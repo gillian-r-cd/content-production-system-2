@@ -3,7 +3,7 @@
 // 主要函数: fetchAPI, streamAPI
 // 数据结构: Project, Field, ChatMessage
 
-const API_BASE = process.env.BACKEND_URL || "http://localhost:8000";
+const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 
 // ============== Types ==============
 

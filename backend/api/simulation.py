@@ -8,7 +8,7 @@
 管理模拟记录、人物小传选择
 """
 
-from typing import Optional
+from typing import Optional, List, Union
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -38,7 +38,7 @@ class PersonaSchema(BaseModel):
 class SimulationCreate(BaseModel):
     project_id: str
     simulator_id: str
-    target_field_ids: list[str] = []
+    target_field_ids: List[str] = []
     persona: PersonaSchema
 
 
@@ -46,9 +46,9 @@ class SimulationResponse(BaseModel):
     id: str
     project_id: str
     simulator_id: str
-    target_field_ids: list[str]
+    target_field_ids: List[str]
     persona: dict
-    interaction_log: list | dict
+    interaction_log: Union[list, dict]
     feedback: dict
     status: str
     created_at: str
@@ -64,7 +64,7 @@ class PersonaFromResearch(BaseModel):
 
 # ============== Routes ==============
 
-@router.get("/project/{project_id}", response_model=list[SimulationResponse])
+@router.get("/project/{project_id}", response_model=List[SimulationResponse])
 def list_simulations(project_id: str, db: Session = Depends(get_db)):
     """获取项目的模拟记录列表"""
     records = (

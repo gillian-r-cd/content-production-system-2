@@ -9,10 +9,16 @@
 可以基于模板创建，也可以完全自定义
 """
 
+from typing import Optional, Set, Dict, TYPE_CHECKING
+
 from sqlalchemy import String, Text, JSON, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.models.base import BaseModel
+
+if TYPE_CHECKING:
+    from core.models.project import Project
+    from core.models.field_template import FieldTemplate
 
 
 # 字段状态
@@ -49,7 +55,7 @@ class ProjectField(BaseModel):
     project_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("projects.id"), nullable=False
     )
-    template_id: Mapped[str | None] = mapped_column(
+    template_id: Mapped[Optional[str]] = mapped_column(
         String(36), ForeignKey("field_templates.id"), nullable=True
     )
     
@@ -65,7 +71,7 @@ class ProjectField(BaseModel):
     dependencies: Mapped[dict] = mapped_column(
         JSON, default=lambda: {"depends_on": [], "dependency_type": "all"}
     )
-    generation_log_id: Mapped[str | None] = mapped_column(
+    generation_log_id: Mapped[Optional[str]] = mapped_column(
         String(36), nullable=True
     )
 
@@ -75,7 +81,7 @@ class ProjectField(BaseModel):
     )
     template: Mapped["FieldTemplate"] = relationship("FieldTemplate")
 
-    def can_generate(self, completed_field_ids: set[str]) -> bool:
+    def can_generate(self, completed_field_ids: Set[str]) -> bool:
         """
         检查是否可以生成（依赖是否满足）
         

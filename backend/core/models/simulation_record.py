@@ -8,10 +8,16 @@
 记录每次消费者模拟的完整过程和结果
 """
 
+from typing import Optional, Union, List, Dict, TYPE_CHECKING
+
 from sqlalchemy import String, Text, JSON, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.models.base import BaseModel
+
+if TYPE_CHECKING:
+    from core.models.project import Project
+    from core.models.simulator import Simulator
 
 
 class SimulationRecord(BaseModel):
@@ -54,7 +60,7 @@ class SimulationRecord(BaseModel):
             "story": "",
         }
     )
-    interaction_log: Mapped[list | dict] = mapped_column(JSON, default=list)
+    interaction_log: Mapped[Union[list, dict]] = mapped_column(JSON, default=list)
     feedback: Mapped[dict] = mapped_column(
         JSON, default=lambda: {
             "scores": {},
@@ -70,7 +76,7 @@ class SimulationRecord(BaseModel):
     )
     simulator: Mapped["Simulator"] = relationship("Simulator")
 
-    def get_average_score(self) -> float | None:
+    def get_average_score(self) -> Optional[float]:
         """计算平均分"""
         scores = self.feedback.get("scores", {})
         if not scores:

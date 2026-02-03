@@ -5,12 +5,14 @@
 
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
-import { PHASE_NAMES } from "@/lib/utils";
-import { fieldAPI } from "@/lib/api";
+import { PHASE_NAMES, PROJECT_PHASES } from "@/lib/utils";
+import { fieldAPI, agentAPI } from "@/lib/api";
 import type { Field } from "@/lib/api";
 import { SimulationPanel } from "./simulation-panel";
+import { ProposalSelector } from "./proposal-selector";
+import { ResearchPanel } from "./research-panel";
 
 interface ContentPanelProps {
   projectId: string | null;
@@ -18,6 +20,7 @@ interface ContentPanelProps {
   fields: Field[];
   onFieldUpdate?: (fieldId: string, content: string) => void;
   onFieldsChange?: () => void;
+  onPhaseAdvance?: () => void;  // 阶段推进后的回调
 }
 
 export function ContentPanel({
@@ -26,10 +29,72 @@ export function ContentPanel({
   fields,
   onFieldUpdate,
   onFieldsChange,
+  onPhaseAdvance,
 }: ContentPanelProps) {
+  const [isAdvancing, setIsAdvancing] = useState(false);
+  
   const phaseFields = fields.filter((f) => f.phase === currentPhase);
   const allCompletedFields = fields.filter((f) => f.status === "completed");
+  
+  // 判断当前阶段是否可以进入下一阶段
+  const phaseHasContent = phaseFields.length > 0 && phaseFields.some(f => f.status === "completed");
+  const currentPhaseIndex = PROJECT_PHASES.indexOf(currentPhase);
+  const isLastPhase = currentPhaseIndex === PROJECT_PHASES.length - 1;
+  const nextPhase = isLastPhase ? null : PROJECT_PHASES[currentPhaseIndex + 1];
+  
+  // 内涵设计阶段：检查是否是JSON方案格式（Hooks必须在顶层调用）
+  const designInnerField = phaseFields.find(
+    (f) => f.phase === "design_inner" && f.name === "内涵设计方案"
+  );
+  
+  // 尝试解析JSON方案（design_inner）
+  const isProposalFormat = useMemo(() => {
+    if (currentPhase !== "design_inner" || !designInnerField?.content) {
+      return false;
+    }
+    try {
+      const data = JSON.parse(designInnerField.content);
+      return data.proposals && Array.isArray(data.proposals);
+    } catch {
+      return false;
+    }
+  }, [currentPhase, designInnerField?.content]);
 
+  // 消费者调研阶段：检查是否是JSON格式
+  const researchField = phaseFields.find(
+    (f) => f.phase === "research" && f.name === "消费者调研报告"
+  );
+  
+  const isResearchJsonFormat = useMemo(() => {
+    if (currentPhase !== "research" || !researchField?.content) {
+      return false;
+    }
+    try {
+      const data = JSON.parse(researchField.content);
+      return data.summary && data.personas && Array.isArray(data.personas);
+    } catch {
+      return false;
+    }
+  }, [currentPhase, researchField?.content]);
+  
+  // 确认进入下一阶段
+  const handleAdvancePhase = async () => {
+    if (!projectId || !nextPhase) return;
+    
+    setIsAdvancing(true);
+    try {
+      await agentAPI.advance(projectId);
+      onPhaseAdvance?.();
+    } catch (err) {
+      console.error("进入下一阶段失败:", err);
+      alert("进入下一阶段失败: " + (err instanceof Error ? err.message : "未知错误"));
+    } finally {
+      setIsAdvancing(false);
+    }
+  };
+
+  // ===== 早期返回（在所有Hooks之后）=====
+  
   if (!projectId) {
     return (
       <div className="flex items-center justify-center h-full text-zinc-500">
@@ -49,6 +114,45 @@ export function ContentPanel({
         fields={fields}
         onSimulationCreated={onFieldsChange}
       />
+    );
+  }
+
+  // 消费者调研阶段：使用调研面板
+  if (currentPhase === "research" && isResearchJsonFormat && researchField) {
+    return (
+      <ResearchPanel
+        projectId={projectId}
+        fieldId={researchField.id}
+        content={researchField.content}
+        onUpdate={onFieldsChange}
+      />
+    );
+  }
+
+  // 如果是方案格式，使用方案选择器
+  if (currentPhase === "design_inner" && isProposalFormat && designInnerField) {
+    return (
+      <div className="h-full flex flex-col">
+        <div className="p-4 border-b border-surface-3">
+          <h1 className="text-xl font-bold text-zinc-100">
+            {PHASE_NAMES[currentPhase] || currentPhase}
+          </h1>
+          <p className="text-zinc-500 text-sm mt-1">
+            请选择一个方案，调整字段设置后确认进入生产
+          </p>
+        </div>
+        <div className="flex-1 overflow-hidden">
+          <ProposalSelector
+            projectId={projectId}
+            content={designInnerField.content}
+            onConfirm={() => {
+              onFieldsChange?.();
+              onPhaseAdvance?.();
+            }}
+            onFieldsCreated={onFieldsChange}
+          />
+        </div>
+      </div>
     );
   }
 
@@ -83,6 +187,37 @@ export function ContentPanel({
           <p className="text-sm mt-2">
             在右侧与 AI Agent 对话开始生产内容
           </p>
+        </div>
+      )}
+      
+      {/* 确认进入下一阶段按钮 */}
+      {phaseHasContent && nextPhase && (
+        <div className="mt-8 pt-6 border-t border-surface-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-zinc-400 text-sm">当前阶段内容已完成</p>
+              <p className="text-zinc-500 text-xs mt-1">
+                下一阶段：{PHASE_NAMES[nextPhase] || nextPhase}
+              </p>
+            </div>
+            <button
+              onClick={handleAdvancePhase}
+              disabled={isAdvancing}
+              className={`px-6 py-3 rounded-xl font-medium transition-all ${
+                isAdvancing
+                  ? "bg-zinc-700 text-zinc-400 cursor-wait"
+                  : "bg-brand-600 hover:bg-brand-700 text-white shadow-lg hover:shadow-brand-600/25"
+              }`}
+            >
+              {isAdvancing ? (
+                <span className="flex items-center gap-2">
+                  <span className="animate-spin">⏳</span> 处理中...
+                </span>
+              ) : (
+                <span>✅ 确认，进入下一阶段</span>
+              )}
+            </button>
+          </div>
         </div>
       )}
     </div>

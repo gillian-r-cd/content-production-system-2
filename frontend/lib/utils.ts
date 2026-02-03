@@ -28,6 +28,20 @@ export function formatDate(dateString: string): string {
 }
 
 /**
+ * 项目阶段顺序
+ */
+export const PROJECT_PHASES = [
+  "intent",
+  "research",
+  "design_inner",
+  "produce_inner",
+  "design_outer",
+  "produce_outer",
+  "simulate",
+  "evaluate",
+];
+
+/**
  * 阶段名称映射
  */
 export const PHASE_NAMES: Record<string, string> = {

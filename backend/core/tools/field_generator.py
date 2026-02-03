@@ -9,7 +9,7 @@
 支持流式输出和批量并行生成
 """
 
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Optional, List
 from dataclasses import dataclass
 
 from core.ai_client import ai_client, ChatMessage, ChatResponse
@@ -118,10 +118,10 @@ async def generate_field_stream(
 
 
 async def generate_fields_parallel(
-    fields: list[ProjectField],
+    fields: List[ProjectField],
     context: PromptContext,
     temperature: float = 0.7,
-) -> list[FieldGenerationResult]:
+) -> List[FieldGenerationResult]:
     """
     并行生成多个字段
     
@@ -159,7 +159,7 @@ async def generate_fields_parallel(
     return processed_results
 
 
-def resolve_field_order(fields: list[ProjectField]) -> list[list[ProjectField]]:
+def resolve_field_order(fields: List[ProjectField]) -> List[List[ProjectField]]:
     """
     解析字段依赖顺序，返回可并行执行的分组
     

@@ -14,7 +14,7 @@ AI客户端
 
 import time
 import json
-from typing import AsyncGenerator, Optional, Any, Type
+from typing import AsyncGenerator, Optional, Any, Type, List, Tuple
 from dataclasses import dataclass
 
 from openai import OpenAI, AsyncOpenAI
@@ -82,7 +82,7 @@ class AIClient:
     
     def chat(
         self,
-        messages: list[ChatMessage],
+        messages: List[ChatMessage],
         model: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
@@ -130,7 +130,7 @@ class AIClient:
     
     async def async_chat(
         self,
-        messages: list[ChatMessage],
+        messages: List[ChatMessage],
         model: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
@@ -169,7 +169,7 @@ class AIClient:
     
     async def stream_chat(
         self,
-        messages: list[ChatMessage],
+        messages: List[ChatMessage],
         model: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
@@ -206,11 +206,11 @@ class AIClient:
     
     async def generate_structured(
         self,
-        messages: list[ChatMessage],
+        messages: List[ChatMessage],
         response_model: Type[BaseModel],
         model: Optional[str] = None,
         temperature: float = 0.7,
-    ) -> tuple[BaseModel, ChatResponse]:
+    ) -> Tuple[BaseModel, ChatResponse]:
         """
         生成结构化输出
         
@@ -276,7 +276,7 @@ class AIClient:
         project_id: str,
         phase: str,
         operation: str,
-        messages: list[ChatMessage],
+        messages: List[ChatMessage],
         response: ChatResponse,
         field_id: Optional[str] = None,
         status: str = "success",

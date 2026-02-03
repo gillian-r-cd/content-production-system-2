@@ -14,7 +14,7 @@
 
 import re
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Dict, List, Tuple
 
 from core.models import (
     Project, 
@@ -166,15 +166,50 @@ class PromptEngine:
 
 输出格式要求结构化、具体、可操作。""",
 
-        "design_inner": """你是一个资深的内容架构师。基于项目意图和用户调研，设计内容生产方案。
+        "design_inner": """你是一个资深的内容架构师。基于项目意图和用户调研，设计3个不同的内容生产方案供用户选择。
 
-你需要输出：
-1. 内容策略建议
-2. 推荐的内容结构/大纲
-3. 建议使用的字段模板（如有）
-4. 关键注意事项
+你必须输出严格的JSON格式（不要添加任何其他内容），包含3个方案：
 
-设计要紧扣用户痛点和价值主张。""",
+```json
+{
+  "proposals": [
+    {
+      "id": "proposal_1",
+      "name": "方案名称（简洁有力）",
+      "description": "方案核心思路描述（2-3句话）",
+      "fields": [
+        {
+          "id": "field_1",
+          "name": "字段名称",
+          "field_type": "richtext",
+          "ai_prompt": "生成这个字段时的AI提示词",
+          "depends_on": [],
+          "order": 1,
+          "need_review": true
+        },
+        {
+          "id": "field_2",
+          "name": "第二个字段",
+          "field_type": "richtext",
+          "ai_prompt": "生成提示词",
+          "depends_on": ["field_1"],
+          "order": 2,
+          "need_review": false
+        }
+      ]
+    },
+    { ... },
+    { ... }
+  ]
+}
+```
+
+要求：
+1. 3个方案要有明显差异（如：模块化 vs 线性 vs 场景驱动）
+2. 每个方案5-10个字段
+3. 字段依赖关系要合理（depends_on 填写依赖的字段id）
+4. need_review=true 表示重要字段需要人工确认
+5. 紧扣用户痛点和项目意图""",
 
         "produce_inner": """你是一个专业的内容创作者。根据内涵设计方案，生产具体的内容。
 
@@ -310,8 +345,8 @@ class PromptEngine:
     def parse_references(
         self,
         text: str,
-        fields_by_name: dict[str, ProjectField],
-    ) -> tuple[str, list[ProjectField]]:
+        fields_by_name: Dict[str, ProjectField],
+    ) -> Tuple[str, List[ProjectField]]:
         """
         解析@引用语法
         

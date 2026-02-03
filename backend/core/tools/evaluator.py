@@ -8,7 +8,7 @@
 根据评估模板对项目进行全面评估
 """
 
-from typing import Optional
+from typing import Optional, Dict, List
 from dataclasses import dataclass, field
 from pydantic import BaseModel, Field as PydanticField
 
@@ -23,8 +23,8 @@ from core.models import (
 
 class SectionScore(BaseModel):
     """板块评分"""
-    scores: dict[str, float] = PydanticField(description="各指标评分")
-    comments: dict[str, str] = PydanticField(description="各指标评语")
+    scores: Dict[str, float] = PydanticField(description="各指标评分")
+    comments: Dict[str, str] = PydanticField(description="各指标评语")
     summary: str = PydanticField(description="板块总结")
 
 
@@ -39,9 +39,9 @@ class Suggestion(BaseModel):
 
 class EvaluationResult(BaseModel):
     """评估结果"""
-    section_scores: dict[str, SectionScore] = PydanticField(description="各板块评分")
+    section_scores: Dict[str, SectionScore] = PydanticField(description="各板块评分")
     overall_score: float = PydanticField(description="综合评分")
-    suggestions: list[Suggestion] = PydanticField(description="修改建议")
+    suggestions: List[Suggestion] = PydanticField(description="修改建议")
     summary: str = PydanticField(description="总体评价")
 
 
@@ -110,9 +110,9 @@ async def evaluate_section(
 
 
 async def generate_suggestions(
-    section_scores: dict[str, SectionScore],
+    section_scores: Dict[str, SectionScore],
     project_context: str,
-) -> list[Suggestion]:
+) -> List[Suggestion]:
     """
     生成修改建议
     
@@ -165,7 +165,7 @@ async def generate_suggestions(
     ]
     
     class SuggestionList(BaseModel):
-        suggestions: list[Suggestion]
+        suggestions: List[Suggestion]
     
     result, _ = await ai_client.generate_structured(
         messages=messages,
@@ -179,8 +179,8 @@ async def generate_suggestions(
 async def evaluate_project(
     template: EvaluationTemplate,
     project: Project,
-    fields: list[ProjectField],
-    simulation_records: list[SimulationRecord],
+    fields: List[ProjectField],
+    simulation_records: List[SimulationRecord],
     project_context: str,
 ) -> EvaluationResult:
     """

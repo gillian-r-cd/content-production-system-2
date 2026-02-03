@@ -8,10 +8,15 @@ Agent对话历史模型
 记录与Agent的每条对话，支持历史加载、编辑重发
 """
 
+from typing import Optional, TYPE_CHECKING
+
 from sqlalchemy import String, Text, JSON, Boolean, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.models.base import BaseModel
+
+if TYPE_CHECKING:
+    from core.models.project import Project
 
 
 class ChatMessage(BaseModel):
@@ -48,7 +53,7 @@ class ChatMessage(BaseModel):
             "references": [],
         }
     )
-    parent_message_id: Mapped[str | None] = mapped_column(
+    parent_message_id: Mapped[Optional[str]] = mapped_column(
         String(36), ForeignKey("chat_messages.id"), nullable=True
     )
 

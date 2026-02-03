@@ -9,10 +9,19 @@
 支持版本管理：修改前面字段时创建新版本
 """
 
+from typing import Optional, List, Dict, TYPE_CHECKING
+
 from sqlalchemy import String, Text, Integer, JSON, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.models.base import BaseModel
+
+if TYPE_CHECKING:
+    from core.models.creator_profile import CreatorProfile
+    from core.models.project_field import ProjectField
+    from core.models.simulation_record import SimulationRecord
+    from core.models.evaluation import EvaluationReport
+    from core.models.generation_log import GenerationLog
 
 
 # 项目阶段定义
@@ -60,7 +69,7 @@ class Project(BaseModel):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=1)
     version_note: Mapped[str] = mapped_column(Text, default="")
-    parent_version_id: Mapped[str | None] = mapped_column(
+    parent_version_id: Mapped[Optional[str]] = mapped_column(
         String(36), ForeignKey("projects.id"), nullable=True
     )
     
@@ -103,7 +112,7 @@ class Project(BaseModel):
         except ValueError:
             return -1
 
-    def get_next_phase(self) -> str | None:
+    def get_next_phase(self) -> Optional[str]:
         """获取下一个阶段"""
         current_idx = self.get_phase_index(self.current_phase)
         if current_idx < 0 or current_idx >= len(self.phase_order) - 1:

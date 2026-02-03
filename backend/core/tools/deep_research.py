@@ -9,7 +9,7 @@ DeepResearch 工具
 """
 
 import asyncio
-from typing import Optional
+from typing import Optional, List
 from pydantic import BaseModel, Field
 
 import httpx
@@ -20,23 +20,25 @@ from core.ai_client import ai_client, ChatMessage
 
 class ConsumerPersona(BaseModel):
     """用户小传"""
+    id: str = Field(default="", description="唯一标识")
     name: str = Field(description="人物名称")
-    background: str = Field(description="背景描述")
-    story: str = Field(description="完整的故事小传")
-    pain_points: list[str] = Field(description="该人物的痛点")
+    basic_info: dict = Field(default_factory=dict, description="基本信息（年龄、职位、行业等）")
+    background: str = Field(description="背景简介")
+    pain_points: List[str] = Field(description="核心痛点")
+    selected: bool = Field(default=True, description="是否选中用于Simulator")
 
 
 class ResearchReport(BaseModel):
     """调研报告"""
     summary: str = Field(description="总体概述")
     consumer_profile: dict = Field(description="消费者画像")
-    pain_points: list[str] = Field(description="核心痛点列表")
-    value_propositions: list[str] = Field(description="价值主张列表")
-    personas: list[ConsumerPersona] = Field(description="典型用户小传")
-    sources: list[str] = Field(default_factory=list, description="信息来源")
+    pain_points: List[str] = Field(description="核心痛点列表")
+    value_propositions: List[str] = Field(description="价值主张列表")
+    personas: List[ConsumerPersona] = Field(description="典型用户小传")
+    sources: List[str] = Field(default_factory=list, description="信息来源")
 
 
-def search_ddg(query: str, max_results: int = 10) -> list[dict]:
+def search_ddg(query: str, max_results: int = 10) -> List[dict]:
     """
     使用DuckDuckGo搜索
     
@@ -81,7 +83,7 @@ async def read_with_jina(url: str, timeout: float = 30.0) -> Optional[str]:
     return None
 
 
-async def plan_search_queries(query: str, intent: str) -> list[str]:
+async def plan_search_queries(query: str, intent: str) -> List[str]:
     """
     使用LLM规划搜索查询
     
@@ -112,7 +114,7 @@ async def plan_search_queries(query: str, intent: str) -> list[str]:
 
 
 async def synthesize_report(
-    contents: list[str],
+    contents: List[str],
     query: str,
     intent: str,
 ) -> ResearchReport:

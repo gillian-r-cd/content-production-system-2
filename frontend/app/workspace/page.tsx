@@ -20,6 +20,7 @@ export default function WorkspacePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);  // 用于触发子组件刷新
 
   // 加载项目列表
   useEffect(() => {
@@ -124,11 +125,12 @@ export default function WorkspacePage() {
       currentProject.current_phase
     );
 
-    // 更新项目状态
-    if (response.phase_status) {
+    // 完整更新项目状态（phase_status + current_phase）
+    if (response.phase_status || response.phase) {
       setCurrentProject({
         ...currentProject,
-        phase_status: response.phase_status,
+        phase_status: response.phase_status || currentProject.phase_status,
+        current_phase: response.phase || currentProject.current_phase,
       });
     }
 
@@ -217,10 +219,21 @@ export default function WorkspacePage() {
               fields={fields}
               onFieldUpdate={handleFieldUpdate}
               onFieldsChange={() => currentProject && loadFields(currentProject.id)}
+              onPhaseAdvance={async () => {
+                // 阶段推进后，刷新项目、字段和对话历史
+                if (currentProject) {
+                  const updatedProject = await projectAPI.get(currentProject.id);
+                  setCurrentProject(updatedProject);
+                  await loadFields(currentProject.id);
+                  // 触发右侧面板刷新（通过重新渲染 AgentPanel）
+                  setRefreshKey(prev => prev + 1);
+                }
+              }}
             />
           }
           rightPanel={
             <AgentPanel
+              key={refreshKey}  // 触发刷新
               projectId={currentProject?.id || null}
               fields={fields}
               onSendMessage={handleSendMessage}

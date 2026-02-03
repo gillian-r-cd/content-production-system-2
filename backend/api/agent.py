@@ -10,8 +10,8 @@ Agent 对话 API
 """
 
 import json
-from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional, List, Dict
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -31,15 +31,15 @@ class ChatRequest(BaseModel):
     project_id: str
     message: str
     current_phase: Optional[str] = None
-    references: list[str] = []  # @引用的字段名列表
+    references: List[str] = []  # @引用的字段名列表
 
 
-class ChatResponse(BaseModel):
+class ChatResponseSchema(BaseModel):
     """对话响应"""
     message_id: str
     message: str
     phase: str
-    phase_status: dict[str, str]
+    phase_status: Dict[str, str]
     waiting_for_human: bool
 
 
@@ -70,7 +70,7 @@ class ChatMessageResponse(BaseModel):
 
 # ============== Routes ==============
 
-@router.get("/history/{project_id}", response_model=list[ChatMessageResponse])
+@router.get("/history/{project_id}", response_model=List[ChatMessageResponse])
 def get_chat_history(
     project_id: str,
     limit: int = 100,
@@ -94,7 +94,7 @@ class ChatResponseExtended(BaseModel):
     message_id: str
     message: str
     phase: str
-    phase_status: dict[str, str]
+    phase_status: Dict[str, str]
     waiting_for_human: bool
     field_updated: Optional[dict] = None  # 如果生成了字段内容
     project_updated: bool = False
@@ -123,15 +123,26 @@ async def chat(
     
     current_phase = request.current_phase or project.current_phase
     
-    # 加载历史对话（在保存新消息之前）
+    # 加载历史对话（只加载当前阶段的消息，避免混入之前阶段的内容）
     history_messages = (
         db.query(ChatMessage)
         .filter(ChatMessage.project_id == request.project_id)
         .order_by(ChatMessage.created_at.asc())
-        .limit(50)  # 最近50条
         .all()
     )
-    chat_history = [{"role": m.role, "content": m.content} for m in history_messages]
+    
+    # 只保留当前阶段的消息（通过 metadata.phase 过滤）
+    current_phase_messages = []
+    for m in history_messages:
+        msg_phase = None
+        if m.message_metadata:
+            msg_phase = m.message_metadata.get("phase")
+        # 如果消息没有 phase 信息，或者是当前阶段的消息，则保留
+        if msg_phase is None or msg_phase == current_phase:
+            current_phase_messages.append(m)
+    
+    # 只取最近的20条当前阶段消息
+    chat_history = [{"role": m.role, "content": m.content} for m in current_phase_messages[-20:]]
     
     # 保存用户消息
     user_msg = ChatMessage(
@@ -165,11 +176,6 @@ async def chat(
     # ===== 核心逻辑：只有产出模式才保存为 ProjectField =====
     # 意图分析阶段：提问模式(is_producing=False)只显示在对话区
     #              产出模式(is_producing=True)才保存为字段显示在中间栏
-    # 其他阶段：直接保存为字段（is_producing 默认 True）
-    
-    # 非意图阶段默认都是产出模式
-    if result_phase != "intent":
-        is_producing = True
     
     field_updated = None
     fields_created = []
@@ -268,34 +274,44 @@ async def chat(
                 db.add(new_field)
                 field_updated = {"id": new_field.id, "name": new_field.name, "phase": result_phase}
     
-    # ===== 记录GenerationLog =====
+    # ===== 记录GenerationLog（使用 Agent 返回的完整 prompt 信息）=====
+    # full_prompt 包含系统提示词和用户输入
+    full_prompt = result.get("full_prompt", request.message)
+    
     log_entry = GenerationLog(
         id=generate_uuid(),
         project_id=request.project_id,
         phase=result_phase,
         operation=f"agent_chat_{result_phase}",
         model=ai_client.model,
-        prompt_input=request.message,
+        prompt_input=full_prompt,  # 完整的 prompt（系统提示词 + 用户输入）
         prompt_output=agent_output,
-        tokens_in=0,  # TODO: 从result获取实际token数
-        tokens_out=0,
-        duration_ms=0,
-        cost=0.0,
+        tokens_in=result.get("tokens_in", 0),
+        tokens_out=result.get("tokens_out", 0),
+        duration_ms=result.get("duration_ms", 0),
+        cost=result.get("cost", 0.0),
         status="success",
     )
     db.add(log_entry)
     
     # 保存Agent响应到对话历史
     # 核心规则：产出模式下，聊天区只显示简短确认，完整内容在中间工作台
-    if is_producing and field_updated:
+    
+    # 优先使用 display_output（某些阶段如 design_inner 会单独提供对话区显示内容）
+    display_output = result.get("display_output")
+    
+    if display_output:
+        # 如果有专门的显示内容，直接使用
+        chat_content = display_output
+    elif is_producing and field_updated:
         # 产出模式：聊天区显示简短确认
         phase_names = {
             "intent": "意图分析",
-            "research": "消费者调研", 
-            "design_inner": "内涵设计",
-            "produce_inner": "内涵生产",
-            "design_outer": "外延设计",
-            "produce_outer": "外延生产",
+            "research": "消费者调研报告", 
+            "design_inner": "内涵设计方案",
+            "produce_inner": "内涵生产内容",
+            "design_outer": "外延设计方案",
+            "produce_outer": "外延生产内容",
             "simulate": "消费者模拟",
             "evaluate": "评估报告",
         }
@@ -332,11 +348,8 @@ async def chat(
     project_updated = False
     new_phase_status = result.get("phase_status", project.phase_status or {})
     
-    # 确保当前阶段标记为进行中或已完成
-    if result_phase and agent_output:
-        new_phase_status[result_phase] = "in_progress"
-        project_updated = True
-    
+    # 使用 orchestrator 返回的 phase_status（已包含正确的完成/进行中状态）
+    # 不再强制覆盖，尊重 orchestrator 的判断
     if new_phase_status != project.phase_status:
         project.phase_status = new_phase_status
         project_updated = True
@@ -409,7 +422,7 @@ async def edit_message(
     return _to_message_response(msg)
 
 
-@router.post("/retry/{message_id}", response_model=ChatResponse)
+@router.post("/retry/{message_id}", response_model=ChatResponseSchema)
 async def retry_message(
     message_id: str,
     db: Session = Depends(get_db),
@@ -471,7 +484,7 @@ async def retry_message(
     db.add(new_msg)
     db.commit()
     
-    return ChatResponse(
+    return ChatResponseSchema(
         message_id=new_msg.id,
         message=result.get("agent_output", ""),
         phase=result.get("current_phase", "intent"),
@@ -480,7 +493,7 @@ async def retry_message(
     )
 
 
-@router.post("/tool", response_model=ChatResponse)
+@router.post("/tool", response_model=ChatResponseSchema)
 async def call_tool(
     request: ToolCallRequest,
     db: Session = Depends(get_db),
@@ -546,7 +559,7 @@ async def call_tool(
     db.add(agent_msg)
     db.commit()
     
-    return ChatResponse(
+    return ChatResponseSchema(
         message_id=agent_msg.id,
         message=output,
         phase=project.current_phase,
@@ -652,9 +665,12 @@ async def stream_chat(
 async def advance_phase(
     request: ChatRequest,
     db: Session = Depends(get_db),
+    background_tasks: BackgroundTasks = None,
 ):
     """
-    推进到下一阶段
+    推进到下一阶段（用户点击确认按钮后调用）
+    
+    快速返回，调研任务在后台执行
     """
     project = db.query(Project).filter(Project.id == request.project_id).first()
     if not project:
@@ -662,44 +678,45 @@ async def advance_phase(
     
     current_idx = project.phase_order.index(project.current_phase)
     if current_idx >= len(project.phase_order) - 1:
-        return {"message": "Already at final phase", "phase": project.current_phase}
-    
-    next_phase = project.phase_order[current_idx + 1]
-    
-    # 检查当前阶段是否需要人工确认
-    needs_confirm = project.agent_autonomy.get(project.current_phase, True)
-    if needs_confirm:
-        # 需要确认，标记等待状态
-        return ChatResponse(
+        return ChatResponseExtended(
             message_id="",
-            message=f"阶段 {project.current_phase} 需要您确认后才能继续。请确认当前阶段内容后说'继续'。",
+            message="已经是最后一个阶段了",
             phase=project.current_phase,
             phase_status=project.phase_status,
-            waiting_for_human=True,
+            waiting_for_human=False,
         )
     
-    # 不需要确认，直接推进
-    project.phase_status[project.current_phase] = "completed"
+    prev_phase = project.current_phase
+    next_phase = project.phase_order[current_idx + 1]
+    
+    # 更新阶段状态
+    project.phase_status[prev_phase] = "completed"
     project.current_phase = next_phase
     project.phase_status[next_phase] = "in_progress"
-    
     db.commit()
     
-    result = await content_agent.run(
+    # 保存进入阶段的消息
+    enter_msg = ChatMessage(
+        id=generate_uuid(),
         project_id=request.project_id,
-        user_input=f"开始{next_phase}阶段",
-        current_phase=next_phase,
-        golden_context=project.golden_context or {},
-        autonomy_settings=project.agent_autonomy or {},
-        use_deep_research=project.use_deep_research if hasattr(project, 'use_deep_research') else True,
+        role="assistant",
+        content=f"✅ 已进入【{_get_phase_field_name(next_phase)}】阶段。请在右侧对话框输入「开始」来生成内容。",
+        message_metadata={"phase": next_phase},
     )
+    db.add(enter_msg)
+    db.commit()
     
-    return ChatResponse(
-        message_id="",
-        message=result.get("agent_output", ""),
+    # 重新查询获取最新状态
+    db.refresh(project)
+    
+    return ChatResponseExtended(
+        message_id=enter_msg.id,
+        message=f"✅ 已进入【{_get_phase_field_name(next_phase)}】阶段。请在右侧对话框输入「开始」来生成内容。",
         phase=next_phase,
         phase_status=project.phase_status,
-        waiting_for_human=result.get("waiting_for_human", False),
+        waiting_for_human=False,
+        project_updated=True,
+        is_producing=False,
     )
 
 

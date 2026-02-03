@@ -7,7 +7,7 @@
 项目管理 API
 """
 
-from typing import Optional
+from typing import Optional, List, Dict
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -32,8 +32,8 @@ class ProjectUpdate(BaseModel):
     """更新项目请求"""
     name: Optional[str] = None
     current_phase: Optional[str] = None
-    phase_order: Optional[list[str]] = None
-    agent_autonomy: Optional[dict[str, bool]] = None
+    phase_order: Optional[List[str]] = None
+    agent_autonomy: Optional[Dict[str, bool]] = None
     golden_context: Optional[dict] = None
     use_deep_research: Optional[bool] = None
 
@@ -46,9 +46,9 @@ class ProjectResponse(BaseModel):
     version_note: str
     creator_profile_id: Optional[str]
     current_phase: str
-    phase_order: list[str]
-    phase_status: dict[str, str]
-    agent_autonomy: dict[str, bool]
+    phase_order: List[str]
+    phase_status: Dict[str, str]
+    agent_autonomy: Dict[str, bool]
     golden_context: dict
     use_deep_research: bool
     created_at: str
@@ -64,7 +64,7 @@ class NewVersionRequest(BaseModel):
 
 # ============== Routes ==============
 
-@router.get("/", response_model=list[ProjectResponse])
+@router.get("/", response_model=List[ProjectResponse])
 def list_projects(
     skip: int = 0,
     limit: int = 100,
@@ -90,6 +90,18 @@ def create_project(
         if creator_profile:
             golden_context["creator_profile"] = creator_profile.to_prompt_context()
     
+    # ===== 关键：从AgentSettings读取默认自主权 =====
+    from core.models.agent_settings import AgentSettings
+    agent_settings = db.query(AgentSettings).filter(AgentSettings.name == "default").first()
+    
+    # 如果有设置，使用设置中的默认值；否则全部设为True（自动执行）
+    if agent_settings and agent_settings.autonomy_defaults:
+        default_autonomy = agent_settings.autonomy_defaults
+        # 确保所有阶段都有值
+        agent_autonomy = {p: default_autonomy.get(p, True) for p in PROJECT_PHASES}
+    else:
+        agent_autonomy = {p: True for p in PROJECT_PHASES}
+    
     db_project = Project(
         id=generate_uuid(),
         name=project.name,
@@ -99,7 +111,7 @@ def create_project(
         current_phase="intent",
         phase_order=PROJECT_PHASES.copy(),
         phase_status={p: "pending" for p in PROJECT_PHASES},
-        agent_autonomy={p: True for p in PROJECT_PHASES},
+        agent_autonomy=agent_autonomy,  # 使用默认自主权
         golden_context=golden_context,
     )
     

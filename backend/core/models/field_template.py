@@ -9,6 +9,8 @@
 每个模板包含若干字段定义及其关联关系
 """
 
+from typing import Optional, List
+
 from sqlalchemy import String, Text, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -58,18 +60,18 @@ class FieldTemplate(BaseModel):
     category: Mapped[str] = mapped_column(String(50), default="通用")
     fields: Mapped[list] = mapped_column(JSON, default=list)
 
-    def get_field_names(self) -> list[str]:
+    def get_field_names(self) -> List[str]:
         """获取所有字段名"""
         return [f["name"] for f in self.fields]
 
-    def get_field_by_name(self, name: str) -> dict | None:
+    def get_field_by_name(self, name: str) -> Optional[dict]:
         """根据名称获取字段定义"""
         for field in self.fields:
             if field["name"] == name:
                 return field
         return None
 
-    def validate_dependencies(self) -> list[str]:
+    def validate_dependencies(self) -> List[str]:
         """验证依赖关系，返回错误列表"""
         errors = []
         field_names = set(self.get_field_names())

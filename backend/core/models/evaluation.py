@@ -8,10 +8,15 @@
 包含评估模板（可自定义）和评估报告
 """
 
+from typing import List, TYPE_CHECKING
+
 from sqlalchemy import String, Text, JSON, ForeignKey, Float
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.models.base import BaseModel
+
+if TYPE_CHECKING:
+    from core.models.project import Project
 
 
 class EvaluationTemplate(BaseModel):
@@ -58,7 +63,7 @@ class EvaluationTemplate(BaseModel):
         """计算总权重（应该等于1）"""
         return sum(s.get("weight", 0) for s in self.sections)
 
-    def validate(self) -> list[str]:
+    def validate(self) -> List[str]:
         """验证模板，返回错误列表"""
         errors = []
         total_weight = self.get_total_weight()
@@ -113,7 +118,7 @@ class EvaluationReport(BaseModel):
     )
     template: Mapped["EvaluationTemplate"] = relationship("EvaluationTemplate")
 
-    def get_pending_suggestions(self) -> list[dict]:
+    def get_pending_suggestions(self) -> List[dict]:
         """获取未处理的建议"""
         return [s for s in self.suggestions if not s.get("adopted")]
 

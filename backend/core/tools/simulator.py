@@ -8,7 +8,7 @@
 支持多种交互类型的模拟
 """
 
-from typing import Optional
+from typing import Optional, Dict, List, Union
 from dataclasses import dataclass, field
 
 from core.ai_client import ai_client, ChatMessage
@@ -18,8 +18,8 @@ from core.models import Simulator, SimulationRecord, ProjectField
 @dataclass
 class SimulationFeedback:
     """模拟反馈"""
-    scores: dict[str, float] = field(default_factory=dict)
-    comments: dict[str, str] = field(default_factory=dict)
+    scores: Dict[str, float] = field(default_factory=dict)
+    comments: Dict[str, str] = field(default_factory=dict)
     overall: str = ""
 
 
@@ -27,7 +27,7 @@ class SimulationFeedback:
 class SimulationResult:
     """模拟结果"""
     record_id: str
-    interaction_log: list[dict] | dict
+    interaction_log: Union[List[dict], dict]
     feedback: SimulationFeedback
     success: bool
     error: Optional[str] = None

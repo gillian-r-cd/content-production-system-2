@@ -490,6 +490,8 @@ class LogResponse(BaseModel):
     phase: str
     operation: str
     model: str
+    prompt_input: str  # 输入内容
+    prompt_output: str  # 输出内容
     tokens_in: int
     tokens_out: int
     duration_ms: int
@@ -666,6 +668,8 @@ def _to_log_response(log: GenerationLog) -> LogResponse:
         phase=log.phase or "",
         operation=log.operation or "",
         model=log.model or "",
+        prompt_input=log.prompt_input or "",
+        prompt_output=log.prompt_output or "",
         tokens_in=log.tokens_in or 0,
         tokens_out=log.tokens_out or 0,
         duration_ms=log.duration_ms or 0,

@@ -8,10 +8,15 @@
 记录每一次大模型调用的详细信息，用于调试和成本分析
 """
 
+from typing import Optional, TYPE_CHECKING
+
 from sqlalchemy import String, Text, Integer, Float, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.models.base import BaseModel
+
+if TYPE_CHECKING:
+    from core.models.project import Project
 
 
 class GenerationLog(BaseModel):
@@ -41,7 +46,7 @@ class GenerationLog(BaseModel):
     project_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("projects.id"), nullable=False
     )
-    field_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    field_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     phase: Mapped[str] = mapped_column(String(50), default="")
     operation: Mapped[str] = mapped_column(String(50), default="")
 

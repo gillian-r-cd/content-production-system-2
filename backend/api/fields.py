@@ -7,7 +7,7 @@
 字段管理 API
 """
 
-from typing import Optional
+from typing import Optional, List, Dict
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -32,7 +32,7 @@ class FieldCreate(BaseModel):
     name: str
     field_type: str = "text"
     ai_prompt: str = ""
-    pre_questions: list[str] = []
+    pre_questions: List[str] = []
     dependencies: dict = {"depends_on": [], "dependency_type": "all"}
     template_id: Optional[str] = None
 
@@ -342,9 +342,9 @@ class BatchGenerateRequest(BaseModel):
 
 class BatchGenerateResponse(BaseModel):
     """批量生成响应"""
-    generated: list[str]  # 成功生成的字段ID
-    failed: list[dict]  # 失败的字段 {"id": str, "error": str}
-    pending: list[str]  # 等待人工确认的字段ID
+    generated: List[str]  # 成功生成的字段ID
+    failed: List[dict]  # 失败的字段 {"id": str, "error": str}
+    pending: List[str]  # 等待人工确认的字段ID
     completed: bool  # 是否全部完成
 
 
