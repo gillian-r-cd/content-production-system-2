@@ -210,16 +210,36 @@ async def chat(
     db.add(log_entry)
     
     # 保存Agent响应到对话历史
+    # 核心规则：产出模式下，聊天区只显示简短确认，完整内容在中间工作台
+    if is_producing and field_updated:
+        # 产出模式：聊天区显示简短确认
+        phase_names = {
+            "intent": "意图分析",
+            "research": "消费者调研", 
+            "design_inner": "内涵设计",
+            "produce_inner": "内涵生产",
+            "design_outer": "外延设计",
+            "produce_outer": "外延生产",
+            "simulate": "消费者模拟",
+            "evaluate": "评估报告",
+        }
+        phase_name = phase_names.get(result_phase, result_phase)
+        chat_content = f"✅ 已生成【{phase_name}】，请在左侧工作台查看和编辑。"
+    else:
+        # 对话模式：显示完整内容
+        chat_content = agent_output
+    
     agent_msg = ChatMessage(
         id=generate_uuid(),
         project_id=request.project_id,
         role="assistant",
-        content=agent_output,
+        content=chat_content,
         message_metadata={
             "phase": result_phase,
             "tool_used": result.get("tool_used"),
             "waiting_for_human": result.get("waiting_for_human", False),
             "field_id": field_updated.get("id") if field_updated else None,
+            "is_producing": is_producing,  # 标记便于前端判断
         },
     )
     db.add(agent_msg)
@@ -251,7 +271,7 @@ async def chat(
     
     return ChatResponseExtended(
         message_id=agent_msg.id,
-        message=agent_output,
+        message=chat_content,  # 聊天区显示的内容（产出模式为简短确认）
         phase=result_phase,
         phase_status=new_phase_status,
         waiting_for_human=result.get("waiting_for_human", False),
