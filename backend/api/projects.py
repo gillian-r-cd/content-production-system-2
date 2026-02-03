@@ -1,0 +1,277 @@
+# backend/api/projects.py
+# 功能: 项目管理API
+# 主要路由: CRUD操作、版本管理
+# 数据结构: ProjectCreate, ProjectUpdate, ProjectResponse
+
+"""
+项目管理 API
+"""
+
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from core.database import get_db
+from core.models import Project, CreatorProfile, PROJECT_PHASES, generate_uuid
+
+
+router = APIRouter()
+
+
+# ============== Schemas ==============
+
+class ProjectCreate(BaseModel):
+    """创建项目请求"""
+    name: str
+    creator_profile_id: Optional[str] = None
+    use_deep_research: bool = True
+
+
+class ProjectUpdate(BaseModel):
+    """更新项目请求"""
+    name: Optional[str] = None
+    current_phase: Optional[str] = None
+    phase_order: Optional[list[str]] = None
+    agent_autonomy: Optional[dict[str, bool]] = None
+    golden_context: Optional[dict] = None
+    use_deep_research: Optional[bool] = None
+
+
+class ProjectResponse(BaseModel):
+    """项目响应"""
+    id: str
+    name: str
+    version: int
+    version_note: str
+    creator_profile_id: Optional[str]
+    current_phase: str
+    phase_order: list[str]
+    phase_status: dict[str, str]
+    agent_autonomy: dict[str, bool]
+    golden_context: dict
+    use_deep_research: bool
+    created_at: str
+    updated_at: str
+
+    model_config = {"from_attributes": True}
+
+
+class NewVersionRequest(BaseModel):
+    """创建新版本请求"""
+    version_note: str
+
+
+# ============== Routes ==============
+
+@router.get("/", response_model=list[ProjectResponse])
+def list_projects(
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+):
+    """获取项目列表"""
+    projects = db.query(Project).offset(skip).limit(limit).all()
+    return [_project_to_response(p) for p in projects]
+
+
+@router.post("/", response_model=ProjectResponse)
+def create_project(
+    project: ProjectCreate,
+    db: Session = Depends(get_db),
+):
+    """创建新项目"""
+    # 获取创作者特质内容，用于 golden_context
+    golden_context = {}
+    if project.creator_profile_id:
+        creator_profile = db.query(CreatorProfile).filter(
+            CreatorProfile.id == project.creator_profile_id
+        ).first()
+        if creator_profile:
+            golden_context["creator_profile"] = creator_profile.to_prompt_context()
+    
+    db_project = Project(
+        id=generate_uuid(),
+        name=project.name,
+        creator_profile_id=project.creator_profile_id,
+        use_deep_research=project.use_deep_research,
+        version=1,
+        current_phase="intent",
+        phase_order=PROJECT_PHASES.copy(),
+        phase_status={p: "pending" for p in PROJECT_PHASES},
+        agent_autonomy={p: True for p in PROJECT_PHASES},
+        golden_context=golden_context,
+    )
+    
+    db.add(db_project)
+    db.commit()
+    db.refresh(db_project)
+    
+    return _project_to_response(db_project)
+
+
+@router.get("/{project_id}", response_model=ProjectResponse)
+def get_project(
+    project_id: str,
+    db: Session = Depends(get_db),
+):
+    """获取项目详情"""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return _project_to_response(project)
+
+
+@router.put("/{project_id}", response_model=ProjectResponse)
+def update_project(
+    project_id: str,
+    update: ProjectUpdate,
+    db: Session = Depends(get_db),
+):
+    """更新项目"""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    update_data = update.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(project, key, value)
+    
+    db.commit()
+    db.refresh(project)
+    
+    return _project_to_response(project)
+
+
+@router.delete("/{project_id}")
+def delete_project(
+    project_id: str,
+    db: Session = Depends(get_db),
+):
+    """删除项目"""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    db.delete(project)
+    db.commit()
+    
+    return {"message": "Project deleted"}
+
+
+@router.post("/{project_id}/versions", response_model=ProjectResponse)
+def create_new_version(
+    project_id: str,
+    request: NewVersionRequest,
+    db: Session = Depends(get_db),
+):
+    """创建项目新版本"""
+    old_project = db.query(Project).filter(Project.id == project_id).first()
+    if not old_project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    # 创建新版本
+    new_project = Project(
+        id=generate_uuid(),
+        name=old_project.name,
+        creator_profile_id=old_project.creator_profile_id,
+        version=old_project.version + 1,
+        version_note=request.version_note,
+        parent_version_id=old_project.id,
+        current_phase=old_project.current_phase,
+        phase_order=old_project.phase_order.copy() if old_project.phase_order else PROJECT_PHASES.copy(),
+        phase_status=old_project.phase_status.copy() if old_project.phase_status else {},
+        agent_autonomy=old_project.agent_autonomy.copy() if old_project.agent_autonomy else {},
+        golden_context=old_project.golden_context.copy() if old_project.golden_context else {},
+        use_deep_research=old_project.use_deep_research,
+    )
+    
+    db.add(new_project)
+    db.commit()
+    db.refresh(new_project)
+    
+    # 复制所有字段到新版本
+    from core.models import ProjectField
+    old_fields = db.query(ProjectField).filter(
+        ProjectField.project_id == old_project.id
+    ).all()
+    
+    # 创建字段ID映射（旧ID -> 新ID）用于更新依赖关系
+    field_id_mapping = {}
+    new_fields = []
+    
+    for old_field in old_fields:
+        new_field_id = generate_uuid()
+        field_id_mapping[old_field.id] = new_field_id
+        
+        new_field = ProjectField(
+            id=new_field_id,
+            project_id=new_project.id,
+            template_id=old_field.template_id,
+            phase=old_field.phase,
+            name=old_field.name,
+            field_type=old_field.field_type,
+            content=old_field.content,
+            status=old_field.status,
+            ai_prompt=old_field.ai_prompt,
+            pre_questions=old_field.pre_questions.copy() if old_field.pre_questions else [],
+            pre_answers=old_field.pre_answers.copy() if old_field.pre_answers else {},
+            dependencies=old_field.dependencies.copy() if old_field.dependencies else {"depends_on": [], "dependency_type": "all"},
+        )
+        new_fields.append(new_field)
+    
+    # 更新依赖关系中的字段ID
+    for new_field in new_fields:
+        if new_field.dependencies and new_field.dependencies.get("depends_on"):
+            old_deps = new_field.dependencies["depends_on"]
+            new_deps = [field_id_mapping.get(dep_id, dep_id) for dep_id in old_deps]
+            new_field.dependencies = {
+                **new_field.dependencies,
+                "depends_on": new_deps,
+            }
+        db.add(new_field)
+    
+    db.commit()
+    
+    return _project_to_response(new_project)
+
+
+@router.get("/{project_id}/versions", response_model=list[ProjectResponse])
+def list_project_versions(
+    project_id: str,
+    db: Session = Depends(get_db),
+):
+    """获取项目的所有版本"""
+    # 获取当前项目
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    # 获取所有相关版本（相同名称）
+    versions = db.query(Project).filter(
+        Project.name == project.name
+    ).order_by(Project.version.desc()).all()
+    
+    return [_project_to_response(p) for p in versions]
+
+
+# ============== Helpers ==============
+
+def _project_to_response(project: Project) -> ProjectResponse:
+    """转换为响应格式"""
+    return ProjectResponse(
+        id=project.id,
+        name=project.name,
+        version=project.version,
+        version_note=project.version_note or "",
+        creator_profile_id=project.creator_profile_id,
+        current_phase=project.current_phase,
+        phase_order=project.phase_order or PROJECT_PHASES.copy(),
+        phase_status=project.phase_status or {},
+        agent_autonomy=project.agent_autonomy or {},
+        golden_context=project.golden_context or {},
+        use_deep_research=project.use_deep_research if hasattr(project, 'use_deep_research') else True,
+        created_at=project.created_at.isoformat() if project.created_at else "",
+        updated_at=project.updated_at.isoformat() if project.updated_at else "",
+    )
+
