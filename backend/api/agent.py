@@ -172,36 +172,101 @@ async def chat(
         is_producing = True
     
     field_updated = None
+    fields_created = []
+    
     if agent_output and result_phase and is_producing:
-        # 查找或创建该阶段的字段
-        existing_field = (
-            db.query(ProjectField)
-            .filter(
-                ProjectField.project_id == request.project_id,
-                ProjectField.phase == result_phase,
-                ProjectField.name == _get_phase_field_name(result_phase),
-            )
-            .first()
-        )
-        
-        if existing_field:
-            # 更新现有字段
-            existing_field.content = agent_output
-            existing_field.status = "completed"
-            field_updated = {"id": existing_field.id, "name": existing_field.name, "phase": result_phase}
+        # ===== 意图分析阶段：解析JSON创建3个独立字段 =====
+        if result_phase == "intent":
+            try:
+                # 提取JSON（可能包含```json...```包裹）
+                import re
+                json_match = re.search(r'```json\s*(.*?)\s*```', agent_output, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(1)
+                else:
+                    json_str = agent_output
+                
+                intent_data = json.loads(json_str)
+                
+                # 创建3个独立字段
+                intent_fields = [
+                    ("做什么", intent_data.get("做什么", "")),
+                    ("给谁看", intent_data.get("给谁看", "")),
+                    ("期望行动", intent_data.get("期望行动", "")),
+                ]
+                
+                for field_name, field_content in intent_fields:
+                    if not field_content:
+                        continue
+                    
+                    # 查找或创建
+                    existing = db.query(ProjectField).filter(
+                        ProjectField.project_id == request.project_id,
+                        ProjectField.phase == "intent",
+                        ProjectField.name == field_name,
+                    ).first()
+                    
+                    if existing:
+                        existing.content = field_content
+                        existing.status = "completed"
+                        fields_created.append({"id": existing.id, "name": field_name})
+                    else:
+                        new_field = ProjectField(
+                            id=generate_uuid(),
+                            project_id=request.project_id,
+                            name=field_name,
+                            phase="intent",
+                            content=field_content,
+                            field_type="text",
+                            status="completed",
+                        )
+                        db.add(new_field)
+                        fields_created.append({"id": new_field.id, "name": field_name})
+                
+                field_updated = {"fields": fields_created, "phase": result_phase}
+                
+            except (json.JSONDecodeError, Exception) as e:
+                # JSON解析失败，回退到保存原始内容
+                print(f"Intent JSON parse error: {e}, saving raw content")
+                new_field = ProjectField(
+                    id=generate_uuid(),
+                    project_id=request.project_id,
+                    name="项目意图",
+                    phase=result_phase,
+                    content=agent_output,
+                    field_type="richtext",
+                    status="completed",
+                )
+                db.add(new_field)
+                field_updated = {"id": new_field.id, "name": "项目意图", "phase": result_phase}
         else:
-            # 创建新字段
-            new_field = ProjectField(
-                id=generate_uuid(),
-                project_id=request.project_id,
-                name=_get_phase_field_name(result_phase),
-                phase=result_phase,
-                content=agent_output,
-                field_type="richtext",
-                status="completed",
+            # ===== 其他阶段：保存为单个字段 =====
+            existing_field = (
+                db.query(ProjectField)
+                .filter(
+                    ProjectField.project_id == request.project_id,
+                    ProjectField.phase == result_phase,
+                    ProjectField.name == _get_phase_field_name(result_phase),
+                )
+                .first()
             )
-            db.add(new_field)
-            field_updated = {"id": new_field.id, "name": new_field.name, "phase": result_phase}
+            
+            if existing_field:
+                existing_field.content = agent_output
+                existing_field.status = "completed"
+                field_updated = {"id": existing_field.id, "name": existing_field.name, "phase": result_phase}
+            else:
+                new_field = ProjectField(
+                    id=generate_uuid(),
+                    project_id=request.project_id,
+                    name=_get_phase_field_name(result_phase),
+                    phase=result_phase,
+                    content=agent_output,
+                    field_type="richtext",
+                    status="completed",
+                )
+                db.add(new_field)
+                field_updated = {"id": new_field.id, "name": new_field.name, "phase": result_phase}
     
     # ===== 记录GenerationLog =====
     log_entry = GenerationLog(
@@ -240,6 +305,14 @@ async def chat(
         # 对话模式：显示完整内容
         chat_content = agent_output
     
+    # 获取字段ID（兼容单字段和多字段模式）
+    field_id = None
+    if field_updated:
+        if "id" in field_updated:
+            field_id = field_updated["id"]
+        elif "fields" in field_updated and len(field_updated["fields"]) > 0:
+            field_id = field_updated["fields"][0]["id"]
+    
     agent_msg = ChatMessage(
         id=generate_uuid(),
         project_id=request.project_id,
@@ -249,7 +322,7 @@ async def chat(
             "phase": result_phase,
             "tool_used": result.get("tool_used"),
             "waiting_for_human": result.get("waiting_for_human", False),
-            "field_id": field_updated.get("id") if field_updated else None,
+            "field_id": field_id,
             "is_producing": is_producing,  # 标记便于前端判断
         },
     )
