@@ -542,7 +542,7 @@ function TemplatesSection({ templates, onRefresh }: { templates: any[]; onRefres
   const addField = () => {
     setEditForm({
       ...editForm,
-      fields: [...(editForm.fields || []), { name: "", type: "text", prompt: "", pre_questions: [], dependencies: [] }],
+      fields: [...(editForm.fields || []), { name: "", type: "richtext", ai_prompt: "", pre_questions: [], depends_on: [] }],
     });
   };
 
@@ -666,8 +666,8 @@ function TemplatesSection({ templates, onRefresh }: { templates: any[]; onRefres
 
                   <FormField label="AI 生成提示词" hint="指导 AI 如何生成这个字段的内容">
                     <textarea
-                      value={field.prompt || ""}
-                      onChange={(e) => updateField(index, "prompt", e.target.value)}
+                      value={field.ai_prompt || ""}
+                      onChange={(e) => updateField(index, "ai_prompt", e.target.value)}
                       placeholder="请根据项目意图和消费者画像，生成一段简洁有力的产品定位..."
                       rows={3}
                       className="w-full px-3 py-2 bg-surface-2 border border-surface-3 rounded-lg text-zinc-200 text-sm"
@@ -692,13 +692,13 @@ function TemplatesSection({ templates, onRefresh }: { templates: any[]; onRefres
                             <label key={i} className="flex items-center gap-2 text-sm text-zinc-300">
                               <input
                                 type="checkbox"
-                                checked={(field.dependencies || []).includes(f.name)}
+                                checked={(field.depends_on || []).includes(f.name)}
                                 onChange={(e) => {
-                                  const deps = field.dependencies || [];
+                                  const deps = field.depends_on || [];
                                   if (e.target.checked) {
-                                    updateField(index, "dependencies", [...deps, f.name]);
+                                    updateField(index, "depends_on", [...deps, f.name]);
                                   } else {
-                                    updateField(index, "dependencies", deps.filter((d: string) => d !== f.name));
+                                    updateField(index, "depends_on", deps.filter((d: string) => d !== f.name));
                                   }
                                 }}
                               />

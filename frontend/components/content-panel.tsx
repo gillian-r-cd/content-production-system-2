@@ -35,10 +35,111 @@ export function ContentPanel({
 }: ContentPanelProps) {
   const [isAdvancing, setIsAdvancing] = useState(false);
   const [autoGeneratingFieldId, setAutoGeneratingFieldId] = useState<string | null>(null);
+  const [showFieldTemplateModal, setShowFieldTemplateModal] = useState(false);
+  const [fieldTemplates, setFieldTemplates] = useState<any[]>([]);
   
   const phaseFields = fields.filter((f) => f.phase === currentPhase);
   const allCompletedFields = fields.filter((f) => f.status === "completed");
   const completedFieldIds = new Set(allCompletedFields.map(f => f.id));
+
+  // 加载字段模板
+  useEffect(() => {
+    import("@/lib/api").then(({ settingsAPI }) => {
+      settingsAPI.listFieldTemplates().then(setFieldTemplates).catch(console.error);
+    });
+  }, []);
+
+  // 添加空字段
+  const handleAddEmptyField = async () => {
+    if (!projectId) return;
+    try {
+      await fieldAPI.create({
+        project_id: projectId,
+        phase: currentPhase,
+        name: `新字段 ${phaseFields.length + 1}`,
+        field_type: "richtext",
+        content: "",
+        status: "pending",
+        ai_prompt: "",  // 空字符串，在约束弹窗中设置
+        dependencies: { depends_on: [], dependency_type: "all" },
+        need_review: true,
+      });
+      onFieldsChange?.();
+    } catch (err) {
+      console.error("添加字段失败:", err);
+      alert("添加字段失败: " + (err instanceof Error ? err.message : "未知错误"));
+    }
+  };
+
+  // 从模板添加字段
+  const handleAddFromTemplate = async (template: any) => {
+    if (!projectId) return;
+    try {
+      const templateFields = template.fields || [];
+      
+      // 获取现有字段名以处理重复
+      const existingNames = phaseFields.map(f => f.name);
+      
+      // 生成唯一名称的辅助函数
+      const getUniqueName = (baseName: string): string => {
+        if (!existingNames.includes(baseName)) {
+          existingNames.push(baseName);
+          return baseName;
+        }
+        let counter = 1;
+        while (existingNames.includes(`${baseName} ${counter}`)) {
+          counter++;
+        }
+        const uniqueName = `${baseName} ${counter}`;
+        existingNames.push(uniqueName);
+        return uniqueName;
+      };
+      
+      // 第一轮：创建所有字段，记录 name -> id 映射
+      const nameToIdMap: Record<string, string> = {};
+      const createdFields: any[] = [];
+      
+      for (const tf of templateFields) {
+        const uniqueName = getUniqueName(tf.name);
+        const newField = await fieldAPI.create({
+          project_id: projectId,
+          phase: currentPhase,
+          name: uniqueName,
+          field_type: tf.type || "richtext",
+          content: "",
+          status: "pending",
+          ai_prompt: tf.ai_prompt || "",
+          pre_questions: tf.pre_questions || [],
+          dependencies: { depends_on: [], dependency_type: "all" },
+          need_review: true,
+        });
+        nameToIdMap[tf.name] = newField.id;
+        createdFields.push({ field: newField, templateField: tf });
+      }
+      
+      // 第二轮：更新依赖关系（将模板中的字段名转换为实际的字段 ID）
+      for (const { field, templateField } of createdFields) {
+        const templateDeps = templateField.depends_on || [];
+        if (templateDeps.length > 0) {
+          const realDepsIds = templateDeps
+            .map((depName: string) => nameToIdMap[depName])
+            .filter(Boolean);
+          
+          if (realDepsIds.length > 0) {
+            await fieldAPI.update(field.id, {
+              dependencies: { depends_on: realDepsIds, dependency_type: "all" },
+            });
+          }
+        }
+      }
+      
+      setShowFieldTemplateModal(false);
+      onFieldsChange?.();
+    } catch (err) {
+      console.error("从模板添加失败:", err);
+      alert("从模板添加失败: " + (err instanceof Error ? err.message : "未知错误"));
+    }
+  };
 
   // 自动触发生成：检查是否有字段可以自动生成
   const checkAndAutoGenerate = async () => {
@@ -204,12 +305,14 @@ export function ContentPanel({
         <div className="flex-1 overflow-hidden">
           <ProposalSelector
             projectId={projectId}
+            fieldId={designInnerField.id}
             content={designInnerField.content}
             onConfirm={() => {
               onFieldsChange?.();
               onPhaseAdvance?.();
             }}
             onFieldsCreated={onFieldsChange}
+            onSave={onFieldsChange}
           />
         </div>
       </div>
@@ -266,6 +369,22 @@ export function ContentPanel({
                 </button>
               );
             })}
+          </div>
+          
+          {/* 添加字段按钮 */}
+          <div className="mt-4 space-y-2">
+            <button
+              onClick={() => handleAddEmptyField()}
+              className="w-full py-2 text-xs bg-brand-600 hover:bg-brand-700 text-white rounded-lg transition-colors"
+            >
+              + 添加字段
+            </button>
+            <button
+              onClick={() => setShowFieldTemplateModal(true)}
+              className="w-full py-2 text-xs bg-surface-3 hover:bg-surface-4 text-zinc-400 hover:text-zinc-200 rounded-lg transition-colors"
+            >
+              📦 从模板添加
+            </button>
           </div>
           
           {/* 依赖关系图例 */}
@@ -366,6 +485,51 @@ export function ContentPanel({
         );
       })()}
       </div>
+
+      {/* 字段模板选择弹窗 */}
+      {showFieldTemplateModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-surface-2 rounded-xl border border-surface-3 w-full max-w-lg max-h-[80vh] overflow-hidden">
+            <div className="px-4 py-3 border-b border-surface-3">
+              <h3 className="font-medium text-zinc-200">从模板添加字段</h3>
+              <p className="text-xs text-zinc-500 mt-1">
+                选择一个模板添加到当前阶段
+              </p>
+            </div>
+
+            <div className="p-4 max-h-[50vh] overflow-y-auto space-y-2">
+              {fieldTemplates.length > 0 ? (
+                fieldTemplates.map((template) => (
+                  <button
+                    key={template.id}
+                    onClick={() => handleAddFromTemplate(template)}
+                    className="w-full text-left p-4 rounded-lg bg-surface-1 border border-surface-3 hover:bg-surface-3 hover:border-brand-500/50 transition-all"
+                  >
+                    <div className="font-medium text-zinc-200">{template.name}</div>
+                    <div className="text-xs text-zinc-500 mt-1">{template.description}</div>
+                    <div className="text-xs text-zinc-600 mt-2">
+                      📦 {template.fields?.length || 0} 个字段
+                    </div>
+                  </button>
+                ))
+              ) : (
+                <p className="text-zinc-500 text-center py-8">
+                  暂无字段模板，请在后台设置中添加
+                </p>
+              )}
+            </div>
+
+            <div className="px-4 py-3 border-t border-surface-3 flex justify-end">
+              <button
+                onClick={() => setShowFieldTemplateModal(false)}
+                className="px-4 py-2 text-sm bg-surface-3 hover:bg-surface-4 rounded-lg transition-colors"
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -379,6 +543,8 @@ interface FieldCardProps {
 
 function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProps) {
   const [isEditing, setIsEditing] = useState(false);
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [editedName, setEditedName] = useState(field.name);
   const [content, setContent] = useState(field.content);
   const [showDependencyModal, setShowDependencyModal] = useState(false);
   const [showConstraintsModal, setShowConstraintsModal] = useState(false);
@@ -467,17 +633,47 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
   };
 
   const handleUpdateConstraints = async (newConstraints: {
+    ai_prompt?: string | null;
     max_length?: number | null;
     output_format?: string;
     structure?: string | null;
     example?: string | null;
   }) => {
     try {
-      await fieldAPI.update(field.id, { constraints: newConstraints });
+      // 分离 ai_prompt 和 constraints
+      const { ai_prompt, ...constraints } = newConstraints;
+      
+      await fieldAPI.update(field.id, { 
+        ai_prompt: ai_prompt || "",
+        constraints 
+      });
       onFieldsChange?.();
       setShowConstraintsModal(false);
     } catch (err) {
       alert("更新约束失败: " + (err instanceof Error ? err.message : "未知错误"));
+    }
+  };
+
+  const handleSaveName = async () => {
+    if (editedName.trim() && editedName !== field.name) {
+      try {
+        await fieldAPI.update(field.id, { name: editedName.trim() });
+        onFieldsChange?.();
+      } catch (err) {
+        alert("更新名称失败: " + (err instanceof Error ? err.message : "未知错误"));
+        setEditedName(field.name);  // 恢复原名称
+      }
+    }
+    setIsEditingName(false);
+  };
+
+  const handleDelete = async () => {
+    if (!confirm(`确定要删除字段「${field.name}」吗？此操作不可撤销。`)) return;
+    try {
+      await fieldAPI.delete(field.id);
+      onFieldsChange?.();
+    } catch (err) {
+      alert("删除失败: " + (err instanceof Error ? err.message : "未知错误"));
     }
   };
 
@@ -487,7 +683,31 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
       <div className="px-4 py-3 border-b border-surface-3">
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="font-medium text-zinc-200">{field.name}</h3>
+            {isEditingName ? (
+              <input
+                type="text"
+                value={editedName}
+                onChange={(e) => setEditedName(e.target.value)}
+                onBlur={handleSaveName}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleSaveName();
+                  if (e.key === "Escape") {
+                    setEditedName(field.name);
+                    setIsEditingName(false);
+                  }
+                }}
+                className="font-medium text-zinc-200 bg-surface-1 border border-surface-3 rounded px-2 py-0.5 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                autoFocus
+              />
+            ) : (
+              <h3 
+                className="font-medium text-zinc-200 cursor-pointer hover:text-brand-400 transition-colors"
+                onClick={() => setIsEditingName(true)}
+                title="点击编辑标题"
+              >
+                {field.name} <span className="text-xs text-zinc-600">✏️</span>
+              </h3>
+            )}
             <div className="flex items-center gap-2 mt-1">
               <span className={`text-xs px-2 py-0.5 rounded ${
                 field.status === "completed" 
@@ -557,6 +777,15 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
                 编辑
               </button>
             )}
+            
+            {/* 删除按钮 */}
+            <button
+              onClick={handleDelete}
+              className="px-3 py-1 text-sm bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/30 rounded-lg transition-colors"
+              title="删除此字段"
+            >
+              🗑️
+            </button>
           </div>
         </div>
 
@@ -586,25 +815,45 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
             )}
           </button>
           
-          {/* 约束概览（可点击编辑） */}
+          {/* 生成配置概览（可点击编辑） */}
           <button
             onClick={() => setShowConstraintsModal(true)}
-            className="flex items-center gap-2 text-zinc-600 hover:text-zinc-400 transition-colors"
+            className="flex items-center gap-2 text-zinc-600 hover:text-zinc-400 transition-colors flex-wrap"
           >
-            <span>⚙️ 约束:</span>
+            {/* AI 提示词状态 */}
+            <span className={`flex items-center gap-1 ${
+              field.ai_prompt && field.ai_prompt !== "请在这里编写生成提示词..." 
+                ? "text-brand-400" 
+                : "text-red-400"
+            }`}>
+              {field.ai_prompt && field.ai_prompt !== "请在这里编写生成提示词..." ? (
+                <>
+                  <span>✨</span>
+                  <span className="px-1.5 py-0.5 bg-brand-600/20 rounded max-w-[150px] truncate" title={field.ai_prompt}>
+                    {field.ai_prompt.slice(0, 20)}{field.ai_prompt.length > 20 ? "..." : ""}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span>⚠️</span>
+                  <span className="px-1.5 py-0.5 bg-red-600/20 rounded">未设置提示词</span>
+                </>
+              )}
+            </span>
+            
+            {/* 约束标签 */}
             {field.constraints?.max_length ? (
-              <span className="px-1.5 py-0.5 bg-surface-3 rounded" title="最大字数">
+              <span className="px-1.5 py-0.5 bg-surface-3 rounded text-zinc-400" title="最大字数">
                 ≤{field.constraints.max_length}字
               </span>
             ) : null}
             {field.constraints?.output_format && field.constraints.output_format !== "markdown" ? (
-              <span className="px-1.5 py-0.5 bg-surface-3 rounded" title="输出格式">
+              <span className="px-1.5 py-0.5 bg-surface-3 rounded text-zinc-400" title="输出格式">
                 {field.constraints.output_format}
               </span>
             ) : null}
-            {!field.constraints?.max_length && (!field.constraints?.output_format || field.constraints.output_format === "markdown") && (
-              <span className="text-zinc-600">默认</span>
-            )}
+            
+            <span className="text-xs text-zinc-600">（点击配置）</span>
           </button>
         </div>
       </div>
@@ -742,7 +991,8 @@ function DependencyModal({ field, allFields, onClose, onSave }: DependencyModalP
 interface ConstraintsModalProps {
   field: Field;
   onClose: () => void;
-  onSave: (constraints: {
+  onSave: (config: {
+    ai_prompt?: string | null;
     max_length?: number | null;
     output_format?: string;
     structure?: string | null;
@@ -751,6 +1001,12 @@ interface ConstraintsModalProps {
 }
 
 function ConstraintsModal({ field, onClose, onSave }: ConstraintsModalProps) {
+  // 核心：AI 生成提示词
+  const [aiPrompt, setAiPrompt] = useState(
+    field.ai_prompt && field.ai_prompt !== "请在这里编写生成提示词..." 
+      ? field.ai_prompt 
+      : ""
+  );
   const [maxLength, setMaxLength] = useState<string>(
     field.constraints?.max_length?.toString() || ""
   );
@@ -762,6 +1018,7 @@ function ConstraintsModal({ field, onClose, onSave }: ConstraintsModalProps) {
 
   const handleSave = () => {
     onSave({
+      ai_prompt: aiPrompt || null,
       max_length: maxLength ? parseInt(maxLength, 10) : null,
       output_format: outputFormat,
       structure: structure || null,
@@ -773,13 +1030,30 @@ function ConstraintsModal({ field, onClose, onSave }: ConstraintsModalProps) {
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
       <div className="bg-surface-2 rounded-xl border border-surface-3 w-full max-w-lg max-h-[80vh] overflow-hidden">
         <div className="px-4 py-3 border-b border-surface-3">
-          <h3 className="font-medium text-zinc-200">字段生产约束</h3>
+          <h3 className="font-medium text-zinc-200">字段生成配置</h3>
           <p className="text-xs text-zinc-500 mt-1">
-            设置"{field.name}"的生成规则
+            设置「{field.name}」的生成提示词和约束
           </p>
         </div>
 
         <div className="p-4 space-y-4 max-h-[60vh] overflow-y-auto">
+          {/* ⭐ 核心：AI 生成提示词 */}
+          <div className="bg-brand-600/10 border border-brand-500/30 rounded-lg p-3">
+            <label className="block text-sm text-brand-400 mb-1.5 font-medium">
+              ✨ 生成提示词（最重要！）
+            </label>
+            <textarea
+              value={aiPrompt}
+              onChange={(e) => setAiPrompt(e.target.value)}
+              placeholder="例如：写一段开场白，用轻松幽默的语气介绍本文的主题"
+              rows={4}
+              className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-brand-500 resize-none"
+            />
+            <p className="text-xs text-zinc-500 mt-1.5">
+              告诉 AI 这个字段应该生成什么内容。越具体越好！
+            </p>
+          </div>
+
           {/* 最大字数 */}
           <div>
             <label className="block text-sm text-zinc-400 mb-1.5">
@@ -846,6 +1120,7 @@ function ConstraintsModal({ field, onClose, onSave }: ConstraintsModalProps) {
         <div className="px-4 py-3 border-t border-surface-3 flex justify-between">
           <button
             onClick={() => {
+              setAiPrompt("");
               setMaxLength("");
               setOutputFormat("markdown");
               setStructure("");

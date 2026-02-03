@@ -42,24 +42,54 @@ interface ProposalsData {
 
 interface ProposalSelectorProps {
   projectId: string;
+  fieldId: string;  // 存储方案的字段ID（用于保存修改）
   content: string;  // JSON格式的方案内容
   onConfirm: () => void;  // 确认后的回调
   onFieldsCreated?: () => void;  // 字段创建后的回调
+  onSave?: () => void;  // 保存后的回调
 }
 
 export function ProposalSelector({
   projectId,
+  fieldId,
   content,
   onConfirm,
   onFieldsCreated,
+  onSave,
 }: ProposalSelectorProps) {
-  // 解析方案数据
+  // 解析方案数据，并添加"自定义方案"（如果不存在）
   const proposalsData = useMemo<ProposalsData>(() => {
     try {
       const data = JSON.parse(content);
-      return data;
+      const proposals = data.proposals || [];
+      
+      // 检查是否已有自定义方案
+      const hasCustomProposal = proposals.some((p: Proposal) => p.id === "custom_proposal");
+      
+      if (!hasCustomProposal) {
+        // 添加自定义方案（空方案）
+        const customProposal: Proposal = {
+          id: "custom_proposal",
+          name: "自定义方案",
+          description: "从零开始构建您的内容结构，自由添加和编辑字段",
+          fields: [],
+        };
+        proposals.push(customProposal);
+      }
+      
+      return {
+        ...data,
+        proposals,
+      };
     } catch {
-      return { proposals: [], error: "方案数据解析失败" };
+      // 解析失败时，至少提供自定义方案
+      const customProposal: Proposal = {
+        id: "custom_proposal",
+        name: "自定义方案",
+        description: "从零开始构建您的内容结构，自由添加和编辑字段",
+        fields: [],
+      };
+      return { proposals: [customProposal], error: undefined };
     }
   }, [content]);
 
@@ -68,6 +98,8 @@ export function ProposalSelector({
   );
   const [editedFields, setEditedFields] = useState<Record<string, ProposalField[]>>({});
   const [isConfirming, setIsConfirming] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [confirmedProposalId, setConfirmedProposalId] = useState<string | null>(null);  // 已确认的方案ID
   const [editingDependencyFieldId, setEditingDependencyFieldId] = useState<string | null>(null);
   
@@ -81,6 +113,46 @@ export function ProposalSelector({
   useEffect(() => {
     settingsAPI.listFieldTemplates().then(setFieldTemplates).catch(console.error);
   }, []);
+
+  // 跟踪是否有未保存的修改
+  useEffect(() => {
+    if (Object.keys(editedFields).length > 0) {
+      setHasUnsavedChanges(true);
+    }
+  }, [editedFields]);
+
+  // 保存方案修改到后端
+  const saveProposals = async () => {
+    if (!fieldId) return;
+    
+    setIsSaving(true);
+    try {
+      // 构建更新后的方案数据
+      const updatedProposals = proposalsData.proposals.map((proposal) => {
+        const editedFieldsForProposal = editedFields[proposal.id];
+        if (editedFieldsForProposal) {
+          return { ...proposal, fields: editedFieldsForProposal };
+        }
+        return proposal;
+      });
+      
+      const newContent = JSON.stringify({
+        proposals: updatedProposals,
+        selected_proposal: selectedProposalId,
+      }, null, 2);
+      
+      // 调用 API 更新字段内容
+      await fieldAPI.update(fieldId, { content: newContent });
+      
+      setHasUnsavedChanges(false);
+      onSave?.();
+    } catch (err) {
+      console.error("保存方案失败:", err);
+      alert("保存失败: " + (err instanceof Error ? err.message : "未知错误"));
+    } finally {
+      setIsSaving(false);
+    }
+  };
 
   // 当前选中的方案
   const selectedProposal = useMemo(() => {
@@ -174,6 +246,66 @@ export function ProposalSelector({
       [selectedProposalId]: [...currentFields, ...newFields],
     }));
     setShowAddTemplateModal(false);
+  };
+
+  // 直接添加空字段（不引用模板）
+  const addEmptyField = () => {
+    if (!selectedProposalId) return;
+    
+    const newField: ProposalField = {
+      id: `new_field_${Date.now()}`,
+      name: `新字段 ${currentFields.length + 1}`,
+      field_type: "richtext",
+      ai_prompt: "请在这里编写生成提示词...",
+      depends_on: [],
+      order: currentFields.length + 1,
+      need_review: true,
+      constraints: {
+        max_length: null,
+        output_format: "markdown",
+        structure: null,
+        example: null,
+      },
+    };
+    
+    setEditedFields((prev) => ({
+      ...prev,
+      [selectedProposalId]: [...currentFields, newField],
+    }));
+    
+    // 自动进入编辑模式
+    setEditingFieldId(newField.id);
+  };
+
+  // 更新字段提示词
+  const updateFieldPrompt = (fieldId: string, newPrompt: string) => {
+    if (!selectedProposalId) return;
+    
+    const fields = [...currentFields];
+    const fieldIndex = fields.findIndex((f) => f.id === fieldId);
+    if (fieldIndex !== -1) {
+      fields[fieldIndex] = { ...fields[fieldIndex], ai_prompt: newPrompt };
+      setEditedFields((prev) => ({ ...prev, [selectedProposalId]: fields }));
+    }
+  };
+
+  // 拖拽排序
+  const moveField = (fieldId: string, direction: "up" | "down") => {
+    if (!selectedProposalId) return;
+    
+    const fields = [...currentFields];
+    const fieldIndex = fields.findIndex((f) => f.id === fieldId);
+    if (fieldIndex === -1) return;
+    
+    const newIndex = direction === "up" ? fieldIndex - 1 : fieldIndex + 1;
+    if (newIndex < 0 || newIndex >= fields.length) return;
+    
+    // 交换位置
+    [fields[fieldIndex], fields[newIndex]] = [fields[newIndex], fields[fieldIndex]];
+    // 更新 order
+    fields.forEach((f, idx) => { f.order = idx + 1; });
+    
+    setEditedFields((prev) => ({ ...prev, [selectedProposalId]: fields }));
   };
 
   // 更新字段的依赖关系
@@ -308,7 +440,14 @@ export function ProposalSelector({
               >
                 <div className="font-medium text-sm flex items-center gap-2">
                   {isConfirmed && <span>✅</span>}
-                  方案 {index + 1}
+                  {proposal.id === "custom_proposal" ? (
+                    <>
+                      <span>✏️</span>
+                      自定义
+                    </>
+                  ) : (
+                    <>方案 {index + 1}</>
+                  )}
                   {isConfirmed && <span className="text-xs bg-green-600/30 px-1.5 py-0.5 rounded">已选中</span>}
                 </div>
                 <div className="text-xs mt-1 opacity-80 line-clamp-2">
@@ -319,20 +458,35 @@ export function ProposalSelector({
           })}
         </div>
         
-        {/* 确认按钮 */}
-        {confirmedProposalId ? (
-          <div className="mt-4 w-full py-3 bg-green-600/20 text-green-400 border border-green-500/30 rounded-lg font-medium text-center">
-            ✅ 已确认并进入生产
-          </div>
-        ) : (
-          <button
-            onClick={handleConfirmProposal}
-            disabled={!selectedProposalId || isConfirming}
-            className="mt-4 w-full py-3 bg-brand-600 hover:bg-brand-700 disabled:bg-zinc-700 disabled:text-zinc-500 rounded-lg font-medium transition-colors"
-          >
-            {isConfirming ? "确认中..." : "✅ 确认并进入生产"}
-          </button>
-        )}
+        {/* 保存和确认按钮 */}
+        <div className="mt-4 space-y-2">
+          {/* 保存按钮 */}
+          {!confirmedProposalId && hasUnsavedChanges && (
+            <button
+              onClick={saveProposals}
+              disabled={isSaving}
+              className="w-full py-2.5 bg-surface-3 hover:bg-surface-4 disabled:bg-zinc-700 text-zinc-300 rounded-lg font-medium transition-colors text-sm"
+            >
+              {isSaving ? "💾 保存中..." : "💾 保存修改"}
+            </button>
+          )}
+          
+          {/* 确认按钮 */}
+          {confirmedProposalId ? (
+            <div className="w-full py-3 bg-green-600/20 text-green-400 border border-green-500/30 rounded-lg font-medium text-center">
+              ✅ 已确认并进入生产
+            </div>
+          ) : (
+            <button
+              onClick={handleConfirmProposal}
+              disabled={!selectedProposalId || isConfirming || (hasUnsavedChanges && currentFields.length > 0)}
+              className="w-full py-3 bg-brand-600 hover:bg-brand-700 disabled:bg-zinc-700 disabled:text-zinc-500 rounded-lg font-medium transition-colors"
+              title={hasUnsavedChanges && currentFields.length > 0 ? "请先保存修改" : ""}
+            >
+              {isConfirming ? "确认中..." : hasUnsavedChanges && currentFields.length > 0 ? "⚠️ 请先保存修改" : "✅ 确认并进入生产"}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* 右侧：方案详情 */}
@@ -357,12 +511,20 @@ export function ProposalSelector({
                 </p>
               </div>
               {!confirmedProposalId && (
-                <button
-                  onClick={() => setShowAddTemplateModal(true)}
-                  className="px-3 py-1.5 text-xs bg-surface-3 hover:bg-surface-4 text-zinc-400 hover:text-zinc-200 rounded-lg transition-colors"
-                >
-                  + 添加字段模板
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    onClick={addEmptyField}
+                    className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-700 text-white rounded-lg transition-colors"
+                  >
+                    + 添加字段
+                  </button>
+                  <button
+                    onClick={() => setShowAddTemplateModal(true)}
+                    className="px-3 py-1.5 text-xs bg-surface-3 hover:bg-surface-4 text-zinc-400 hover:text-zinc-200 rounded-lg transition-colors"
+                  >
+                    📦 从模板添加
+                  </button>
+                </div>
               )}
             </div>
 
@@ -375,9 +537,29 @@ export function ProposalSelector({
                   <div className="flex items-start justify-between">
                     <div className="flex-1">
                       <div className="flex items-center gap-2">
-                        {/* 序号和拖动手柄 */}
-                        <span className="text-xs bg-surface-3 px-2 py-0.5 rounded text-zinc-500 cursor-grab">
-                          ⋮⋮ {index + 1}
+                        {/* 排序按钮 */}
+                        {!confirmedProposalId && (
+                          <div className="flex flex-col gap-0.5">
+                            <button
+                              onClick={() => moveField(field.id, "up")}
+                              disabled={index === 0}
+                              className="text-xs text-zinc-500 hover:text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed px-1"
+                              title="上移"
+                            >
+                              ▲
+                            </button>
+                            <button
+                              onClick={() => moveField(field.id, "down")}
+                              disabled={index === currentFields.length - 1}
+                              className="text-xs text-zinc-500 hover:text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed px-1"
+                              title="下移"
+                            >
+                              ▼
+                            </button>
+                          </div>
+                        )}
+                        <span className="text-xs bg-surface-3 px-2 py-0.5 rounded text-zinc-500">
+                          {index + 1}
                         </span>
                         {editingFieldId === field.id ? (
                           <input
@@ -440,9 +622,22 @@ export function ProposalSelector({
                         </button>
                       </div>
                       
-                      {/* AI提示词预览 */}
-                      <div className="mt-2 text-xs text-zinc-500 line-clamp-2">
-                        {field.ai_prompt}
+                      {/* AI提示词 - 可编辑 */}
+                      <div className="mt-3">
+                        <label className="text-xs text-zinc-500 mb-1 block">生成提示词：</label>
+                        {confirmedProposalId ? (
+                          <div className="text-xs text-zinc-400 bg-surface-1 rounded-lg p-2 whitespace-pre-wrap">
+                            {field.ai_prompt || "无提示词"}
+                          </div>
+                        ) : (
+                          <textarea
+                            value={field.ai_prompt}
+                            onChange={(e) => updateFieldPrompt(field.id, e.target.value)}
+                            placeholder="请输入AI生成该字段内容时的提示词..."
+                            rows={3}
+                            className="w-full text-xs bg-surface-1 border border-surface-3 hover:border-surface-4 rounded-lg px-3 py-2 text-zinc-300 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-brand-500 resize-none"
+                          />
+                        )}
                       </div>
                     </div>
 

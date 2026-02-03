@@ -317,24 +317,31 @@ async def generate_field_stream_api(
             duration_ms = int((end_time - start_time).total_seconds() * 1000)
             estimated_tokens = len(full_prompt) // 4 + len(full_content) // 4
             
-            # 创建日志记录
-            gen_log = GenerationLog(
-                id=generate_uuid(),
-                project_id=field.project_id,
-                phase="produce_inner",
-                operation=f"field_generate_{field.name}",
-                model="gpt-5.1",  # TODO: 从配置获取实际模型
-                input_tokens=len(full_prompt) // 4,
-                output_tokens=len(full_content) // 4,
-                total_tokens=estimated_tokens,
-                duration_ms=duration_ms,
-                full_prompt=full_prompt,
-                full_response=full_content,
-            )
-            db.add(gen_log)
-            field.generation_log_id = gen_log.id
-            
-            db.commit()
+            # 创建日志记录 - 使用正确的字段名
+            try:
+                gen_log = GenerationLog(
+                    id=generate_uuid(),
+                    project_id=field.project_id,
+                    field_id=field.id,
+                    phase=field.phase,
+                    operation=f"field_generate_{field.name}",
+                    model="gpt-5.1",
+                    tokens_in=len(full_prompt) // 4,
+                    tokens_out=len(full_content) // 4,
+                    duration_ms=duration_ms,
+                    prompt_input=full_prompt,
+                    prompt_output=full_content,
+                    cost=GenerationLog.calculate_cost("gpt-5.1", len(full_prompt) // 4, len(full_content) // 4),
+                    status="success",
+                )
+                db.add(gen_log)
+                field.generation_log_id = gen_log.id
+                db.commit()
+                print(f"[LOG] Field generation logged: {field.name}, phase={field.phase}, tokens={estimated_tokens}")
+            except Exception as log_err:
+                print(f"[ERROR] Failed to save generation log: {log_err}")
+                db.rollback()
+                db.commit()  # 至少保存字段内容
             
             yield f"data: {json.dumps({'done': True, 'field_id': field_id})}\n\n"
             
@@ -482,6 +489,27 @@ async def batch_generate_fields(
                 generated_ids.append(field.id)
                 # 更新缓存
                 fields_by_id[field.id] = field
+                
+                # 记录日志 - 使用正确的字段名
+                system_prompt = prompt_engine.get_field_generation_prompt(field, context)
+                full_prompt = f"[System]\n{system_prompt}\n\n[User]\n请生成「{field.name}」的内容。"
+                gen_log = GenerationLog(
+                    id=generate_uuid(),
+                    project_id=field.project_id,
+                    field_id=field.id,
+                    phase=field.phase,
+                    operation=f"batch_generate_{field.name}",
+                    model=result.response.model or "gpt-5.1",
+                    tokens_in=result.response.tokens_in,
+                    tokens_out=result.response.tokens_out,
+                    duration_ms=result.response.duration_ms,
+                    prompt_input=full_prompt,
+                    prompt_output=result.content,
+                    cost=result.response.cost,
+                    status="success",
+                )
+                db.add(gen_log)
+                field.generation_log_id = gen_log.id
             else:
                 field.status = "failed"
                 failed_items.append({

@@ -411,9 +411,34 @@ class PromptEngine:
         """
         parts = [context.to_system_prompt()]
         
-        # 添加字段特定的AI提示词
-        if field.ai_prompt:
-            parts.append(f"# 字段生成指导\n{field.ai_prompt}")
+        # 添加字段基本信息
+        parts.append(f"# 当前要生成的字段\n字段名称：{field.name}")
+        
+        # 添加字段约束（非常重要！）
+        constraints = field.constraints or {}
+        constraints_lines = []
+        
+        if constraints.get("max_length"):
+            constraints_lines.append(f"- 字数限制：不超过 {constraints['max_length']} 字")
+        if constraints.get("output_format"):
+            format_names = {
+                "markdown": "Markdown 富文本",
+                "plain_text": "纯文本",
+                "json": "JSON 格式",
+                "list": "列表格式（每行一项）"
+            }
+            constraints_lines.append(f"- 输出格式：{format_names.get(constraints['output_format'], constraints['output_format'])}")
+        if constraints.get("structure"):
+            constraints_lines.append(f"- 结构要求：{constraints['structure']}")
+        if constraints.get("example"):
+            constraints_lines.append(f"- 参考示例：\n{constraints['example']}")
+        
+        if constraints_lines:
+            parts.append(f"# 生成约束（必须严格遵守！）\n" + "\n".join(constraints_lines))
+        
+        # 添加字段特定的AI提示词（核心指令）
+        if field.ai_prompt and field.ai_prompt.strip() and field.ai_prompt != "请在这里编写生成提示词...":
+            parts.append(f"# 具体生成要求\n{field.ai_prompt}")
         
         # 添加用户回答的预问题
         if field.pre_answers:
