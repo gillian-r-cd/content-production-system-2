@@ -300,13 +300,18 @@ async def intent_analysis_node(state: ContentProductionState) -> ContentProducti
             "intent": response.content,  # 意图分析结果
         }
         
+        # 构建简洁的确认消息（实际内容保存到字段）
+        confirm_message = "✅ 已生成【意图分析】，请在左侧工作台查看。输入「继续」进入消费者调研阶段。"
+        
         return {
             **state,
-            "agent_output": response.content,
-            "messages": [AIMessage(content=response.content)],
+            "agent_output": response.content,  # 完整内容用于保存字段
+            "display_output": confirm_message,  # 对话区显示简洁确认
+            "messages": [AIMessage(content=confirm_message)],
             "phase_status": new_phase_status,
             "golden_context": new_gc,  # 更新 golden_context
             "is_producing": True,
+            "waiting_for_human": True,  # 关键：等待用户确认，不自动推进
             "tokens_in": response.tokens_in,
             "tokens_out": response.tokens_out,
             "duration_ms": response.duration_ms,
@@ -477,24 +482,67 @@ async def research_node(state: ContentProductionState) -> ContentProductionState
             "consumer_personas": report_content,  # JSON格式
         }
         
-        # 构建 full_prompt 用于日志
-        full_prompt = f"""[消费者调研]
-查询: {query}
-项目意图: {intent[:500] if intent else '未知'}
+        # 构建 full_prompt 用于日志 - 记录完整上下文
+        full_prompt = f"""[消费者调研 - 完整上下文]
+
+=== 1. 调研参数 ===
+查询主题: {query}
 使用深度调研: {use_deep}
-创作者特质: {gc.get('creator_profile', '未知')[:200]}"""
+
+=== 2. 创作者特质 ===
+{gc.get('creator_profile', '未设置')}
+
+=== 3. 项目意图 (完整) ===
+{intent if intent else '未设置'}
+
+=== 4. DeepResearch 流程 ===
+步骤1: 规划搜索查询 (LLM生成3-5个搜索词)
+步骤2: DuckDuckGo 搜索 (每个查询5条结果)
+步骤3: Jina Reader 读取网页内容
+步骤4: 综合分析生成报告
+
+=== 5. 综合分析提示词 ===
+[System]
+你是一个资深的用户研究专家。请基于搜索结果，生成一份详细的消费者调研报告。
+
+输出JSON格式，包含以下字段：
+- summary: 总体概述（200字以内）
+- consumer_profile: 消费者画像对象 {{age_range, occupation, characteristics, behaviors}}
+- pain_points: 核心痛点列表（3-5个）
+- value_propositions: 价值主张列表（3-5个）
+- personas: 3个典型用户小传，每个包含 {{name, background, story, pain_points}}
+
+[User]
+# 调研主题
+{query}
+
+# 项目意图
+{intent if intent else '未设置'}
+
+# 搜索结果
+[... 实际搜索结果内容（最多15000字符）...]
+
+=== 6. 生成结果 ===
+报告已生成，包含 {len(personas_data)} 个用户画像
+来源: {len(report.sources) if hasattr(report, 'sources') else 0} 个网页
+搜索查询: {report.search_queries if hasattr(report, 'search_queries') else '未记录'}
+内容长度: {report.content_length if hasattr(report, 'content_length') else '未记录'} 字符"""
+        
+        # 确认消息
+        confirm_text = "✅ 已生成【消费者调研报告】，请在左侧工作台查看。输入「继续」进入内涵设计阶段。"
         
         return {
             **state,
-            "agent_output": report_content,  # JSON格式
-            "display_output": display_text,   # 对话区简洁展示
+            "agent_output": report_content,  # JSON格式，保存到字段
+            "display_output": confirm_text,   # 对话区显示确认消息
             "full_prompt": full_prompt,
-            "messages": [AIMessage(content=report_text)],
+            "messages": [AIMessage(content=confirm_text)],
             "golden_context": new_gc,
             "phase_status": {**state.get("phase_status", {}), "research": "completed"},
-            "current_phase": "research",  # 确保更新当前阶段
+            "current_phase": "research",
             "is_producing": True,  # 调研结果应保存到工作台
-            # token 信息（deep_research 内部可能有多次调用，暂时使用估算值）
+            "waiting_for_human": True,  # 关键：等待用户确认，不自动推进
+            # token 信息
             "tokens_in": getattr(report, 'tokens_in', 0),
             "tokens_out": getattr(report, 'tokens_out', 0),
             "duration_ms": getattr(report, 'duration_ms', 0),
@@ -537,11 +585,10 @@ async def design_inner_node(state: ContentProductionState) -> ContentProductionS
     )
     
     system_prompt = context.to_system_prompt()
-    user_prompt = f"""请为以下项目设计3个内容生产方案：
-
-项目意图：{gc.get("intent", "未知")}
-
-消费者画像：{gc.get("consumer_personas", "未知")[:500]}
+    
+    # 注意：Golden Context（项目意图、消费者画像）已经在 system_prompt 中
+    # user_prompt 只需要发出任务指令
+    user_prompt = """请基于上述项目意图和消费者画像，设计3个内容生产方案。
 
 请输出严格的JSON格式（不要添加```json标记）。"""
     
@@ -605,6 +652,7 @@ async def produce_inner_node(state: ContentProductionState) -> ContentProduction
     根据设计方案生产内容
     """
     gc = state.get("golden_context", {})
+    user_input = state.get("user_input", "请生产内涵内容。")
     
     context = PromptContext(
         golden_context=GoldenContext(
@@ -615,20 +663,30 @@ async def produce_inner_node(state: ContentProductionState) -> ContentProduction
         phase_context=prompt_engine.PHASE_PROMPTS["produce_inner"],
     )
     
+    system_prompt = context.to_system_prompt()
+    
     messages = [
-        ChatMessage(role="system", content=context.to_system_prompt()),
-        ChatMessage(role="user", content=state.get("user_input", "请生产内涵内容。")),
+        ChatMessage(role="system", content=system_prompt),
+        ChatMessage(role="user", content=user_input),
     ]
     
     response = await ai_client.async_chat(messages, temperature=0.7)
     
+    confirm_text = "✅ 已生成【内涵生产】，请在左侧工作台查看。输入「继续」进入外延设计阶段。"
+    
+    # 构建完整提示词用于日志
+    full_prompt = f"[System]\n{system_prompt}\n\n[User]\n{user_input}"
+    
     return {
         **state,
         "agent_output": response.content,
-        "messages": [AIMessage(content=response.content)],
+        "display_output": confirm_text,
+        "full_prompt": full_prompt,  # 添加日志记录
+        "messages": [AIMessage(content=confirm_text)],
         "phase_status": {**state.get("phase_status", {}), "produce_inner": "completed"},
         "current_phase": "produce_inner",
         "is_producing": True,
+        "waiting_for_human": True,  # 等待用户确认
         "tokens_in": response.tokens_in,
         "tokens_out": response.tokens_out,
         "duration_ms": response.duration_ms,
@@ -639,6 +697,7 @@ async def produce_inner_node(state: ContentProductionState) -> ContentProduction
 async def design_outer_node(state: ContentProductionState) -> ContentProductionState:
     """外延设计节点"""
     gc = state.get("golden_context", {})
+    user_input = "请设计外延传播方案。"
     
     context = PromptContext(
         golden_context=GoldenContext(
@@ -649,20 +708,28 @@ async def design_outer_node(state: ContentProductionState) -> ContentProductionS
         phase_context=prompt_engine.PHASE_PROMPTS["design_outer"],
     )
     
+    system_prompt = context.to_system_prompt()
+    
     messages = [
-        ChatMessage(role="system", content=context.to_system_prompt()),
-        ChatMessage(role="user", content="请设计外延传播方案。"),
+        ChatMessage(role="system", content=system_prompt),
+        ChatMessage(role="user", content=user_input),
     ]
     
     response = await ai_client.async_chat(messages, temperature=0.7)
     
+    confirm_text = "✅ 已生成【外延设计】，请在左侧工作台查看。输入「继续」进入外延生产阶段。"
+    full_prompt = f"[System]\n{system_prompt}\n\n[User]\n{user_input}"
+    
     return {
         **state,
         "agent_output": response.content,
-        "messages": [AIMessage(content=response.content)],
+        "display_output": confirm_text,
+        "full_prompt": full_prompt,
+        "messages": [AIMessage(content=confirm_text)],
         "phase_status": {**state.get("phase_status", {}), "design_outer": "completed"},
         "current_phase": "design_outer",
         "is_producing": True,
+        "waiting_for_human": True,
         "tokens_in": response.tokens_in,
         "tokens_out": response.tokens_out,
         "duration_ms": response.duration_ms,
@@ -673,6 +740,7 @@ async def design_outer_node(state: ContentProductionState) -> ContentProductionS
 async def produce_outer_node(state: ContentProductionState) -> ContentProductionState:
     """外延生产节点"""
     gc = state.get("golden_context", {})
+    user_input = state.get("user_input", "请生产外延内容。")
     
     context = PromptContext(
         golden_context=GoldenContext(
@@ -683,20 +751,28 @@ async def produce_outer_node(state: ContentProductionState) -> ContentProduction
         phase_context=prompt_engine.PHASE_PROMPTS["produce_outer"],
     )
     
+    system_prompt = context.to_system_prompt()
+    
     messages = [
-        ChatMessage(role="system", content=context.to_system_prompt()),
-        ChatMessage(role="user", content=state.get("user_input", "请生产外延内容。")),
+        ChatMessage(role="system", content=system_prompt),
+        ChatMessage(role="user", content=user_input),
     ]
     
     response = await ai_client.async_chat(messages, temperature=0.7)
     
+    confirm_text = "✅ 已生成【外延生产】，请在左侧工作台查看。输入「继续」进入消费者模拟阶段。"
+    full_prompt = f"[System]\n{system_prompt}\n\n[User]\n{user_input}"
+    
     return {
         **state,
         "agent_output": response.content,
-        "messages": [AIMessage(content=response.content)],
+        "display_output": confirm_text,
+        "full_prompt": full_prompt,
+        "messages": [AIMessage(content=confirm_text)],
         "phase_status": {**state.get("phase_status", {}), "produce_outer": "completed"},
         "current_phase": "produce_outer",
         "is_producing": True,
+        "waiting_for_human": True,
         "tokens_in": response.tokens_in,
         "tokens_out": response.tokens_out,
         "duration_ms": response.duration_ms,
@@ -707,6 +783,7 @@ async def produce_outer_node(state: ContentProductionState) -> ContentProduction
 async def simulate_node(state: ContentProductionState) -> ContentProductionState:
     """消费者模拟节点"""
     gc = state.get("golden_context", {})
+    user_input = "请模拟用户体验并给出反馈。"
     
     context = PromptContext(
         golden_context=GoldenContext(
@@ -717,20 +794,28 @@ async def simulate_node(state: ContentProductionState) -> ContentProductionState
         phase_context=prompt_engine.PHASE_PROMPTS["simulate"],
     )
     
+    system_prompt = context.to_system_prompt()
+    
     messages = [
-        ChatMessage(role="system", content=context.to_system_prompt()),
-        ChatMessage(role="user", content="请模拟用户体验并给出反馈。"),
+        ChatMessage(role="system", content=system_prompt),
+        ChatMessage(role="user", content=user_input),
     ]
     
     response = await ai_client.async_chat(messages, temperature=0.8)
     
+    confirm_text = "✅ 已生成【消费者模拟】，请在左侧工作台查看。输入「继续」进入评估阶段。"
+    full_prompt = f"[System]\n{system_prompt}\n\n[User]\n{user_input}"
+    
     return {
         **state,
         "agent_output": response.content,
-        "messages": [AIMessage(content=response.content)],
+        "display_output": confirm_text,
+        "full_prompt": full_prompt,
+        "messages": [AIMessage(content=confirm_text)],
         "phase_status": {**state.get("phase_status", {}), "simulate": "completed"},
         "current_phase": "simulate",
         "is_producing": True,
+        "waiting_for_human": True,
         "tokens_in": response.tokens_in,
         "tokens_out": response.tokens_out,
         "duration_ms": response.duration_ms,
@@ -741,6 +826,7 @@ async def simulate_node(state: ContentProductionState) -> ContentProductionState
 async def evaluate_node(state: ContentProductionState) -> ContentProductionState:
     """评估节点"""
     gc = state.get("golden_context", {})
+    user_input = "请对项目进行全面评估。"
     
     context = PromptContext(
         golden_context=GoldenContext(
@@ -751,20 +837,28 @@ async def evaluate_node(state: ContentProductionState) -> ContentProductionState
         phase_context=prompt_engine.PHASE_PROMPTS["evaluate"],
     )
     
+    system_prompt = context.to_system_prompt()
+    
     messages = [
-        ChatMessage(role="system", content=context.to_system_prompt()),
-        ChatMessage(role="user", content="请对项目进行全面评估。"),
+        ChatMessage(role="system", content=system_prompt),
+        ChatMessage(role="user", content=user_input),
     ]
     
     response = await ai_client.async_chat(messages, temperature=0.5)
     
+    confirm_text = "✅ 已生成【评估报告】，请在左侧工作台查看。内容生产流程已完成！"
+    full_prompt = f"[System]\n{system_prompt}\n\n[User]\n{user_input}"
+    
     return {
         **state,
         "agent_output": response.content,
-        "messages": [AIMessage(content=response.content)],
+        "display_output": confirm_text,
+        "full_prompt": full_prompt,
+        "messages": [AIMessage(content=confirm_text)],
         "phase_status": {**state.get("phase_status", {}), "evaluate": "completed"},
         "current_phase": "evaluate",
         "is_producing": True,
+        "waiting_for_human": True,  # 流程结束，等待用户
         "tokens_in": response.tokens_in,
         "tokens_out": response.tokens_out,
         "duration_ms": response.duration_ms,
@@ -1028,11 +1122,17 @@ def route_by_intent(state: ContentProductionState) -> str:
 
 def route_after_phase(state: ContentProductionState) -> str:
     """阶段完成后的路由"""
-    # ===== 关键检查：如果还在对话中（未产出），直接结束本轮 =====
-    if not state.get("is_producing", False):
-        return END  # 未产出，结束本轮，等待用户下一条消息
+    # ===== 核心检查：如果 is_producing=False（对话模式），结束本轮 =====
+    # 意图分析等需要多轮对话的阶段，不会自动推进
+    is_producing = state.get("is_producing", False)
+    if not is_producing:
+        return END  # 对话模式：结束本轮，等待用户下一条消息
     
-    # 检查自主权：是否需要人工确认
+    # ===== 检查是否明确要求等待人工（优先级最高） =====
+    if state.get("waiting_for_human", False):
+        return END  # 节点明确要求等待用户确认，结束本轮
+    
+    # 产出模式：检查自主权决定是否等待人工确认
     if check_autonomy(state) == "wait_human":
         return "wait_human"
     else:
@@ -1164,6 +1264,7 @@ class ContentProductionAgent:
         use_deep_research: bool = True,
         thread_id: Optional[str] = None,
         chat_history: Optional[list] = None,  # 新增：传递历史对话
+        phase_status: Optional[dict] = None,  # 新增：传递项目现有的阶段状态
     ) -> ContentProductionState:
         """
         运行Agent
@@ -1177,6 +1278,7 @@ class ContentProductionAgent:
             use_deep_research: 是否使用DeepResearch
             thread_id: 线程ID（用于状态持久化）
             chat_history: 历史对话记录
+            phase_status: 项目现有的阶段状态
         
         Returns:
             最终状态
@@ -1192,11 +1294,14 @@ class ContentProductionAgent:
         # 添加当前用户输入
         messages.append(HumanMessage(content=user_input))
         
+        # 使用传入的 phase_status，否则初始化为 pending
+        existing_phase_status = phase_status or {p: "pending" for p in PROJECT_PHASES}
+        
         initial_state: ContentProductionState = {
             "project_id": project_id,
             "current_phase": current_phase,
             "phase_order": PROJECT_PHASES.copy(),
-            "phase_status": {p: "pending" for p in PROJECT_PHASES},
+            "phase_status": existing_phase_status,  # 使用项目现有状态！
             "autonomy_settings": autonomy_settings or {p: True for p in PROJECT_PHASES},
             "golden_context": golden_context or {},
             "fields": {},

@@ -110,7 +110,7 @@ export default function SettingsPage() {
               {activeTab === "channels" && <ChannelsSection channels={channels} onRefresh={loadData} />}
               {activeTab === "simulators" && <SimulatorsSection simulators={simulators} onRefresh={loadData} />}
               {activeTab === "agent" && <AgentSettingsSection settings={agentSettings} onRefresh={loadData} />}
-              {activeTab === "logs" && <LogsSection logs={logs} />}
+              {activeTab === "logs" && <LogsSection logs={logs} onRefresh={loadData} />}
             </>
           )}
         </main>
@@ -1377,8 +1377,15 @@ function AgentSettingsSection({ settings, onRefresh }: { settings: any; onRefres
 }
 
 // ============== 调试日志 ==============
-function LogsSection({ logs }: { logs: any[] }) {
+function LogsSection({ logs, onRefresh }: { logs: any[]; onRefresh?: () => void }) {
   const [selectedLog, setSelectedLog] = useState<any>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    await onRefresh?.();
+    setIsRefreshing(false);
+  };
 
   const handleExport = async (format: "json" | "csv") => {
     try {
@@ -1403,9 +1410,18 @@ function LogsSection({ logs }: { logs: any[] }) {
           <h2 className="text-xl font-semibold text-zinc-100">调试日志</h2>
           <p className="text-sm text-zinc-500 mt-1">查看每次 AI 调用的详细信息</p>
         </div>
-        <button onClick={() => handleExport("json")} className="px-4 py-2 bg-surface-3 hover:bg-surface-4 rounded-lg">
-          导出 JSON
-        </button>
+        <div className="flex gap-2">
+          <button 
+            onClick={handleRefresh} 
+            disabled={isRefreshing}
+            className="px-4 py-2 bg-brand-600 hover:bg-brand-700 disabled:bg-zinc-600 rounded-lg text-white transition-colors"
+          >
+            {isRefreshing ? "⏳ 刷新中..." : "🔄 刷新"}
+          </button>
+          <button onClick={() => handleExport("json")} className="px-4 py-2 bg-surface-3 hover:bg-surface-4 rounded-lg">
+            导出 JSON
+          </button>
+        </div>
       </div>
 
       <div className="overflow-x-auto">

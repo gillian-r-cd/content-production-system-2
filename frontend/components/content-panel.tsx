@@ -17,6 +17,7 @@ import { ResearchPanel } from "./research-panel";
 interface ContentPanelProps {
   projectId: string | null;
   currentPhase: string;
+  phaseStatus?: Record<string, string>;  // 各阶段状态
   fields: Field[];
   onFieldUpdate?: (fieldId: string, content: string) => void;
   onFieldsChange?: () => void;
@@ -26,15 +27,73 @@ interface ContentPanelProps {
 export function ContentPanel({
   projectId,
   currentPhase,
+  phaseStatus = {},
   fields,
   onFieldUpdate,
   onFieldsChange,
   onPhaseAdvance,
 }: ContentPanelProps) {
   const [isAdvancing, setIsAdvancing] = useState(false);
+  const [autoGeneratingFieldId, setAutoGeneratingFieldId] = useState<string | null>(null);
   
   const phaseFields = fields.filter((f) => f.phase === currentPhase);
   const allCompletedFields = fields.filter((f) => f.status === "completed");
+  const completedFieldIds = new Set(allCompletedFields.map(f => f.id));
+
+  // 自动触发生成：检查是否有字段可以自动生成
+  const checkAndAutoGenerate = async () => {
+    if (autoGeneratingFieldId) return; // 已有自动生成在进行中
+    
+    // 找到可以自动生成的字段：pending、need_review=false、依赖已满足
+    const autoGeneratableField = phaseFields.find(field => {
+      if (field.status !== "pending") return false;
+      if (field.need_review !== false) return false; // 需要人工确认的跳过
+      
+      const dependsOn = field.dependencies?.depends_on || [];
+      if (dependsOn.length === 0) return true; // 无依赖
+      
+      // 检查所有依赖是否完成
+      const allDepsCompleted = dependsOn.every(depId => completedFieldIds.has(depId));
+      return allDepsCompleted;
+    });
+    
+    if (autoGeneratableField) {
+      console.log(`[AutoGen] 自动触发生成: ${autoGeneratableField.name}`);
+      setAutoGeneratingFieldId(autoGeneratableField.id);
+      
+      try {
+        // 调用流式生成 API
+        const response = await fetch(`http://localhost:8000/api/fields/${autoGeneratableField.id}/generate/stream`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pre_answers: autoGeneratableField.pre_answers || {} }),
+        });
+        
+        // 等待生成完成
+        const reader = response.body?.getReader();
+        if (reader) {
+          while (true) {
+            const { done } = await reader.read();
+            if (done) break;
+          }
+        }
+        
+        // 刷新字段列表
+        onFieldsChange?.();
+      } catch (err) {
+        console.error("[AutoGen] 自动生成失败:", err);
+      } finally {
+        setAutoGeneratingFieldId(null);
+      }
+    }
+  };
+
+  // 当字段列表变化时，检查是否有字段可以自动生成
+  useEffect(() => {
+    if (currentPhase === "produce_inner" && phaseFields.length > 0) {
+      checkAndAutoGenerate();
+    }
+  }, [fields, currentPhase]); // 依赖 fields 变化
   
   // 判断当前阶段是否可以进入下一阶段
   const phaseHasContent = phaseFields.length > 0 && phaseFields.some(f => f.status === "completed");
@@ -125,6 +184,7 @@ export function ContentPanel({
         fieldId={researchField.id}
         content={researchField.content}
         onUpdate={onFieldsChange}
+        onAdvance={handleAdvancePhase}
       />
     );
   }
@@ -156,70 +216,156 @@ export function ContentPanel({
     );
   }
 
-  return (
-    <div className="p-6 max-w-4xl mx-auto">
-      {/* 阶段标题 */}
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-zinc-100">
-          {PHASE_NAMES[currentPhase] || currentPhase}
-        </h1>
-        <p className="text-zinc-500 mt-1">
-          {getPhaseDescription(currentPhase)}
-        </p>
-      </div>
+  // 构建字段ID到字段名称的映射（用于显示依赖）
+  const fieldNameMap = Object.fromEntries(fields.map(f => [f.id, f.name]));
+  
+  // 滚动到指定字段
+  const scrollToField = (fieldId: string) => {
+    const element = document.getElementById(`field-${fieldId}`);
+    element?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
 
-      {/* 字段列表 */}
-      {phaseFields.length > 0 ? (
-        <div className="space-y-6">
-          {phaseFields.map((field) => (
-            <FieldCard
-              key={field.id}
-              field={field}
-              allFields={fields}
-              onUpdate={(content) => onFieldUpdate?.(field.id, content)}
-              onFieldsChange={onFieldsChange}
-            />
-          ))}
-        </div>
-      ) : (
-        <div className="text-center py-12 text-zinc-500">
-          <p>当前阶段暂无内容</p>
-          <p className="text-sm mt-2">
-            在右侧与 AI Agent 对话开始生产内容
-          </p>
-        </div>
-      )}
-      
-      {/* 确认进入下一阶段按钮 */}
-      {phaseHasContent && nextPhase && (
-        <div className="mt-8 pt-6 border-t border-surface-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-zinc-400 text-sm">当前阶段内容已完成</p>
-              <p className="text-zinc-500 text-xs mt-1">
-                下一阶段：{PHASE_NAMES[nextPhase] || nextPhase}
-              </p>
+  return (
+    <div className="h-full flex">
+      {/* 内涵生产阶段：左侧字段目录 */}
+      {currentPhase === "produce_inner" && phaseFields.length > 0 && (
+        <div className="w-56 shrink-0 border-r border-surface-3 p-4 overflow-auto">
+          <h3 className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-3">
+            字段目录
+          </h3>
+          <div className="space-y-1">
+            {phaseFields.map((field, index) => {
+              const deps = field.dependencies?.depends_on || [];
+              const depsComplete = deps.every(depId => 
+                fields.find(f => f.id === depId)?.status === "completed"
+              );
+              
+              return (
+                <button
+                  key={field.id}
+                  onClick={() => scrollToField(field.id)}
+                  className="w-full text-left p-2 rounded-lg hover:bg-surface-3 transition-colors group"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-zinc-600">{index + 1}</span>
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${
+                      field.status === "completed" ? "bg-green-500" :
+                      field.status === "generating" ? "bg-yellow-500 animate-pulse" :
+                      "bg-zinc-600"
+                    }`} />
+                    <span className="text-sm text-zinc-300 truncate flex-1">
+                      {field.name}
+                    </span>
+                  </div>
+                  {/* 依赖显示 */}
+                  {deps.length > 0 && (
+                    <div className="mt-1 ml-6 text-xs text-zinc-600">
+                      ← {deps.map(d => fieldNameMap[d] || "?").join(", ")}
+                    </div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          
+          {/* 依赖关系图例 */}
+          <div className="mt-6 pt-4 border-t border-surface-3">
+            <div className="text-xs text-zinc-600 space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-green-500" />
+                <span>已完成</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-yellow-500" />
+                <span>生成中</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-zinc-600" />
+                <span>待生成</span>
+              </div>
             </div>
-            <button
-              onClick={handleAdvancePhase}
-              disabled={isAdvancing}
-              className={`px-6 py-3 rounded-xl font-medium transition-all ${
-                isAdvancing
-                  ? "bg-zinc-700 text-zinc-400 cursor-wait"
-                  : "bg-brand-600 hover:bg-brand-700 text-white shadow-lg hover:shadow-brand-600/25"
-              }`}
-            >
-              {isAdvancing ? (
-                <span className="flex items-center gap-2">
-                  <span className="animate-spin">⏳</span> 处理中...
-                </span>
-              ) : (
-                <span>✅ 确认，进入下一阶段</span>
-              )}
-            </button>
           </div>
         </div>
       )}
+      
+      {/* 主内容区 */}
+      <div className="flex-1 overflow-auto p-6 max-w-4xl mx-auto">
+        {/* 阶段标题 */}
+        <div className="mb-8">
+          <h1 className="text-2xl font-bold text-zinc-100">
+            {PHASE_NAMES[currentPhase] || currentPhase}
+          </h1>
+          <p className="text-zinc-500 mt-1">
+            {getPhaseDescription(currentPhase)}
+          </p>
+        </div>
+
+        {/* 字段列表 */}
+        {phaseFields.length > 0 ? (
+          <div className="space-y-6">
+            {phaseFields.map((field) => (
+              <div key={field.id} id={`field-${field.id}`}>
+                <FieldCard
+                  field={field}
+                  allFields={fields}
+                  onUpdate={(content) => onFieldUpdate?.(field.id, content)}
+                  onFieldsChange={onFieldsChange}
+                />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-center py-12 text-zinc-500">
+            <p>当前阶段暂无内容</p>
+            <p className="text-sm mt-2">
+              在右侧与 AI Agent 对话开始生产内容
+            </p>
+          </div>
+        )}
+      
+      {/* 确认进入下一阶段按钮 */}
+      {phaseHasContent && nextPhase && (() => {
+        const isPhaseCompleted = phaseStatus[currentPhase] === "completed";
+        
+        return (
+          <div className="mt-8 pt-6 border-t border-surface-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-zinc-400 text-sm">
+                  {isPhaseCompleted ? "✅ 当前阶段已确认" : "当前阶段内容已完成"}
+                </p>
+                <p className="text-zinc-500 text-xs mt-1">
+                  下一阶段：{PHASE_NAMES[nextPhase] || nextPhase}
+                </p>
+              </div>
+              {isPhaseCompleted ? (
+                <div className="px-6 py-3 rounded-xl font-medium bg-green-600/20 text-green-400 border border-green-500/30">
+                  ✅ 已确认
+                </div>
+              ) : (
+                <button
+                  onClick={handleAdvancePhase}
+                  disabled={isAdvancing}
+                  className={`px-6 py-3 rounded-xl font-medium transition-all ${
+                    isAdvancing
+                      ? "bg-zinc-700 text-zinc-400 cursor-wait"
+                      : "bg-brand-600 hover:bg-brand-700 text-white shadow-lg hover:shadow-brand-600/25"
+                  }`}
+                >
+                  {isAdvancing ? (
+                    <span className="flex items-center gap-2">
+                      <span className="animate-spin">⏳</span> 处理中...
+                    </span>
+                  ) : (
+                    <span>✅ 确认，进入下一阶段</span>
+                  )}
+                </button>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+      </div>
     </div>
   );
 }
@@ -235,6 +381,7 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
   const [isEditing, setIsEditing] = useState(false);
   const [content, setContent] = useState(field.content);
   const [showDependencyModal, setShowDependencyModal] = useState(false);
+  const [showConstraintsModal, setShowConstraintsModal] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatingContent, setGeneratingContent] = useState("");
 
@@ -319,6 +466,21 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
     }
   };
 
+  const handleUpdateConstraints = async (newConstraints: {
+    max_length?: number | null;
+    output_format?: string;
+    structure?: string | null;
+    example?: string | null;
+  }) => {
+    try {
+      await fieldAPI.update(field.id, { constraints: newConstraints });
+      onFieldsChange?.();
+      setShowConstraintsModal(false);
+    } catch (err) {
+      alert("更新约束失败: " + (err instanceof Error ? err.message : "未知错误"));
+    }
+  };
+
   return (
     <div className="bg-surface-2 rounded-xl border border-surface-3 overflow-hidden">
       {/* 字段头部 */}
@@ -342,6 +504,7 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
           </div>
           
           <div className="flex gap-2">
+            {/* 未完成 + 不在生成中：显示生成按钮 */}
             {field.status !== "completed" && !isGenerating && (
               <button
                 onClick={handleGenerate}
@@ -354,6 +517,17 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
                 title={canGenerate ? "生成内容" : `依赖未满足: ${unmetDependencies.map(f => f.name).join(", ")}`}
               >
                 生成
+              </button>
+            )}
+            
+            {/* 已完成：显示重新生成按钮 */}
+            {field.status === "completed" && !isGenerating && (
+              <button
+                onClick={handleGenerate}
+                className="px-3 py-1 text-sm bg-amber-600/20 hover:bg-amber-600/30 text-amber-400 border border-amber-500/30 rounded-lg transition-colors"
+                title="重新生成内容（会覆盖现有内容）"
+              >
+                🔄 重新生成
               </button>
             )}
             
@@ -386,18 +560,19 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
           </div>
         </div>
 
-        {/* 依赖关系显示 */}
-        <div className="mt-2 flex items-center gap-2 flex-wrap">
+        {/* 依赖关系 + 约束显示 */}
+        <div className="mt-2 flex items-center gap-4 flex-wrap text-xs">
+          {/* 依赖关系 */}
           <button
             onClick={() => setShowDependencyModal(true)}
-            className="text-xs text-zinc-500 hover:text-zinc-300 flex items-center gap-1"
+            className="text-zinc-500 hover:text-zinc-300 flex items-center gap-1"
           >
             <span>📎 依赖:</span>
             {dependencyFields.length > 0 ? (
               dependencyFields.map((df) => (
                 <span
                   key={df.id}
-                  className={`px-1.5 py-0.5 rounded text-xs ${
+                  className={`px-1.5 py-0.5 rounded ${
                     df.status === "completed"
                       ? "bg-green-600/20 text-green-400"
                       : "bg-red-600/20 text-red-400"
@@ -409,7 +584,27 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
             ) : (
               <span className="text-zinc-600">无</span>
             )}
-            <span className="text-zinc-600 ml-1">（点击编辑）</span>
+          </button>
+          
+          {/* 约束概览（可点击编辑） */}
+          <button
+            onClick={() => setShowConstraintsModal(true)}
+            className="flex items-center gap-2 text-zinc-600 hover:text-zinc-400 transition-colors"
+          >
+            <span>⚙️ 约束:</span>
+            {field.constraints?.max_length ? (
+              <span className="px-1.5 py-0.5 bg-surface-3 rounded" title="最大字数">
+                ≤{field.constraints.max_length}字
+              </span>
+            ) : null}
+            {field.constraints?.output_format && field.constraints.output_format !== "markdown" ? (
+              <span className="px-1.5 py-0.5 bg-surface-3 rounded" title="输出格式">
+                {field.constraints.output_format}
+              </span>
+            ) : null}
+            {!field.constraints?.max_length && (!field.constraints?.output_format || field.constraints.output_format === "markdown") && (
+              <span className="text-zinc-600">默认</span>
+            )}
           </button>
         </div>
       </div>
@@ -447,6 +642,15 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
           allFields={allFields}
           onClose={() => setShowDependencyModal(false)}
           onSave={handleUpdateDependencies}
+        />
+      )}
+
+      {/* 约束编辑弹窗 */}
+      {showConstraintsModal && (
+        <ConstraintsModal
+          field={field}
+          onClose={() => setShowConstraintsModal(false)}
+          onSave={handleUpdateConstraints}
         />
       )}
     </div>
@@ -528,6 +732,143 @@ function DependencyModal({ field, allFields, onClose, onSave }: DependencyModalP
           >
             保存
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============== 约束编辑弹窗 ==============
+interface ConstraintsModalProps {
+  field: Field;
+  onClose: () => void;
+  onSave: (constraints: {
+    max_length?: number | null;
+    output_format?: string;
+    structure?: string | null;
+    example?: string | null;
+  }) => void;
+}
+
+function ConstraintsModal({ field, onClose, onSave }: ConstraintsModalProps) {
+  const [maxLength, setMaxLength] = useState<string>(
+    field.constraints?.max_length?.toString() || ""
+  );
+  const [outputFormat, setOutputFormat] = useState(
+    field.constraints?.output_format || "markdown"
+  );
+  const [structure, setStructure] = useState(field.constraints?.structure || "");
+  const [example, setExample] = useState(field.constraints?.example || "");
+
+  const handleSave = () => {
+    onSave({
+      max_length: maxLength ? parseInt(maxLength, 10) : null,
+      output_format: outputFormat,
+      structure: structure || null,
+      example: example || null,
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-surface-2 rounded-xl border border-surface-3 w-full max-w-lg max-h-[80vh] overflow-hidden">
+        <div className="px-4 py-3 border-b border-surface-3">
+          <h3 className="font-medium text-zinc-200">字段生产约束</h3>
+          <p className="text-xs text-zinc-500 mt-1">
+            设置"{field.name}"的生成规则
+          </p>
+        </div>
+
+        <div className="p-4 space-y-4 max-h-[60vh] overflow-y-auto">
+          {/* 最大字数 */}
+          <div>
+            <label className="block text-sm text-zinc-400 mb-1.5">
+              📏 最大字数
+            </label>
+            <input
+              type="number"
+              value={maxLength}
+              onChange={(e) => setMaxLength(e.target.value)}
+              placeholder="不限制"
+              className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-brand-500"
+            />
+            <p className="text-xs text-zinc-600 mt-1">
+              留空表示不限制长度
+            </p>
+          </div>
+
+          {/* 输出格式 */}
+          <div>
+            <label className="block text-sm text-zinc-400 mb-1.5">
+              📋 输出格式
+            </label>
+            <select
+              value={outputFormat}
+              onChange={(e) => setOutputFormat(e.target.value)}
+              className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 focus:outline-none focus:ring-2 focus:ring-brand-500"
+            >
+              <option value="markdown">Markdown（富文本）</option>
+              <option value="plain_text">纯文本</option>
+              <option value="json">JSON 结构化</option>
+              <option value="list">列表（每行一项）</option>
+            </select>
+          </div>
+
+          {/* 结构模板 */}
+          <div>
+            <label className="block text-sm text-zinc-400 mb-1.5">
+              🏗️ 结构模板（可选）
+            </label>
+            <textarea
+              value={structure}
+              onChange={(e) => setStructure(e.target.value)}
+              placeholder="例如：标题 + 正文 + 总结&#10;或：问题 → 原因分析 → 解决方案"
+              rows={2}
+              className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-brand-500 resize-none"
+            />
+          </div>
+
+          {/* 示例输出 */}
+          <div>
+            <label className="block text-sm text-zinc-400 mb-1.5">
+              💡 示例输出（可选）
+            </label>
+            <textarea
+              value={example}
+              onChange={(e) => setExample(e.target.value)}
+              placeholder="提供一个期望输出的示例，帮助 AI 理解格式"
+              rows={3}
+              className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-brand-500 resize-none"
+            />
+          </div>
+        </div>
+
+        <div className="px-4 py-3 border-t border-surface-3 flex justify-between">
+          <button
+            onClick={() => {
+              setMaxLength("");
+              setOutputFormat("markdown");
+              setStructure("");
+              setExample("");
+            }}
+            className="px-3 py-2 text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
+          >
+            重置为默认
+          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={onClose}
+              className="px-4 py-2 text-sm bg-surface-3 hover:bg-surface-4 rounded-lg transition-colors"
+            >
+              取消
+            </button>
+            <button
+              onClick={handleSave}
+              className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-700 rounded-lg transition-colors"
+            >
+              保存
+            </button>
+          </div>
         </div>
       </div>
     </div>

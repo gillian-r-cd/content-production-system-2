@@ -37,6 +37,7 @@ interface ResearchPanelProps {
   fieldId: string;
   content: string;
   onUpdate?: () => void;
+  onAdvance?: () => void;  // 确认进入下一阶段
 }
 
 export function ResearchPanel({
@@ -44,6 +45,7 @@ export function ResearchPanel({
   fieldId,
   content,
   onUpdate,
+  onAdvance,
 }: ResearchPanelProps) {
   // 解析调研数据
   const initialData = useMemo<ResearchData | null>(() => {
@@ -111,37 +113,34 @@ export function ResearchPanel({
 
   const selectedCount = data.personas.filter((p) => p.selected).length;
 
+  // 保存并进入下一步
+  const handleSaveAndAdvance = async () => {
+    await handleSave();
+    onAdvance?.();
+  };
+
   return (
-    <div className="p-6 max-w-4xl mx-auto space-y-8">
-      {/* 标题和保存按钮 */}
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-zinc-100">消费者调研报告</h1>
-        <button
-          onClick={handleSave}
-          disabled={isSaving}
-          className="px-4 py-2 bg-brand-600 hover:bg-brand-700 disabled:bg-zinc-700 rounded-lg text-sm font-medium transition-colors"
-        >
-          {isSaving ? "保存中..." : "💾 保存修改"}
-        </button>
-      </div>
+    <div className="h-full flex flex-col">
+      {/* 可滚动内容区 */}
+      <div className="flex-1 overflow-auto p-6 max-w-4xl mx-auto w-full space-y-8">
 
       {/* 总体概述 */}
-      <section className="bg-surface-2 border border-surface-3 rounded-lg p-5">
-        <h2 className="text-lg font-semibold text-zinc-200 mb-3">总体概述</h2>
+      <section className="bg-surface-2 border border-surface-3 rounded-xl p-5">
+        <h2 className="text-lg font-semibold text-zinc-200 mb-4">总体概述</h2>
         <textarea
           value={data.summary}
           onChange={(e) => setData({ ...data, summary: e.target.value })}
-          className="w-full bg-surface-1 border border-surface-3 rounded-lg p-3 text-zinc-300 text-sm min-h-[100px] focus:outline-none focus:ring-2 focus:ring-brand-500"
+          className="w-full bg-surface-1 border border-surface-3 hover:border-surface-4 rounded-lg p-4 text-zinc-300 text-sm min-h-[120px] leading-relaxed focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all resize-none"
         />
       </section>
 
       {/* 消费者画像 */}
-      <section className="bg-surface-2 border border-surface-3 rounded-lg p-5">
-        <h2 className="text-lg font-semibold text-zinc-200 mb-3">消费者画像</h2>
+      <section className="bg-surface-2 border border-surface-3 rounded-xl p-5">
+        <h2 className="text-lg font-semibold text-zinc-200 mb-4">消费者画像</h2>
         <div className="grid grid-cols-2 gap-4">
           {Object.entries(data.consumer_profile).map(([key, value]) => (
-            <div key={key} className="space-y-1">
-              <label className="text-xs text-zinc-500">{key}</label>
+            <div key={key} className="space-y-1.5">
+              <label className="text-xs font-medium text-zinc-400">{key}</label>
               <input
                 type="text"
                 value={String(value)}
@@ -154,7 +153,7 @@ export function ResearchPanel({
                     },
                   })
                 }
-                className="w-full bg-surface-1 border border-surface-3 rounded px-3 py-2 text-sm text-zinc-300 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                className="w-full bg-surface-1 border border-surface-3 hover:border-surface-4 rounded-lg px-3 py-2.5 text-sm text-zinc-300 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all"
               />
             </div>
           ))}
@@ -162,44 +161,82 @@ export function ResearchPanel({
       </section>
 
       {/* 核心痛点 */}
-      <section className="bg-surface-2 border border-surface-3 rounded-lg p-5">
-        <h2 className="text-lg font-semibold text-zinc-200 mb-3">核心痛点</h2>
-        <ul className="space-y-2">
+      <section className="bg-surface-2 border border-surface-3 rounded-xl p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold text-zinc-200">核心痛点</h2>
+          <button
+            onClick={() => setData({ ...data, pain_points: [...data.pain_points, ""] })}
+            className="px-3 py-1 text-xs bg-surface-3 hover:bg-surface-4 text-zinc-400 hover:text-zinc-200 rounded-lg transition-colors"
+          >
+            + 添加痛点
+          </button>
+        </div>
+        <ul className="space-y-3">
           {data.pain_points.map((point, index) => (
-            <li key={index} className="flex items-start gap-2">
-              <span className="text-amber-400 mt-1">•</span>
+            <li key={index} className="group flex items-start gap-3">
+              <span className="text-amber-400 mt-2.5 text-lg">•</span>
               <input
                 type="text"
                 value={point}
+                placeholder="输入痛点描述..."
                 onChange={(e) => {
                   const newPoints = [...data.pain_points];
                   newPoints[index] = e.target.value;
                   setData({ ...data, pain_points: newPoints });
                 }}
-                className="flex-1 bg-surface-1 border border-surface-3 rounded px-3 py-1.5 text-sm text-zinc-300 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                className="flex-1 bg-surface-1 border border-surface-3 hover:border-surface-4 rounded-lg px-4 py-2.5 text-sm text-zinc-300 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all"
               />
+              <button
+                onClick={() => {
+                  const newPoints = data.pain_points.filter((_, i) => i !== index);
+                  setData({ ...data, pain_points: newPoints });
+                }}
+                className="opacity-0 group-hover:opacity-100 p-2 text-red-400 hover:text-red-300 hover:bg-red-400/10 rounded-lg transition-all"
+                title="删除此痛点"
+              >
+                ✕
+              </button>
             </li>
           ))}
         </ul>
       </section>
 
       {/* 价值主张 */}
-      <section className="bg-surface-2 border border-surface-3 rounded-lg p-5">
-        <h2 className="text-lg font-semibold text-zinc-200 mb-3">价值主张</h2>
-        <ul className="space-y-2">
+      <section className="bg-surface-2 border border-surface-3 rounded-xl p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold text-zinc-200">价值主张</h2>
+          <button
+            onClick={() => setData({ ...data, value_propositions: [...data.value_propositions, ""] })}
+            className="px-3 py-1 text-xs bg-surface-3 hover:bg-surface-4 text-zinc-400 hover:text-zinc-200 rounded-lg transition-colors"
+          >
+            + 添加主张
+          </button>
+        </div>
+        <ul className="space-y-3">
           {data.value_propositions.map((prop, index) => (
-            <li key={index} className="flex items-start gap-2">
-              <span className="text-green-400 mt-1">✓</span>
+            <li key={index} className="group flex items-start gap-3">
+              <span className="text-green-400 mt-2.5 text-lg">✓</span>
               <input
                 type="text"
                 value={prop}
+                placeholder="输入价值主张..."
                 onChange={(e) => {
                   const newProps = [...data.value_propositions];
                   newProps[index] = e.target.value;
                   setData({ ...data, value_propositions: newProps });
                 }}
-                className="flex-1 bg-surface-1 border border-surface-3 rounded px-3 py-1.5 text-sm text-zinc-300 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                className="flex-1 bg-surface-1 border border-surface-3 hover:border-surface-4 rounded-lg px-4 py-2.5 text-sm text-zinc-300 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all"
               />
+              <button
+                onClick={() => {
+                  const newProps = data.value_propositions.filter((_, i) => i !== index);
+                  setData({ ...data, value_propositions: newProps });
+                }}
+                className="opacity-0 group-hover:opacity-100 p-2 text-red-400 hover:text-red-300 hover:bg-red-400/10 rounded-lg transition-all"
+                title="删除此主张"
+              >
+                ✕
+              </button>
             </li>
           ))}
         </ul>
@@ -230,6 +267,33 @@ export function ResearchPanel({
           ))}
         </div>
       </section>
+      
+      {/* 底部留白，避免被固定按钮遮挡 */}
+      <div className="h-24"></div>
+      </div>
+      
+      {/* 底部固定按钮栏 */}
+      <div className="shrink-0 px-6 py-4 border-t border-surface-3 bg-surface-1 flex items-center justify-between">
+        <div className="text-sm text-zinc-500">
+          已选中 <span className="text-brand-400 font-medium">{selectedCount}</span> 个用户画像用于后续模拟
+        </div>
+        <div className="flex gap-3">
+          <button
+            onClick={handleSave}
+            disabled={isSaving}
+            className="px-5 py-2.5 bg-surface-3 hover:bg-surface-4 disabled:bg-zinc-700 text-zinc-300 rounded-lg text-sm font-medium transition-all"
+          >
+            {isSaving ? "⏳ 保存中..." : "💾 保存修改"}
+          </button>
+          <button
+            onClick={handleSaveAndAdvance}
+            disabled={isSaving}
+            className="px-6 py-2.5 bg-brand-600 hover:bg-brand-700 disabled:bg-zinc-700 text-white rounded-lg text-sm font-medium transition-all shadow-lg hover:shadow-brand-600/25"
+          >
+            ✅ 确认，进入内涵设计
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -254,25 +318,25 @@ function PersonaCard({
 }: PersonaCardProps) {
   return (
     <div
-      className={`border rounded-lg p-4 transition-all ${
+      className={`border rounded-xl p-4 transition-all ${
         persona.selected
-          ? "bg-surface-2 border-brand-500/50"
-          : "bg-surface-1 border-surface-3 opacity-60"
+          ? "bg-surface-2 border-brand-500/50 shadow-lg shadow-brand-500/5"
+          : "bg-surface-1 border-surface-3 opacity-70 hover:opacity-90"
       }`}
     >
       {/* 头部：选中和编辑 */}
-      <div className="flex items-start justify-between mb-3">
+      <div className="flex items-start justify-between mb-4">
         <button
           onClick={onToggleSelect}
-          className={`flex items-center gap-2 text-sm font-medium ${
-            persona.selected ? "text-brand-400" : "text-zinc-500"
+          className={`flex items-center gap-2.5 text-sm font-semibold transition-colors ${
+            persona.selected ? "text-brand-400" : "text-zinc-400 hover:text-zinc-300"
           }`}
         >
           <span
-            className={`w-5 h-5 rounded border flex items-center justify-center ${
+            className={`w-5 h-5 rounded-md border-2 flex items-center justify-center text-xs transition-all ${
               persona.selected
-                ? "bg-brand-600 border-brand-600"
-                : "border-zinc-600"
+                ? "bg-brand-600 border-brand-600 text-white"
+                : "border-zinc-600 hover:border-zinc-500"
             }`}
           >
             {persona.selected && "✓"}
@@ -283,14 +347,14 @@ function PersonaCard({
         {isEditing ? (
           <button
             onClick={onSaveEdit}
-            className="text-xs text-brand-400 hover:text-brand-300"
+            className="px-3 py-1 text-xs font-medium bg-brand-600 hover:bg-brand-700 text-white rounded-lg transition-colors"
           >
             完成
           </button>
         ) : (
           <button
             onClick={onEdit}
-            className="text-xs text-zinc-500 hover:text-zinc-400"
+            className="px-3 py-1 text-xs text-zinc-500 hover:text-zinc-300 hover:bg-surface-3 rounded-lg transition-colors"
           >
             编辑
           </button>
@@ -299,32 +363,53 @@ function PersonaCard({
 
       {isEditing ? (
         // 编辑模式
-        <div className="space-y-3 text-sm">
+        <div className="space-y-4 text-sm">
           <div>
-            <label className="text-xs text-zinc-500">姓名</label>
+            <label className="text-xs font-medium text-zinc-400 mb-1.5 block">姓名</label>
             <input
               type="text"
               value={persona.name}
               onChange={(e) => onUpdate({ name: e.target.value })}
-              className="w-full mt-1 bg-surface-1 border border-surface-3 rounded px-2 py-1 text-zinc-300"
+              className="w-full bg-surface-1 border border-surface-3 hover:border-surface-4 rounded-lg px-3 py-2 text-zinc-200 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all"
             />
           </div>
+          
+          {/* 标签编辑 */}
           <div>
-            <label className="text-xs text-zinc-500">背景简介</label>
+            <label className="text-xs font-medium text-zinc-400 mb-1.5 block">基本信息标签</label>
+            <div className="space-y-2">
+              {Object.entries(persona.basic_info).map(([key, value]) => (
+                <div key={key} className="flex items-center gap-2">
+                  <span className="text-xs text-zinc-500 w-20 shrink-0">{key}:</span>
+                  <input
+                    type="text"
+                    value={String(value || "")}
+                    onChange={(e) => onUpdate({
+                      basic_info: { ...persona.basic_info, [key]: e.target.value }
+                    })}
+                    className="flex-1 bg-surface-1 border border-surface-3 hover:border-surface-4 rounded-lg px-3 py-1.5 text-xs text-zinc-300 focus:outline-none focus:ring-2 focus:ring-brand-500 transition-all"
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+          
+          <div>
+            <label className="text-xs font-medium text-zinc-400 mb-1.5 block">背景简介</label>
             <textarea
               value={persona.background}
               onChange={(e) => onUpdate({ background: e.target.value })}
-              className="w-full mt-1 bg-surface-1 border border-surface-3 rounded px-2 py-1 text-zinc-300 min-h-[60px]"
+              className="w-full bg-surface-1 border border-surface-3 hover:border-surface-4 rounded-lg px-3 py-2 text-zinc-300 min-h-[80px] focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all resize-none"
             />
           </div>
           <div>
-            <label className="text-xs text-zinc-500">核心痛点（每行一个）</label>
+            <label className="text-xs font-medium text-zinc-400 mb-1.5 block">核心痛点（每行一个）</label>
             <textarea
               value={persona.pain_points.join("\n")}
               onChange={(e) =>
                 onUpdate({ pain_points: e.target.value.split("\n").filter(Boolean) })
               }
-              className="w-full mt-1 bg-surface-1 border border-surface-3 rounded px-2 py-1 text-zinc-300 min-h-[60px]"
+              className="w-full bg-surface-1 border border-surface-3 hover:border-surface-4 rounded-lg px-3 py-2 text-zinc-300 min-h-[80px] focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all resize-none"
             />
           </div>
         </div>

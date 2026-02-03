@@ -36,6 +36,9 @@ class ResearchReport(BaseModel):
     value_propositions: List[str] = Field(description="价值主张列表")
     personas: List[ConsumerPersona] = Field(description="典型用户小传")
     sources: List[str] = Field(default_factory=list, description="信息来源")
+    # 调试信息
+    search_queries: List[str] = Field(default_factory=list, description="搜索查询词")
+    content_length: int = Field(default=0, description="实际使用的内容长度")
 
 
 def search_ddg(query: str, max_results: int = 10) -> List[dict]:
@@ -215,8 +218,15 @@ async def deep_research(
     valid_contents = [c for c in contents if isinstance(c, str) and c]
     
     # 5. 综合分析
+    combined_content = "\n\n---\n\n".join(valid_contents[:5])
     report = await synthesize_report(valid_contents, query, intent)
     report.sources = unique_urls
+    report.search_queries = search_queries
+    report.content_length = len(combined_content)
+    
+    print(f"[DeepResearch] 搜索查询: {search_queries}")
+    print(f"[DeepResearch] 找到 {len(unique_urls)} 个URL，成功读取 {len(valid_contents)} 个")
+    print(f"[DeepResearch] 内容总长度: {len(combined_content)} 字符")
     
     return report
 

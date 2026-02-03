@@ -23,6 +23,13 @@ export interface Project {
   updated_at: string;
 }
 
+export interface FieldConstraints {
+  max_length?: number | null;      // 最大字数
+  output_format?: string;           // 输出格式: markdown / plain_text / json / list
+  structure?: string | null;        // 结构模板
+  example?: string | null;          // 示例输出
+}
+
 export interface Field {
   id: string;
   project_id: string;
@@ -38,6 +45,8 @@ export interface Field {
     depends_on: string[];
     dependency_type: string;
   };
+  constraints?: FieldConstraints;   // 字段生产约束
+  need_review: boolean;             // 是否需要人工确认（false = 自动生成）
   template_id: string | null;
   created_at: string;
   updated_at: string;

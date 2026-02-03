@@ -216,6 +216,7 @@ export default function WorkspacePage() {
             <ContentPanel
               projectId={currentProject?.id || null}
               currentPhase={currentProject?.current_phase || "intent"}
+              phaseStatus={currentProject?.phase_status || {}}
               fields={fields}
               onFieldUpdate={handleFieldUpdate}
               onFieldsChange={() => currentProject && loadFields(currentProject.id)}

@@ -158,7 +158,7 @@ async def chat(
     db.add(user_msg)
     db.commit()
     
-    # 运行Agent（传递历史对话）
+    # 运行Agent（传递历史对话和现有阶段状态）
     result = await content_agent.run(
         project_id=request.project_id,
         user_input=request.message,
@@ -167,6 +167,7 @@ async def chat(
         autonomy_settings=project.agent_autonomy or {},
         use_deep_research=project.use_deep_research if hasattr(project, 'use_deep_research') else True,
         chat_history=chat_history,  # 传递历史对话
+        phase_status=project.phase_status or {},  # 传递现有阶段状态！
     )
     
     agent_output = result.get("agent_output", "")
@@ -466,6 +467,7 @@ async def retry_message(
         golden_context=project.golden_context or {},
         autonomy_settings=project.agent_autonomy or {},
         use_deep_research=project.use_deep_research if hasattr(project, 'use_deep_research') else True,
+        phase_status=project.phase_status or {},  # 传递现有阶段状态！
     )
     
     # 创建新的响应（关联到原消息）

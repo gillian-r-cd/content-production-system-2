@@ -11,7 +11,7 @@
 
 from typing import Optional, Set, Dict, TYPE_CHECKING
 
-from sqlalchemy import String, Text, JSON, ForeignKey
+from sqlalchemy import String, Text, JSON, ForeignKey, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.models.base import BaseModel
@@ -71,6 +71,21 @@ class ProjectField(BaseModel):
     dependencies: Mapped[dict] = mapped_column(
         JSON, default=lambda: {"depends_on": [], "dependency_type": "all"}
     )
+    # 生产约束配置
+    # - max_length: 最大字数（如 500）
+    # - output_format: 输出格式 (markdown / plain_text / json / list)
+    # - structure: 结构模板（如 "标题 + 正文 + 总结"）
+    # - example: 示例输出
+    constraints: Mapped[dict] = mapped_column(
+        JSON, default=lambda: {
+            "max_length": None,  # None = 不限制
+            "output_format": "markdown",
+            "structure": None,
+            "example": None,
+        }
+    )
+    # 是否需要人工确认（False = 依赖满足后自动生成）
+    need_review: Mapped[bool] = mapped_column(default=True)
     generation_log_id: Mapped[Optional[str]] = mapped_column(
         String(36), nullable=True
     )

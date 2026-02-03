@@ -15,9 +15,10 @@ from sqlalchemy.orm import Session
 import json
 
 from core.database import get_db
-from core.models import ProjectField, Project, FieldTemplate, generate_uuid
+from core.models import ProjectField, Project, FieldTemplate, generate_uuid, GenerationLog
 from core.tools import generate_field, generate_field_stream, resolve_field_order
 from core.prompt_engine import prompt_engine, PromptContext, GoldenContext
+from datetime import datetime
 
 
 router = APIRouter()
@@ -31,9 +32,13 @@ class FieldCreate(BaseModel):
     phase: str
     name: str
     field_type: str = "text"
+    content: str = ""
+    status: str = "pending"
     ai_prompt: str = ""
     pre_questions: List[str] = []
     dependencies: dict = {"depends_on": [], "dependency_type": "all"}
+    constraints: Optional[dict] = None  # 字段生产约束
+    need_review: bool = True  # 是否需要人工确认
     template_id: Optional[str] = None
 
 
@@ -45,6 +50,8 @@ class FieldUpdate(BaseModel):
     ai_prompt: Optional[str] = None
     pre_answers: Optional[dict] = None
     dependencies: Optional[dict] = None
+    constraints: Optional[dict] = None  # 字段生产约束
+    need_review: Optional[bool] = None  # 是否需要人工确认
 
 
 class FieldResponse(BaseModel):
@@ -60,6 +67,8 @@ class FieldResponse(BaseModel):
     pre_questions: list
     pre_answers: dict
     dependencies: dict
+    constraints: Optional[dict] = None  # 字段生产约束
+    need_review: bool = True  # 是否需要人工确认
     template_id: Optional[str]
     created_at: str
     updated_at: str
@@ -285,6 +294,11 @@ async def generate_field_stream_api(
         dependent_fields=dep_fields,
     )
     
+    # 构建系统提示词用于日志记录
+    system_prompt = prompt_engine.get_field_generation_prompt(field, context)
+    full_prompt = f"[System]\n{system_prompt}\n\n[User]\n请生成「{field.name}」的内容。"
+    start_time = datetime.utcnow()
+    
     async def stream_generator():
         content_parts = []
         try:
@@ -297,6 +311,29 @@ async def generate_field_stream_api(
             full_content = "".join(content_parts)
             field.content = full_content
             field.status = "completed"
+            
+            # 计算耗时和tokens（估算）
+            end_time = datetime.utcnow()
+            duration_ms = int((end_time - start_time).total_seconds() * 1000)
+            estimated_tokens = len(full_prompt) // 4 + len(full_content) // 4
+            
+            # 创建日志记录
+            gen_log = GenerationLog(
+                id=generate_uuid(),
+                project_id=field.project_id,
+                phase="produce_inner",
+                operation=f"field_generate_{field.name}",
+                model="gpt-5.1",  # TODO: 从配置获取实际模型
+                input_tokens=len(full_prompt) // 4,
+                output_tokens=len(full_content) // 4,
+                total_tokens=estimated_tokens,
+                duration_ms=duration_ms,
+                full_prompt=full_prompt,
+                full_response=full_content,
+            )
+            db.add(gen_log)
+            field.generation_log_id = gen_log.id
+            
             db.commit()
             
             yield f"data: {json.dumps({'done': True, 'field_id': field_id})}\n\n"
@@ -479,6 +516,8 @@ def _field_to_response(field: ProjectField) -> FieldResponse:
         pre_questions=field.pre_questions or [],
         pre_answers=field.pre_answers or {},
         dependencies=field.dependencies or {"depends_on": [], "dependency_type": "all"},
+        constraints=field.constraints if hasattr(field, 'constraints') else None,
+        need_review=field.need_review if hasattr(field, 'need_review') else True,
         template_id=field.template_id,
         created_at=field.created_at.isoformat() if field.created_at else "",
         updated_at=field.updated_at.isoformat() if field.updated_at else "",
