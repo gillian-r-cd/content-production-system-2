@@ -123,6 +123,16 @@ async def chat(
     
     current_phase = request.current_phase or project.current_phase
     
+    # 加载历史对话（在保存新消息之前）
+    history_messages = (
+        db.query(ChatMessage)
+        .filter(ChatMessage.project_id == request.project_id)
+        .order_by(ChatMessage.created_at.asc())
+        .limit(50)  # 最近50条
+        .all()
+    )
+    chat_history = [{"role": m.role, "content": m.content} for m in history_messages]
+    
     # 保存用户消息
     user_msg = ChatMessage(
         id=generate_uuid(),
@@ -137,7 +147,7 @@ async def chat(
     db.add(user_msg)
     db.commit()
     
-    # 运行Agent
+    # 运行Agent（传递历史对话）
     result = await content_agent.run(
         project_id=request.project_id,
         user_input=request.message,
@@ -145,6 +155,7 @@ async def chat(
         golden_context=project.golden_context or {},
         autonomy_settings=project.agent_autonomy or {},
         use_deep_research=project.use_deep_research if hasattr(project, 'use_deep_research') else True,
+        chat_history=chat_history,  # 传递历史对话
     )
     
     agent_output = result.get("agent_output", "")

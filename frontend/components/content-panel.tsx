@@ -6,6 +6,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import ReactMarkdown from "react-markdown";
 import { PHASE_NAMES } from "@/lib/utils";
 import { fieldAPI } from "@/lib/api";
 import type { Field } from "@/lib/api";
@@ -294,11 +295,9 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
             className="w-full min-h-[200px] bg-surface-1 border border-surface-3 rounded-lg p-3 text-zinc-200 resize-y focus:outline-none focus:ring-2 focus:ring-brand-500"
           />
         ) : (
-          <div className="prose prose-invert max-w-none">
+          <div className="prose prose-invert max-w-none prose-headings:text-zinc-100 prose-p:text-zinc-300 prose-li:text-zinc-300 prose-strong:text-zinc-200">
             {field.content ? (
-              <div className="whitespace-pre-wrap text-zinc-300">
-                {field.content}
-              </div>
+              <ReactMarkdown>{field.content}</ReactMarkdown>
             ) : (
               <p className="text-zinc-500 italic">暂无内容，点击"生成"按钮开始</p>
             )}

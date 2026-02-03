@@ -848,6 +848,7 @@ class ContentProductionAgent:
         autonomy_settings: Optional[dict] = None,
         use_deep_research: bool = True,
         thread_id: Optional[str] = None,
+        chat_history: Optional[list] = None,  # 新增：传递历史对话
     ) -> ContentProductionState:
         """
         运行Agent
@@ -860,10 +861,22 @@ class ContentProductionAgent:
             autonomy_settings: 自主权设置
             use_deep_research: 是否使用DeepResearch
             thread_id: 线程ID（用于状态持久化）
+            chat_history: 历史对话记录
         
         Returns:
             最终状态
         """
+        # 构建消息历史
+        messages = []
+        if chat_history:
+            for msg in chat_history:
+                if msg.get("role") == "user":
+                    messages.append(HumanMessage(content=msg.get("content", "")))
+                elif msg.get("role") == "assistant":
+                    messages.append(AIMessage(content=msg.get("content", "")))
+        # 添加当前用户输入
+        messages.append(HumanMessage(content=user_input))
+        
         initial_state: ContentProductionState = {
             "project_id": project_id,
             "current_phase": current_phase,
@@ -872,7 +885,7 @@ class ContentProductionAgent:
             "autonomy_settings": autonomy_settings or {p: True for p in PROJECT_PHASES},
             "golden_context": golden_context or {},
             "fields": {},
-            "messages": [HumanMessage(content=user_input)],
+            "messages": messages,  # 使用完整历史
             "user_input": user_input,
             "agent_output": "",
             "waiting_for_human": False,
