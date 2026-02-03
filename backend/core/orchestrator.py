@@ -171,20 +171,24 @@ async def intent_analysis_node(state: ContentProductionState) -> ContentProducti
     两种模式：
     1. 引导提问：用户还在回答问题，AI 继续提问（不保存为字段）
     2. 产出生成：用户触发生成，AI 输出结构化意图分析（保存为字段）
+    
+    规则：最多问3个问题，每个问题标注 "问题 X/3"
     """
     gc = state.get("golden_context", {})
     user_input = state.get("user_input", "")
     chat_history = state.get("messages", [])
     
+    # 统计已经问了几个问题（AI发送的消息数 = 问题数）
+    ai_question_count = sum(1 for m in chat_history if isinstance(m, AIMessage))
+    MAX_QUESTIONS = 3
+    current_question = ai_question_count + 1  # 本次是第几个问题
+    
     # 判断是否触发产出生成模式
     trigger_keywords = ["生成", "总结", "分析一下", "开始生成", "确定", "可以了", "就这些", "没有了", "继续"]
-    is_producing = any(kw in user_input for kw in trigger_keywords)
-    
-    # 选择提示词
-    if is_producing:
-        system_prompt = prompt_engine.INTENT_PRODUCING_PROMPT
-    else:
-        system_prompt = prompt_engine.INTENT_QUESTIONING_PROMPT
+    is_producing = (
+        any(kw in user_input for kw in trigger_keywords) or
+        current_question > MAX_QUESTIONS  # 已问完3个问题，自动生成
+    )
     
     # 构建对话历史上下文
     history_context = ""
@@ -193,6 +197,18 @@ async def intent_analysis_node(state: ContentProductionState) -> ContentProducti
             history_context += f"用户: {msg.content}\n"
         elif isinstance(msg, AIMessage):
             history_context += f"助手: {msg.content}\n"
+    
+    # 选择提示词
+    if is_producing:
+        system_prompt = prompt_engine.INTENT_PRODUCING_PROMPT
+    else:
+        # 提问模式：告知当前是第几个问题
+        system_prompt = f"""{prompt_engine.INTENT_QUESTIONING_PROMPT}
+
+重要规则：
+- 这是第 {current_question} 个问题（共3个）
+- 请在问题开头标注【问题 {current_question}/3】
+- 本次只问1个最关键的问题，简洁明了"""
     
     messages = [
         ChatMessage(
