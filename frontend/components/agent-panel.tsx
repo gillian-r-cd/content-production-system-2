@@ -1,14 +1,16 @@
 // frontend/components/agent-panel.tsx
 // 功能: 右栏AI Agent对话面板
 // 主要组件: AgentPanel, MessageBubble, MentionDropdown, ToolSelector
-// 支持: @引用、对话历史加载、编辑重发、再试一次、一键复制、Tool调用
+// 支持: @引用、对话历史加载、编辑重发、再试一次、一键复制、Tool调用、流式输出、Markdown渲染
 
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { cn, PHASE_NAMES } from "@/lib/utils";
-import { agentAPI, parseReferences } from "@/lib/api";
+import { agentAPI, parseReferences, API_BASE } from "@/lib/api";
 import type { Field, ChatMessageRecord } from "@/lib/api";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 interface AgentPanelProps {
   projectId: string | null;
@@ -155,7 +157,7 @@ export function AgentPanel({
 
     // 立即显示用户消息（乐观更新）
     const tempUserMsg: ChatMessageRecord = {
-      id: `temp-${Date.now()}`,
+      id: `temp-user-${Date.now()}`,
       role: "user",
       content: userMessage,
       original_content: userMessage,
@@ -163,36 +165,159 @@ export function AgentPanel({
       metadata: { references },
       created_at: new Date().toISOString(),
     };
-    setMessages((prev) => [...prev, tempUserMsg]);
+    
+    // 创建一个临时的 AI 回复消息（用于流式更新）
+    const tempAiMsg: ChatMessageRecord = {
+      id: `temp-ai-${Date.now()}`,
+      role: "assistant",
+      content: "",
+      original_content: "",
+      is_edited: false,
+      metadata: {},
+      created_at: new Date().toISOString(),
+    };
+    
+    setMessages((prev) => [...prev, tempUserMsg, tempAiMsg]);
 
     try {
-      // 调用 API，传递 references 参数
-      const response = await agentAPI.chat(projectId, userMessage, { references });
+      // 使用流式 API
+      const response = await fetch(`${API_BASE}/api/agent/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: projectId,
+          message: userMessage,
+          references,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Stream failed: ${response.status}`);
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error("No reader");
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let fullContent = "";
+      let currentRoute = "";  // 跟踪当前路由
       
-      // 检查是否有字段被修改
-      if (response.field_updated) {
-        console.log("[AgentPanel] 字段已更新:", response.field_updated);
-        // 显示 Toast 提示
-        const action = response.field_updated.action === "modified" ? "已修改" : "已更新";
-        setToast({
-          message: `${action}【${response.field_updated.name}】`,
-          type: "success",
-        });
-        // 3秒后自动消失
-        setTimeout(() => setToast(null), 3000);
+      // 产出类型路由（内容应显示在中间区，聊天区只显示简短确认）
+      const PRODUCE_ROUTES = ["intent_produce", "research", "design_inner", "produce_inner", 
+                               "design_outer", "produce_outer", "simulate", "evaluate"];
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              
+              if (data.type === "route") {
+                // 记录路由类型
+                currentRoute = data.target;
+                console.log("[AgentPanel] Route:", currentRoute);
+                
+                // 如果是产出模式，显示"生成中..."
+                if (PRODUCE_ROUTES.includes(currentRoute)) {
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === tempAiMsg.id ? { ...m, content: "⏳ 正在生成内容..." } : m
+                    )
+                  );
+                }
+              } else if (data.type === "token") {
+                // 逐 token 更新
+                fullContent += data.content;
+                
+                // 只有非产出模式才实时显示内容
+                if (!PRODUCE_ROUTES.includes(currentRoute)) {
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === tempAiMsg.id ? { ...m, content: fullContent } : m
+                    )
+                  );
+                }
+              } else if (data.type === "content") {
+                // 一次性内容（非流式场景）
+                fullContent = data.content;
+                
+                if (!PRODUCE_ROUTES.includes(currentRoute)) {
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === tempAiMsg.id ? { ...m, content: fullContent } : m
+                    )
+                  );
+                }
+              } else if (data.type === "done") {
+                // 流式完成
+                const routeNames: Record<string, string> = {
+                  "intent_produce": "意图分析",
+                  "research": "消费者调研",
+                  "design_inner": "内涵设计",
+                  "produce_inner": "内涵生产",
+                  "design_outer": "外延设计",
+                  "produce_outer": "外延生产",
+                  "simulate": "消费者模拟",
+                  "evaluate": "评估报告",
+                };
+                
+                // 产出模式：显示简短确认消息
+                if (PRODUCE_ROUTES.includes(currentRoute)) {
+                  const routeName = routeNames[currentRoute] || currentRoute;
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === tempAiMsg.id
+                        ? { ...m, id: data.message_id, content: `✅ 已生成【${routeName}】，请在左侧工作台查看和编辑。` }
+                        : m
+                    )
+                  );
+                } else {
+                  // 对话模式：保持完整内容
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === tempAiMsg.id ? { ...m, id: data.message_id } : m
+                    )
+                  );
+                }
+              } else if (data.type === "error") {
+                console.error("Stream error:", data.error);
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === tempAiMsg.id
+                      ? { ...m, content: `❌ 错误: ${data.error}` }
+                      : m
+                  )
+                );
+              }
+            } catch (e) {
+              // JSON 解析失败，忽略
+            }
+          }
+        }
       }
       
-      // 重新加载完整历史（包含真实的消息ID和Agent响应）
-      await loadHistory();
-      
-      // 通知父组件刷新内容和进度（无论是否有字段更新都刷新，确保状态同步）
+      // 通知父组件刷新内容和进度（特别是产出模式需要刷新中间区）
       if (onContentUpdate) {
         onContentUpdate();
       }
     } catch (error) {
       console.error("发送失败:", error);
-      // 移除临时消息，显示错误
-      setMessages((prev) => prev.filter((m) => m.id !== tempUserMsg.id));
+      // 更新临时 AI 消息显示错误
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === tempAiMsg.id
+            ? { ...m, content: `❌ 发送失败: ${error}` }
+            : m
+        )
+      );
     } finally {
       setSending(false);
     }
@@ -219,17 +344,93 @@ export function AgentPanel({
   const handleSaveEdit = async () => {
     if (!editingMessageId || !projectId || sending) return;
 
-    setSending(true);  // 添加loading状态
-    setEditingMessageId(null);  // 立即关闭编辑框
+    setSending(true);
+    setEditingMessageId(null);
     
     // 提取 @ 引用
     const references = parseReferences(editContent);
+    const editedContent = editContent;
+    setEditContent("");
     
     try {
-      await agentAPI.editMessage(editingMessageId, editContent);
-      // 编辑后重新发送，传递 references
-      const response = await agentAPI.chat(projectId, editContent, { references });
-      await loadHistory();
+      // 1. 先更新编辑的消息
+      await agentAPI.editMessage(editingMessageId, editedContent);
+      
+      // 2. 删除该消息之后的所有消息（从UI中移除）
+      const editedMsgIndex = messages.findIndex(m => m.id === editingMessageId);
+      if (editedMsgIndex !== -1) {
+        // 保留编辑的消息及之前的，移除之后的
+        setMessages(prev => {
+          const updated = prev.slice(0, editedMsgIndex);
+          // 更新编辑的消息内容
+          const editedMsg = { ...prev[editedMsgIndex], content: editedContent, is_edited: true };
+          return [...updated, editedMsg];
+        });
+      }
+      
+      // 3. 创建临时 AI 回复
+      const tempAiMsg: ChatMessageRecord = {
+        id: `temp-ai-${Date.now()}`,
+        role: "assistant",
+        content: "",
+        original_content: "",
+        is_edited: false,
+        metadata: {},
+        created_at: new Date().toISOString(),
+      };
+      setMessages(prev => [...prev, tempAiMsg]);
+      
+      // 4. 使用流式 API 重新发送
+      const response = await fetch(`${API_BASE}/api/agent/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: projectId,
+          message: editedContent,
+          references,
+        }),
+      });
+
+      if (!response.ok) throw new Error(`Stream failed: ${response.status}`);
+
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error("No reader");
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let fullContent = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (data.type === "token") {
+                fullContent += data.content;
+                setMessages(prev =>
+                  prev.map(m => m.id === tempAiMsg.id ? { ...m, content: fullContent } : m)
+                );
+              } else if (data.type === "content") {
+                fullContent = data.content;
+                setMessages(prev =>
+                  prev.map(m => m.id === tempAiMsg.id ? { ...m, content: fullContent } : m)
+                );
+              } else if (data.type === "done") {
+                setMessages(prev =>
+                  prev.map(m => m.id === tempAiMsg.id ? { ...m, id: data.message_id } : m)
+                );
+              }
+            } catch (e) {}
+          }
+        }
+      }
       
       // 通知父组件刷新
       if (onContentUpdate) {
@@ -237,9 +438,10 @@ export function AgentPanel({
       }
     } catch (err) {
       console.error("编辑失败:", err);
+      // 重新加载历史以恢复
+      await loadHistory();
     } finally {
       setSending(false);
-      setEditContent("");
     }
   };
 
@@ -439,14 +641,64 @@ function MessageBubble({
   const isUser = message.role === "user";
   const [showActions, setShowActions] = useState(false);
 
-  const renderContent = (content: string) => {
+  // 渲染用户消息（高亮 @ 引用）
+  const renderUserContent = (content: string) => {
     const parts = content.split(/(@[\u4e00-\u9fffa-zA-Z0-9_]+)/g);
     return parts.map((part, i) => {
       if (part.startsWith("@")) {
-        return <span key={i} className="text-brand-400 font-medium">{part}</span>;
+        return <span key={i} className="text-brand-300 font-medium">{part}</span>;
       }
       return part;
     });
+  };
+
+  // 渲染 AI 消息（Markdown 渲染）
+  const renderAiContent = (content: string) => {
+    if (!content) {
+      return <span className="text-zinc-500 animate-pulse">▌</span>;
+    }
+    return (
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          // 自定义各种 Markdown 元素的样式
+          p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+          h1: ({ children }) => <h1 className="text-lg font-bold mb-2">{children}</h1>,
+          h2: ({ children }) => <h2 className="text-base font-bold mb-2">{children}</h2>,
+          h3: ({ children }) => <h3 className="text-sm font-bold mb-1">{children}</h3>,
+          ul: ({ children }) => <ul className="list-disc list-inside mb-2 space-y-1">{children}</ul>,
+          ol: ({ children }) => <ol className="list-decimal list-inside mb-2 space-y-1">{children}</ol>,
+          li: ({ children }) => <li className="ml-2">{children}</li>,
+          code: ({ className, children, ...props }) => {
+            const isInline = !className;
+            return isInline ? (
+              <code className="bg-surface-1 px-1 py-0.5 rounded text-brand-400 text-xs" {...props}>
+                {children}
+              </code>
+            ) : (
+              <code className="block bg-surface-1 p-2 rounded text-xs overflow-x-auto my-2" {...props}>
+                {children}
+              </code>
+            );
+          },
+          pre: ({ children }) => <pre className="bg-surface-1 rounded overflow-x-auto">{children}</pre>,
+          strong: ({ children }) => <strong className="font-bold text-zinc-100">{children}</strong>,
+          em: ({ children }) => <em className="italic">{children}</em>,
+          a: ({ href, children }) => (
+            <a href={href} target="_blank" rel="noopener noreferrer" className="text-brand-400 hover:underline">
+              {children}
+            </a>
+          ),
+          blockquote: ({ children }) => (
+            <blockquote className="border-l-2 border-brand-500 pl-3 my-2 text-zinc-400 italic">
+              {children}
+            </blockquote>
+          ),
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    );
   };
 
   return (
@@ -483,8 +735,8 @@ function MessageBubble({
             </div>
           ) : (
             <>
-              <div className="whitespace-pre-wrap text-sm">
-                {renderContent(message.content)}
+              <div className="text-sm">
+                {isUser ? renderUserContent(message.content) : renderAiContent(message.content)}
               </div>
               {message.is_edited && (
                 <span className="text-xs opacity-50 ml-1">(已编辑)</span>

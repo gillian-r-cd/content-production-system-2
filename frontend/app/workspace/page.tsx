@@ -124,7 +124,7 @@ export default function WorkspacePage() {
     const response = await agentAPI.chat(
       currentProject.id,
       message,
-      currentProject.current_phase
+      { currentPhase: currentProject.current_phase }
     );
 
     // 完整更新项目状态（phase_status + current_phase）

@@ -17,6 +17,8 @@ LangGraph Agent 核心编排器
 from typing import TypedDict, Literal, Optional, Any, Annotated, List, Dict, Tuple
 from dataclasses import dataclass, field
 import operator
+import re
+import json
 
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
@@ -30,6 +32,48 @@ from core.tools.architecture_reader import (
     format_architecture_for_llm,
     get_field_content,
 )
+import json as json_module  # 避免与局部变量冲突
+
+
+# ============== 辅助函数 ==============
+
+def normalize_intent(raw_intent) -> str:
+    """
+    将项目意图规范化为字符串格式
+    
+    意图可能是：
+    - 字典 {"做什么": "...", "给谁看": "...", "核心价值": "..."}
+    - 字符串
+    - None 或空值
+    
+    返回：格式化的字符串
+    """
+    if not raw_intent:
+        return ""
+    
+    if isinstance(raw_intent, dict):
+        # 转换为结构化的 JSON 字符串
+        return json_module.dumps(raw_intent, ensure_ascii=False, indent=2)
+    
+    return str(raw_intent)
+
+
+def normalize_consumer_personas(raw_personas) -> str:
+    """
+    将消费者画像规范化为字符串格式
+    
+    可能是：
+    - JSON 字符串
+    - 字典对象
+    - None
+    """
+    if not raw_personas:
+        return ""
+    
+    if isinstance(raw_personas, dict):
+        return json_module.dumps(raw_personas, ensure_ascii=False, indent=2)
+    
+    return str(raw_personas)
 
 
 # ============== 状态定义 ==============
@@ -113,6 +157,10 @@ class ContentProductionState(TypedDict):
     
     # 修改操作的目标字段（用于保存修改后的内容）
     modify_target_field: Optional[str]
+    
+    # ===== 多意图支持（新增）=====
+    # 待处理的意图队列
+    pending_intents: List[dict]
 
 
 # ============== 意图路由 ==============
@@ -177,23 +225,44 @@ async def route_intent(state: ContentProductionState) -> ContentProductionState:
         
         # 默认有 @ 引用但意图不明确 → 使用 LLM 判断
     
-    # ===== 规则 2: 阶段推进触发词 =====
-    advance_triggers = ["继续", "下一步", "进入下一阶段", "确认", "好的", "可以", "开始下一"]
-    if any(t in user_input for t in advance_triggers) and current_phase_status == "completed":
-        return {**state, "route_target": "advance_phase", "parsed_intent_type": "advance_phase"}
+    # ===== 规则 2 & 3: 已移除硬编码触发词 =====
+    # 现在完全依靠 LLM 理解用户意图（规则5）
+    # 这样可以正确处理：
+    # - "进入外延设计阶段" → advance_phase (而不是 tool_architecture)
+    # - "在内涵生产部分补充字段" → tool_architecture
+    # 硬编码的问题是无法区分这两种情况
     
-    # ===== 规则 3: 阶段开始触发词 + 阶段未完成 =====
-    start_triggers = ["开始", "开始吧", "start", "go", "执行"]
-    is_start_trigger = any(t in user_input.lower() for t in start_triggers)
-    
-    if is_start_trigger and current_phase_status != "completed":
-        return {**state, "route_target": "phase_current", "parsed_intent_type": "phase_action"}
-    
-    # ===== 规则 4: 意图分析阶段的问答流程 =====
-    # 只有当项目包含 intent 阶段时才进入意图分析流程
+    # ===== 规则 4: 意图分析阶段的问答流程（重构：智能判断）=====
+    # 关键改进：不再强制锁定，而是智能判断用户是否在回答意图问题
     phase_order = state.get("phase_order", PROJECT_PHASES)
     if "intent" in phase_order and current_phase == "intent" and current_phase_status != "completed":
-        return {**state, "route_target": "phase_current", "parsed_intent_type": "phase_action"}
+        chat_history = state.get("messages", [])
+        
+        # 检查是否有待回答的意图分析问题
+        has_pending_question = False
+        for m in reversed(chat_history[-10:]):  # 只检查最近10条
+            if isinstance(m, AIMessage):
+                content = m.content if hasattr(m, 'content') else str(m)
+                if "【问题" in content and "/3】" in content:
+                    has_pending_question = True
+                    break
+                # 如果遇到已完成的分析，停止检查
+                if "✅ 已生成" in content or ('"做什么"' in content and '"给谁看"' in content):
+                    break
+        
+        # 判断用户输入是否是"问问题"（而非"回答问题"）
+        # 问问题的特征：以"？"结尾、包含疑问词、询问 agent 能力等
+        question_indicators = ["？", "?", "什么", "怎么", "如何", "能不能", "可以吗", "是不是", "吗？", "呢？", "能做", "有什么", "你是"]
+        is_asking_question = any(qi in user_input for qi in question_indicators)
+        
+        # 只有在有待回答的问题 且 用户不是在问其他问题时，才进入意图分析流程
+        if has_pending_question and not is_asking_question:
+            print(f"[route_intent] 规则4命中: 用户回答意图问题")
+            return {**state, "route_target": "phase_current", "parsed_intent_type": "phase_action"}
+        
+        # 如果用户是在问问题（比如问 agent 能做什么），则进入 LLM 判断
+        if is_asking_question:
+            print(f"[route_intent] 规则4跳过: 用户在问问题，交给 LLM 判断")
     
     # ===== 规则 5: LLM 智能意图分类（带架构感知和工具选择）=====
     # 获取项目架构信息
@@ -230,12 +299,18 @@ async def route_intent(state: ContentProductionState) -> ContentProductionState:
 ## 工具清单（优先考虑）
 
 ### tool_architecture - 项目结构操作
-当用户提到这些概念时选择：加字段、删字段、加阶段、删阶段、移动、拆分、合并、调整结构、新增模块
+当用户提到这些概念时选择：加字段、添加字段、补充字段、新增字段、删字段、加阶段、删阶段、移动、拆分、合并、调整结构、新增模块
 例如：
 - "帮我加一个新字段" → tool_architecture
 - "把这个阶段删掉" → tool_architecture  
 - "我想拆分一下内涵设计" → tool_architecture
 - "在内容里加一个关键洞察" → tool_architecture
+- "在内涵生产部分补充字段" → tool_architecture
+- "给内涵设计添加一个字段" → tool_architecture
+
+**重要：区分"添加字段"和"修改字段内容"**
+- "在XX阶段加/添加/补充一个字段" → tool_architecture（创建新字段）
+- "修改XX字段的内容" → modify（修改已有字段的内容，需要@引用）
 
 ### tool_outline - 内容规划
 当用户想规划内容结构时选择：设计大纲、内容框架、怎么组织、课程结构、文章架构
@@ -244,10 +319,12 @@ async def route_intent(state: ContentProductionState) -> ContentProductionState:
 - "这个内容怎么组织比较好" → tool_outline
 
 ### tool_persona - 人物管理
-当用户想管理用户画像时选择：生成人物、创建用户、查看人物、选中、取消选中
+当用户想管理用户画像/角色时选择：生成人物、创建用户、查看人物、选中、取消选中、补充角色、添加用户、新增人物
 例如：
 - "再生成一个程序员用户" → tool_persona
 - "看看有哪些人物" → tool_persona
+- "补充一个角色，22岁应届毕业生" → tool_persona
+- "添加一个新用户画像" → tool_persona
 
 ### tool_skill - 技能使用
 当用户想用特定风格/技能时选择：用专业方式、用故事化方式、简化内容、批判分析、有什么技能
@@ -255,17 +332,65 @@ async def route_intent(state: ContentProductionState) -> ContentProductionState:
 - "用专业的方式帮我写" → tool_skill
 - "有什么技能可以用" → tool_skill
 
+## 阶段流转意图（非常重要！优先判断）
+
+### advance_phase - 进入下一阶段或指定阶段
+当用户想推进项目进度、进入某个阶段时选择。
+例如：
+- "进入下一阶段" → advance_phase
+- "继续" / "下一步" → advance_phase
+- "开始外延设计" / "进入外延设计阶段" → advance_phase (target: "design_outer")
+- "开始消费者调研" → advance_phase (target: "research")
+- "可以了，进入下一步" → advance_phase
+
+**关键区分**：
+- "进入XX阶段" → advance_phase（推进流程）
+- "在XX阶段添加字段" → tool_architecture（修改结构）
+
+### phase_action - 执行当前阶段
+当用户想在当前阶段执行操作时选择。
+例如：
+- "开始" / "开始吧" / "执行" → phase_action
+- "开始生成" → phase_action
+
 ## 其他意图类型
 - modify: 修改已有字段内容（配合@引用）
-- query: 查询信息（是什么、有哪些阶段）
+- query: 查询信息（有哪些阶段、当前进度等）
 - generate: 生成字段内容
-- advance_phase: 进入下一阶段
-- phase_action: 开始当前阶段
 - research/simulate/evaluate: 执行对应阶段
-- chat: **仅当上述都不匹配时**
+- **chat**: 当用户在闲聊、询问 agent 能力、问通用问题时选择
+
+## chat 意图示例（重要！这些必须路由到 chat）
+- "你能做什么？" → chat
+- "你是谁？" → chat
+- "帮我解释一下这个系统" → chat
+- "作为 agent 你有什么能力？" → chat
+- "hello" / "你好" → chat
+- 任何询问性的问题（不涉及具体操作）→ chat
+
+## 复合意图处理（非常重要！）
+用户的一句话可能包含多个意图，你必须**全部识别**并按**正确的执行顺序**排列。
+
+例如：
+- "清空外延设计的所有字段，重新开展外延设计" → 两个意图：
+  1. tool_architecture（删除 design_outer 的字段）
+  2. advance_phase（重新开始 design_outer）
+- "删掉这个字段，然后帮我生成一个新的" → 两个意图：
+  1. tool_architecture（删除字段）
+  2. generate（生成内容）
+- "先调研一下，再生成内容" → 两个意图：
+  1. research
+  2. generate
 
 ## 输出格式（JSON）
-{{"intent": "意图类型", "target": "目标对象", "operation": "操作描述"}}
+如果只有一个意图：
+{{"intents": [{{"type": "意图类型", "target": "目标对象", "operation": "操作描述"}}]}}
+
+如果有多个意图，按执行顺序排列：
+{{"intents": [
+  {{"type": "第一个意图", "target": "目标1", "operation": "描述1"}},
+  {{"type": "第二个意图", "target": "目标2", "operation": "描述2"}}
+]}}
 
 只输出JSON。"""
         ),
@@ -274,8 +399,9 @@ async def route_intent(state: ContentProductionState) -> ContentProductionState:
     
     response = await ai_client.async_chat(messages, temperature=0.3)
     
-    # 解析 JSON 响应
+    # 解析 JSON 响应 - 支持多意图列表
     import json
+    intents_list = []
     try:
         content = response.content.strip()
         if content.startswith("```"):
@@ -283,16 +409,33 @@ async def route_intent(state: ContentProductionState) -> ContentProductionState:
             if content.startswith("json"):
                 content = content[4:]
         result = json.loads(content)
-        intent = result.get("intent", "chat")
-        target = result.get("target", "")
-        operation = result.get("operation", user_input)
-        print(f"[route_intent] LLM分类结果: intent={intent}, target={target}")
+        
+        # 新格式：intents 列表
+        if "intents" in result and isinstance(result["intents"], list):
+            intents_list = result["intents"]
+            print(f"[route_intent] LLM返回 {len(intents_list)} 个意图")
+        # 兼容旧格式：单个意图
+        elif "intent" in result:
+            intents_list = [{
+                "type": result.get("intent", "chat"),
+                "target": result.get("target", ""),
+                "operation": result.get("operation", user_input)
+            }]
+        else:
+            intents_list = [{"type": "chat", "target": "", "operation": user_input}]
+            
     except Exception as e:
-        # 解析失败，尝试直接匹配意图
         print(f"[route_intent] JSON解析失败: {e}, 原始响应: {response.content[:200]}")
-        intent = response.content.strip().lower()
-        target = ""
-        operation = user_input
+        intents_list = [{"type": "chat", "target": "", "operation": user_input}]
+    
+    # 取第一个意图作为当前意图，其余放入 pending_intents
+    current_intent = intents_list[0] if intents_list else {"type": "chat", "target": "", "operation": user_input}
+    pending_intents = intents_list[1:] if len(intents_list) > 1 else []
+    
+    intent = current_intent.get("type", "chat")
+    target = current_intent.get("target", "")
+    operation = current_intent.get("operation", user_input)
+    print(f"[route_intent] 当前意图: {intent}, target={target}, 待处理意图: {len(pending_intents)} 个")
     
     # 标准化意图（支持简写映射）
     intent_mapping = {
@@ -333,12 +476,23 @@ async def route_intent(state: ContentProductionState) -> ContentProductionState:
     if intent in ["modify", "query"] and references and not target_field:
         target_field = references[0]
     
+    # 标准化 pending_intents 中的意图类型
+    normalized_pending = []
+    for pi in pending_intents:
+        pi_type = intent_mapping.get(pi.get("type", "chat"), "chat")
+        normalized_pending.append({
+            "type": pi_type,
+            "target": pi.get("target", ""),
+            "operation": pi.get("operation", "")
+        })
+    
     return {
         **state, 
         "route_target": route_target,
         "parsed_intent_type": intent,
         "parsed_target_field": target_field,
         "parsed_operation": operation,
+        "pending_intents": normalized_pending,  # 新增：待处理的意图列表
     }
 
 
@@ -596,7 +750,13 @@ async def research_node(state: ContentProductionState) -> ContentProductionState
     use_deep = state.get("use_deep_research", True)
     
     query = "消费者调研"
-    intent = gc.get("intent", state.get("user_input", ""))
+    
+    # 使用辅助函数规范化意图
+    intent = normalize_intent(gc.get("intent"))
+    if not intent:
+        # fallback：使用用户输入（这不应该发生，意图分析应该先完成）
+        intent = state.get("user_input", "")
+        print(f"[research_node] 警告：未找到项目意图，使用用户输入: {intent[:50]}...")
     
     import json
     import uuid
@@ -742,13 +902,24 @@ async def design_inner_node(state: ContentProductionState) -> ContentProductionS
     
     gc = state.get("golden_context", {})
     
+    # Golden Context 只包含创作者特质
+    # intent 和 consumer_personas 通过 field_context 传递（作为依赖内容）
+    intent_str = normalize_intent(gc.get("intent"))
+    personas_str = normalize_consumer_personas(gc.get("consumer_personas"))
+    
+    # 构建依赖内容（作为参考内容注入，而非全局上下文）
+    field_context = ""
+    if intent_str:
+        field_context += f"## 项目意图\n{intent_str}\n\n"
+    if personas_str:
+        field_context += f"## 目标用户画像\n{personas_str}\n\n"
+    
     context = PromptContext(
         golden_context=GoldenContext(
             creator_profile=gc.get("creator_profile", ""),
-            intent=gc.get("intent", ""),
-            consumer_personas=gc.get("consumer_personas", ""),
         ),
         phase_context=prompt_engine.PHASE_PROMPTS["design_inner"],
+        field_context=field_context.strip(),  # 依赖内容作为参考
     )
     
     system_prompt = context.to_system_prompt()
@@ -821,13 +992,24 @@ async def produce_inner_node(state: ContentProductionState) -> ContentProduction
     gc = state.get("golden_context", {})
     user_input = state.get("user_input", "请生产内涵内容。")
     
+    # Golden Context 只包含创作者特质
+    # produce_inner 阶段的 intent/consumer_personas 应通过字段依赖传递
+    # 这里为向后兼容仍注入，但前端应配置字段依赖
+    intent_str = normalize_intent(gc.get("intent"))
+    personas_str = normalize_consumer_personas(gc.get("consumer_personas"))
+    
+    field_context = ""
+    if intent_str:
+        field_context += f"## 项目意图\n{intent_str}\n\n"
+    if personas_str:
+        field_context += f"## 目标用户画像\n{personas_str}\n\n"
+    
     context = PromptContext(
         golden_context=GoldenContext(
             creator_profile=gc.get("creator_profile", ""),
-            intent=gc.get("intent", ""),
-            consumer_personas=gc.get("consumer_personas", ""),
         ),
         phase_context=prompt_engine.PHASE_PROMPTS["produce_inner"],
+        field_context=field_context.strip(),
     )
     
     system_prompt = context.to_system_prompt()
@@ -863,46 +1045,102 @@ async def produce_inner_node(state: ContentProductionState) -> ContentProduction
 
 
 async def design_outer_node(state: ContentProductionState) -> ContentProductionState:
-    """外延设计节点"""
+    """
+    外延设计节点
+    
+    类似内涵设计，生成多个渠道方案供用户选择。
+    每个渠道是一个独立的字段，用户可以选择/增删渠道。
+    """
     gc = state.get("golden_context", {})
-    user_input = "请设计外延传播方案。"
     
-    context = PromptContext(
-        golden_context=GoldenContext(
-            creator_profile=gc.get("creator_profile", ""),
-            intent=gc.get("intent", ""),
-            consumer_personas=gc.get("consumer_personas", ""),
-        ),
-        phase_context=prompt_engine.PHASE_PROMPTS["design_outer"],
-    )
+    intent_str = normalize_intent(gc.get("intent"))
+    personas_str = normalize_consumer_personas(gc.get("consumer_personas"))
     
-    system_prompt = context.to_system_prompt()
+    field_context = ""
+    if intent_str:
+        field_context += f"## 项目意图\n{intent_str}\n\n"
+    if personas_str:
+        field_context += f"## 目标用户画像\n{personas_str}\n\n"
     
+    # 外延设计的系统提示词
+    system_prompt = f"""你是一个专业的内容传播策略师。
+
+{gc.get("creator_profile", "")}
+
+{field_context}
+
+你的任务是为这个内容项目推荐适合的传播渠道。"""
+
+    # 用户提示词：生成渠道方案
+    user_prompt = """请推荐5-8个适合的传播渠道，每个渠道包含：
+1. 渠道名称（如：小红书、抖音、公众号、知乎、B站等）
+2. 适合原因（1-2句话，为什么这个项目适合这个渠道）
+3. 内容形式建议（该渠道适合的内容形式，如：短视频、图文、长文等）
+
+请输出严格的JSON格式（不要添加```json标记）：
+{
+    "channels": [
+        {
+            "id": "channel_1",
+            "name": "渠道名称",
+            "reason": "为什么适合（1-2句话）",
+            "content_form": "建议的内容形式",
+            "priority": "high/medium/low"
+        }
+    ],
+    "summary": "一句话概括传播策略方向"
+}"""
+
     messages = [
         ChatMessage(role="system", content=system_prompt),
-        ChatMessage(role="user", content=user_input),
+        ChatMessage(role="user", content=user_prompt),
     ]
     
     response = await ai_client.async_chat(messages, temperature=0.7)
+    raw_output = response.content
     
-    confirm_text = "✅ 已生成【外延设计】，请在左侧工作台查看。输入「继续」进入外延生产阶段。"
-    full_prompt = f"[System]\n{system_prompt}\n\n[User]\n{user_input}"
+    # 解析JSON
+    json_content = raw_output
+    json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', raw_output)
+    if json_match:
+        json_content = json_match.group(1)
+    
+    try:
+        channels_data = json.loads(json_content)
+    except json.JSONDecodeError:
+        channels_data = {
+            "channels": [],
+            "error": "AI输出格式错误，请重试"
+        }
+    
+    # 存储结构化JSON
+    output_content = json.dumps(channels_data, ensure_ascii=False, indent=2)
+    
+    # 构建简洁的展示文本
+    display_text = "✅ 已生成渠道方案，请在左侧工作台查看并选择要使用的渠道。\n\n"
+    if "channels" in channels_data and channels_data["channels"]:
+        for ch in channels_data["channels"][:8]:
+            priority_icon = "🔴" if ch.get("priority") == "high" else "🟡" if ch.get("priority") == "medium" else "⚪"
+            display_text += f"{priority_icon} **{ch.get('name', '未命名')}**：{ch.get('reason', '')[:50]}\n"
+    if channels_data.get("summary"):
+        display_text += f"\n📌 {channels_data['summary']}"
+    
+    full_prompt = f"[System]\n{system_prompt}\n\n[User]\n{user_prompt}"
     
     return {
         **state,
-        "agent_output": response.content,
-        "display_output": confirm_text,
-        "full_prompt": full_prompt,
-        "messages": [AIMessage(content=confirm_text)],
-        # 注意：不自动设置 completed，需要用户确认
+        "agent_output": output_content,  # JSON格式，存入字段
+        "display_output": display_text,   # 简洁展示
+        "messages": [AIMessage(content=display_text)],
         "phase_status": {**state.get("phase_status", {}), "design_outer": "in_progress"},
         "current_phase": "design_outer",
         "is_producing": True,
-        "waiting_for_human": True,
+        "waiting_for_human": True,  # 需要用户选择渠道
         "tokens_in": response.tokens_in,
         "tokens_out": response.tokens_out,
         "duration_ms": response.duration_ms,
         "cost": response.cost,
+        "full_prompt": full_prompt,
     }
 
 
@@ -911,13 +1149,21 @@ async def produce_outer_node(state: ContentProductionState) -> ContentProduction
     gc = state.get("golden_context", {})
     user_input = state.get("user_input", "请生产外延内容。")
     
+    intent_str = normalize_intent(gc.get("intent"))
+    personas_str = normalize_consumer_personas(gc.get("consumer_personas"))
+    
+    field_context = ""
+    if intent_str:
+        field_context += f"## 项目意图\n{intent_str}\n\n"
+    if personas_str:
+        field_context += f"## 目标用户画像\n{personas_str}\n\n"
+    
     context = PromptContext(
         golden_context=GoldenContext(
             creator_profile=gc.get("creator_profile", ""),
-            intent=gc.get("intent", ""),
-            consumer_personas=gc.get("consumer_personas", ""),
         ),
         phase_context=prompt_engine.PHASE_PROMPTS["produce_outer"],
+        field_context=field_context.strip(),
     )
     
     system_prompt = context.to_system_prompt()
@@ -955,13 +1201,21 @@ async def simulate_node(state: ContentProductionState) -> ContentProductionState
     gc = state.get("golden_context", {})
     user_input = "请模拟用户体验并给出反馈。"
     
+    intent_str = normalize_intent(gc.get("intent"))
+    personas_str = normalize_consumer_personas(gc.get("consumer_personas"))
+    
+    field_context = ""
+    if intent_str:
+        field_context += f"## 项目意图\n{intent_str}\n\n"
+    if personas_str:
+        field_context += f"## 目标用户画像\n{personas_str}\n\n"
+    
     context = PromptContext(
         golden_context=GoldenContext(
             creator_profile=gc.get("creator_profile", ""),
-            intent=gc.get("intent", ""),
-            consumer_personas=gc.get("consumer_personas", ""),
         ),
         phase_context=prompt_engine.PHASE_PROMPTS["simulate"],
+        field_context=field_context.strip(),
     )
     
     system_prompt = context.to_system_prompt()
@@ -999,13 +1253,21 @@ async def evaluate_node(state: ContentProductionState) -> ContentProductionState
     gc = state.get("golden_context", {})
     user_input = "请对项目进行全面评估。"
     
+    intent_str = normalize_intent(gc.get("intent"))
+    personas_str = normalize_consumer_personas(gc.get("consumer_personas"))
+    
+    field_context = ""
+    if intent_str:
+        field_context += f"## 项目意图\n{intent_str}\n\n"
+    if personas_str:
+        field_context += f"## 目标用户画像\n{personas_str}\n\n"
+    
     context = PromptContext(
         golden_context=GoldenContext(
             creator_profile=gc.get("creator_profile", ""),
-            intent=gc.get("intent", ""),
-            consumer_personas=gc.get("consumer_personas", ""),
         ),
         phase_context=prompt_engine.PHASE_PROMPTS["evaluate"],
+        field_context=field_context.strip(),
     )
     
     system_prompt = context.to_system_prompt()
@@ -1053,13 +1315,26 @@ async def modify_node(state: ContentProductionState) -> ContentProductionState:
     
     # 获取目标字段的原始内容
     original_content = referenced_contents.get(target_field, "")
+    user_input = state.get("user_input", "")
     
     if not original_content:
+        # 即使失败也要记录完整的调试信息
+        references = state.get("references", [])
+        debug_prompt = f"""[modify_node 失败调试信息]
+目标字段: {target_field}
+用户输入: {user_input}
+引用解析: {references}
+可用字段: {list(referenced_contents.keys())}
+
+解析操作: {operation}
+当前阶段: {state.get('current_phase', 'unknown')}
+"""
         return {
             **state,
-            "agent_output": f"未找到字段「{target_field}」的内容，无法修改。",
+            "agent_output": f"未找到字段「{target_field}」的内容，无法修改。\n\n可用字段: {list(referenced_contents.keys())}",
             "is_producing": False,
             "waiting_for_human": False,
+            "full_prompt": debug_prompt,  # 确保日志中能看到调试信息
         }
     
     # 构建修改提示词
@@ -1088,6 +1363,9 @@ async def modify_node(state: ContentProductionState) -> ContentProductionState:
     response = await ai_client.async_chat(messages, temperature=0.5)
     modified_content = response.content
     
+    # 构建完整 prompt 用于日志记录
+    full_prompt = f"[System]\n{system_prompt}\n\n[User]\n请修改「{target_field}」的内容"
+    
     # 返回修改后的内容（is_producing=True 会触发保存）
     return {
         **state,
@@ -1099,7 +1377,7 @@ async def modify_node(state: ContentProductionState) -> ContentProductionState:
         "tokens_out": response.tokens_out,
         "duration_ms": response.duration_ms,
         "cost": response.cost,
-        "full_prompt": system_prompt,
+        "full_prompt": full_prompt,
         # 特殊标记：这是修改操作，需要更新指定字段
         "modify_target_field": target_field,
     }
@@ -1176,6 +1454,9 @@ async def query_node(state: ContentProductionState) -> ContentProductionState:
     
     response = await ai_client.async_chat(messages, temperature=0.7)
     
+    # 构建完整 prompt 用于日志记录
+    full_prompt = f"[System]\n{system_prompt}\n\n[User]\n{operation}"
+    
     return {
         **state,
         "agent_output": response.content,
@@ -1185,7 +1466,7 @@ async def query_node(state: ContentProductionState) -> ContentProductionState:
         "tokens_out": response.tokens_out,
         "duration_ms": response.duration_ms,
         "cost": response.cost,
-        "full_prompt": system_prompt,
+        "full_prompt": full_prompt,
     }
 
 
@@ -1215,19 +1496,31 @@ async def chat_node(state: ContentProductionState) -> ContentProductionState:
 """
     
     # 构建对话上下文
-    system_prompt = f"""你是一个专业的内容策略顾问。当前正在进行内容生产项目。
+    current_phase = state.get('current_phase', 'intent')
+    system_prompt = f"""你是一个智能的内容生产 Agent。当前正在帮助用户进行内容生产项目。
 
-项目上下文:
-{gc.get('creator_profile', '')}
-{gc.get('intent', '')}
+## 我的能力
+1. **意图分析**: 通过 3 个问题帮你明确内容目标（做什么、给谁看、期望行动）
+2. **消费者调研**: 使用 DeepResearch 深度分析目标用户画像和痛点
+3. **内涵设计**: 规划内容的核心结构和字段
+4. **内涵生产**: 根据设计方案生成具体内容
+5. **外延设计/生产**: 产出营销和触达相关内容
+6. **消费者模拟**: 模拟用户与内容交互，获取反馈
+7. **评估**: 多维度评估内容质量
 
-当前阶段: {state.get('current_phase', 'intent')}{ref_context}
+## 可用工具
+- **架构操作**: 添加/删除/移动字段和阶段
+- **大纲生成**: 帮你规划内容结构
+- **人物管理**: 生成和管理用户画像
+- **技能应用**: 使用不同写作风格
 
-请帮助用户解答问题或提供建议。你可以：
-1. 回答关于项目的任何问题
-2. 根据引用的内容提供分析和建议
-3. 帮助用户规划下一步行动
-4. 解释当前进度和状态"""
+## 项目上下文
+{gc.get('creator_profile', '') or '（暂无创作者信息）'}
+{gc.get('intent', '') or '（暂无项目意图）'}
+
+当前阶段: {current_phase}{ref_context}
+
+请友好地回答用户的问题。如果用户询问你能做什么，请简洁介绍你的能力。"""
     
     messages = [ChatMessage(role="system", content=system_prompt)]
     
@@ -1239,15 +1532,23 @@ async def chat_node(state: ContentProductionState) -> ContentProductionState:
             messages.append(ChatMessage(role="assistant", content=msg.content))
     
     # 添加当前输入
-    messages.append(ChatMessage(role="user", content=state.get("user_input", "")))
+    user_input = state.get("user_input", "")
+    messages.append(ChatMessage(role="user", content=user_input))
     
     response = await ai_client.async_chat(messages, temperature=0.7)
+    
+    # 构建完整的 prompt 用于日志记录
+    full_prompt = f"[System]\n{system_prompt}\n\n"
+    for msg in messages[1:-1]:  # 跳过 system 和最后的 user
+        full_prompt += f"[{msg.role}]\n{msg.content}\n\n"
+    full_prompt += f"[User]\n{user_input}"
     
     return {
         **state,
         "agent_output": response.content,
         "messages": [AIMessage(content=response.content)],
         "is_producing": False,  # 对话模式不保存为字段
+        "full_prompt": full_prompt,  # 记录完整 prompt
         "tokens_in": response.tokens_in,
         "tokens_out": response.tokens_out,
         "duration_ms": response.duration_ms,
@@ -1325,13 +1626,23 @@ async def generate_field_node(state: ContentProductionState) -> ContentProductio
     }
     field_name = field_names.get(current_phase, "内容")
     
+    # Golden Context 只包含创作者特质
+    # intent/consumer_personas 作为参考内容传入
+    intent_str = normalize_intent(gc.get("intent"))
+    personas_str = normalize_consumer_personas(gc.get("consumer_personas"))
+    
+    field_context = ""
+    if intent_str:
+        field_context += f"## 项目意图\n{intent_str}\n\n"
+    if personas_str:
+        field_context += f"## 目标用户画像\n{personas_str}\n\n"
+    
     context = PromptContext(
         golden_context=GoldenContext(
             creator_profile=gc.get("creator_profile", ""),
-            intent=gc.get("intent", ""),
-            consumer_personas=gc.get("consumer_personas", ""),
         ),
         phase_context=prompt_engine.PHASE_PROMPTS.get(current_phase, ""),
+        field_context=field_context.strip(),
     )
     
     messages = [
@@ -1399,12 +1710,10 @@ async def update_field_node(state: ContentProductionState) -> ContentProductionS
     gc = state.get("golden_context", {})
     user_input = state.get("user_input", "")
     
-    # 让AI根据用户要求修改内容
+    # Golden Context 只包含创作者特质
     context = PromptContext(
         golden_context=GoldenContext(
             creator_profile=gc.get("creator_profile", ""),
-            intent=gc.get("intent", ""),
-            consumer_personas=gc.get("consumer_personas", ""),
         ),
     )
     
@@ -1448,6 +1757,7 @@ async def tool_node(state: ContentProductionState) -> ContentProductionState:
     operation = state.get("parsed_operation", user_input)
     
     output = ""
+    full_prompt = f"[Tool Node]\n工具类型: {intent_type}\n用户输入: {user_input}\n"
     
     try:
         if intent_type == "tool_architecture":
@@ -1464,16 +1774,21 @@ async def tool_node(state: ContentProductionState) -> ContentProductionState:
         
         else:
             output = f"未知工具类型: {intent_type}"
+        
+        full_prompt += f"\n工具输出:\n{output}"
             
     except Exception as e:
         import traceback
-        output = f"工具执行错误: {str(e)}\n\n```\n{traceback.format_exc()}\n```"
+        error_trace = traceback.format_exc()
+        output = f"工具执行错误: {str(e)}\n\n```\n{error_trace}\n```"
+        full_prompt += f"\n错误:\n{error_trace}"
     
     return {
         **state,
         "agent_output": output,
         "messages": [AIMessage(content=output)],
         "is_producing": False,
+        "full_prompt": full_prompt,  # 记录完整的工具调用信息
     }
 
 
@@ -1503,11 +1818,11 @@ async def _llm_handle_architecture(project_id: str, user_input: str, state: dict
 5. move_field: 移动字段 (参数: field_name, target_phase)
 6. update_field: 更新字段 (参数: field_name, updates)
 
-## 阶段代码映射
+## 阶段代码映射（重要！用户说中文名，你要转成代码）
 - intent = 意图分析
 - research = 消费者调研
 - design_inner = 内涵设计
-- produce_inner = 内涵生产
+- produce_inner = 内涵生产 / 生产内涵 / 内容生产
 - design_outer = 外延设计
 - produce_outer = 外延生产
 - simulate = 消费者模拟
@@ -1518,6 +1833,11 @@ async def _llm_handle_architecture(project_id: str, user_input: str, state: dict
 
 ## 输出格式（JSON）
 {{"action": "操作名", "params": {{参数对象}}}}
+
+## 解析规则
+1. 用户说"在XX阶段补充/添加字段"→ action="add_field", params.phase=阶段代码
+2. 如果用户没说具体字段名，根据上下文生成一个合理的字段名
+3. 如果实在无法推断字段名，使用"待命名字段"
 
 只输出 JSON，不要解释。如果无法解析，输出 {{"action": "unknown", "reason": "原因"}}"""
 
@@ -1538,8 +1858,14 @@ async def _llm_handle_architecture(project_id: str, user_input: str, state: dict
         result = json.loads(content)
         action = result.get("action", "unknown")
         params = result.get("params", {})
-    except:
-        return f"无法解析操作请求。请尝试更明确的描述，例如：\n- 在内涵生产阶段添加一个「核心论点」字段\n- 删除「意图分析」阶段"
+        print(f"[_llm_handle_architecture] 解析结果: action={action}, params={params}")
+    except Exception as parse_error:
+        debug_info = f"""[架构操作解析失败]
+用户输入: {user_input}
+LLM原始响应: {response.content[:500]}
+解析错误: {str(parse_error)}"""
+        print(debug_info)
+        return f"无法解析操作请求。请尝试更明确的描述，例如：\n- 在内涵生产阶段添加一个「核心论点」字段\n- 删除「意图分析」阶段\n\n（调试: LLM响应为 {response.content[:100]}...）"
     
     # 执行操作
     if action == "add_phase":
@@ -1556,13 +1882,20 @@ async def _llm_handle_architecture(project_id: str, user_input: str, state: dict
         return op_result.message
     
     elif action == "add_field":
+        phase = params.get("phase", "produce_inner")
+        name = params.get("name", "新字段")
+        ai_prompt = params.get("ai_prompt", "")
+        print(f"[add_field] phase={phase}, name={name}")
         op_result = add_field(
             project_id,
-            params.get("phase", "produce_inner"),
-            params.get("name", "新字段"),
-            params.get("ai_prompt", ""),
+            phase,
+            name,
+            ai_prompt,
         )
-        return op_result.message
+        if op_result.success:
+            return f"✅ {op_result.message}\n\n已在「{phase}」阶段添加字段「{name}」，请刷新页面查看。"
+        else:
+            return f"❌ {op_result.message}\n\n（尝试添加: phase={phase}, name={name}）"
     
     elif action == "remove_field":
         op_result = remove_field(project_id, params.get("field_name", ""))
@@ -1691,7 +2024,28 @@ async def _llm_handle_persona(project_id: str, user_input: str, state: dict) -> 
         op_result = await generate_persona(project_id, hint)
         if op_result.success and op_result.persona:
             p = op_result.persona
-            return f"## ✨ 已创建人物「{p.name}」\n\n**背景**: {p.background}\n\n**痛点**:\n" + "\n".join([f"- {pt}" for pt in p.pain_points])
+            # 使用 LLM 生成自然的回复
+            summary_prompt = f"""用一句话自然地告诉用户你完成了什么任务。
+
+用户请求: {user_input}
+完成结果: 成功创建了人物「{p.name}」，{p.basic_info.get('age', '')}岁，{p.basic_info.get('occupation', '')}
+
+要求：
+- 用友好、口语化的语气
+- 提到人物姓名和关键特征
+- 提醒用户可以在左侧工作台查看
+- 不要用模板化的格式，要自然
+
+只输出这一句话。"""
+            
+            summary_messages = [ChatMessage(role="user", content=summary_prompt)]
+            summary_response = await ai_client.async_chat(summary_messages, temperature=0.8)
+            natural_reply = summary_response.content.strip()
+            
+            # 附带详细信息
+            detail = f"\n\n---\n**{p.name}**\n- 背景: {p.background[:150]}...\n- 核心痛点: {', '.join(p.pain_points[:2])}"
+            
+            return natural_reply + detail
         return op_result.message
     
     elif action == "select":
@@ -1797,6 +2151,7 @@ def route_by_intent(state: ContentProductionState) -> str:
     target = state.get("route_target", "chat")
     phase_order = state.get("phase_order", PROJECT_PHASES)
     current_phase = state.get("current_phase", phase_order[0] if phase_order else "intent")
+    target_field = state.get("parsed_target_field", "")  # 可能包含目标阶段
     
     # 如果 current_phase 不在 phase_order 中，使用第一个阶段
     if current_phase not in phase_order and phase_order:
@@ -1806,11 +2161,31 @@ def route_by_intent(state: ContentProductionState) -> str:
         # 保持在当前阶段
         return f"phase_{current_phase}"
     elif target == "advance_phase":
-        # 推进到下一阶段
+        # 推进阶段：可能指定了目标阶段，也可能是下一阶段
+        # 先检查是否指定了具体阶段（如 "进入外延设计阶段"）
+        if target_field:
+            # 阶段名称映射
+            phase_name_map = {
+                "intent": "intent", "意图分析": "intent", "意图": "intent",
+                "research": "research", "消费者调研": "research", "调研": "research",
+                "design_inner": "design_inner", "内涵设计": "design_inner",
+                "produce_inner": "produce_inner", "内涵生产": "produce_inner",
+                "design_outer": "design_outer", "外延设计": "design_outer",
+                "produce_outer": "produce_outer", "外延生产": "produce_outer",
+                "simulate": "simulate", "消费者模拟": "simulate", "模拟": "simulate",
+                "evaluate": "evaluate", "评估": "evaluate",
+            }
+            target_phase = phase_name_map.get(target_field.lower().strip(), "")
+            if target_phase and target_phase in phase_order:
+                print(f"[route_by_intent] 跳转到指定阶段: {target_phase}")
+                return f"phase_{target_phase}"
+        
+        # 没有指定目标阶段，推进到下一阶段
         try:
             idx = phase_order.index(current_phase)
             if idx < len(phase_order) - 1:
                 next_phase = phase_order[idx + 1]
+                print(f"[route_by_intent] 推进到下一阶段: {next_phase}")
                 return f"phase_{next_phase}"
         except ValueError:
             pass
@@ -1839,6 +2214,12 @@ def route_by_intent(state: ContentProductionState) -> str:
 
 def route_after_phase(state: ContentProductionState) -> str:
     """阶段完成后的路由"""
+    # ===== 先检查是否有待处理的意图 =====
+    pending = state.get("pending_intents", [])
+    if pending:
+        print(f"[route_after_phase] 检测到 {len(pending)} 个待处理意图，继续执行")
+        return "continue_pending"
+    
     # ===== 核心检查：如果 is_producing=False（对话模式），结束本轮 =====
     # 意图分析等需要多轮对话的阶段，不会自动推进
     is_producing = state.get("is_producing", False)
@@ -1857,6 +2238,63 @@ def route_after_phase(state: ContentProductionState) -> str:
         if next_phase == "end":
             return END
         return f"phase_{next_phase}"
+
+
+def route_after_tool(state: ContentProductionState) -> str:
+    """
+    工具执行完成后的路由
+    
+    检查是否有待处理的意图（多意图顺序执行）
+    """
+    pending = state.get("pending_intents", [])
+    
+    if pending:
+        print(f"[route_after_tool] 检测到 {len(pending)} 个待处理意图，继续执行")
+        return "continue_pending"
+    else:
+        return END
+
+
+async def continue_pending_node(state: ContentProductionState) -> ContentProductionState:
+    """
+    处理待处理意图的节点
+    
+    从 pending_intents 中取出第一个，设置为当前意图，
+    然后重新路由
+    """
+    pending = state.get("pending_intents", [])
+    
+    if not pending:
+        return {**state, "route_target": "chat"}
+    
+    # 取出第一个待处理意图
+    next_intent = pending[0]
+    remaining = pending[1:]
+    
+    intent_type = next_intent.get("type", "chat")
+    target = next_intent.get("target", "")
+    operation = next_intent.get("operation", "")
+    
+    print(f"[continue_pending] 处理下一个意图: type={intent_type}, target={target}")
+    
+    # 确定路由目标
+    if intent_type.startswith("tool_"):
+        route_target = intent_type
+    elif intent_type == "phase_action":
+        route_target = "phase_current"
+    elif intent_type == "advance_phase":
+        route_target = "advance_phase"
+    else:
+        route_target = intent_type
+    
+    return {
+        **state,
+        "route_target": route_target,
+        "parsed_intent_type": intent_type,
+        "parsed_target_field": target,
+        "parsed_operation": operation,
+        "pending_intents": remaining,  # 更新剩余待处理意图
+    }
 
 
 # ============== 图构建 ==============
@@ -1899,6 +2337,9 @@ def create_content_production_graph():
     # 等待人工确认节点（实际上只是返回状态）
     graph.add_node("wait_human", lambda s: {**s, "waiting_for_human": True})
     
+    # 多意图处理节点（新增）
+    graph.add_node("continue_pending", continue_pending_node)
+    
     # 设置入口
     graph.set_entry_point("router")
     
@@ -1931,7 +2372,11 @@ def create_content_production_graph():
     )
     
     # 构建阶段路由映射（用于自主权判断）
-    phase_routing_map = {"wait_human": "wait_human", END: END}
+    phase_routing_map = {
+        "wait_human": "wait_human", 
+        "continue_pending": "continue_pending",  # 新增：多意图处理
+        END: END
+    }
     for p in PROJECT_PHASES:
         phase_routing_map[f"phase_{p}"] = f"phase_{p}"
     
@@ -1950,21 +2395,50 @@ def create_content_production_graph():
         phase_routing_map
     )
     
-    # 工具节点到结束（工具执行完直接返回结果）
-    graph.add_edge("generate_field", END)
-    graph.add_edge("read_field", END)
-    graph.add_edge("update_field", END)
-    graph.add_edge("tool", END)  # 统一工具节点
+    # 工具节点使用条件边（支持多意图顺序执行）
+    tool_routing_map = {"continue_pending": "continue_pending", END: END}
+    graph.add_conditional_edges("tool", route_after_tool, tool_routing_map)
+    graph.add_conditional_edges("generate_field", route_after_tool, tool_routing_map)
+    graph.add_conditional_edges("read_field", route_after_tool, tool_routing_map)
+    graph.add_conditional_edges("update_field", route_after_tool, tool_routing_map)
     
-    # @ 引用节点到结束
-    graph.add_edge("modify", END)
-    graph.add_edge("query", END)
+    # @ 引用节点使用条件边（支持多意图）
+    graph.add_conditional_edges("modify", route_after_tool, tool_routing_map)
+    graph.add_conditional_edges("query", route_after_tool, tool_routing_map)
     
-    # 从chat到结束
+    # 从chat到结束（chat 不触发后续意图）
     graph.add_edge("chat", END)
     
     # 从等待到结束（用户会在这里继续）
     graph.add_edge("wait_human", END)
+    
+    # continue_pending 节点 -> 重新路由到下一个意图
+    graph.add_conditional_edges(
+        "continue_pending",
+        route_by_intent,
+        {
+            # 阶段节点
+            "phase_intent": "phase_intent",
+            "phase_research": "phase_research",
+            "phase_design_inner": "phase_design_inner",
+            "phase_produce_inner": "phase_produce_inner",
+            "phase_design_outer": "phase_design_outer",
+            "phase_produce_outer": "phase_produce_outer",
+            "phase_simulate": "phase_simulate",
+            "phase_evaluate": "phase_evaluate",
+            # @ 引用节点
+            "modify": "modify",
+            "query": "query",
+            # 工具节点
+            "research": "research",
+            "generate_field": "generate_field",
+            "read_field": "read_field",
+            "update_field": "update_field",
+            "tool": "tool",
+            # 对话节点
+            "chat": "chat",
+        }
+    )
     
     # 编译
     memory = MemorySaver()
@@ -2023,14 +2497,19 @@ class ContentProductionAgent:
         # 使用传入的 phase_order，否则使用默认
         actual_phase_order = phase_order if phase_order else PROJECT_PHASES.copy()
         
-        # 构建消息历史
+        # 构建消息历史（兼容两种格式：字典 或 LangChain Message 对象）
         messages = []
         if chat_history:
             for msg in chat_history:
-                if msg.get("role") == "user":
-                    messages.append(HumanMessage(content=msg.get("content", "")))
-                elif msg.get("role") == "assistant":
-                    messages.append(AIMessage(content=msg.get("content", "")))
+                # 如果是 LangChain Message 对象
+                if isinstance(msg, (HumanMessage, AIMessage)):
+                    messages.append(msg)
+                # 如果是字典格式
+                elif isinstance(msg, dict):
+                    if msg.get("role") == "user":
+                        messages.append(HumanMessage(content=msg.get("content", "")))
+                    elif msg.get("role") == "assistant":
+                        messages.append(AIMessage(content=msg.get("content", "")))
         # 添加当前用户输入
         messages.append(HumanMessage(content=user_input))
         
@@ -2069,6 +2548,8 @@ class ContentProductionAgent:
             "parsed_operation": "",
             # 修改操作目标字段
             "modify_target_field": None,
+            # 多意图支持
+            "pending_intents": [],
         }
         
         config = {"configurable": {"thread_id": thread_id or project_id}}
@@ -2105,6 +2586,8 @@ class ContentProductionAgent:
             "use_deep_research": kwargs.get("use_deep_research", True),
             "is_producing": False,
             "error": None,
+            # 多意图支持
+            "pending_intents": [],
         }
         
         config = {"configurable": {"thread_id": kwargs.get("thread_id", project_id)}}

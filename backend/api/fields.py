@@ -318,14 +318,10 @@ async def generate_field_stream_api(
     db.commit()
     
     # 构建上下文
-    # 核心原则：produce_inner 阶段只通过依赖传递上下文
-    is_design_phase = field.phase in ["design_inner", "design_outer", "intent", "research"]
-    
+    # 核心原则：Golden Context 只包含创作者特质
+    # intent 和 consumer_personas 应该通过字段依赖传递
     gc = GoldenContext(
         creator_profile=project.golden_context.get("creator_profile", "") if project.golden_context else "",
-        intent=project.golden_context.get("intent", "") if project.golden_context else "",
-        consumer_personas=project.golden_context.get("consumer_personas", "") if project.golden_context else "",
-        include_all_context=is_design_phase,  # 只有设计阶段才注入全部上下文
     )
     
     depends_on = field.dependencies.get("depends_on", [])

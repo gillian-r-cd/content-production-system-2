@@ -93,7 +93,12 @@ async def run_reading_simulation(
         
         return SimulationResult(
             record_id="",
-            interaction_log={"input": content, "output": response.content},
+            interaction_log={
+                "input": content,
+                "system_prompt": system_prompt,
+                "user_instruction": eval_instruction,
+                "output": response.content,
+            },
             feedback=feedback,
             success=True,
         )
@@ -101,7 +106,11 @@ async def run_reading_simulation(
     except Exception as e:
         return SimulationResult(
             record_id="",
-            interaction_log={},
+            interaction_log={
+                "input": content,
+                "system_prompt": system_prompt,
+                "error": str(e),
+            },
             feedback=SimulationFeedback(),
             success=False,
             error=str(e),
@@ -113,134 +122,175 @@ async def run_dialogue_simulation(
     content: str,
     persona: dict,
     max_turns: int = 5,
+    content_field_names: list = None,  # 新增：内容字段名称列表
 ) -> SimulationResult:
     """
     运行对话式模拟
     
-    模拟一个消费者与内容/服务的多轮对话，然后评估对话质量。
+    模拟场景：一个真实用户（Persona）带着问题/困惑，与"内容"进行对话。
+    验证目标：内容能否回答用户的问题、解决用户的困惑、让用户感到有价值。
+    
+    核心设计：
+    1. 用户（Persona）：带着背景、需求、痛点来咨询
+    2. 内容代表：严格基于提供的内容回答，不能编造
+    3. 知识边界：如果内容中没有相关信息，要诚实说"这个问题在内容中没有涉及"
     
     Args:
         simulator: 模拟器配置
-        content: 初始内容/上下文（产品描述、服务介绍等）
+        content: 内容（选定字段的内容）
         persona: 用户画像
         max_turns: 最大对话轮数
+        content_field_names: 内容来源字段名称（用于显示）
     
     Returns:
         SimulationResult 包含完整对话历史和评估反馈
     """
-    prompt_template = simulator.prompt_template or Simulator.get_default_template("dialogue")
+    # === 角色名称 ===
+    user_name = persona.get('name', '用户')
+    content_name = "内容"
+    if content_field_names:
+        if len(content_field_names) == 1:
+            content_name = f"《{content_field_names[0]}》"
+        else:
+            content_name = f"《{content_field_names[0]}》等{len(content_field_names)}篇内容"
     
-    persona_text = f"""
-姓名: {persona.get('name', '匿名用户')}
+    persona_text = f"""姓名: {user_name}
 背景: {persona.get('background', '')}
-故事: {persona.get('story', '')}
-"""
+详细情况: {persona.get('story', '')}"""
     
-    # === 第一阶段：模拟消费者提问 ===
-    consumer_system = f"""你是一位真实的消费者，具有以下特征：
+    # === 模拟用户的系统提示词 ===
+    user_system = f"""你正在扮演一位真实用户进行模拟对话。
+
+【你的角色】
 {persona_text}
 
-你正在了解一个产品/服务。请基于你的背景和需求，自然地提出问题。
-每次只问一个问题，表达要简短自然，像真人一样。"""
+【你的目标】
+你有一些困惑和问题想要解决。你正在通过阅读/咨询{content_name}来寻找答案。
+请基于你的背景和真实需求，自然地提出问题。
 
-    # === 第二阶段：模拟服务方回复 ===
-    service_system = f"""你是这个产品/服务的AI助手。基于以下产品信息回复用户的问题：
+【行为要求】
+1. 每次只问一个问题，表达简短自然
+2. 问题要基于你的真实背景和痛点
+3. 如果对方的回答让你满意或困惑得到解决，可以表示感谢并结束
+4. 如果对方的回答不能解决你的问题，继续追问或换个角度问
+5. 如果觉得已经了解足够了，说"好的，我了解了，谢谢"结束对话"""
 
+    # === 内容代表的系统提示词（严格知识边界）===
+    content_system = f"""你是{content_name}的内容代表，负责回答用户基于这些内容的问题。
+
+【重要：知识边界约束】
+你只能基于以下内容来回答问题。这是你的全部知识，不能编造或推测内容以外的信息。
+
+=== 内容开始 ===
 {content}
+=== 内容结束 ===
 
-要求：
-1. 回答要基于产品信息，不要编造
-2. 语气友好专业
-3. 回答简洁明了"""
+【回答规则】
+1. **严格基于内容回答**：只能使用上述内容中明确提到的信息
+2. **诚实承认不足**：如果内容中没有涉及用户的问题，请诚实说"这个问题在当前内容中没有详细说明"
+3. **不要编造**：宁可说"不知道"也不要编造内容中没有的信息
+4. **引用内容**：尽量引用内容中的原话或核心观点
+5. **语气友好**：像一位了解这些内容的朋友在解答
+
+【回答示例】
+- 好的回答："根据内容中提到的，XXX可以通过YYY来解决..."
+- 好的回答："这个问题内容中提到了一个方法：..."
+- 诚实的回答："关于这个具体问题，当前内容没有直接给出答案，但提到了相关的XXX..."
+- 不好的回答：编造内容中没有的信息"""
 
     interaction_log = []
     
     try:
         for turn in range(max_turns):
-            # 消费者提问
-            consumer_messages = [
-                ChatMessage(role="system", content=consumer_system),
+            # === 用户提问 ===
+            user_messages = [
+                ChatMessage(role="system", content=user_system),
             ]
-            # 加入对话历史
+            # 加入对话历史（从用户视角）
             for log in interaction_log:
-                if log["role"] == "consumer":
-                    consumer_messages.append(ChatMessage(role="assistant", content=log["content"]))
+                if log["role"] == "user":
+                    user_messages.append(ChatMessage(role="assistant", content=log["content"]))
                 else:
-                    consumer_messages.append(ChatMessage(role="user", content=log["content"]))
+                    user_messages.append(ChatMessage(role="user", content=log["content"]))
             
             if turn == 0:
-                consumer_messages.append(ChatMessage(
+                user_messages.append(ChatMessage(
                     role="user", 
-                    content="请开始提出你的第一个问题。"
+                    content="请基于你的背景，提出你最想解决的第一个问题。"
                 ))
             else:
-                consumer_messages.append(ChatMessage(
+                user_messages.append(ChatMessage(
                     role="user",
-                    content="请基于之前的对话，继续提问或表达你的想法。如果觉得足够了解了，可以说'好的，我了解了'。"
+                    content="请基于之前的对话，继续你的咨询。你可以追问、换个问题、或者如果满意了就结束对话。"
                 ))
             
-            consumer_response = await ai_client.async_chat(consumer_messages, temperature=0.8)
-            consumer_msg = consumer_response.content
+            user_response = await ai_client.async_chat(user_messages, temperature=0.8)
+            user_msg = user_response.content
             
             interaction_log.append({
-                "role": "consumer",
-                "content": consumer_msg,
+                "role": "user",
+                "name": user_name,
+                "content": user_msg,
                 "turn": turn + 1,
             })
             
             # 检查是否结束
-            if any(end_signal in consumer_msg for end_signal in ["了解了", "明白了", "好的谢谢", "再见", "不需要了"]):
+            end_signals = ["了解了", "明白了", "好的谢谢", "谢谢", "再见", "不需要了", "足够了", "清楚了"]
+            if any(end_signal in user_msg for end_signal in end_signals):
                 break
             
-            # 服务方回复
-            service_messages = [
-                ChatMessage(role="system", content=service_system),
+            # === 内容代表回复 ===
+            content_messages = [
+                ChatMessage(role="system", content=content_system),
             ]
             for log in interaction_log:
-                if log["role"] == "consumer":
-                    service_messages.append(ChatMessage(role="user", content=log["content"]))
+                if log["role"] == "user":
+                    content_messages.append(ChatMessage(role="user", content=log["content"]))
                 else:
-                    service_messages.append(ChatMessage(role="assistant", content=log["content"]))
+                    content_messages.append(ChatMessage(role="assistant", content=log["content"]))
             
-            service_response = await ai_client.async_chat(service_messages, temperature=0.7)
-            service_msg = service_response.content
+            content_response = await ai_client.async_chat(content_messages, temperature=0.5)
+            content_msg = content_response.content
             
             interaction_log.append({
-                "role": "service",
-                "content": service_msg,
+                "role": "content",
+                "name": content_name,
+                "content": content_msg,
                 "turn": turn + 1,
             })
         
-        # === 第三阶段：生成评估反馈 ===
+        # === 评估阶段 ===
         dialogue_transcript = "\n".join([
-            f"{'[消费者]' if log['role'] == 'consumer' else '[服务方]'}: {log['content']}"
+            f"[{log.get('name', log['role'])}]: {log['content']}"
             for log in interaction_log
         ])
         
-        dimensions = simulator.evaluation_dimensions or ["响应相关性", "问题解决率", "交互体验"]
+        dimensions = simulator.evaluation_dimensions or ["问题解决度", "内容价值感", "信息完整性"]
         
-        eval_system = f"""你是{persona.get('name', '这位消费者')}，刚刚与一个产品/服务进行了对话。
+        eval_system = f"""你是{user_name}，刚刚与{content_name}进行了一次咨询对话。
 
 你的背景：
 {persona_text}
 
-请基于你的真实感受评估这次对话体验。"""
+请以你的真实身份，评估这次对话中**内容**对你的帮助程度。
+注意：评估的是**内容本身的价值**，不是AI的回答技巧。"""
 
         eval_instruction = f"""以下是对话记录：
 
 {dialogue_transcript}
 
-请以这位消费者的身份，评估这次对话体验：
+请评估：这些内容是否解决了你的问题？对你有多大价值？
 
 以JSON格式输出：
 {{
     "scores": {{{", ".join([f'"{d}": 分数(1-10)' for d in dimensions])}}},
     "comments": {{{", ".join([f'"{d}": "具体评语"' for d in dimensions])}}},
-    "questions_answered": ["被解答的问题1", "..."],
-    "questions_unanswered": ["未解答的问题1", "..."],
-    "friction_points": ["交互中的摩擦点1", "..."],
-    "would_continue": true/false,
-    "overall": "总体评价（100字以内）"
+    "problems_solved": ["被解决的问题/困惑1", "..."],
+    "problems_unsolved": ["未被解决的问题/困惑1", "..."],
+    "content_gaps": ["内容缺失的部分1", "..."],
+    "valuable_points": ["内容中最有价值的点1", "..."],
+    "would_recommend": true/false,
+    "overall": "总体评价：这些内容对你的帮助程度（100字以内）"
 }}"""
 
         eval_messages = [
@@ -257,17 +307,27 @@ async def run_dialogue_simulation(
             scores=feedback_data.get("scores", {}),
             comments={
                 **feedback_data.get("comments", {}),
-                "questions_answered": ", ".join(feedback_data.get("questions_answered", [])),
-                "questions_unanswered": ", ".join(feedback_data.get("questions_unanswered", [])),
-                "friction_points": ", ".join(feedback_data.get("friction_points", [])),
-                "would_continue": str(feedback_data.get("would_continue", "unknown")),
+                "problems_solved": ", ".join(feedback_data.get("problems_solved", [])),
+                "problems_unsolved": ", ".join(feedback_data.get("problems_unsolved", [])),
+                "content_gaps": ", ".join(feedback_data.get("content_gaps", [])),
+                "valuable_points": ", ".join(feedback_data.get("valuable_points", [])),
+                "would_recommend": str(feedback_data.get("would_recommend", "unknown")),
             },
             overall=feedback_data.get("overall", ""),
         )
         
         return SimulationResult(
             record_id="",
-            interaction_log=interaction_log,
+            interaction_log={
+                "type": "dialogue",
+                "user_name": user_name,
+                "content_name": content_name,
+                "user_system_prompt": user_system,
+                "content_system_prompt": content_system,
+                "eval_system_prompt": eval_system,
+                "dialogue": interaction_log,
+                "eval_output": eval_response.content,
+            },
             feedback=feedback,
             success=True,
         )
@@ -275,7 +335,15 @@ async def run_dialogue_simulation(
     except Exception as e:
         return SimulationResult(
             record_id="",
-            interaction_log=interaction_log,
+            interaction_log={
+                "type": "dialogue",
+                "user_name": user_name,
+                "content_name": content_name,
+                "user_system_prompt": user_system,
+                "content_system_prompt": content_system,
+                "dialogue": interaction_log,
+                "error": str(e),
+            },
             feedback=SimulationFeedback(),
             success=False,
             error=str(e),
@@ -347,7 +415,14 @@ async def run_decision_simulation(
         
         return SimulationResult(
             record_id="",
-            interaction_log=feedback_data,
+            interaction_log={
+                "type": "decision",
+                "input": content,
+                "system_prompt": system_prompt,
+                "user_instruction": eval_instruction,
+                "output": response.content,
+                "decision_details": feedback_data,
+            },
             feedback=feedback,
             success=True,
         )
@@ -355,7 +430,12 @@ async def run_decision_simulation(
     except Exception as e:
         return SimulationResult(
             record_id="",
-            interaction_log={},
+            interaction_log={
+                "type": "decision",
+                "input": content,
+                "system_prompt": system_prompt,
+                "error": str(e),
+            },
             feedback=SimulationFeedback(),
             success=False,
             error=str(e),
@@ -449,6 +529,11 @@ async def run_exploration_simulation(
         return SimulationResult(
             record_id="",
             interaction_log={
+                "type": "exploration",
+                "input": content,
+                "system_prompt": system_prompt,
+                "user_instruction": eval_instruction,
+                "output": response.content,
                 "task": task,
                 "exploration_path": feedback_data.get("exploration_path", []),
                 "attention_points": feedback_data.get("attention_points", []),
@@ -461,7 +546,13 @@ async def run_exploration_simulation(
     except Exception as e:
         return SimulationResult(
             record_id="",
-            interaction_log={"task": task},
+            interaction_log={
+                "type": "exploration",
+                "input": content,
+                "system_prompt": system_prompt,
+                "task": task,
+                "error": str(e),
+            },
             feedback=SimulationFeedback(),
             success=False,
             error=str(e),
@@ -558,10 +649,20 @@ async def run_experience_simulation(
         return SimulationResult(
             record_id="",
             interaction_log={
+                "type": "experience",
+                "input": content,
+                "system_prompt": system_prompt,
+                "user_instruction": eval_instruction,
+                "output": response.content,
                 "task": task,
+                # 完整保存所有结构化数据
                 "steps": feedback_data.get("steps", []),
                 "time_estimate": feedback_data.get("time_estimate", ""),
+                "task_completed": feedback_data.get("task_completed", False),
+                "pain_points": feedback_data.get("pain_points", []),
+                "delights": feedback_data.get("delights", []),
                 "suggestions": feedback_data.get("suggestions", []),
+                "would_recommend": feedback_data.get("would_recommend", False),
             },
             feedback=feedback,
             success=True,
@@ -570,7 +671,13 @@ async def run_experience_simulation(
     except Exception as e:
         return SimulationResult(
             record_id="",
-            interaction_log={"task": task},
+            interaction_log={
+                "type": "experience",
+                "input": content,
+                "system_prompt": system_prompt,
+                "task": task,
+                "error": str(e),
+            },
             feedback=SimulationFeedback(),
             success=False,
             error=str(e),
@@ -581,6 +688,7 @@ async def run_simulation(
     simulator: Simulator,
     content: str,
     persona: dict,
+    content_field_names: list = None,  # 新增：内容字段名称列表
 ) -> SimulationResult:
     """
     运行模拟（自动选择类型）
@@ -596,6 +704,7 @@ async def run_simulation(
         simulator: 模拟器配置
         content: 内容
         persona: 用户画像
+        content_field_names: 内容来源字段名称（用于日志和提示词显示）
     
     Returns:
         SimulationResult
@@ -606,7 +715,9 @@ async def run_simulation(
         return await run_reading_simulation(simulator, content, persona)
     elif sim_type == "dialogue":
         max_turns = simulator.max_turns or 5
-        return await run_dialogue_simulation(simulator, content, persona, max_turns)
+        return await run_dialogue_simulation(
+            simulator, content, persona, max_turns, content_field_names
+        )
     elif sim_type == "decision":
         return await run_decision_simulation(simulator, content, persona)
     elif sim_type == "exploration":

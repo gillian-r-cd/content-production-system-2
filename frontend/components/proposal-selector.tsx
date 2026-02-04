@@ -40,6 +40,16 @@ interface ProposalsData {
   error?: string;
 }
 
+// 全局可引用字段（来自其他阶段）
+interface GlobalField {
+  id: string;
+  name: string;
+  phase: string;
+  phase_name: string;  // 阶段显示名称
+  status: string;
+  ai_prompt?: string;
+}
+
 interface ProposalSelectorProps {
   projectId: string;
   fieldId: string;  // 存储方案的字段ID（用于保存修改）
@@ -109,10 +119,52 @@ export function ProposalSelector({
   const [editingFieldId, setEditingFieldId] = useState<string | null>(null);
   const [showConstraintsModal, setShowConstraintsModal] = useState<string | null>(null);
   
+  // 全局可引用字段（来自意图分析和消费者调研阶段）
+  const [globalFields, setGlobalFields] = useState<GlobalField[]>([]);
+  
+  // 阶段名称映射
+  const phaseNameMap: Record<string, string> = {
+    intent_produce: "意图分析",
+    research: "消费者调研",
+    design_inner: "内涵设计",
+    produce_inner: "内涵生产",
+  };
+  
   // 加载字段模板
   useEffect(() => {
     settingsAPI.listFieldTemplates().then(setFieldTemplates).catch(console.error);
   }, []);
+  
+  // 加载全局可引用字段（意图分析和消费者调研）
+  useEffect(() => {
+    if (!projectId) return;
+    
+    const loadGlobalFields = async () => {
+      try {
+        // 获取意图分析和消费者调研阶段的字段
+        const allFields = await fieldAPI.listByProject(projectId);
+        const referableFields = allFields.filter(
+          (f) => f.phase === "intent_produce" || f.phase === "research"
+        );
+        
+        // 转换为 GlobalField 格式
+        const global: GlobalField[] = referableFields.map((f) => ({
+          id: f.id,
+          name: f.name,
+          phase: f.phase,
+          phase_name: phaseNameMap[f.phase] || f.phase,
+          status: f.status,
+          ai_prompt: f.ai_prompt,
+        }));
+        
+        setGlobalFields(global);
+      } catch (err) {
+        console.error("加载全局字段失败:", err);
+      }
+    };
+    
+    loadGlobalFields();
+  }, [projectId]);
 
   // 跟踪是否有未保存的修改
   useEffect(() => {
@@ -225,21 +277,46 @@ export function ProposalSelector({
   const addFieldFromTemplate = (templateFields: any[]) => {
     if (!selectedProposalId) return;
     
-    const newFields: ProposalField[] = templateFields.map((tf, idx) => ({
-      id: `new_field_${Date.now()}_${idx}`,
-      name: tf.name,
-      field_type: tf.type || "richtext",
-      ai_prompt: tf.ai_prompt || "",
-      depends_on: [],  // 从模板添加的字段默认无依赖
-      order: currentFields.length + idx + 1,
-      need_review: true,
-      constraints: {
-        max_length: null,
-        output_format: "markdown",
-        structure: null,
-        example: null,
-      },
-    }));
+    // 为了处理模板内部的依赖关系，需要建立 templateFieldId -> newFieldId 的映射
+    const idMapping: Record<string, string> = {};
+    const baseTime = Date.now();
+    
+    // 第一遍：生成新ID并建立映射
+    templateFields.forEach((tf, idx) => {
+      const newId = `new_field_${baseTime}_${idx}`;
+      if (tf.id) {
+        idMapping[tf.id] = newId;
+      }
+    });
+    
+    const newFields: ProposalField[] = templateFields.map((tf, idx) => {
+      // 转换依赖关系：将模板内的依赖ID映射为新ID，保留全局依赖（意图分析、消费者调研的字段ID）
+      const originalDependsOn = tf.depends_on || [];
+      const mappedDependsOn = originalDependsOn.map((depId: string) => {
+        // 如果是模板内部依赖，映射到新ID
+        if (idMapping[depId]) {
+          return idMapping[depId];
+        }
+        // 否则保留原ID（全局字段依赖）
+        return depId;
+      });
+      
+      return {
+        id: `new_field_${baseTime}_${idx}`,
+        name: tf.name,
+        field_type: tf.type || "richtext",
+        ai_prompt: tf.ai_prompt || "",
+        depends_on: mappedDependsOn,  // 保留模板中的依赖关系
+        order: currentFields.length + idx + 1,
+        need_review: tf.need_review !== undefined ? tf.need_review : true,
+        constraints: tf.constraints || {
+          max_length: null,
+          output_format: "markdown",
+          structure: null,
+          example: null,
+        },
+      };
+    });
     
     setEditedFields((prev) => ({
       ...prev,
@@ -612,10 +689,21 @@ export function ProposalSelector({
                           {field.depends_on && field.depends_on.length > 0 ? (
                             <span className="flex gap-1 flex-wrap">
                               {field.depends_on.slice(0, 2).map((depId) => {
+                                // 先从方案内字段查找，再从全局字段查找
                                 const depField = currentFields.find((f) => f.id === depId);
+                                const globalDepField = globalFields.find((f) => f.id === depId);
+                                const depName = depField?.name || globalDepField?.name;
+                                const isGlobal = !depField && !!globalDepField;
                                 return (
-                                  <span key={depId} className="px-1.5 py-0.5 bg-surface-3 rounded text-zinc-400">
-                                    {depField?.name?.substring(0, 8) || "?"}
+                                  <span 
+                                    key={depId} 
+                                    className={`px-1.5 py-0.5 rounded ${
+                                      isGlobal 
+                                        ? "bg-brand-600/30 text-brand-300" 
+                                        : "bg-surface-3 text-zinc-400"
+                                    }`}
+                                  >
+                                    {depName?.substring(0, 8) || "?"}
                                   </span>
                                 );
                               })}
@@ -702,6 +790,7 @@ export function ProposalSelector({
         <DependencyEditModal
           field={editingDependencyField}
           allFields={currentFields}
+          globalFields={globalFields}
           onClose={() => setEditingDependencyFieldId(null)}
           onSave={(newDependsOn) => updateFieldDependencies(editingDependencyFieldId, newDependsOn)}
         />
@@ -736,15 +825,16 @@ export function ProposalSelector({
 interface DependencyEditModalProps {
   field: ProposalField;
   allFields: ProposalField[];
+  globalFields?: GlobalField[];  // 全局可引用字段
   onClose: () => void;
   onSave: (dependsOn: string[]) => void;
 }
 
-function DependencyEditModal({ field, allFields, onClose, onSave }: DependencyEditModalProps) {
+function DependencyEditModal({ field, allFields, globalFields = [], onClose, onSave }: DependencyEditModalProps) {
   const [selectedIds, setSelectedIds] = useState<string[]>(field.depends_on || []);
 
-  // 可选的依赖字段（排除自己，且只能选择 order 小于当前字段的）
-  const availableFields = allFields.filter(
+  // 方案内可选的依赖字段（排除自己，且只能选择 order 小于当前字段的）
+  const availableProposalFields = allFields.filter(
     (f) => f.id !== field.id && f.order < field.order
   );
 
@@ -764,35 +854,82 @@ function DependencyEditModal({ field, allFields, onClose, onSave }: DependencyEd
           </p>
         </div>
 
-        <div className="p-4 max-h-[50vh] overflow-y-auto space-y-2">
-          {availableFields.length > 0 ? (
-            availableFields.map((f) => (
-              <label
-                key={f.id}
-                className="flex items-center gap-3 p-3 rounded-lg hover:bg-surface-3 cursor-pointer transition-colors"
-              >
-                <input
-                  type="checkbox"
-                  checked={selectedIds.includes(f.id)}
-                  onChange={() => toggleField(f.id)}
-                  className="rounded accent-brand-500"
-                />
-                <div className="flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs bg-surface-3 px-2 py-0.5 rounded text-zinc-500">
-                      {f.order}
-                    </span>
-                    <span className="text-sm text-zinc-200">{f.name}</span>
-                  </div>
-                  <div className="text-xs text-zinc-500 mt-1 line-clamp-1">
-                    {f.ai_prompt}
-                  </div>
-                </div>
-              </label>
-            ))
-          ) : (
+        <div className="p-4 max-h-[50vh] overflow-y-auto space-y-4">
+          {/* 全局字段（意图分析、消费者调研） */}
+          {globalFields.length > 0 && (
+            <div>
+              <div className="text-xs font-medium text-zinc-400 mb-2 flex items-center gap-2">
+                <span>🌐</span>
+                <span>全局字段（可引用项目上游阶段）</span>
+              </div>
+              <div className="space-y-2">
+                {globalFields.map((f) => (
+                  <label
+                    key={f.id}
+                    className="flex items-center gap-3 p-3 rounded-lg hover:bg-surface-3 cursor-pointer transition-colors border border-surface-3"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.includes(f.id)}
+                      onChange={() => toggleField(f.id)}
+                      className="rounded accent-brand-500"
+                    />
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs bg-brand-600/30 px-2 py-0.5 rounded text-brand-300">
+                          {f.phase_name}
+                        </span>
+                        <span className="text-sm text-zinc-200">{f.name}</span>
+                        {f.status === "completed" && (
+                          <span className="text-xs text-green-400">✓</span>
+                        )}
+                      </div>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 方案内字段 */}
+          {availableProposalFields.length > 0 && (
+            <div>
+              <div className="text-xs font-medium text-zinc-400 mb-2 flex items-center gap-2">
+                <span>📄</span>
+                <span>方案内字段（顺序在前的字段）</span>
+              </div>
+              <div className="space-y-2">
+                {availableProposalFields.map((f) => (
+                  <label
+                    key={f.id}
+                    className="flex items-center gap-3 p-3 rounded-lg hover:bg-surface-3 cursor-pointer transition-colors"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.includes(f.id)}
+                      onChange={() => toggleField(f.id)}
+                      className="rounded accent-brand-500"
+                    />
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs bg-surface-3 px-2 py-0.5 rounded text-zinc-500">
+                          {f.order}
+                        </span>
+                        <span className="text-sm text-zinc-200">{f.name}</span>
+                      </div>
+                      <div className="text-xs text-zinc-500 mt-1 line-clamp-1">
+                        {f.ai_prompt}
+                      </div>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {availableProposalFields.length === 0 && globalFields.length === 0 && (
             <p className="text-zinc-500 text-center py-4">
-              没有可选的依赖字段（只能依赖顺序在前的字段）
+              没有可选的依赖字段
             </p>
           )}
         </div>

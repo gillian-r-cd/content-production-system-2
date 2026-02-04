@@ -642,11 +642,21 @@ async def stream_chat(
     db: Session = Depends(get_db),
 ):
     """
-    与Agent对话（SSE流式输出）
+    与Agent对话（真正的 token-by-token SSE流式输出）
+    
+    流程：
+    1. 先执行意图路由（快速，非流式）
+    2. 根据路由结果，流式生成内容
     """
+    from core.ai_client import ai_client, ChatMessage as AIChatMessage
+    from core.orchestrator import route_intent, ContentProductionState, PROJECT_PHASES
+    from langchain_core.messages import HumanMessage, AIMessage
+    
     project = db.query(Project).filter(Project.id == request.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    
+    current_phase = request.current_phase or project.current_phase
     
     # 先保存用户消息
     user_msg = ChatMessage(
@@ -654,55 +664,405 @@ async def stream_chat(
         project_id=request.project_id,
         role="user",
         content=request.message,
-        message_message_metadata={
-            "phase": request.current_phase or project.current_phase,
+        message_metadata={
+            "phase": current_phase,
             "references": request.references,
         },
     )
     db.add(user_msg)
     db.commit()
     
+    # 获取对话历史
+    history_msgs = db.query(ChatMessage).filter(
+        ChatMessage.project_id == request.project_id
+    ).order_by(ChatMessage.created_at).all()
+    
+    chat_history = []
+    for m in history_msgs[-20:]:  # 最近 20 条
+        if m.role == "user":
+            chat_history.append(HumanMessage(content=m.content))
+        else:
+            chat_history.append(AIMessage(content=m.content))
+    
     async def event_generator():
-        """生成SSE事件"""
+        """生成 token-by-token SSE 事件"""
         full_content = ""
         
         try:
-            async for event in content_agent.stream(
-                project_id=request.project_id,
-                user_input=request.message,
-                current_phase=request.current_phase or project.current_phase,
-                golden_context=project.golden_context or {},
-                autonomy_settings=project.agent_autonomy or {},
-                use_deep_research=project.use_deep_research if hasattr(project, 'use_deep_research') else True,
-            ):
-                for node_name, node_output in event.items():
-                    if isinstance(node_output, dict):
-                        output = node_output.get("agent_output", "")
-                        if output:
-                            full_content += output
-                            data = json.dumps({
-                                "node": node_name,
-                                "content": output,
-                                "phase": node_output.get("current_phase", ""),
-                            }, ensure_ascii=False)
-                            yield f"data: {data}\n\n"
+            # 1. 执行意图路由
+            initial_state: ContentProductionState = {
+                "project_id": request.project_id,
+                "current_phase": current_phase,
+                "phase_order": project.phase_order or PROJECT_PHASES.copy(),
+                "phase_status": project.phase_status or {p: "pending" for p in PROJECT_PHASES},
+                "autonomy_settings": project.agent_autonomy or {},
+                "golden_context": project.golden_context or {},
+                "fields": {},
+                "messages": chat_history,
+                "user_input": request.message,
+                "agent_output": "",
+                "waiting_for_human": False,
+                "route_target": "",
+                "use_deep_research": project.use_deep_research if hasattr(project, 'use_deep_research') else True,
+                "is_producing": False,
+                "error": None,
+                "references": request.references,
+                "referenced_contents": {},
+            }
             
-            # 保存完整响应
+            # 2. 意图分析阶段特殊处理（优先级最高）
+            gc = project.golden_context or {}
+            phase_status = project.phase_status or {}
+            intent_completed = phase_status.get("intent") == "completed"
+            
+            # 统计已问的问题数（只在当前轮次内）
+            question_count = 0
+            for m in chat_history:
+                if isinstance(m, AIMessage):
+                    content = m.content if hasattr(m, 'content') else str(m)
+                    if "【问题" in content and "/3】" in content:
+                        question_count += 1
+                    # 遇到已完成的意图分析，重置计数（新一轮）
+                    if "✅ 已生成" in content or "已生成【意图分析】" in content:
+                        question_count = 0
+            
+            print(f"[stream] 当前阶段={current_phase}, 意图已完成={intent_completed}, 已问问题数={question_count}")
+            
+            # 意图分析阶段 + 未完成
+            if current_phase == "intent" and not intent_completed:
+                # 检查用户是否在问通用问题（而不是回答意图问题）
+                question_indicators = ["？", "?", "什么", "怎么", "如何", "能不能", "可以吗", "你是", "能做", "有什么"]
+                is_asking_question = any(qi in request.message for qi in question_indicators) and question_count > 0
+                
+                if is_asking_question:
+                    # 用户在问通用问题，走 chat 流程
+                    route_target = "chat"
+                    system_prompt = f"""你是一个智能的内容生产 Agent。
+
+## 我的能力
+1. **意图分析**: 通过问答帮你明确内容目标
+2. **消费者调研**: DeepResearch 深度分析目标用户
+3. **内涵设计/生产**: 规划和生成核心内容
+4. **外延设计/生产**: 营销触达内容
+5. **消费者模拟**: 模拟用户反馈
+6. **评估**: 多维度质量评估
+
+当前阶段: {current_phase}
+
+请友好地回答用户的问题。回答完后提醒用户继续回答意图分析的问题。"""
+                elif question_count >= 3:
+                    # 已问完3个问题，生成意图分析报告
+                    route_target = "intent_produce"
+                    system_prompt = """你是一个专业的内容策略顾问。根据用户的所有回答，生成结构化的项目意图分析。
+
+请严格按以下格式输出：
+
+1. **做什么**: [用一句话总结这个内容的主题和形式]
+2. **给谁看**: [目标受众的岗位/角色、所在行业、1-2个核心痛点]
+3. **核心价值**: [这个内容能给读者带来的独特收获或认知转变]
+
+请仔细分析对话历史中用户的所有回答，提炼出准确的意图。"""
+                else:
+                    # 继续提问
+                    route_target = "intent_question"
+                    next_q = question_count + 1
+                    
+                    # 根据问题序号设置问题方向
+                    if next_q == 1:
+                        question_focus = "你想做什么内容？（比如：一篇文章、一个视频脚本、一份产品介绍、一套培训课件等），请用一句话描述你想做的内容方向。"
+                    elif next_q == 2:
+                        question_focus = "这个内容主要给谁看？请用「岗位/角色 + 所在行业 + 当前面临的1-2个痛点」来描述目标读者。"
+                    else:
+                        question_focus = "你觉得这个内容最核心的价值是什么？读者看完后应该获得什么独特的收获或认知？"
+                    
+                    system_prompt = f"""你是一个专业的内容策略顾问。你的任务是通过提问帮助用户澄清内容意图。
+
+这是第 {next_q} 个问题（共3个）。
+
+请在回复开头标注【问题 {next_q}/3】，然后提出以下问题：
+{question_focus}
+
+规则：
+- 只问这1个问题，简洁明了
+- 可以根据用户之前的回答适当调整措辞，使问题更自然
+- 不要回答用户的问题，只提问"""
+            else:
+                # 非意图阶段 或 意图已完成：执行路由
+                routed_state = await route_intent(initial_state)
+                route_target = routed_state.get("route_target", "chat")
+                
+                if route_target == "chat":
+                    system_prompt = f"""你是一个智能的内容生产 Agent。
+
+## 项目上下文
+{gc.get('creator_profile', '') or '（暂无创作者信息）'}
+{gc.get('intent', '') or '（暂无项目意图）'}
+
+当前阶段: {current_phase}
+
+请友好地回答用户的问题。"""
+                else:
+                    # 其他阶段：非流式处理（走原逻辑）
+                    # 根据当前阶段确定 route_target（用于前端判断是否为产出模式）
+                    phase_route_map = {
+                        "research": "research",
+                        "design_inner": "design_inner",
+                        "produce_inner": "produce_inner",
+                        "design_outer": "design_outer",
+                        "produce_outer": "produce_outer",
+                        "simulate": "simulate",
+                        "evaluate": "evaluate",
+                    }
+                    route_target = phase_route_map.get(current_phase, route_target)
+                    
+                    # 先发送路由信息，让前端知道这是产出模式
+                    yield f"data: {json.dumps({'type': 'route', 'target': route_target}, ensure_ascii=False)}\n\n"
+                    
+                    result = await content_agent.run(
+                        project_id=request.project_id,
+                        user_input=request.message,
+                        current_phase=current_phase,
+                        golden_context=gc,
+                        autonomy_settings=project.agent_autonomy or {},
+                        chat_history=chat_history,
+                    )
+                    full_content = result.get("agent_output", "")
+                    display_content = result.get("display_output", full_content)  # 用于对话区显示
+                    
+                    # 记录日志 - 确保 full_prompt 始终有值
+                    from core.models import GenerationLog
+                    log_prompt_input = result.get("full_prompt", "")
+                    if not log_prompt_input:
+                        # 如果 full_prompt 为空，构建一个基本的日志
+                        log_prompt_input = f"""[未捕获完整提示词]
+路由目标: {route_target}
+用户输入: {request.message}
+当前阶段: {current_phase}
+解析意图: {result.get('parsed_intent_type', 'unknown')}
+目标字段: {result.get('parsed_target_field', 'none')}
+
+注意: 此日志未能获取完整的系统提示词，请检查对应节点是否正确设置了 full_prompt"""
+                    
+                    gen_log = GenerationLog(
+                        id=generate_uuid(),
+                        project_id=request.project_id,
+                        phase=current_phase,
+                        operation=f"agent_stream_{route_target}",
+                        model="gpt-5.1",
+                        prompt_input=log_prompt_input,
+                        prompt_output=full_content,
+                        tokens_in=result.get("tokens_in", 0),
+                        tokens_out=result.get("tokens_out", 0),
+                        duration_ms=result.get("duration_ms", 0),
+                        cost=result.get("cost", 0.0),
+                        status="success",
+                    )
+                    db.add(gen_log)
+                    
+                    # ===== 关键：将结果保存为 ProjectField =====
+                    if result.get("is_producing", False) and full_content:
+                        # 使用 Agent 返回的 current_phase，因为可能已经跳转到新阶段
+                        save_phase = result.get("current_phase", current_phase)
+                        print(f"[stream] 保存阶段: {save_phase} (原阶段: {current_phase})")
+                        
+                        phase_field_names = {
+                            "research": "消费者调研报告",
+                            "design_inner": "内涵设计方案",
+                            "produce_inner": "内涵生产内容",
+                            "design_outer": "外延设计方案",
+                            "produce_outer": "外延生产内容",
+                            "simulate": "消费者模拟结果",
+                            "evaluate": "评估报告",
+                        }
+                        field_name = phase_field_names.get(save_phase, f"{save_phase}结果")
+                        
+                        # 查找或创建字段
+                        existing_field = db.query(ProjectField).filter(
+                            ProjectField.project_id == request.project_id,
+                            ProjectField.phase == save_phase,
+                            ProjectField.name == field_name,
+                        ).first()
+                        
+                        if existing_field:
+                            existing_field.content = full_content
+                            existing_field.status = "completed"
+                        else:
+                            new_field = ProjectField(
+                                id=generate_uuid(),
+                                project_id=request.project_id,
+                                name=field_name,
+                                phase=save_phase,
+                                content=full_content,
+                                field_type="structured" if save_phase == "research" else "richtext",
+                                status="completed",
+                            )
+                            db.add(new_field)
+                        
+                        print(f"[stream] 已保存 {save_phase} 阶段结果到字段: {field_name}")
+                        
+                        # 更新项目的 golden_context（如果有新的上下文）
+                        new_gc = result.get("golden_context")
+                        if new_gc:
+                            project.golden_context = new_gc
+                            db.add(project)
+                        
+                        # 更新阶段状态 - 使用正确的阶段
+                        new_phase_status = project.phase_status or {}
+                        new_phase_status[save_phase] = "in_progress"
+                        project.phase_status = new_phase_status
+                        
+                        # 更新项目的当前阶段
+                        project.current_phase = save_phase
+                        db.add(project)
+                    
+                    # 一次性发送内容（发送简洁展示文本）
+                    yield f"data: {json.dumps({'type': 'content', 'content': display_content}, ensure_ascii=False)}\n\n"
+                    
+                    # 保存响应
+                    agent_msg = ChatMessage(
+                        id=generate_uuid(),
+                        project_id=request.project_id,
+                        role="assistant",
+                        content=display_content,  # 保存简洁展示内容到对话历史
+                        message_metadata={"phase": current_phase, "route": route_target},
+                    )
+                    db.add(agent_msg)
+                    db.commit()
+                    
+                    # 发送完成事件，包含 route 信息
+                    yield f"data: {json.dumps({'type': 'done', 'message_id': agent_msg.id, 'route': route_target}, ensure_ascii=False)}\n\n"
+                    return
+            
+            # 发送路由信息
+            yield f"data: {json.dumps({'type': 'route', 'target': route_target}, ensure_ascii=False)}\n\n"
+            
+            # 3. 构建消息列表
+            messages = [AIChatMessage(role="system", content=system_prompt)]
+            for m in chat_history[-10:]:
+                if isinstance(m, HumanMessage):
+                    messages.append(AIChatMessage(role="user", content=m.content))
+                elif isinstance(m, AIMessage):
+                    messages.append(AIChatMessage(role="assistant", content=m.content))
+            messages.append(AIChatMessage(role="user", content=request.message))
+            
+            # 4. 真正的 token-by-token 流式输出
+            import time
+            start_time = time.time()
+            
+            async for token in ai_client.stream_chat(messages, temperature=0.7):
+                full_content += token
+                yield f"data: {json.dumps({'type': 'token', 'content': token}, ensure_ascii=False)}\n\n"
+            
+            duration_ms = int((time.time() - start_time) * 1000)
+            
+            # 5. 记录 GenerationLog - 必须记录完整的 prompt（system + 历史 + user）
+            from core.models import GenerationLog
+            
+            # 构建完整的 prompt 用于日志记录
+            full_prompt_for_log = f"[System]\n{system_prompt}\n\n"
+            for m in messages[1:-1]:  # 跳过 system 和最后的 user
+                role = m.role if hasattr(m, 'role') else 'unknown'
+                content = m.content if hasattr(m, 'content') else str(m)
+                full_prompt_for_log += f"[{role}]\n{content}\n\n"
+            full_prompt_for_log += f"[User]\n{request.message}"
+            
+            gen_log = GenerationLog(
+                id=generate_uuid(),
+                project_id=request.project_id,
+                phase=current_phase,
+                operation=f"agent_stream_{route_target}",
+                model="gpt-5.1",
+                prompt_input=full_prompt_for_log,  # 记录完整 prompt
+                prompt_output=full_content,
+                tokens_in=len(full_prompt_for_log) // 4,  # 估算
+                tokens_out=len(full_content) // 4,
+                duration_ms=duration_ms,
+                cost=0.0,
+                status="success",
+            )
+            db.add(gen_log)
+            
+            # 6. 如果是意图分析完成，更新项目状态
+            if route_target == "intent_produce":
+                # 解析生成的意图内容，存入 golden_context
+                intent_data = {
+                    "做什么": "",
+                    "给谁看": "",
+                    "核心价值": "",
+                }
+                current_key = None
+                for line in full_content.split('\n'):
+                    if "**做什么**" in line or "做什么:" in line or "做什么：" in line:
+                        current_key = "做什么"
+                        # 尝试提取同行内容
+                        if ":" in line or "：" in line:
+                            intent_data[current_key] = line.split(":", 1)[-1].split("：", 1)[-1].strip().strip("*").strip()
+                    elif "**给谁看**" in line or "给谁看:" in line or "给谁看：" in line:
+                        current_key = "给谁看"
+                        if ":" in line or "：" in line:
+                            intent_data[current_key] = line.split(":", 1)[-1].split("：", 1)[-1].strip().strip("*").strip()
+                    elif "**核心价值**" in line or "核心价值:" in line or "核心价值：" in line:
+                        current_key = "核心价值"
+                        if ":" in line or "：" in line:
+                            intent_data[current_key] = line.split(":", 1)[-1].split("：", 1)[-1].strip().strip("*").strip()
+                    elif current_key and line.strip():
+                        # 追加内容
+                        if not intent_data[current_key]:
+                            intent_data[current_key] = line.strip()
+                
+                # 更新项目
+                new_gc = project.golden_context or {}
+                new_gc["intent"] = intent_data
+                project.golden_context = new_gc
+                
+                new_phase_status = project.phase_status or {}
+                new_phase_status["intent"] = "completed"
+                project.phase_status = new_phase_status
+                
+                db.add(project)
+                
+                # 同时创建意图分析的字段
+                for field_name, content in intent_data.items():
+                    if content:
+                        existing = db.query(ProjectField).filter(
+                            ProjectField.project_id == request.project_id,
+                            ProjectField.phase == "intent",
+                            ProjectField.name == field_name,
+                        ).first()
+                        if existing:
+                            existing.content = content
+                            existing.status = "completed"
+                        else:
+                            new_field = ProjectField(
+                                id=generate_uuid(),
+                                project_id=request.project_id,
+                                name=field_name,
+                                phase="intent",
+                                content=content,
+                                field_type="richtext",
+                                status="completed",
+                            )
+                            db.add(new_field)
+                
+                print(f"[stream] 意图分析完成，已更新 golden_context 和字段")
+            
+            # 7. 保存完整响应
             agent_msg = ChatMessage(
                 id=generate_uuid(),
                 project_id=request.project_id,
                 role="assistant",
                 content=full_content,
-                message_metadata={"phase": project.current_phase},
+                message_metadata={"phase": current_phase, "route": route_target},
             )
             db.add(agent_msg)
             db.commit()
             
-            yield f"data: {json.dumps({'done': True, 'message_id': agent_msg.id})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'message_id': agent_msg.id, 'route': route_target}, ensure_ascii=False)}\n\n"
             
         except Exception as e:
-            error_data = json.dumps({"error": str(e)}, ensure_ascii=False)
-            yield f"data: {error_data}\n\n"
+            import traceback
+            traceback.print_exc()
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)}, ensure_ascii=False)}\n\n"
     
     return StreamingResponse(
         event_generator(),
@@ -710,6 +1070,7 @@ async def stream_chat(
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # 禁用 nginx 缓冲
         }
     )
 

@@ -110,6 +110,7 @@ def create_project(
         name=project.name,
         creator_profile_id=project.creator_profile_id,
         use_deep_research=project.use_deep_research,
+        use_flexible_architecture=project.use_flexible_architecture,
         version=1,
         current_phase="intent",
         phase_order=PROJECT_PHASES.copy(),

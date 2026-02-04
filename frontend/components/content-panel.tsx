@@ -13,6 +13,7 @@ import type { Field, ContentBlock } from "@/lib/api";
 import { ContentBlockEditor } from "./content-block-editor";
 import { SimulationPanel } from "./simulation-panel";
 import { ProposalSelector } from "./proposal-selector";
+import { ChannelSelector } from "./channel-selector";
 import { ResearchPanel } from "./research-panel";
 import { FileText, Folder, Settings, ChevronRight } from "lucide-react";
 
@@ -27,6 +28,7 @@ interface ContentPanelProps {
   onFieldUpdate?: (fieldId: string, content: string) => void;
   onFieldsChange?: () => void;
   onPhaseAdvance?: () => void;  // 阶段推进后的回调
+  onBlockSelect?: (block: ContentBlock) => void;  // 选中内容块的回调
 }
 
 export function ContentPanel({
@@ -40,6 +42,7 @@ export function ContentPanel({
   onFieldUpdate,
   onFieldsChange,
   onPhaseAdvance,
+  onBlockSelect,
 }: ContentPanelProps) {
   const [isAdvancing, setIsAdvancing] = useState(false);
   const [autoGeneratingFieldId, setAutoGeneratingFieldId] = useState<string | null>(null);
@@ -275,6 +278,274 @@ export function ContentPanel({
   }
 
   // ===== 树形视图选中内容块时，显示该块详情 =====
+  
+  // 处理阶段块点击（从树形视图点击阶段节点）
+  if (selectedBlock && selectedBlock.block_type === "phase") {
+    // 从虚拟块ID中提取阶段名称（格式：virtual_phase_xxx）
+    const phaseMatch = selectedBlock.id.match(/virtual_phase_(.+)/);
+    const selectedPhase = phaseMatch ? phaseMatch[1] : selectedBlock.special_handler;
+    
+    if (selectedPhase) {
+      // 获取该阶段的所有字段
+      const phaseFields = fields.filter(f => f.phase === selectedPhase);
+      
+      // ===== 特殊阶段处理 =====
+      
+      // 消费者调研阶段
+      if (selectedPhase === "research") {
+        const researchField = phaseFields.find(f => f.name === "消费者调研报告");
+        if (researchField) {
+          try {
+            const researchData = JSON.parse(researchField.content || "{}");
+            if (researchData.summary || researchData.personas) {
+              return (
+                <ResearchPanel
+                  projectId={projectId}
+                  fieldId={researchField.id}
+                  content={researchField.content}
+                  onUpdate={onFieldsChange}
+                  onAdvance={handleAdvancePhase}
+                />
+              );
+            }
+          } catch {
+            // JSON 解析失败
+          }
+        }
+      }
+      
+      // 内涵设计阶段
+      if (selectedPhase === "design_inner") {
+        const designField = phaseFields.find(f => f.name === "内容设计方案");
+        if (designField) {
+          try {
+            const proposalData = JSON.parse(designField.content || "{}");
+            if (proposalData.proposals && Array.isArray(proposalData.proposals)) {
+              return (
+                <div className="h-full flex flex-col">
+                  <div className="p-4 border-b border-surface-3">
+                    <h1 className="text-xl font-bold text-zinc-100">
+                      {PHASE_NAMES[selectedPhase] || selectedPhase}
+                    </h1>
+                    <p className="text-zinc-500 text-sm mt-1">
+                      请选择一个方案，调整字段设置后确认进入生产
+                    </p>
+                  </div>
+                  <div className="flex-1 overflow-hidden">
+                    <ProposalSelector
+                      projectId={projectId}
+                      fieldId={designField.id}
+                      content={designField.content}
+                      onConfirm={() => {
+                        onFieldsChange?.();
+                        onPhaseAdvance?.();
+                      }}
+                      onFieldsCreated={onFieldsChange}
+                      onSave={onFieldsChange}
+                    />
+                  </div>
+                </div>
+              );
+            }
+          } catch {
+            // JSON 解析失败
+          }
+        }
+      }
+      
+      // 外延设计阶段 - 使用 ChannelSelector
+      if (selectedPhase === "design_outer") {
+        const designOuterField = phaseFields.find(f => f.name === "外延设计方案");
+        if (designOuterField) {
+          try {
+            const channelsData = JSON.parse(designOuterField.content || "{}");
+            if (channelsData.channels && Array.isArray(channelsData.channels)) {
+              return (
+                <div className="h-full flex flex-col">
+                  <div className="p-4 border-b border-surface-3">
+                    <h1 className="text-xl font-bold text-zinc-100">外延设计</h1>
+                    <p className="text-zinc-500 text-sm mt-1">
+                      选择要使用的传播渠道，确认后进入外延生产
+                    </p>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-4">
+                    <ChannelSelector
+                      projectId={projectId}
+                      fieldId={designOuterField.id}
+                      content={designOuterField.content}
+                      onConfirm={() => {
+                        onFieldsChange?.();
+                        onPhaseAdvance?.();
+                      }}
+                      onFieldsCreated={onFieldsChange}
+                      onSave={onFieldsChange}
+                    />
+                  </div>
+                </div>
+              );
+            }
+          } catch {
+            // JSON 解析失败
+          }
+        }
+      }
+      
+      // 外延生产阶段 - 显示渠道字段列表
+      if (selectedPhase === "produce_outer" && phaseFields.length > 0) {
+        return (
+          <div className="h-full flex flex-col">
+            <div className="p-4 border-b border-surface-3">
+              <h1 className="text-xl font-bold text-zinc-100">外延生产</h1>
+              <p className="text-zinc-500 text-sm mt-1">
+                点击左侧具体渠道查看和生成内容
+              </p>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4">
+              <div className="grid gap-3">
+                {phaseFields.map(field => (
+                  <div
+                    key={field.id}
+                    className="p-4 bg-surface-2 border border-surface-3 rounded-lg hover:border-brand-500/30 cursor-pointer transition-colors"
+                    onClick={() => {
+                      // 创建虚拟 ContentBlock 并选中
+                      const virtualBlock: ContentBlock = {
+                        id: field.id,
+                        project_id: projectId,
+                        parent_id: null,
+                        name: field.name,
+                        block_type: "field",
+                        depth: 1,
+                        order_index: 0,
+                        status: (field.status || "pending") as "pending" | "in_progress" | "completed" | "failed",
+                        content: field.content,
+                        ai_prompt: field.ai_prompt,
+                        depends_on: field.dependencies?.depends_on || [],
+                        constraints: field.constraints || {},
+                        special_handler: null,
+                        need_review: field.need_review || false,
+                        is_collapsed: false,
+                        children: [],
+                        created_at: field.created_at || new Date().toISOString(),
+                        updated_at: field.updated_at || new Date().toISOString(),
+                      };
+                      onBlockSelect?.(virtualBlock);
+                    }}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium text-zinc-200">{field.name}</span>
+                      <span className={`text-xs px-2 py-0.5 rounded ${
+                        field.status === "completed" ? "bg-green-600/20 text-green-400" :
+                        field.status === "generating" ? "bg-yellow-600/20 text-yellow-400" :
+                        "bg-zinc-600/20 text-zinc-400"
+                      }`}>
+                        {field.status === "completed" ? "已完成" :
+                         field.status === "generating" ? "生成中" : "待生成"}
+                      </span>
+                    </div>
+                    {field.ai_prompt && (
+                      <p className="text-sm text-zinc-500 mt-2 line-clamp-2">{field.ai_prompt}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      }
+      
+      // 消费者模拟阶段
+      if (selectedPhase === "simulate") {
+        return (
+          <SimulationPanel
+            projectId={projectId}
+            fields={fields}
+            onSimulationCreated={onFieldsChange}
+          />
+        );
+      }
+      
+      // 内涵生产阶段 - 显示字段列表
+      if (selectedPhase === "produce_inner" && phaseFields.length > 0) {
+        return (
+          <div className="h-full flex flex-col">
+            <div className="p-4 border-b border-surface-3">
+              <h1 className="text-xl font-bold text-zinc-100">
+                {PHASE_NAMES[selectedPhase] || selectedPhase}
+              </h1>
+              <p className="text-zinc-500 text-sm mt-1">
+                点击左侧具体字段查看和生成内容
+              </p>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4">
+              <div className="grid gap-3">
+                {phaseFields.map(field => (
+                  <div 
+                    key={field.id} 
+                    className="p-4 bg-surface-2 border border-surface-3 rounded-lg"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium text-zinc-200">{field.name}</span>
+                      <span className={`px-2 py-0.5 rounded text-xs ${
+                        field.status === "completed" 
+                          ? "bg-green-600/20 text-green-400"
+                          : field.status === "in_progress"
+                          ? "bg-yellow-600/20 text-yellow-400"
+                          : "bg-zinc-600/20 text-zinc-400"
+                      }`}>
+                        {field.status === "completed" ? "已完成" 
+                          : field.status === "in_progress" ? "生成中" 
+                          : "待生成"}
+                      </span>
+                    </div>
+                    {field.ai_prompt && (
+                      <p className="text-sm text-zinc-500 mt-2 line-clamp-2">{field.ai_prompt}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      }
+      
+      // 其他阶段 - 显示阶段概览
+      return (
+        <div className="h-full flex flex-col p-6">
+          <h1 className="text-xl font-bold text-zinc-100 mb-2">
+            {PHASE_NAMES[selectedPhase] || selectedPhase}
+          </h1>
+          <p className="text-zinc-500 mb-6">
+            共有 {phaseFields.length} 个字段
+          </p>
+          {phaseFields.length > 0 ? (
+            <div className="space-y-4">
+              {phaseFields.map(field => (
+                <div key={field.id} className="p-4 bg-surface-2 border border-surface-3 rounded-lg">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-medium text-zinc-200">{field.name}</span>
+                    <span className={`px-2 py-0.5 rounded text-xs ${
+                      field.status === "completed" 
+                        ? "bg-green-600/20 text-green-400"
+                        : "bg-zinc-600/20 text-zinc-400"
+                    }`}>
+                      {field.status === "completed" ? "已完成" : "待处理"}
+                    </span>
+                  </div>
+                  {field.content && (
+                    <p className="text-sm text-zinc-400 line-clamp-3">{field.content.substring(0, 200)}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-zinc-500">该阶段暂无内容字段</p>
+          )}
+        </div>
+      );
+    }
+  }
+  
+  // 处理字段块点击
   if (selectedBlock && selectedBlock.block_type === "field") {
     // 尝试找到对应的传统 Field（虚拟树形视图使用真实的 field.id）
     const matchingField = fields.find(f => f.id === selectedBlock.id);
@@ -312,9 +583,12 @@ export function ContentPanel({
                   projectId={projectId}
                   fieldId={matchingField.id}
                   content={matchingField.content}
-                  existingFields={phaseFields.filter(f => f.phase === "produce_inner")}
-                  onUpdate={onFieldsChange}
-                  onAdvance={handleAdvancePhase}
+                  onConfirm={() => {
+                    onFieldsChange?.();
+                    onPhaseAdvance?.();
+                  }}
+                  onFieldsCreated={onFieldsChange}
+                  onSave={onFieldsChange}
                 />
               </div>
             );
@@ -342,11 +616,8 @@ export function ContentPanel({
               key={matchingField.id}
               field={matchingField}
               allFields={fields}
-              completedFieldIds={completedFieldIds}
-              autoGeneratingFieldId={autoGeneratingFieldId}
-              onContentChange={(content) => onFieldUpdate?.(matchingField.id, content)}
+              onUpdate={(content: string) => onFieldUpdate?.(matchingField.id, content)}
               onFieldsChange={onFieldsChange}
-              onAutoGenerate={() => handleAutoGenerateField(matchingField)}
             />
           </div>
         </div>
@@ -1078,12 +1349,76 @@ function DependencyModal({ field, allFields, onClose, onSave }: DependencyModalP
     field.dependencies?.depends_on || []
   );
 
+  // 阶段显示名称映射
+  const phaseNameMap: Record<string, string> = {
+    intent_produce: "意图分析",
+    research: "消费者调研",
+    design_inner: "内涵设计",
+    produce_inner: "内涵生产",
+    design_outer: "外显设计",
+    produce_outer: "外显生产",
+    simulate: "模拟评估",
+    evaluate: "总结优化",
+  };
+
   // 可选的依赖字段（排除自己）
   const availableFields = allFields.filter((f) => f.id !== field.id);
+
+  // 按阶段分组（全局字段在前）
+  const globalPhases = ["intent_produce", "research"];
+  const globalFields = availableFields.filter((f) => globalPhases.includes(f.phase));
+  const currentPhaseFields = availableFields.filter((f) => f.phase === field.phase);
+  const otherFields = availableFields.filter(
+    (f) => !globalPhases.includes(f.phase) && f.phase !== field.phase
+  );
 
   const toggleField = (id: string) => {
     setSelectedIds((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
+
+  const renderFieldGroup = (fields: Field[], title: string, isGlobal: boolean = false) => {
+    if (fields.length === 0) return null;
+    return (
+      <div>
+        <div className="text-xs font-medium text-zinc-400 mb-2 flex items-center gap-2">
+          <span>{isGlobal ? "🌐" : "📄"}</span>
+          <span>{title}</span>
+        </div>
+        <div className="space-y-2">
+          {fields.map((f) => (
+            <label
+              key={f.id}
+              className={`flex items-center gap-3 p-2 rounded-lg hover:bg-surface-3 cursor-pointer ${
+                isGlobal ? "border border-surface-3" : ""
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={selectedIds.includes(f.id)}
+                onChange={() => toggleField(f.id)}
+                className="rounded accent-brand-500"
+              />
+              <div className="flex-1">
+                <div className="flex items-center gap-2">
+                  <span className={`text-xs px-2 py-0.5 rounded ${
+                    isGlobal ? "bg-brand-600/30 text-brand-300" : "bg-surface-3 text-zinc-500"
+                  }`}>
+                    {phaseNameMap[f.phase] || f.phase}
+                  </span>
+                  <span className="text-sm text-zinc-200">{f.name}</span>
+                </div>
+              </div>
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  f.status === "completed" ? "bg-green-500" : "bg-zinc-600"
+                }`}
+              />
+            </label>
+          ))}
+        </div>
+      </div>
     );
   };
 
@@ -1097,33 +1432,17 @@ function DependencyModal({ field, allFields, onClose, onSave }: DependencyModalP
           </p>
         </div>
 
-        <div className="p-4 max-h-[50vh] overflow-y-auto space-y-2">
-          {availableFields.length > 0 ? (
-            availableFields.map((f) => (
-              <label
-                key={f.id}
-                className="flex items-center gap-3 p-2 rounded-lg hover:bg-surface-3 cursor-pointer"
-              >
-                <input
-                  type="checkbox"
-                  checked={selectedIds.includes(f.id)}
-                  onChange={() => toggleField(f.id)}
-                  className="rounded"
-                />
-                <div className="flex-1">
-                  <div className="text-sm text-zinc-200">{f.name}</div>
-                  <div className="text-xs text-zinc-500">
-                    {f.phase} · {f.status === "completed" ? "已完成" : "未完成"}
-                  </div>
-                </div>
-                <span
-                  className={`w-2 h-2 rounded-full ${
-                    f.status === "completed" ? "bg-green-500" : "bg-zinc-600"
-                  }`}
-                />
-              </label>
-            ))
-          ) : (
+        <div className="p-4 max-h-[50vh] overflow-y-auto space-y-4">
+          {/* 全局字段（意图分析、消费者调研） */}
+          {renderFieldGroup(globalFields, "全局字段（可引用项目上游阶段）", true)}
+          
+          {/* 当前阶段字段 */}
+          {renderFieldGroup(currentPhaseFields, `当前阶段（${phaseNameMap[field.phase] || field.phase}）`)}
+          
+          {/* 其他阶段字段 */}
+          {renderFieldGroup(otherFields, "其他阶段")}
+          
+          {availableFields.length === 0 && (
             <p className="text-zinc-500 text-center py-4">暂无可选的依赖字段</p>
           )}
         </div>

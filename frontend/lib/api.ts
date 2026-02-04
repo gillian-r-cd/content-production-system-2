@@ -3,7 +3,7 @@
 // 主要函数: fetchAPI, streamAPI
 // 数据结构: Project, Field, ChatMessage
 
-const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+export const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 
 // ============== Types ==============
 
@@ -215,13 +215,14 @@ export const fieldAPI = {
 // ============== Agent API ==============
 
 export const agentAPI = {
-  chat: (projectId: string, message: string, currentPhase?: string) =>
+  chat: (projectId: string, message: string, options?: { currentPhase?: string; references?: string[] }) =>
     fetchAPI<ChatResponse>("/api/agent/chat", {
       method: "POST",
       body: JSON.stringify({
         project_id: projectId,
         message,
-        current_phase: currentPhase,
+        current_phase: options?.currentPhase,
+        references: options?.references || [],
       }),
     }),
   
@@ -441,6 +442,10 @@ export const simulationAPI = {
       body: JSON.stringify(data),
     }),
   
+  // 运行模拟（启动模拟任务）
+  run: (id: string) =>
+    fetchAPI<SimulationRecord>(`/api/simulations/${id}/run`, { method: "POST" }),
+  
   // 删除模拟记录
   delete: (id: string) =>
     fetchAPI<any>(`/api/simulations/${id}`, { method: "DELETE" }),
@@ -636,4 +641,20 @@ export const phaseTemplateAPI = {
       { method: "POST" }
     ),
 };
+
+// ============== Utilities ==============
+
+/**
+ * 解析消息中的 @引用
+ * 例如: "请参考 @标题 和 @正文 生成内容" => ["标题", "正文"]
+ */
+export function parseReferences(message: string): string[] {
+  const pattern = /@([^\s@]+)/g;
+  const matches: string[] = [];
+  let match;
+  while ((match = pattern.exec(message)) !== null) {
+    matches.push(match[1]);
+  }
+  return matches;
+}
 
