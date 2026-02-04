@@ -8,17 +8,22 @@
 import { useState, useEffect, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import { PHASE_NAMES, PROJECT_PHASES } from "@/lib/utils";
-import { fieldAPI, agentAPI } from "@/lib/api";
-import type { Field } from "@/lib/api";
+import { fieldAPI, agentAPI, blockAPI } from "@/lib/api";
+import type { Field, ContentBlock } from "@/lib/api";
+import { ContentBlockEditor } from "./content-block-editor";
 import { SimulationPanel } from "./simulation-panel";
 import { ProposalSelector } from "./proposal-selector";
 import { ResearchPanel } from "./research-panel";
+import { FileText, Folder, Settings, ChevronRight } from "lucide-react";
 
 interface ContentPanelProps {
   projectId: string | null;
   currentPhase: string;
   phaseStatus?: Record<string, string>;  // 各阶段状态
   fields: Field[];
+  selectedBlock?: ContentBlock | null;  // 树形视图选中的内容块
+  allBlocks?: ContentBlock[];  // 所有内容块（用于依赖选择）
+  useFlexibleArchitecture?: boolean;  // 项目是否使用灵活架构
   onFieldUpdate?: (fieldId: string, content: string) => void;
   onFieldsChange?: () => void;
   onPhaseAdvance?: () => void;  // 阶段推进后的回调
@@ -29,6 +34,9 @@ export function ContentPanel({
   currentPhase,
   phaseStatus = {},
   fields,
+  selectedBlock,
+  allBlocks = [],
+  useFlexibleArchitecture = false,
   onFieldUpdate,
   onFieldsChange,
   onPhaseAdvance,
@@ -266,6 +274,98 @@ export function ContentPanel({
     );
   }
 
+  // ===== 树形视图选中内容块时，显示该块详情 =====
+  if (selectedBlock && selectedBlock.block_type === "field") {
+    // 尝试找到对应的传统 Field（虚拟树形视图使用真实的 field.id）
+    const matchingField = fields.find(f => f.id === selectedBlock.id);
+    
+    // 如果找到对应的传统 Field
+    if (matchingField) {
+      // ===== 特殊处理：消费者调研报告 =====
+      if (matchingField.phase === "research" && matchingField.name === "消费者调研报告") {
+        try {
+          const researchData = JSON.parse(matchingField.content || "{}");
+          if (researchData.summary && researchData.personas) {
+            return (
+              <ResearchPanel
+                projectId={projectId}
+                fieldId={matchingField.id}
+                content={matchingField.content}
+                onUpdate={onFieldsChange}
+                onAdvance={handleAdvancePhase}
+              />
+            );
+          }
+        } catch {
+          // JSON 解析失败，使用默认 FieldCard
+        }
+      }
+      
+      // ===== 特殊处理：内涵设计方案 =====
+      if (matchingField.phase === "design_inner" && matchingField.name === "内容设计方案") {
+        try {
+          const proposalData = JSON.parse(matchingField.content || "{}");
+          if (proposalData.proposals && Array.isArray(proposalData.proposals)) {
+            return (
+              <div className="h-full flex flex-col">
+                <ProposalSelector
+                  projectId={projectId}
+                  fieldId={matchingField.id}
+                  content={matchingField.content}
+                  existingFields={phaseFields.filter(f => f.phase === "produce_inner")}
+                  onUpdate={onFieldsChange}
+                  onAdvance={handleAdvancePhase}
+                />
+              </div>
+            );
+          }
+        } catch {
+          // JSON 解析失败，使用默认 FieldCard
+        }
+      }
+      
+      // 默认：使用 FieldCard 显示完整功能
+      return (
+        <div className="h-full flex flex-col p-6">
+          {/* 面包屑导航 */}
+          <div className="flex items-center gap-2 text-sm text-zinc-500 mb-4">
+            <Folder className="w-4 h-4" />
+            <span>{PHASE_NAMES[matchingField.phase] || matchingField.phase}</span>
+            <ChevronRight className="w-3 h-3" />
+            <FileText className="w-4 h-4" />
+            <span className="text-zinc-300">{matchingField.name}</span>
+          </div>
+          
+          {/* 使用 FieldCard 显示完整功能 */}
+          <div className="flex-1 overflow-y-auto">
+            <FieldCard
+              key={matchingField.id}
+              field={matchingField}
+              allFields={fields}
+              completedFieldIds={completedFieldIds}
+              autoGeneratingFieldId={autoGeneratingFieldId}
+              onContentChange={(content) => onFieldUpdate?.(matchingField.id, content)}
+              onFieldsChange={onFieldsChange}
+              onAutoGenerate={() => handleAutoGenerateField(matchingField)}
+            />
+          </div>
+        </div>
+      );
+    }
+    
+    // 显示 ContentBlock 编辑界面
+    // isVirtual: 如果项目不使用灵活架构，则是虚拟块（来自 ProjectField）
+    return (
+      <ContentBlockEditor
+        block={selectedBlock}
+        projectId={projectId}
+        allBlocks={allBlocks}
+        isVirtual={!useFlexibleArchitecture}
+        onUpdate={onFieldsChange}
+      />
+    );
+  }
+  
   // 消费者模拟阶段使用专用面板
   if (currentPhase === "simulate") {
     return (
@@ -550,6 +650,12 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
   const [showConstraintsModal, setShowConstraintsModal] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatingContent, setGeneratingContent] = useState("");
+  // 预提问相关状态
+  const [showPreQuestions, setShowPreQuestions] = useState(false);
+  const [preAnswers, setPreAnswers] = useState<Record<string, string>>(
+    field.pre_answers || {}
+  );
+  const hasPreQuestions = field.pre_questions && field.pre_questions.length > 0;
 
   useEffect(() => {
     setContent(field.content);
@@ -571,16 +677,23 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
       alert(`请先完成依赖字段: ${unmetDependencies.map(f => f.name).join(", ")}`);
       return;
     }
+    
+    // 如果有预提问但还没展开，先展开让用户填写
+    if (hasPreQuestions && !showPreQuestions && Object.keys(preAnswers).length === 0) {
+      setShowPreQuestions(true);
+      return;
+    }
 
     setIsGenerating(true);
     setGeneratingContent("");
+    setShowPreQuestions(false);
 
     try {
-      // 使用流式生成
+      // 使用流式生成，传递预回答
       const response = await fetch(`http://localhost:8000/api/fields/${field.id}/generate/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pre_answers: field.pre_answers || {} }),
+        body: JSON.stringify({ pre_answers: preAnswers }),
       });
 
       const reader = response.body?.getReader();
@@ -858,6 +971,49 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
         </div>
       </div>
 
+      {/* 预提问区域（模板定义的生成前提问） */}
+      {showPreQuestions && hasPreQuestions && (
+        <div className="mx-4 mb-4 p-4 bg-surface-1 border border-amber-500/30 rounded-lg">
+          <h4 className="text-sm font-medium text-amber-400 mb-3 flex items-center gap-2">
+            <span>📝</span>
+            生成前请先回答以下问题
+          </h4>
+          <div className="space-y-3">
+            {field.pre_questions.map((question: string, index: number) => (
+              <div key={index}>
+                <label className="block text-xs text-zinc-400 mb-1">
+                  {index + 1}. {question}
+                </label>
+                <input
+                  type="text"
+                  value={preAnswers[question] || ""}
+                  onChange={(e) => setPreAnswers({
+                    ...preAnswers,
+                    [question]: e.target.value,
+                  })}
+                  placeholder="请输入您的回答..."
+                  className="w-full bg-surface-2 border border-surface-3 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                />
+              </div>
+            ))}
+          </div>
+          <div className="mt-4 flex gap-2 justify-end">
+            <button
+              onClick={() => setShowPreQuestions(false)}
+              className="px-3 py-1.5 text-sm bg-surface-3 hover:bg-surface-4 text-zinc-400 rounded-lg transition-colors"
+            >
+              取消
+            </button>
+            <button
+              onClick={handleGenerate}
+              className="px-4 py-1.5 text-sm bg-brand-600 hover:bg-brand-700 text-white rounded-lg transition-colors"
+            >
+              ✅ 确认并生成
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* 字段内容 */}
       <div className="p-4">
         {isGenerating ? (
@@ -877,6 +1033,10 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
           <div className="prose prose-invert max-w-none prose-headings:text-zinc-100 prose-p:text-zinc-300 prose-li:text-zinc-300 prose-strong:text-zinc-200">
             {field.content ? (
               <ReactMarkdown>{field.content}</ReactMarkdown>
+            ) : hasPreQuestions && !showPreQuestions ? (
+              <p className="text-zinc-500 italic">
+                此字段有预设问题需要回答，点击"生成"按钮开始
+              </p>
             ) : (
               <p className="text-zinc-500 italic">暂无内容，点击"生成"按钮开始</p>
             )}

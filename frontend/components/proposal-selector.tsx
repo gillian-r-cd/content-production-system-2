@@ -336,29 +336,48 @@ export function ProposalSelector({
 
     setIsConfirming(true);
     try {
+      // 首先获取已存在的 produce_inner 阶段字段
+      const existingFields = await fieldAPI.listByProject(projectId, "produce_inner");
+      const existingFieldsByName: Record<string, any> = {};
+      for (const f of existingFields) {
+        existingFieldsByName[f.name] = f;
+      }
+      
       // 构建临时ID到真实ID的映射
       const tempIdToRealId: Record<string, string> = {};
       
-      // 第一步：按顺序创建所有字段（先不设置依赖）
+      // 第一步：按顺序创建/更新字段（先不设置依赖）
       for (const field of currentFields) {
-        const createdField = await fieldAPI.create({
-          project_id: projectId,
-          name: field.name,
-          phase: "produce_inner",  // 字段属于内涵生产阶段
-          field_type: field.field_type || "richtext",
-          content: "",  // 内容待生产
-          status: "pending",
-          ai_prompt: field.ai_prompt,
-          dependencies: {
-            depends_on: [],  // 先创建不带依赖
-            dependency_type: "all",
-          },
-          // 传递约束和自动生成设置
-          constraints: (field as any).constraints || undefined,
-          need_review: field.need_review,  // 是否需要人工确认
-        });
-        // 记录临时ID到真实ID的映射
-        tempIdToRealId[field.id] = createdField.id;
+        const existingField = existingFieldsByName[field.name];
+        
+        if (existingField) {
+          // 同名字段已存在，更新配置但保留内容
+          await fieldAPI.update(existingField.id, {
+            ai_prompt: field.ai_prompt,
+            constraints: (field as any).constraints || undefined,
+            need_review: field.need_review,
+            // 注意：不更新 content 和 status，保留已有内容
+          });
+          tempIdToRealId[field.id] = existingField.id;
+        } else {
+          // 新字段，创建
+          const createdField = await fieldAPI.create({
+            project_id: projectId,
+            name: field.name,
+            phase: "produce_inner",
+            field_type: field.field_type || "richtext",
+            content: "",
+            status: "pending",
+            ai_prompt: field.ai_prompt,
+            dependencies: {
+              depends_on: [],
+              dependency_type: "all",
+            },
+            constraints: (field as any).constraints || undefined,
+            need_review: field.need_review,
+          });
+          tempIdToRealId[field.id] = createdField.id;
+        }
       }
 
       // 第二步：更新依赖关系（使用真实ID）
@@ -367,7 +386,7 @@ export function ProposalSelector({
           const realId = tempIdToRealId[field.id];
           const realDependsOn = field.depends_on
             .map((depId) => tempIdToRealId[depId])
-            .filter(Boolean);  // 过滤掉找不到映射的ID
+            .filter(Boolean);
           
           if (realDependsOn.length > 0) {
             await fieldAPI.update(realId, {

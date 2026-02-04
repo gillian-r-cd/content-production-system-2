@@ -34,6 +34,14 @@ class ChatRequest(BaseModel):
     references: List[str] = []  # @引用的字段名列表
 
 
+class FieldUpdatedInfo(BaseModel):
+    """字段更新信息"""
+    id: str
+    name: str
+    phase: str
+    action: Optional[str] = None  # "modified" | "created"
+
+
 class ChatResponseSchema(BaseModel):
     """对话响应"""
     message_id: str
@@ -41,6 +49,7 @@ class ChatResponseSchema(BaseModel):
     phase: str
     phase_status: Dict[str, str]
     waiting_for_human: bool
+    field_updated: Optional[FieldUpdatedInfo] = None  # @ 引用修改后返回
 
 
 class MessageUpdate(BaseModel):
@@ -158,7 +167,24 @@ async def chat(
     db.add(user_msg)
     db.commit()
     
-    # 运行Agent（传递历史对话和现有阶段状态）
+    # ===== @ 引用解析：查询引用字段的内容 =====
+    references = request.references or []
+    referenced_contents = {}
+    
+    if references:
+        # 查询所有匹配的字段（按名称）
+        referenced_fields = db.query(ProjectField).filter(
+            ProjectField.project_id == request.project_id,
+            ProjectField.name.in_(references)
+        ).all()
+        
+        for field in referenced_fields:
+            referenced_contents[field.name] = field.content or ""
+        
+        # 记录日志
+        print(f"[Agent] @ 引用解析: {references} -> 找到 {len(referenced_contents)} 个字段")
+    
+    # 运行Agent（传递历史对话、阶段状态、架构信息和引用内容）
     result = await content_agent.run(
         project_id=request.project_id,
         user_input=request.message,
@@ -166,8 +192,11 @@ async def chat(
         golden_context=project.golden_context or {},
         autonomy_settings=project.agent_autonomy or {},
         use_deep_research=project.use_deep_research if hasattr(project, 'use_deep_research') else True,
-        chat_history=chat_history,  # 传递历史对话
-        phase_status=project.phase_status or {},  # 传递现有阶段状态！
+        chat_history=chat_history,
+        phase_status=project.phase_status or {},
+        phase_order=project.phase_order,  # 传递项目实际的阶段顺序
+        references=references,  # @ 引用的字段名
+        referenced_contents=referenced_contents,  # 引用字段的内容
     )
     
     agent_output = result.get("agent_output", "")
@@ -181,7 +210,29 @@ async def chat(
     field_updated = None
     fields_created = []
     
-    if agent_output and result_phase and is_producing:
+    # ===== 特殊处理：@ 引用字段修改 =====
+    modify_target_field = result.get("modify_target_field")
+    if modify_target_field and agent_output:
+        # 找到目标字段并更新
+        target_field = db.query(ProjectField).filter(
+            ProjectField.project_id == request.project_id,
+            ProjectField.name == modify_target_field,
+        ).first()
+        
+        if target_field:
+            target_field.content = agent_output
+            target_field.status = "completed"
+            field_updated = {
+                "id": target_field.id, 
+                "name": target_field.name, 
+                "phase": target_field.phase,
+                "action": "modified"
+            }
+            print(f"[Agent] 字段修改成功: {modify_target_field}")
+        else:
+            print(f"[Agent] 字段修改失败: 未找到 {modify_target_field}")
+    
+    elif agent_output and result_phase and is_producing:
         # ===== 意图分析阶段：解析JSON创建3个独立字段 =====
         if result_phase == "intent":
             try:

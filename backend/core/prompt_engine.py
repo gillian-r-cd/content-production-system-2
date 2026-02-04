@@ -29,27 +29,40 @@ class GoldenContext:
     """
     Golden Context - 每次LLM调用必须注入的核心上下文
     
+    核心原则（2024-02更新）:
+    - 只有 creator_profile 应该全局注入到每个 LLM 调用
+    - intent 和 consumer_personas 应该通过字段依赖关系传递
+    - 但为了向后兼容，特定阶段（如 design_inner）仍需要这些上下文
+    
     包含:
-    - 创作者特质: 风格、语气、禁忌等
-    - 项目意图: 意图分析阶段的输出
-    - 用户画像: 消费者调研阶段的输出
+    - 创作者特质: 风格、语气、禁忌等（全局注入）
+    - 项目意图: 意图分析阶段的输出（通过依赖传递，或特定阶段注入）
+    - 用户画像: 消费者调研阶段的输出（通过依赖传递，或特定阶段注入）
     """
     creator_profile: str = ""
     intent: str = ""
     consumer_personas: str = ""
     
+    # 控制是否注入 intent 和 consumer_personas
+    # False = 只注入 creator_profile（这些应该通过依赖传递）
+    # True = 全部注入（用于 design_inner 等需要全局上下文的阶段）
+    include_all_context: bool = True
+    
     def to_prompt(self) -> str:
         """转换为提示词格式"""
         sections = []
         
+        # 创作者特质始终注入
         if self.creator_profile:
             sections.append(f"# 创作者特质\n{self.creator_profile}")
         
-        if self.intent:
-            sections.append(f"# 项目意图\n{self.intent}")
-        
-        if self.consumer_personas:
-            sections.append(f"# 目标用户画像\n{self.consumer_personas}")
+        # intent 和 consumer_personas 根据 include_all_context 决定是否注入
+        if self.include_all_context:
+            if self.intent:
+                sections.append(f"# 项目意图\n{self.intent}")
+            
+            if self.consumer_personas:
+                sections.append(f"# 目标用户画像\n{self.consumer_personas}")
         
         return "\n\n".join(sections)
     

@@ -1,6 +1,6 @@
 # backend/core/tools/__init__.py
 # 功能: 工具包入口，导出所有LangGraph工具
-# 包含: deep_research, field_generator, simulator, evaluator
+# 包含: deep_research, field_generator, simulator, evaluator, architecture_reader
 
 """
 LangGraph 工具包
@@ -42,6 +42,64 @@ from core.tools.evaluator import (
     Suggestion,
 )
 
+from core.tools.architecture_reader import (
+    get_project_architecture,
+    get_phase_fields,
+    get_field_content,
+    get_content_block_tree,
+    format_architecture_for_llm,
+    ProjectArchitecture,
+    PhaseInfo,
+    FieldInfo,
+    ContentBlockInfo,
+)
+
+from core.tools.architecture_writer import (
+    modify_architecture,
+    add_phase,
+    remove_phase,
+    reorder_phases,
+    add_field,
+    remove_field,
+    update_field,
+    move_field,
+    ArchitectureOperation,
+    OperationResult,
+)
+
+from core.tools.outline_generator import (
+    generate_outline,
+    apply_outline_to_project,
+    ContentOutline,
+    OutlineNode,
+)
+
+from core.tools.persona_manager import (
+    manage_persona,
+    create_persona,
+    update_persona,
+    select_persona,
+    delete_persona,
+    generate_persona,
+    list_personas,
+    PersonaOperation,
+    Persona,
+    PersonaResult,
+)
+
+from core.tools.skill_manager import (
+    manage_skill,
+    create_skill,
+    update_skill,
+    delete_skill,
+    apply_skill,
+    list_skills,
+    get_skill,
+    SkillOperation,
+    Skill,
+    SkillResult,
+)
+
 __all__ = [
     # DeepResearch
     "deep_research",
@@ -73,4 +131,57 @@ __all__ = [
     "EvaluationResult",
     "SectionScore",
     "Suggestion",
+    
+    # Architecture Reader
+    "get_project_architecture",
+    "get_phase_fields",
+    "get_field_content",
+    "get_content_block_tree",
+    "format_architecture_for_llm",
+    "ProjectArchitecture",
+    "PhaseInfo",
+    "FieldInfo",
+    "ContentBlockInfo",
+    
+    # Architecture Writer
+    "modify_architecture",
+    "add_phase",
+    "remove_phase",
+    "reorder_phases",
+    "add_field",
+    "remove_field",
+    "update_field",
+    "move_field",
+    "ArchitectureOperation",
+    "OperationResult",
+    
+    # Outline Generator
+    "generate_outline",
+    "apply_outline_to_project",
+    "ContentOutline",
+    "OutlineNode",
+    
+    # Persona Manager
+    "manage_persona",
+    "create_persona",
+    "update_persona",
+    "select_persona",
+    "delete_persona",
+    "generate_persona",
+    "list_personas",
+    "PersonaOperation",
+    "Persona",
+    "PersonaResult",
+    
+    # Skill Manager
+    "manage_skill",
+    "create_skill",
+    "update_skill",
+    "delete_skill",
+    "apply_skill",
+    "list_skills",
+    "get_skill",
+    "SkillOperation",
+    "Skill",
+    "SkillResult",
 ]

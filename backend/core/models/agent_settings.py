@@ -24,6 +24,7 @@ class AgentSettings(BaseModel):
         tools: 启用的工具列表
         skills: 自定义技能列表
         autonomy_defaults: 各阶段默认自主权设置
+        tool_prompts: 各工具的自定义提示词 {tool_id: prompt}
     """
     __tablename__ = "agent_settings"
 
@@ -31,4 +32,5 @@ class AgentSettings(BaseModel):
     tools: Mapped[list] = mapped_column(JSON, default=list)
     skills: Mapped[list] = mapped_column(JSON, default=list)
     autonomy_defaults: Mapped[dict] = mapped_column(JSON, default=dict)
+    tool_prompts: Mapped[dict] = mapped_column(JSON, default=dict)
 

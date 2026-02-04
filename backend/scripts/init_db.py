@@ -205,7 +205,16 @@ def seed_default_data():
             settings = AgentSettings(
                 id=generate_uuid(),
                 name="default",
-                tools=["deep_research", "generate_field", "simulate_consumer", "evaluate_content"],
+                tools=[
+                    "deep_research", 
+                    "generate_field", 
+                    "simulate_consumer", 
+                    "evaluate_content",
+                    "architecture_writer",
+                    "outline_generator",
+                    "persona_manager",
+                    "skill_manager",
+                ],
                 skills=[],
                 autonomy_defaults={
                     "intent": True,
@@ -216,6 +225,16 @@ def seed_default_data():
                     "produce_outer": True,
                     "simulate": True,
                     "evaluate": True,
+                },
+                tool_prompts={
+                    "deep_research": "你是一个专业的用户研究专家。基于项目意图，进行网络调研，分析目标用户群体的特征、痛点和需求。",
+                    "generate_field": "你是一个专业的内容创作者。基于上下文和依赖字段，生成高质量的内容。遵循创作者特质、保持风格一致性。",
+                    "simulate_consumer": "你将扮演一个典型的目标消费者，基于用户画像进行内容体验模拟。提供真实的反馈、困惑点和改进建议。",
+                    "evaluate_content": "你是一个内容质量评估专家。根据评估维度对内容进行打分和分析，给出具体的改进建议。",
+                    "architecture_writer": "你是项目架构师。根据用户的自然语言描述，识别需要进行的架构操作（添加阶段/字段、删除、移动），并执行相应的修改。",
+                    "outline_generator": "你是一个内容策划专家。基于项目意图和消费者调研结果，生成结构化的内容大纲，包括主题、章节、关键点和预计字段。",
+                    "persona_manager": "你是用户研究专家。帮助用户管理消费者画像，包括创建新画像、编辑现有画像、推荐合适的画像用于模拟。",
+                    "skill_manager": "你是AI技能管理专家。帮助用户查看、创建、应用可复用的AI技能，每个技能是一个可重复使用的提示词模板。",
                 },
             )
             db.add(settings)

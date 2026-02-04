@@ -26,6 +26,7 @@ class ProjectCreate(BaseModel):
     name: str
     creator_profile_id: Optional[str] = None
     use_deep_research: bool = True
+    use_flexible_architecture: bool = False  # 是否使用灵活的 ContentBlock 架构
 
 
 class ProjectUpdate(BaseModel):
@@ -36,6 +37,7 @@ class ProjectUpdate(BaseModel):
     agent_autonomy: Optional[Dict[str, bool]] = None
     golden_context: Optional[dict] = None
     use_deep_research: Optional[bool] = None
+    use_flexible_architecture: Optional[bool] = None
 
 
 class ProjectResponse(BaseModel):
@@ -51,6 +53,7 @@ class ProjectResponse(BaseModel):
     agent_autonomy: Dict[str, bool]
     golden_context: dict
     use_deep_research: bool
+    use_flexible_architecture: bool = False  # 是否使用灵活的 ContentBlock 架构
     created_at: str
     updated_at: str
 
@@ -283,6 +286,7 @@ def _project_to_response(project: Project) -> ProjectResponse:
         agent_autonomy=project.agent_autonomy or {},
         golden_context=project.golden_context or {},
         use_deep_research=project.use_deep_research if hasattr(project, 'use_deep_research') else True,
+        use_flexible_architecture=project.use_flexible_architecture if hasattr(project, 'use_flexible_architecture') else False,
         created_at=project.created_at.isoformat() if project.created_at else "",
         updated_at=project.updated_at.isoformat() if project.updated_at else "",
     )

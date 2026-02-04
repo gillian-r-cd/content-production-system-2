@@ -82,6 +82,7 @@ class AgentSettingsUpdate(BaseModel):
     tools: Optional[list] = None
     skills: Optional[list] = None
     autonomy_defaults: Optional[dict] = None
+    tool_prompts: Optional[dict] = None
 
 
 class AgentSettingsResponse(BaseModel):
@@ -90,6 +91,7 @@ class AgentSettingsResponse(BaseModel):
     tools: list
     skills: list
     autonomy_defaults: dict
+    tool_prompts: dict
 
     model_config = {"from_attributes": True}
 
@@ -611,6 +613,7 @@ def _to_agent_settings_response(s: AgentSettings) -> AgentSettingsResponse:
         tools=s.tools or [],
         skills=s.skills or [],
         autonomy_defaults=s.autonomy_defaults or {},
+        tool_prompts=s.tool_prompts or {},
     )
 
 

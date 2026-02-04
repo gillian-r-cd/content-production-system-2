@@ -1,11 +1,14 @@
 // frontend/components/create-project-modal.tsx
-// 功能: 创建项目对话框，包含创作者特质选择和DeepResearch开关
+// 功能: 创建项目对话框，支持两步流程：基本信息 → 选择模板
+// 主要组件: CreateProjectModal
+// 集成: TemplateSelector 用于选择流程模板
 
 "use client";
 
 import { useState, useEffect } from "react";
-import { settingsAPI, projectAPI } from "@/lib/api";
-import type { CreatorProfile, Project } from "@/lib/api";
+import { settingsAPI, projectAPI, blockAPI, phaseTemplateAPI } from "@/lib/api";
+import type { CreatorProfile, Project, PhaseTemplate } from "@/lib/api";
+import { ChevronLeft, ChevronRight, Check, Folder, Lightbulb, Users, PlayCircle, BarChart3 } from "lucide-react";
 
 interface CreateProjectModalProps {
   isOpen: boolean;
@@ -13,22 +16,49 @@ interface CreateProjectModalProps {
   onCreated: (project: Project) => void;
 }
 
+type Step = "info" | "template";
+
+// 特殊处理器图标
+const specialHandlerIcons: Record<string, React.ReactNode> = {
+  intent: <Lightbulb className="w-4 h-4 text-amber-400" />,
+  research: <Users className="w-4 h-4 text-blue-400" />,
+  simulate: <PlayCircle className="w-4 h-4 text-purple-400" />,
+  evaluate: <BarChart3 className="w-4 h-4 text-emerald-400" />,
+};
+
 export function CreateProjectModal({
   isOpen,
   onClose,
   onCreated,
 }: CreateProjectModalProps) {
+  // 步骤状态
+  const [step, setStep] = useState<Step>("info");
+  
+  // 基本信息
   const [name, setName] = useState("");
   const [creatorProfileId, setCreatorProfileId] = useState<string>("");
   const [useDeepResearch, setUseDeepResearch] = useState(true);
   const [creatorProfiles, setCreatorProfiles] = useState<CreatorProfile[]>([]);
+  
+  // 模板选择
+  const [templates, setTemplates] = useState<PhaseTemplate[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
+  const [expandedTemplateId, setExpandedTemplateId] = useState<string | null>(null);
+  const [useNewArchitecture, setUseNewArchitecture] = useState(false); // 是否使用新架构
+  
+  // 状态
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // 加载创作者特质列表
+  // 加载数据
   useEffect(() => {
     if (isOpen) {
       loadCreatorProfiles();
+      loadTemplates();
+      // 重置状态
+      setStep("info");
+      setName("");
+      setError(null);
     }
   }, [isOpen]);
 
@@ -36,7 +66,6 @@ export function CreateProjectModal({
     try {
       const profiles = await settingsAPI.listCreatorProfiles();
       setCreatorProfiles(profiles);
-      // 如果有默认的，自动选中第一个
       if (profiles.length > 0 && !creatorProfileId) {
         setCreatorProfileId(profiles[0].id);
       }
@@ -44,17 +73,43 @@ export function CreateProjectModal({
       console.error("加载创作者特质失败:", err);
     }
   };
+  
+  const loadTemplates = async () => {
+    try {
+      const data = await phaseTemplateAPI.list();
+      setTemplates(data);
+      // 默认选中默认模板
+      const defaultTemplate = data.find((t) => t.is_default);
+      if (defaultTemplate) {
+        setSelectedTemplateId(defaultTemplate.id);
+        setExpandedTemplateId(defaultTemplate.id);
+      }
+    } catch (err) {
+      console.error("加载模板失败:", err);
+    }
+  };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    
+  const handleNextStep = () => {
     if (!name.trim()) {
       setError("请输入项目名称");
       return;
     }
-    
     if (!creatorProfileId) {
       setError("请选择创作者特质");
+      return;
+    }
+    setError(null);
+    setStep("template");
+  };
+
+  const handlePrevStep = () => {
+    setStep("info");
+    setError(null);
+  };
+
+  const handleSubmit = async () => {
+    if (!name.trim() || !creatorProfileId) {
+      setError("请填写必要信息");
       return;
     }
 
@@ -62,16 +117,29 @@ export function CreateProjectModal({
     setError(null);
 
     try {
+      // 1. 创建项目
       const project = await projectAPI.create({
         name: name.trim(),
         creator_profile_id: creatorProfileId,
         use_deep_research: useDeepResearch,
       });
+      
+      // 2. 如果选择了使用新架构且选择了模板，应用模板
+      if (useNewArchitecture && selectedTemplateId) {
+        try {
+          await blockAPI.applyTemplate(project.id, selectedTemplateId);
+        } catch (templateErr) {
+          console.warn("应用模板失败，使用传统流程:", templateErr);
+        }
+      }
+      
       onCreated(project);
+      
       // 重置表单
       setName("");
       setCreatorProfileId(creatorProfiles[0]?.id || "");
       setUseDeepResearch(true);
+      setStep("info");
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建失败");
@@ -91,120 +159,292 @@ export function CreateProjectModal({
       />
 
       {/* 对话框 */}
-      <div className="relative w-full max-w-md bg-surface-1 border border-surface-3 rounded-xl shadow-2xl">
-        <div className="p-6">
-          <h2 className="text-xl font-semibold text-zinc-100 mb-6">
-            新建内容项目
-          </h2>
-
-          <form onSubmit={handleSubmit} className="space-y-5">
-            {/* 项目名称 */}
-            <div>
-              <label className="block text-sm font-medium text-zinc-300 mb-2">
-                项目名称 <span className="text-red-400">*</span>
-              </label>
-              <input
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="例如：产品发布内容策划"
-                className="w-full px-4 py-2.5 bg-surface-2 border border-surface-3 rounded-lg text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent"
-                autoFocus
-              />
+      <div className="relative w-full max-w-lg bg-surface-1 border border-surface-3 rounded-xl shadow-2xl">
+        {/* 步骤指示器 */}
+        <div className="px-6 pt-6 pb-4 border-b border-surface-3">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-semibold text-zinc-100">
+              新建内容项目
+            </h2>
+            <div className="flex items-center gap-2 text-xs text-zinc-500">
+              <span className={step === "info" ? "text-brand-400 font-medium" : ""}>
+                1. 基本信息
+              </span>
+              <ChevronRight className="w-3 h-3" />
+              <span className={step === "template" ? "text-brand-400 font-medium" : ""}>
+                2. 流程设置
+              </span>
             </div>
+          </div>
+          
+          {/* 进度条 */}
+          <div className="h-1 bg-surface-3 rounded-full overflow-hidden">
+            <div 
+              className="h-full bg-brand-500 transition-all duration-300"
+              style={{ width: step === "info" ? "50%" : "100%" }}
+            />
+          </div>
+        </div>
 
-            {/* 创作者特质 */}
-            <div>
-              <label className="block text-sm font-medium text-zinc-300 mb-2">
-                创作者特质 <span className="text-red-400">*</span>
-              </label>
-              {creatorProfiles.length === 0 ? (
-                <div className="p-4 bg-amber-900/20 border border-amber-700/50 rounded-lg">
-                  <p className="text-sm text-amber-200">
-                    还没有创作者特质，请先在{" "}
-                    <a
-                      href="/settings"
-                      className="underline hover:text-amber-100"
-                    >
-                      后台设置
-                    </a>{" "}
-                    中创建。
+        <div className="p-6">
+          {/* 第一步：基本信息 */}
+          {step === "info" && (
+            <div className="space-y-5">
+              {/* 项目名称 */}
+              <div>
+                <label className="block text-sm font-medium text-zinc-300 mb-2">
+                  项目名称 <span className="text-red-400">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="例如：产品发布内容策划"
+                  className="w-full px-4 py-2.5 bg-surface-2 border border-surface-3 rounded-lg text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent"
+                  autoFocus
+                />
+              </div>
+
+              {/* 创作者特质 */}
+              <div>
+                <label className="block text-sm font-medium text-zinc-300 mb-2">
+                  创作者特质 <span className="text-red-400">*</span>
+                </label>
+                {creatorProfiles.length === 0 ? (
+                  <div className="p-4 bg-amber-900/20 border border-amber-700/50 rounded-lg">
+                    <p className="text-sm text-amber-200">
+                      还没有创作者特质，请先在{" "}
+                      <a href="/settings" className="underline hover:text-amber-100">
+                        后台设置
+                      </a>{" "}
+                      中创建。
+                    </p>
+                  </div>
+                ) : (
+                  <select
+                    value={creatorProfileId}
+                    onChange={(e) => setCreatorProfileId(e.target.value)}
+                    className="w-full px-4 py-2.5 bg-surface-2 border border-surface-3 rounded-lg text-zinc-100 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                  >
+                    <option value="">请选择...</option>
+                    {creatorProfiles.map((profile) => (
+                      <option key={profile.id} value={profile.id}>
+                        {profile.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              {/* DeepResearch 开关 */}
+              <div className="flex items-center justify-between p-4 bg-surface-2 rounded-lg">
+                <div>
+                  <p className="text-sm font-medium text-zinc-200">
+                    启用 DeepResearch
+                  </p>
+                  <p className="text-xs text-zinc-500 mt-1">
+                    消费者调研阶段将使用网络搜索获取更深入的用户洞察
                   </p>
                 </div>
-              ) : (
-                <select
-                  value={creatorProfileId}
-                  onChange={(e) => setCreatorProfileId(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-surface-2 border border-surface-3 rounded-lg text-zinc-100 focus:outline-none focus:ring-2 focus:ring-brand-500"
-                >
-                  <option value="">请选择...</option>
-                  {creatorProfiles.map((profile) => (
-                    <option key={profile.id} value={profile.id}>
-                      {profile.name}
-                    </option>
-                  ))}
-                </select>
-              )}
-              {creatorProfileId && (
-                <p className="mt-2 text-xs text-zinc-500">
-                  创作者特质将作为所有内容生成的全局上下文
-                </p>
-              )}
-            </div>
-
-            {/* DeepResearch 开关 */}
-            <div className="flex items-center justify-between p-4 bg-surface-2 rounded-lg">
-              <div>
-                <p className="text-sm font-medium text-zinc-200">
-                  启用 DeepResearch
-                </p>
-                <p className="text-xs text-zinc-500 mt-1">
-                  消费者调研阶段将使用网络搜索获取更深入的用户洞察
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setUseDeepResearch(!useDeepResearch)}
-                className={`relative w-12 h-6 rounded-full transition-colors ${
-                  useDeepResearch ? "bg-brand-600" : "bg-zinc-600"
-                }`}
-              >
-                <span
-                  className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
-                    useDeepResearch ? "left-7" : "left-1"
+                <button
+                  type="button"
+                  onClick={() => setUseDeepResearch(!useDeepResearch)}
+                  className={`relative w-12 h-6 rounded-full transition-colors ${
+                    useDeepResearch ? "bg-brand-600" : "bg-zinc-600"
                   }`}
-                />
-              </button>
-            </div>
-
-            {/* 错误提示 */}
-            {error && (
-              <div className="p-3 bg-red-900/20 border border-red-700/50 rounded-lg">
-                <p className="text-sm text-red-300">{error}</p>
+                >
+                  <span
+                    className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
+                      useDeepResearch ? "left-7" : "left-1"
+                    }`}
+                  />
+                </button>
               </div>
-            )}
+            </div>
+          )}
 
-            {/* 按钮 */}
-            <div className="flex justify-end gap-3 pt-2">
+          {/* 第二步：流程设置 */}
+          {step === "template" && (
+            <div className="space-y-5">
+              {/* 架构选择 */}
+              <div className="flex items-center justify-between p-4 bg-surface-2 rounded-lg">
+                <div>
+                  <p className="text-sm font-medium text-zinc-200">
+                    使用灵活流程架构
+                  </p>
+                  <p className="text-xs text-zinc-500 mt-1">
+                    支持自定义阶段、无限层级结构（实验性功能）
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setUseNewArchitecture(!useNewArchitecture)}
+                  className={`relative w-12 h-6 rounded-full transition-colors ${
+                    useNewArchitecture ? "bg-brand-600" : "bg-zinc-600"
+                  }`}
+                >
+                  <span
+                    className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
+                      useNewArchitecture ? "left-7" : "left-1"
+                    }`}
+                  />
+                </button>
+              </div>
+              
+              {/* 模板选择（仅在启用新架构时显示） */}
+              {useNewArchitecture && (
+                <div className="space-y-3">
+                  <label className="block text-sm font-medium text-zinc-300">
+                    选择流程模板
+                  </label>
+                  
+                  <div className="max-h-64 overflow-y-auto space-y-2">
+                    {templates.map((template) => {
+                      const isSelected = selectedTemplateId === template.id;
+                      const isExpanded = expandedTemplateId === template.id;
+                      
+                      return (
+                        <div
+                          key={template.id}
+                          className={`
+                            border rounded-lg overflow-hidden transition-all cursor-pointer
+                            ${isSelected 
+                              ? "border-brand-500 bg-brand-500/10" 
+                              : "border-surface-3 bg-surface-2 hover:border-surface-2"
+                            }
+                          `}
+                          onClick={() => setSelectedTemplateId(template.id)}
+                        >
+                          <div className="flex items-center gap-3 p-3">
+                            <div
+                              className={`
+                                w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0
+                                ${isSelected ? "border-brand-500 bg-brand-500" : "border-zinc-600"}
+                              `}
+                            >
+                              {isSelected && <Check className="w-2.5 h-2.5 text-white" />}
+                            </div>
+                            
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-medium text-zinc-200 truncate">
+                                  {template.name}
+                                </span>
+                                {template.is_default && (
+                                  <span className="px-1.5 py-0.5 text-xs bg-brand-500/20 text-brand-400 rounded">
+                                    默认
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-xs text-zinc-500 truncate mt-0.5">
+                                {template.phases.length} 个阶段
+                              </p>
+                            </div>
+                            
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setExpandedTemplateId(isExpanded ? null : template.id);
+                              }}
+                              className="p-1 hover:bg-surface-3 rounded text-zinc-500"
+                            >
+                              <ChevronRight className={`w-4 h-4 transition-transform ${isExpanded ? "rotate-90" : ""}`} />
+                            </button>
+                          </div>
+                          
+                          {/* 阶段预览 */}
+                          {isExpanded && (
+                            <div className="px-3 pb-3 pt-1 border-t border-surface-3">
+                              <div className="space-y-1">
+                                {template.phases.map((phase, idx) => (
+                                  <div
+                                    key={idx}
+                                    className="flex items-center gap-2 py-1 px-2 rounded bg-surface-1 text-xs"
+                                  >
+                                    <span className="text-zinc-600 w-4">{idx + 1}</span>
+                                    {phase.special_handler && specialHandlerIcons[phase.special_handler] ? (
+                                      specialHandlerIcons[phase.special_handler]
+                                    ) : (
+                                      <Folder className="w-3.5 h-3.5 text-zinc-500" />
+                                    )}
+                                    <span className="text-zinc-300">{phase.name}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              
+              {!useNewArchitecture && (
+                <div className="p-4 bg-surface-2 rounded-lg">
+                  <p className="text-sm text-zinc-400">
+                    将使用标准8阶段流程：意图分析 → 消费者调研 → 内涵设计 → 内涵生产 → 外延设计 → 外延生产 → 消费者模拟 → 评估
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 错误提示 */}
+          {error && (
+            <div className="mt-4 p-3 bg-red-900/20 border border-red-700/50 rounded-lg">
+              <p className="text-sm text-red-300">{error}</p>
+            </div>
+          )}
+        </div>
+
+        {/* 按钮区 */}
+        <div className="px-6 py-4 border-t border-surface-3 flex justify-between">
+          <div>
+            {step === "template" && (
               <button
                 type="button"
-                onClick={onClose}
-                className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
+                onClick={handlePrevStep}
+                className="flex items-center gap-1 px-4 py-2 text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
               >
-                取消
+                <ChevronLeft className="w-4 h-4" />
+                上一步
               </button>
+            )}
+          </div>
+          
+          <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
+            >
+              取消
+            </button>
+            
+            {step === "info" ? (
               <button
-                type="submit"
-                disabled={loading || !name.trim() || !creatorProfileId}
+                type="button"
+                onClick={handleNextStep}
+                disabled={!name.trim() || !creatorProfileId}
+                className="flex items-center gap-1 px-5 py-2 text-sm bg-brand-600 hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
+              >
+                下一步
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleSubmit}
+                disabled={loading}
                 className="px-5 py-2 text-sm bg-brand-600 hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
               >
                 {loading ? "创建中..." : "创建项目"}
               </button>
-            </div>
-          </form>
+            )}
+          </div>
         </div>
       </div>
     </div>
   );
 }
-

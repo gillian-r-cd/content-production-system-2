@@ -11,7 +11,7 @@ import { ContentPanel } from "@/components/content-panel";
 import { AgentPanel } from "@/components/agent-panel";
 import { CreateProjectModal } from "@/components/create-project-modal";
 import { projectAPI, fieldAPI, agentAPI } from "@/lib/api";
-import type { Project, Field } from "@/lib/api";
+import type { Project, Field, ContentBlock } from "@/lib/api";
 
 export default function WorkspacePage() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -21,6 +21,8 @@ export default function WorkspacePage() {
   const [error, setError] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);  // 用于触发子组件刷新
+  const [selectedBlock, setSelectedBlock] = useState<ContentBlock | null>(null); // 树形视图选中的内容块
+  const [allBlocks, setAllBlocks] = useState<ContentBlock[]>([]); // 所有内容块（用于依赖选择）
 
   // 加载项目列表
   useEffect(() => {
@@ -140,6 +142,33 @@ export default function WorkspacePage() {
     return response.message;
   };
 
+  const handleBlockSelect = (block: ContentBlock) => {
+    setSelectedBlock(block);
+    console.log("选中内容块:", block.name, block.block_type);
+  };
+
+  // 当 allBlocks 更新时，同步更新 selectedBlock 的内容（保持数据同步）
+  useEffect(() => {
+    if (selectedBlock && allBlocks.length > 0) {
+      // 递归查找匹配的 block
+      const findBlock = (blocks: ContentBlock[], id: string): ContentBlock | null => {
+        for (const block of blocks) {
+          if (block.id === id) return block;
+          if (block.children) {
+            const found = findBlock(block.children, id);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
+      
+      const updatedBlock = findBlock(allBlocks, selectedBlock.id);
+      if (updatedBlock && JSON.stringify(updatedBlock) !== JSON.stringify(selectedBlock)) {
+        setSelectedBlock(updatedBlock);
+      }
+    }
+  }, [allBlocks]);
+
   const handleCreateProject = () => {
     setShowCreateModal(true);
   };
@@ -207,9 +236,19 @@ export default function WorkspacePage() {
           leftPanel={
             <ProgressPanel
               project={currentProject}
+              fields={fields}
               onPhaseClick={handlePhaseClick}
               onPhaseReorder={handlePhaseReorder}
               onAutonomyChange={handleAutonomyChange}
+              onBlockSelect={handleBlockSelect}
+              onBlocksChange={setAllBlocks}
+              onProjectChange={async () => {
+                // 刷新项目数据（获取最新的 use_flexible_architecture 等）
+                if (currentProject) {
+                  const updatedProject = await projectAPI.get(currentProject.id);
+                  setCurrentProject(updatedProject);
+                }
+              }}
             />
           }
           centerPanel={
@@ -218,6 +257,9 @@ export default function WorkspacePage() {
               currentPhase={currentProject?.current_phase || "intent"}
               phaseStatus={currentProject?.phase_status || {}}
               fields={fields}
+              selectedBlock={selectedBlock}
+              allBlocks={allBlocks}
+              useFlexibleArchitecture={currentProject?.use_flexible_architecture || false}
               onFieldUpdate={handleFieldUpdate}
               onFieldsChange={() => currentProject && loadFields(currentProject.id)}
               onPhaseAdvance={async () => {

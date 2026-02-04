@@ -450,3 +450,190 @@ export const simulationAPI = {
     fetchAPI<PersonaFromResearch[]>(`/api/simulations/project/${projectId}/personas`),
 };
 
+// ============== Content Block Types (新架构) ==============
+
+export interface ContentBlock {
+  id: string;
+  project_id: string;
+  parent_id: string | null;
+  name: string;
+  block_type: "phase" | "field" | "proposal" | "group";
+  depth: number;
+  order_index: number;
+  content: string;
+  status: "pending" | "in_progress" | "completed" | "failed";
+  ai_prompt: string;
+  constraints: FieldConstraints;
+  depends_on: string[];
+  special_handler: "intent" | "research" | "simulate" | "evaluate" | null;
+  need_review: boolean;
+  is_collapsed: boolean;
+  children: ContentBlock[];
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface BlockTree {
+  project_id: string;
+  blocks: ContentBlock[];
+  total_count: number;
+}
+
+export interface PhaseTemplate {
+  id: string;
+  name: string;
+  description: string;
+  phases: Array<{
+    name: string;
+    block_type: string;
+    special_handler: string | null;
+    order_index: number;
+    default_fields: Array<{
+      name: string;
+      block_type: string;
+      ai_prompt?: string;
+    }>;
+  }>;
+  is_default: boolean;
+  is_system: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+// ============== Content Block API (新架构) ==============
+
+export const blockAPI = {
+  // 获取项目的所有内容块（树形结构）
+  getProjectBlocks: (projectId: string) =>
+    fetchAPI<BlockTree>(`/api/blocks/project/${projectId}`),
+
+  // 获取单个内容块
+  get: (blockId: string, includeChildren = false) =>
+    fetchAPI<ContentBlock>(`/api/blocks/${blockId}?include_children=${includeChildren}`),
+
+  // 创建内容块
+  create: (data: {
+    project_id: string;
+    parent_id?: string | null;
+    name: string;
+    block_type?: string;
+    content?: string;
+    ai_prompt?: string;
+    constraints?: FieldConstraints;
+    depends_on?: string[];
+    special_handler?: string | null;
+    need_review?: boolean;
+    order_index?: number;
+  }) =>
+    fetchAPI<ContentBlock>("/api/blocks/", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  // 更新内容块
+  update: (blockId: string, data: Partial<{
+    name: string;
+    content: string;
+    status: string;
+    ai_prompt: string;
+    constraints: FieldConstraints;
+    depends_on: string[];
+    need_review: boolean;
+    is_collapsed: boolean;
+  }>) =>
+    fetchAPI<ContentBlock>(`/api/blocks/${blockId}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+
+  // 删除内容块
+  delete: (blockId: string) =>
+    fetchAPI<{ message: string }>(`/api/blocks/${blockId}`, {
+      method: "DELETE",
+    }),
+
+  // 移动内容块
+  move: (blockId: string, data: {
+    new_parent_id: string | null;
+    new_order_index: number;
+  }) =>
+    fetchAPI<ContentBlock>(`/api/blocks/${blockId}/move`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  // 生成内容块内容
+  generate: (blockId: string) =>
+    fetchAPI<{
+      block_id: string;
+      content: string;
+      status: string;
+      tokens_in: number;
+      tokens_out: number;
+      cost: number;
+    }>(`/api/blocks/${blockId}/generate`, {
+      method: "POST",
+    }),
+
+  // 应用模板到项目
+  applyTemplate: (projectId: string, templateId: string) =>
+    fetchAPI<{ message: string; blocks_created: number }>(
+      `/api/blocks/project/${projectId}/apply-template?template_id=${templateId}`,
+      { method: "POST" }
+    ),
+
+  // 迁移传统项目到 content_blocks 架构
+  migrateProject: (projectId: string) =>
+    fetchAPI<{ message: string; phases_created: number; fields_migrated: number }>(
+      `/api/blocks/project/${projectId}/migrate`,
+      { method: "POST" }
+    ),
+};
+
+// ============== Phase Template API (新架构) ==============
+
+export const phaseTemplateAPI = {
+  // 获取所有模板
+  list: () =>
+    fetchAPI<PhaseTemplate[]>("/api/phase-templates/"),
+
+  // 获取单个模板
+  get: (templateId: string) =>
+    fetchAPI<PhaseTemplate>(`/api/phase-templates/${templateId}`),
+
+  // 创建模板
+  create: (data: {
+    name: string;
+    description?: string;
+    phases: PhaseTemplate["phases"];
+  }) =>
+    fetchAPI<PhaseTemplate>("/api/phase-templates/", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  // 更新模板
+  update: (templateId: string, data: Partial<{
+    name: string;
+    description: string;
+    phases: PhaseTemplate["phases"];
+  }>) =>
+    fetchAPI<PhaseTemplate>(`/api/phase-templates/${templateId}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+
+  // 删除模板
+  delete: (templateId: string) =>
+    fetchAPI<{ message: string }>(`/api/phase-templates/${templateId}`, {
+      method: "DELETE",
+    }),
+
+  // 复制模板
+  duplicate: (templateId: string, newName?: string) =>
+    fetchAPI<PhaseTemplate>(
+      `/api/phase-templates/${templateId}/duplicate${newName ? `?new_name=${encodeURIComponent(newName)}` : ""}`,
+      { method: "POST" }
+    ),
+};
+

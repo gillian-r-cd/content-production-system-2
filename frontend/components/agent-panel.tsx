@@ -7,7 +7,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { cn, PHASE_NAMES } from "@/lib/utils";
-import { agentAPI } from "@/lib/api";
+import { agentAPI, parseReferences } from "@/lib/api";
 import type { Field, ChatMessageRecord } from "@/lib/api";
 
 interface AgentPanelProps {
@@ -43,6 +43,7 @@ export function AgentPanel({
   const [cursorPosition, setCursorPosition] = useState(0);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState("");
+  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -143,6 +144,11 @@ export function AgentPanel({
     if (!input.trim() || !projectId || sending) return;
 
     const userMessage = input.trim();
+    
+    // 提取 @ 引用的字段名
+    const references = parseReferences(userMessage);
+    console.log("[AgentPanel] 发送消息，引用字段:", references);
+    
     setInput("");
     setSending(true);
     setShowMentions(false);
@@ -154,17 +160,32 @@ export function AgentPanel({
       content: userMessage,
       original_content: userMessage,
       is_edited: false,
-      metadata: {},
+      metadata: { references },
       created_at: new Date().toISOString(),
     };
     setMessages((prev) => [...prev, tempUserMsg]);
 
     try {
-      const response = await agentAPI.chat(projectId, userMessage);
+      // 调用 API，传递 references 参数
+      const response = await agentAPI.chat(projectId, userMessage, { references });
+      
+      // 检查是否有字段被修改
+      if (response.field_updated) {
+        console.log("[AgentPanel] 字段已更新:", response.field_updated);
+        // 显示 Toast 提示
+        const action = response.field_updated.action === "modified" ? "已修改" : "已更新";
+        setToast({
+          message: `${action}【${response.field_updated.name}】`,
+          type: "success",
+        });
+        // 3秒后自动消失
+        setTimeout(() => setToast(null), 3000);
+      }
+      
       // 重新加载完整历史（包含真实的消息ID和Agent响应）
       await loadHistory();
       
-      // 通知父组件刷新内容和进度
+      // 通知父组件刷新内容和进度（无论是否有字段更新都刷新，确保状态同步）
       if (onContentUpdate) {
         onContentUpdate();
       }
@@ -201,10 +222,13 @@ export function AgentPanel({
     setSending(true);  // 添加loading状态
     setEditingMessageId(null);  // 立即关闭编辑框
     
+    // 提取 @ 引用
+    const references = parseReferences(editContent);
+    
     try {
       await agentAPI.editMessage(editingMessageId, editContent);
-      // 编辑后重新发送
-      const response = await agentAPI.chat(projectId, editContent);
+      // 编辑后重新发送，传递 references
+      const response = await agentAPI.chat(projectId, editContent, { references });
       await loadHistory();
       
       // 通知父组件刷新
@@ -244,7 +268,24 @@ export function AgentPanel({
   };
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full relative">
+      {/* Toast 通知 */}
+      {toast && (
+        <div
+          className={cn(
+            "absolute top-2 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg shadow-lg transition-all duration-300",
+            toast.type === "success"
+              ? "bg-green-600/90 text-white"
+              : "bg-red-600/90 text-white"
+          )}
+        >
+          <div className="flex items-center gap-2">
+            <span>{toast.type === "success" ? "✓" : "✕"}</span>
+            <span className="text-sm">{toast.message}</span>
+          </div>
+        </div>
+      )}
+
       {/* 头部 */}
       <div className="px-4 py-3 border-b border-surface-3">
         <h2 className="font-semibold text-zinc-100">AI Agent</h2>

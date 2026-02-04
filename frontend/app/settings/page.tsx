@@ -1158,12 +1158,82 @@ function AgentSettingsSection({ settings, onRefresh }: { settings: any; onRefres
     }
   };
 
+  // 工具编辑状态
+  const [editingToolId, setEditingToolId] = useState<string | null>(null);
+  const [toolPrompts, setToolPrompts] = useState<Record<string, string>>(
+    editForm.tool_prompts || {}
+  );
+
+  useEffect(() => {
+    if (settings?.tool_prompts) {
+      setToolPrompts(settings.tool_prompts);
+    }
+  }, [settings]);
+
   const TOOLS = [
-    { id: "deep_research", name: "DeepResearch", icon: "🔍", desc: "网络深度调研，自动搜索和分析目标用户" },
-    { id: "generate_field", name: "字段生成", icon: "✍️", desc: "根据上下文和依赖关系生成字段内容" },
-    { id: "simulate_consumer", name: "消费者模拟", icon: "🎭", desc: "模拟消费者与内容的交互体验" },
-    { id: "evaluate_content", name: "内容评估", icon: "📊", desc: "根据评估模板评估内容质量并给出建议" },
+    { 
+      id: "deep_research", 
+      name: "DeepResearch", 
+      icon: "🔍", 
+      desc: "网络深度调研，自动搜索和分析目标用户",
+      defaultPrompt: "你是一个专业的用户研究专家。基于项目意图，你需要：\n1. 调研目标用户群体的特征和行为\n2. 分析用户的痛点和需求\n3. 生成结构化的消费者调研报告"
+    },
+    { 
+      id: "generate_field", 
+      name: "字段生成", 
+      icon: "✍️", 
+      desc: "根据上下文和依赖关系生成字段内容",
+      defaultPrompt: "你是一个专业的内容创作者。基于上下文和依赖字段，生成高质量的内容。\n遵循创作者特质、保持风格一致性。"
+    },
+    { 
+      id: "simulate_consumer", 
+      name: "消费者模拟", 
+      icon: "🎭", 
+      desc: "模拟消费者与内容的交互体验",
+      defaultPrompt: "你将扮演一个典型的目标消费者，基于用户画像进行内容体验模拟。\n提供真实的反馈、困惑点和改进建议。"
+    },
+    { 
+      id: "evaluate_content", 
+      name: "内容评估", 
+      icon: "📊", 
+      desc: "根据评估模板评估内容质量并给出建议",
+      defaultPrompt: "你是一个内容质量评估专家。根据评估维度对内容进行打分和分析，\n给出具体的改进建议。"
+    },
+    { 
+      id: "architecture_writer", 
+      name: "架构操作", 
+      icon: "🏗️", 
+      desc: "添加/删除/移动阶段和字段，修改项目结构",
+      defaultPrompt: "你是项目架构师。根据用户的自然语言描述，识别需要进行的架构操作（添加阶段/字段、删除、移动），\n并调用相应的操作函数完成修改。"
+    },
+    { 
+      id: "outline_generator", 
+      name: "大纲生成", 
+      icon: "📋", 
+      desc: "基于项目上下文生成内容大纲",
+      defaultPrompt: "你是一个内容策划专家。基于项目意图和消费者调研结果，\n生成结构化的内容大纲，包括主题、章节、关键点和预计字段。"
+    },
+    { 
+      id: "persona_manager", 
+      name: "人物管理", 
+      icon: "👥", 
+      desc: "创建、编辑、选择消费者画像",
+      defaultPrompt: "你是用户研究专家。帮助用户管理消费者画像，\n包括创建新画像、编辑现有画像、推荐合适的画像用于模拟。"
+    },
+    { 
+      id: "skill_manager", 
+      name: "技能管理", 
+      icon: "⚡", 
+      desc: "管理和应用可复用的AI技能",
+      defaultPrompt: "你是AI技能管理专家。帮助用户查看、创建、应用可复用的AI技能，\n每个技能是一个可重复使用的提示词模板。"
+    },
   ];
+
+  const updateToolPrompt = (toolId: string, prompt: string) => {
+    const newPrompts = { ...toolPrompts, [toolId]: prompt };
+    setToolPrompts(newPrompts);
+    setEditForm({ ...editForm, tool_prompts: newPrompts });
+  };
 
   const PHASES = [
     { id: "intent", name: "意图分析" },
@@ -1213,38 +1283,65 @@ function AgentSettingsSection({ settings, onRefresh }: { settings: any; onRefres
         {/* 可用工具 */}
         <div className="p-5 bg-surface-2 border border-surface-3 rounded-xl">
           <h3 className="font-medium text-zinc-200 mb-4">🛠️ 可用工具</h3>
-          <p className="text-sm text-zinc-500 mb-4">选择 Agent 在对话中可以调用的工具</p>
+          <p className="text-sm text-zinc-500 mb-4">选择 Agent 在对话中可以调用的工具，点击工具可编辑其提示词</p>
           <div className="grid md:grid-cols-2 gap-3">
             {TOOLS.map((tool) => (
-              <label
+              <div
                 key={tool.id}
-                className={`flex items-start gap-3 p-4 border rounded-lg cursor-pointer transition-colors ${
+                className={`p-4 border rounded-lg transition-colors ${
                   editForm.tools?.includes(tool.id)
                     ? "border-brand-500 bg-brand-600/10"
-                    : "border-surface-3 hover:border-surface-4"
+                    : "border-surface-3"
                 }`}
               >
-                <input
-                  type="checkbox"
-                  checked={editForm.tools?.includes(tool.id) || false}
-                  onChange={(e) => {
-                    const tools = editForm.tools || [];
-                    if (e.target.checked) {
-                      setEditForm({ ...editForm, tools: [...tools, tool.id] });
-                    } else {
-                      setEditForm({ ...editForm, tools: tools.filter((t: string) => t !== tool.id) });
-                    }
-                  }}
-                  className="mt-0.5"
-                />
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span>{tool.icon}</span>
-                    <span className="text-zinc-200 font-medium">{tool.name}</span>
+                <div className="flex items-start gap-3">
+                  <input
+                    type="checkbox"
+                    checked={editForm.tools?.includes(tool.id) || false}
+                    onChange={(e) => {
+                      const tools = editForm.tools || [];
+                      if (e.target.checked) {
+                        setEditForm({ ...editForm, tools: [...tools, tool.id] });
+                      } else {
+                        setEditForm({ ...editForm, tools: tools.filter((t: string) => t !== tool.id) });
+                      }
+                    }}
+                    className="mt-0.5"
+                  />
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span>{tool.icon}</span>
+                        <span className="text-zinc-200 font-medium">{tool.name}</span>
+                      </div>
+                      <button
+                        onClick={() => setEditingToolId(editingToolId === tool.id ? null : tool.id)}
+                        className="text-xs px-2 py-1 bg-surface-3 hover:bg-surface-4 rounded text-zinc-400 hover:text-zinc-200"
+                      >
+                        {editingToolId === tool.id ? "收起" : "编辑提示词"}
+                      </button>
+                    </div>
+                    <p className="text-sm text-zinc-500 mt-1">{tool.desc}</p>
+                    
+                    {/* 提示词编辑区 */}
+                    {editingToolId === tool.id && (
+                      <div className="mt-3 pt-3 border-t border-surface-3">
+                        <label className="block text-xs text-zinc-400 mb-1">工具提示词</label>
+                        <textarea
+                          value={toolPrompts[tool.id] || tool.defaultPrompt}
+                          onChange={(e) => updateToolPrompt(tool.id, e.target.value)}
+                          rows={4}
+                          className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+                          placeholder={tool.defaultPrompt}
+                        />
+                        <p className="text-xs text-zinc-600 mt-1">
+                          此提示词将用于 Agent 调用该工具时的系统指令
+                        </p>
+                      </div>
+                    )}
                   </div>
-                  <p className="text-sm text-zinc-500 mt-1">{tool.desc}</p>
                 </div>
-              </label>
+              </div>
             ))}
           </div>
         </div>

@@ -72,6 +72,9 @@ class FieldResponse(BaseModel):
     template_id: Optional[str]
     created_at: str
     updated_at: str
+    # 版本提示信息（当修改后有后续字段可能受影响时）
+    version_warning: Optional[str] = None
+    affected_fields: Optional[List[str]] = None  # 受影响的字段名称列表
 
     model_config = {"from_attributes": True}
 
@@ -128,6 +131,14 @@ def create_field(
         pre_questions=field.pre_questions,
         dependencies=field.dependencies,
         status="pending",
+        # 添加约束和确认配置
+        constraints=field.constraints if field.constraints else {
+            "max_length": None,
+            "output_format": "markdown",
+            "structure": None,
+            "example": None,
+        },
+        need_review=field.need_review,
     )
     
     db.add(db_field)
@@ -160,6 +171,9 @@ def update_field(
     if not field:
         raise HTTPException(status_code=404, detail="Field not found")
     
+    # 检查是否更新了内容（会影响依赖字段）
+    content_changed = update.content is not None and update.content != field.content
+    
     update_data = update.model_dump(exclude_unset=True)
     for key, value in update_data.items():
         setattr(field, key, value)
@@ -167,7 +181,30 @@ def update_field(
     db.commit()
     db.refresh(field)
     
-    return _field_to_response(field)
+    # 如果内容发生变化，检查是否有其他字段依赖于此字段
+    version_warning = None
+    affected = None
+    
+    if content_changed:
+        # 查找所有依赖于此字段的字段
+        dependent_fields = db.query(ProjectField).filter(
+            ProjectField.project_id == field.project_id,
+            ProjectField.id != field.id,
+            ProjectField.status == "completed",  # 只警告已完成的字段
+        ).all()
+        
+        affected = []
+        for dep_field in dependent_fields:
+            deps = dep_field.dependencies.get("depends_on", []) if dep_field.dependencies else []
+            if field.id in deps:
+                affected.append(dep_field.name)
+        
+        if affected:
+            version_warning = (
+                f"您修改了「{field.name}」，以下字段依赖于它，可能需要重新生成或创建新版本"
+            )
+    
+    return _field_to_response(field, version_warning, affected if affected else None)
 
 
 @router.delete("/{field_id}")
@@ -222,10 +259,15 @@ async def generate_field_content(
     db.commit()
     
     # 构建上下文
+    # 核心原则：produce_inner 阶段只通过依赖传递上下文，不在 Golden Context 中重复注入
+    # 设计阶段（design_inner, design_outer）需要全局上下文来生成方案
+    is_design_phase = field.phase in ["design_inner", "design_outer", "intent", "research"]
+    
     gc = GoldenContext(
-        creator_profile=project.golden_context.get("creator_profile", ""),
-        intent=project.golden_context.get("intent", ""),
-        consumer_personas=project.golden_context.get("consumer_personas", ""),
+        creator_profile=project.golden_context.get("creator_profile", "") if project.golden_context else "",
+        intent=project.golden_context.get("intent", "") if project.golden_context else "",
+        consumer_personas=project.golden_context.get("consumer_personas", "") if project.golden_context else "",
+        include_all_context=is_design_phase,  # 只有设计阶段才注入全部上下文
     )
     
     # 获取依赖字段内容
@@ -276,10 +318,14 @@ async def generate_field_stream_api(
     db.commit()
     
     # 构建上下文
+    # 核心原则：produce_inner 阶段只通过依赖传递上下文
+    is_design_phase = field.phase in ["design_inner", "design_outer", "intent", "research"]
+    
     gc = GoldenContext(
-        creator_profile=project.golden_context.get("creator_profile", ""),
-        intent=project.golden_context.get("intent", ""),
-        consumer_personas=project.golden_context.get("consumer_personas", ""),
+        creator_profile=project.golden_context.get("creator_profile", "") if project.golden_context else "",
+        intent=project.golden_context.get("intent", "") if project.golden_context else "",
+        consumer_personas=project.golden_context.get("consumer_personas", "") if project.golden_context else "",
+        include_all_context=is_design_phase,  # 只有设计阶段才注入全部上下文
     )
     
     depends_on = field.dependencies.get("depends_on", [])
@@ -435,11 +481,12 @@ async def batch_generate_fields(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     
-    # 构建上下文
+    # 构建上下文（批量生成时使用完整上下文，因为可能跨阶段）
     gc = GoldenContext(
         creator_profile=project.golden_context.get("creator_profile", "") if project.golden_context else "",
         intent=project.golden_context.get("intent", "") if project.golden_context else "",
         consumer_personas=project.golden_context.get("consumer_personas", "") if project.golden_context else "",
+        include_all_context=True,  # 批量生成时使用完整上下文
     )
     
     generated_ids = []
@@ -469,10 +516,19 @@ async def batch_generate_fields(
             depends_on = field.dependencies.get("depends_on", []) if field.dependencies else []
             dep_fields = [fields_by_id[dep_id] for dep_id in depends_on if dep_id in fields_by_id]
             
+            # 根据阶段决定是否使用完整上下文
+            is_design_phase = field.phase in ["design_inner", "design_outer", "intent", "research"]
+            field_gc = GoldenContext(
+                creator_profile=gc.creator_profile,
+                intent=gc.intent,
+                consumer_personas=gc.consumer_personas,
+                include_all_context=is_design_phase,
+            )
+            
             context = prompt_engine.build_prompt_context(
                 project=project,
                 phase=field.phase,
-                golden_context=gc,
+                golden_context=field_gc,
                 dependent_fields=dep_fields,
             )
             
@@ -530,7 +586,11 @@ async def batch_generate_fields(
 
 # ============== Helpers ==============
 
-def _field_to_response(field: ProjectField) -> FieldResponse:
+def _field_to_response(
+    field: ProjectField,
+    version_warning: Optional[str] = None,
+    affected_fields: Optional[List[str]] = None,
+) -> FieldResponse:
     """转换为响应格式"""
     return FieldResponse(
         id=field.id,
@@ -549,5 +609,7 @@ def _field_to_response(field: ProjectField) -> FieldResponse:
         template_id=field.template_id,
         created_at=field.created_at.isoformat() if field.created_at else "",
         updated_at=field.updated_at.isoformat() if field.updated_at else "",
+        version_warning=version_warning,
+        affected_fields=affected_fields,
     )
 

@@ -11,7 +11,7 @@
 
 from typing import Optional, List, Dict, TYPE_CHECKING
 
-from sqlalchemy import String, Text, Integer, JSON, ForeignKey
+from sqlalchemy import String, Text, Integer, JSON, ForeignKey, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.models.base import BaseModel
@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from core.models.simulation_record import SimulationRecord
     from core.models.evaluation import EvaluationReport
     from core.models.generation_log import GenerationLog
+    from core.models.content_block import ContentBlock
 
 
 # 项目阶段定义
@@ -87,6 +88,7 @@ class Project(BaseModel):
     )
     golden_context: Mapped[dict] = mapped_column(JSON, default=dict)
     use_deep_research: Mapped[bool] = mapped_column(default=True)
+    use_flexible_architecture: Mapped[bool] = mapped_column(default=False)  # 是否使用灵活的 ContentBlock 架构
 
     # 关联
     creator_profile: Mapped["CreatorProfile"] = relationship(
@@ -103,6 +105,10 @@ class Project(BaseModel):
     )
     generation_logs: Mapped[list["GenerationLog"]] = relationship(
         "GenerationLog", back_populates="project", cascade="all, delete-orphan"
+    )
+    # 新架构：统一内容块
+    content_blocks: Mapped[list["ContentBlock"]] = relationship(
+        "ContentBlock", back_populates="project", cascade="all, delete-orphan"
     )
 
     def get_phase_index(self, phase: str) -> int:
