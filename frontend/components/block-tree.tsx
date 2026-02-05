@@ -5,7 +5,7 @@
 
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import {
   ChevronRight,
   ChevronDown,
@@ -23,8 +23,25 @@ import {
   Copy,
   ArrowRight,
   Undo2,
+  Package,
+  X,
 } from "lucide-react";
-import { ContentBlock, blockAPI } from "@/lib/api";
+import { ContentBlock, blockAPI, settingsAPI } from "@/lib/api";
+
+// 字段模板类型
+interface FieldTemplate {
+  id: string;
+  name: string;
+  description?: string;
+  fields: {
+    name: string;
+    type: string;
+    ai_prompt: string;
+    depends_on?: string[];
+    need_review?: boolean;
+    constraints?: any;
+  }[];
+}
 
 interface UndoHistoryItem {
   history_id: string;
@@ -98,6 +115,79 @@ function BlockNode({
   const [isRenaming, setIsRenaming] = useState(false);
   const [newName, setNewName] = useState(block.name);
   const [isLoading, setIsLoading] = useState(false);
+  
+  // 模板选择相关状态
+  const [showTemplateModal, setShowTemplateModal] = useState(false);
+  const [templates, setTemplates] = useState<FieldTemplate[]>([]);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
+  
+  // 加载字段模板
+  const loadTemplates = async () => {
+    setTemplatesLoading(true);
+    try {
+      const data = await settingsAPI.listFieldTemplates();
+      setTemplates(data || []);
+    } catch (err) {
+      console.error("加载模板失败:", err);
+    } finally {
+      setTemplatesLoading(false);
+    }
+  };
+  
+  // 打开模板选择弹窗
+  const openTemplateModal = () => {
+    setShowMenu(false);
+    setShowTemplateModal(true);
+    loadTemplates();
+  };
+  
+  // 从模板添加字段
+  const handleAddFromTemplate = async (template: FieldTemplate) => {
+    setIsLoading(true);
+    try {
+      // 为模板内部依赖建立 ID 映射
+      const idMapping: Record<string, string> = {};
+      const createdBlocks: string[] = [];
+      
+      // 按顺序创建字段（保持依赖顺序）
+      for (let i = 0; i < template.fields.length; i++) {
+        const field = template.fields[i];
+        
+        // 映射内部依赖：将模板中的字段索引转换为实际创建的块 ID
+        const mappedDependsOn = (field.depends_on || []).map((depName) => {
+          // 查找已创建的块中是否有匹配的名称
+          const depIndex = template.fields.findIndex((f, idx) => idx < i && f.name === depName);
+          if (depIndex >= 0) {
+            return createdBlocks[depIndex];
+          }
+          return depName; // 保留外部依赖
+        }).filter(Boolean);
+        
+        const createdBlock = await blockAPI.create({
+          project_id: block.project_id,
+          parent_id: block.id,
+          name: field.name,
+          block_type: "field",
+          ai_prompt: field.ai_prompt || "",
+          depends_on: mappedDependsOn,
+          need_review: field.need_review !== undefined ? field.need_review : true,
+          constraints: field.constraints || {},
+        });
+        
+        createdBlocks.push(createdBlock.id);
+        idMapping[field.name] = createdBlock.id;
+      }
+      
+      setIsCollapsed(false);
+      onBlocksChange?.();
+      setShowTemplateModal(false);
+    } catch (err) {
+      console.error("从模板添加失败:", err);
+      alert("添加失败: " + (err instanceof Error ? err.message : "未知错误"));
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const hasChildren = block.children && block.children.length > 0;
   const isSelected = selectedBlockId === block.id;
@@ -322,7 +412,14 @@ function BlockNode({
                       className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-surface-2"
                     >
                       <Plus className="w-4 h-4" />
-                      添加字段
+                      添加空白字段
+                    </button>
+                    <button
+                      onClick={openTemplateModal}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-surface-2"
+                    >
+                      <Package className="w-4 h-4" />
+                      从模板添加
                     </button>
                     <button
                       onClick={() => handleAddChild("group")}
@@ -399,6 +496,85 @@ function BlockNode({
           className="absolute left-0 right-0 h-0.5 bg-brand-500"
           style={{ marginLeft: `${level * 16 + 8}px` }}
         />
+      )}
+      
+      {/* 模板选择弹窗 */}
+      {showTemplateModal && (
+        <div 
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+          onClick={() => setShowTemplateModal(false)}
+        >
+          <div 
+            className="bg-surface-1 border border-surface-3 rounded-xl w-full max-w-xl max-h-[80vh] overflow-hidden shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* 弹窗头部 */}
+            <div className="px-5 py-4 border-b border-surface-3 flex items-center justify-between">
+              <div>
+                <h3 className="font-semibold text-zinc-100">从模板添加字段</h3>
+                <p className="text-xs text-zinc-500 mt-1">
+                  选择一个模板，将其中的字段添加到「{block.name}」下
+                </p>
+              </div>
+              <button
+                onClick={() => setShowTemplateModal(false)}
+                className="p-1 hover:bg-surface-3 rounded"
+              >
+                <X className="w-5 h-5 text-zinc-400" />
+              </button>
+            </div>
+            
+            {/* 模板列表 */}
+            <div className="p-4 max-h-[60vh] overflow-y-auto">
+              {templatesLoading ? (
+                <div className="flex items-center justify-center py-8 text-zinc-500">
+                  <span className="animate-pulse">加载中...</span>
+                </div>
+              ) : templates.length === 0 ? (
+                <div className="text-center py-8 text-zinc-500">
+                  <Package className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                  <p>暂无字段模板</p>
+                  <p className="text-xs mt-1">请在后台设置中创建字段模板</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {templates.map((template) => (
+                    <div
+                      key={template.id}
+                      className="p-4 bg-surface-2 border border-surface-3 rounded-lg hover:border-brand-500/50 transition-colors cursor-pointer group"
+                      onClick={() => handleAddFromTemplate(template)}
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <h4 className="font-medium text-zinc-200 group-hover:text-brand-400 transition-colors">
+                            {template.name}
+                          </h4>
+                          {template.description && (
+                            <p className="text-sm text-zinc-500 mt-1 line-clamp-2">
+                              {template.description}
+                            </p>
+                          )}
+                          <div className="flex items-center gap-2 mt-2 text-xs text-zinc-500">
+                            <span>{template.fields?.length || 0} 个字段</span>
+                            {template.fields?.slice(0, 3).map((f, i) => (
+                              <span key={i} className="px-1.5 py-0.5 bg-surface-3 rounded">
+                                {f.name}
+                              </span>
+                            ))}
+                            {(template.fields?.length || 0) > 3 && (
+                              <span className="text-zinc-600">+{template.fields.length - 3}</span>
+                            )}
+                          </div>
+                        </div>
+                        <Plus className="w-5 h-5 text-zinc-500 group-hover:text-brand-400 transition-colors flex-shrink-0" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
