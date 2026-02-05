@@ -508,38 +508,34 @@ export function ContentPanel({
         );
       }
       
-      // 其他阶段 - 显示阶段概览
+      // 其他阶段 - 显示阶段概览（使用 FieldCard 提供完整编辑功能）
       return (
-        <div className="h-full flex flex-col p-6">
-          <h1 className="text-xl font-bold text-zinc-100 mb-2">
-            {PHASE_NAMES[selectedPhase] || selectedPhase}
-          </h1>
-          <p className="text-zinc-500 mb-6">
-            共有 {phaseFields.length} 个字段
-          </p>
-          {phaseFields.length > 0 ? (
-            <div className="space-y-4">
-              {phaseFields.map(field => (
-                <div key={field.id} className="p-4 bg-surface-2 border border-surface-3 rounded-lg">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="font-medium text-zinc-200">{field.name}</span>
-                    <span className={`px-2 py-0.5 rounded text-xs ${
-                      field.status === "completed" 
-                        ? "bg-green-600/20 text-green-400"
-                        : "bg-zinc-600/20 text-zinc-400"
-                    }`}>
-                      {field.status === "completed" ? "已完成" : "待处理"}
-                    </span>
-                  </div>
-                  {field.content && (
-                    <p className="text-sm text-zinc-400 line-clamp-3">{field.content.substring(0, 200)}</p>
-                  )}
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-zinc-500">该阶段暂无内容字段</p>
-          )}
+        <div className="h-full flex flex-col overflow-hidden">
+          <div className="p-6 pb-0">
+            <h1 className="text-xl font-bold text-zinc-100 mb-2">
+              {PHASE_NAMES[selectedPhase] || selectedPhase}
+            </h1>
+            <p className="text-zinc-500 mb-4">
+              共有 {phaseFields.length} 个字段 - 点击字段可编辑
+            </p>
+          </div>
+          <div className="flex-1 overflow-y-auto px-6 pb-6">
+            {phaseFields.length > 0 ? (
+              <div className="space-y-4">
+                {phaseFields.map(field => (
+                  <FieldCard
+                    key={field.id}
+                    field={field}
+                    allFields={fields}
+                    onUpdate={(content: string) => onFieldUpdate?.(field.id, content)}
+                    onFieldsChange={onFieldsChange}
+                  />
+                ))}
+              </div>
+            ) : (
+              <p className="text-zinc-500">该阶段暂无内容字段</p>
+            )}
+          </div>
         </div>
       );
     }

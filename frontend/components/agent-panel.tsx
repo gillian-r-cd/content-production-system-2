@@ -11,6 +11,7 @@ import { agentAPI, parseReferences, API_BASE } from "@/lib/api";
 import type { Field, ChatMessageRecord } from "@/lib/api";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { settingsAPI } from "@/lib/api";
 
 interface AgentPanelProps {
   projectId: string | null;
@@ -20,13 +21,28 @@ interface AgentPanelProps {
   isLoading?: boolean;
 }
 
-// 可用的Tool列表
-const AVAILABLE_TOOLS = [
-  { id: "deep_research", name: "深度调研", desc: "使用DeepResearch进行网络调研" },
-  { id: "generate_field", name: "生成字段", desc: "根据上下文生成指定字段内容" },
-  { id: "simulate_consumer", name: "消费者模拟", desc: "模拟消费者体验内容" },
-  { id: "evaluate_content", name: "内容评估", desc: "评估内容质量" },
-];
+// 工具名称映射
+const TOOL_NAMES: Record<string, string> = {
+  deep_research: "深度调研",
+  generate_field: "生成字段",
+  simulate_consumer: "消费者模拟",
+  evaluate_content: "内容评估",
+  architecture_writer: "架构操作",
+  outline_generator: "大纲生成",
+  persona_manager: "人物管理",
+  skill_manager: "技能管理",
+};
+
+const TOOL_DESCS: Record<string, string> = {
+  deep_research: "使用DeepResearch进行网络调研",
+  generate_field: "根据上下文生成指定字段内容",
+  simulate_consumer: "模拟消费者体验内容",
+  evaluate_content: "评估内容质量",
+  architecture_writer: "添加/删除/移动阶段和字段",
+  outline_generator: "基于上下文生成内容大纲",
+  persona_manager: "创建、编辑、选择消费者画像",
+  skill_manager: "管理和应用可复用的AI技能",
+};
 
 export function AgentPanel({
   projectId,
@@ -46,6 +62,7 @@ export function AgentPanel({
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState("");
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
+  const [availableTools, setAvailableTools] = useState<{ id: string; name: string; desc: string }[]>([]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -65,6 +82,31 @@ export function AgentPanel({
       setMessages([]);
     }
   }, [projectId]);
+
+  // 加载工具列表（从后台 Agent 设置）
+  useEffect(() => {
+    const loadTools = async () => {
+      try {
+        const settings = await settingsAPI.getAgentSettings();
+        const tools = (settings.tools || []).map((toolId: string) => ({
+          id: toolId,
+          name: TOOL_NAMES[toolId] || toolId,
+          desc: TOOL_DESCS[toolId] || "工具",
+        }));
+        setAvailableTools(tools);
+      } catch (err) {
+        console.error("加载工具列表失败:", err);
+        // 使用默认工具列表
+        setAvailableTools([
+          { id: "deep_research", name: "深度调研", desc: "使用DeepResearch进行网络调研" },
+          { id: "generate_field", name: "生成字段", desc: "根据上下文生成指定字段内容" },
+          { id: "simulate_consumer", name: "消费者模拟", desc: "模拟消费者体验内容" },
+          { id: "evaluate_content", name: "内容评估", desc: "评估内容质量" },
+        ]);
+      }
+    };
+    loadTools();
+  }, []);
 
   // 自动滚动
   useEffect(() => {
@@ -563,7 +605,7 @@ export function AgentPanel({
               <div className="p-2 text-xs text-zinc-500 border-b border-surface-3">
                 选择要调用的工具
               </div>
-              {AVAILABLE_TOOLS.map((tool) => (
+              {availableTools.map((tool) => (
                 <button
                   key={tool.id}
                   onClick={() => handleToolCall(tool.id)}
