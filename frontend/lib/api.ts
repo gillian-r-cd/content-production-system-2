@@ -17,7 +17,7 @@ export interface Project {
   phase_order: string[];
   phase_status: Record<string, string>;
   agent_autonomy: Record<string, boolean>;
-  golden_context: Record<string, string>;
+  golden_context?: Record<string, string>;
   use_deep_research: boolean;
   created_at: string;
   updated_at: string;
@@ -470,7 +470,7 @@ export interface ContentBlock {
   ai_prompt: string;
   constraints: FieldConstraints;
   depends_on: string[];
-  special_handler: "intent" | "research" | "simulate" | "evaluate" | null;
+  special_handler: string | null;
   need_review: boolean;
   is_collapsed: boolean;
   children: ContentBlock[];
@@ -553,10 +553,15 @@ export const blockAPI = {
 
   // 删除内容块
   delete: (blockId: string) =>
-    fetchAPI<{ message: string }>(`/api/blocks/${blockId}`, {
+    fetchAPI<{ message: string; can_undo?: boolean; history_id?: string }>(`/api/blocks/${blockId}`, {
       method: "DELETE",
     }),
 
+  // 撤销删除
+  undo: (historyId: string) =>
+    fetchAPI<{ message: string }>(`/api/blocks/undo/${historyId}`, {
+      method: "POST",
+    }),
   // 移动内容块
   move: (blockId: string, data: {
     new_parent_id: string | null;

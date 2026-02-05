@@ -4,6 +4,10 @@
 
 """
 提示词引擎测试
+
+重构说明（2026-02）:
+- GoldenContext 现在只包含 creator_profile
+- intent 和 consumer_personas 应通过字段依赖传递
 """
 
 import pytest
@@ -21,25 +25,23 @@ from core.models import (
 
 
 class TestGoldenContext:
-    """测试Golden Context"""
+    """测试Golden Context - 只包含创作者特质"""
     
     def test_empty_context(self):
         gc = GoldenContext()
         assert gc.is_empty()
         assert gc.to_prompt() == ""
     
-    def test_full_context(self):
+    def test_with_creator_profile(self):
+        """GoldenContext 只包含创作者特质"""
         gc = GoldenContext(
-            creator_profile="专业严谨型",
-            intent="帮助用户学习Python编程",
-            consumer_personas="25-35岁职场人士",
+            creator_profile="专业严谨型: 适合B2B、技术类、专业培训内容",
         )
         
         prompt = gc.to_prompt()
         assert "创作者特质" in prompt
-        assert "项目意图" in prompt
-        assert "目标用户画像" in prompt
-        assert "Python" in prompt
+        assert "专业严谨型" in prompt
+        assert not gc.is_empty()
 
 
 class TestPromptContext:
@@ -49,10 +51,9 @@ class TestPromptContext:
         ctx = PromptContext(
             golden_context=GoldenContext(
                 creator_profile="测试特质",
-                intent="测试意图",
             ),
             phase_context="这是当前任务描述",
-            field_context="参考内容A\n参考内容B",
+            field_context="## 项目意图\n测试意图\n\n## 目标用户\n测试用户",
         )
         
         system_prompt = ctx.to_system_prompt()
@@ -60,6 +61,28 @@ class TestPromptContext:
         assert "创作者特质" in system_prompt
         assert "当前任务" in system_prompt
         assert "参考内容" in system_prompt
+        # 字段依赖内容通过 field_context 传递
+        assert "项目意图" in system_prompt
+    
+    def test_field_context_for_dependencies(self):
+        """测试通过 field_context 传递依赖内容"""
+        # 模拟意图分析和消费者调研的依赖传递
+        field_context = """## 意图分析
+这是意图分析的结果...
+
+## 消费者调研
+这是消费者调研的结果..."""
+        
+        ctx = PromptContext(
+            golden_context=GoldenContext(creator_profile="专业型"),
+            phase_context="内涵设计任务",
+            field_context=field_context,
+        )
+        
+        system_prompt = ctx.to_system_prompt()
+        
+        assert "意图分析" in system_prompt
+        assert "消费者调研" in system_prompt
 
 
 class TestPromptEngine:
@@ -128,7 +151,7 @@ class TestPromptEngine:
             assert len(engine.PHASE_PROMPTS[phase]) > 50
     
     def test_build_golden_context(self, engine):
-        """测试构建Golden Context"""
+        """测试构建Golden Context - 只包含创作者特质"""
         profile = CreatorProfile(
             name="测试特质",
             traits={"tone": "专业"}
@@ -136,10 +159,7 @@ class TestPromptEngine:
         
         project = Project(
             name="测试项目",
-            golden_context={
-                "intent": "测试意图内容",
-                "consumer_personas": "测试用户画像",
-            }
+            # golden_context 已废弃，不再使用
         )
         
         gc = engine.build_golden_context(
@@ -147,9 +167,9 @@ class TestPromptEngine:
             creator_profile=profile,
         )
         
+        # GoldenContext 只包含 creator_profile
         assert "测试特质" in gc.creator_profile
-        assert gc.intent == "测试意图内容"
-        assert gc.consumer_personas == "测试用户画像"
+        assert not gc.is_empty()
     
     def test_get_field_generation_prompt(self, engine):
         """测试字段生成提示词"""
@@ -162,9 +182,11 @@ class TestPromptEngine:
             pre_answers={"问题1": "答案1", "问题2": "答案2"},
         )
         
+        # 依赖内容通过 field_context 传递
         context = PromptContext(
-            golden_context=GoldenContext(intent="测试意图"),
+            golden_context=GoldenContext(creator_profile="专业型"),
             phase_context="内涵生产任务",
+            field_context="## 意图分析\n测试意图内容",
         )
         
         prompt = engine.get_field_generation_prompt(field, context)
@@ -177,4 +199,3 @@ class TestPromptEngine:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
-

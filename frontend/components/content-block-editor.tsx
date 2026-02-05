@@ -183,8 +183,18 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
     .map(id => allBlocks.find(b => b.id === id))
     .filter(Boolean) as ContentBlock[];
 
+  // 检查依赖是否满足
+  const unmetDependencies = dependencyBlocks.filter(d => d.status !== "completed");
+  const canGenerate = unmetDependencies.length === 0;
+
   // 生成内容
   const handleGenerate = async () => {
+    // 前端检查依赖（允许重新生成已完成的内容）
+    if (!canGenerate && block.status !== "completed") {
+      alert(`请先完成以下依赖:\n${unmetDependencies.map(d => `• ${d.name}`).join("\n")}`);
+      return;
+    }
+    
     setIsGenerating(true);
     setGeneratingContent("");
     
@@ -280,11 +290,24 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
             {block.status !== "completed" && !isGenerating && (
               <button
                 onClick={handleGenerate}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-brand-600 hover:bg-brand-700 text-white rounded-lg transition-colors"
+                disabled={!canGenerate}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg transition-colors ${
+                  canGenerate
+                    ? "bg-brand-600 hover:bg-brand-700 text-white"
+                    : "bg-zinc-700 text-zinc-500 cursor-not-allowed"
+                }`}
+                title={!canGenerate ? `依赖未完成: ${unmetDependencies.map(d => d.name).join(", ")}` : "生成内容"}
               >
                 <Sparkles className="w-4 h-4" />
                 生成
               </button>
+            )}
+            
+            {/* 依赖未完成警告 */}
+            {!canGenerate && block.status !== "completed" && !isGenerating && (
+              <span className="text-xs text-amber-500" title={`依赖未完成: ${unmetDependencies.map(d => d.name).join(", ")}`}>
+                ⚠️ {unmetDependencies.length}个依赖未完成
+              </span>
             )}
             
             {/* 重新生成按钮 */}

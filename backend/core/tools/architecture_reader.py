@@ -285,6 +285,65 @@ def get_content_block_tree(project_id: str, db: Optional[Session] = None) -> Lis
     return [block_to_dict(b) for b in root_blocks]
 
 
+def get_dependency_contents(
+    project_id: str, 
+    dependency_names: List[str],
+    db: Optional[Session] = None
+) -> Dict[str, str]:
+    """
+    获取多个依赖字段的内容
+    
+    用于注入到 LLM 提示词中的字段依赖上下文
+    
+    Args:
+        project_id: 项目ID
+        dependency_names: 依赖字段名称列表，如 ["意图分析", "消费者调研"]
+        db: 数据库会话
+    
+    Returns:
+        {字段名: 字段内容} 字典
+    """
+    if db is None:
+        db = next(get_db())
+    
+    result = {}
+    for name in dependency_names:
+        field = db.query(ProjectField).filter(
+            ProjectField.project_id == project_id,
+            ProjectField.name == name
+        ).first()
+        
+        if field and field.content:
+            result[name] = field.content
+    
+    return result
+
+
+def get_intent_and_research(project_id: str, db: Optional[Session] = None) -> Dict[str, str]:
+    """
+    获取意图分析和消费者调研结果
+    
+    这是最常用的依赖组合，专门提供一个便捷函数
+    
+    Args:
+        project_id: 项目ID
+        db: 数据库会话
+    
+    Returns:
+        {"intent": ..., "research": ...} 字典，缺失的字段为空字符串
+    """
+    contents = get_dependency_contents(
+        project_id, 
+        ["意图分析", "消费者调研"],
+        db
+    )
+    
+    return {
+        "intent": contents.get("意图分析", ""),
+        "research": contents.get("消费者调研", ""),
+    }
+
+
 def format_architecture_for_llm(arch: ProjectArchitecture) -> str:
     """
     将架构信息格式化为 LLM 可读的文本

@@ -12,6 +12,21 @@ import { blockAPI } from "@/lib/api";
 import BlockTree from "./block-tree";
 import { List, GitBranch } from "lucide-react";
 
+// 辅助函数：将树形结构扁平化为数组（用于依赖选择）
+function flattenBlocks(blocks: ContentBlock[]): ContentBlock[] {
+  const result: ContentBlock[] = [];
+  const flatten = (blockList: ContentBlock[]) => {
+    for (const block of blockList) {
+      result.push(block);
+      if (block.children && block.children.length > 0) {
+        flatten(block.children);
+      }
+    }
+  };
+  flatten(blocks);
+  return result;
+}
+
 // 阶段到特殊处理器的映射
 const PHASE_SPECIAL_HANDLERS: Record<string, string> = {
   intent: "intent",
@@ -71,7 +86,7 @@ export function ProgressPanel({
         // 传统架构：等 fields 加载完成后构建虚拟块
         const virtualBlocks = buildVirtualBlocksFromFields(project, fields);
         setContentBlocks(virtualBlocks);
-        onBlocksChange?.(virtualBlocks);
+        onBlocksChange?.(flattenBlocks(virtualBlocks));
       }
     }
   }, [viewMode, project?.id, project?.use_flexible_architecture, fields]);
@@ -90,7 +105,8 @@ export function ProgressPanel({
         const data = await blockAPI.getProjectBlocks(project.id);
         if (data.blocks && data.blocks.length > 0) {
           setContentBlocks(data.blocks);
-          onBlocksChange?.(data.blocks);
+          // 传递扁平化的块列表，用于依赖选择
+          onBlocksChange?.(flattenBlocks(data.blocks));
         } else {
           // 灵活架构但没有数据，显示空状态
           setContentBlocks([]);
@@ -101,14 +117,14 @@ export function ProgressPanel({
         // 这确保了树形视图和传统视图显示相同的数据
         const virtualBlocks = buildVirtualBlocksFromFields(project, fields);
         setContentBlocks(virtualBlocks);
-        onBlocksChange?.(virtualBlocks);
+        onBlocksChange?.(flattenBlocks(virtualBlocks));
       }
     } catch (err) {
       console.error("加载内容块失败:", err);
       // 失败时从 fields 构建虚拟块
       const virtualBlocks = buildVirtualBlocksFromFields(project, fields);
       setContentBlocks(virtualBlocks);
-      onBlocksChange?.(virtualBlocks);
+      onBlocksChange?.(flattenBlocks(virtualBlocks));
     } finally {
       setIsLoadingBlocks(false);
     }
@@ -205,9 +221,9 @@ export function ProgressPanel({
       const data = await blockAPI.getProjectBlocks(project.id);
       if (data.blocks && data.blocks.length > 0) {
         setContentBlocks(data.blocks);
-        onBlocksChange?.(data.blocks);
+        onBlocksChange?.(flattenBlocks(data.blocks));
       }
-      
+
       alert(`迁移成功！已创建 ${result.phases_created} 个阶段，迁移 ${result.fields_migrated} 个字段。\n\n请刷新页面以确保所有状态同步。`);
     } catch (err) {
       console.error("迁移失败:", err);
@@ -302,12 +318,37 @@ export function ProgressPanel({
     handleDragEnd();
   };
 
+  // 获取阶段下的字段
+  const getPhaseFields = (phase: string): Field[] => {
+    return fields.filter(f => f.phase === phase);
+  };
+  
+  // 折叠状态
+  const [expandedPhases, setExpandedPhases] = useState<Record<string, boolean>>(() => {
+    // 默认展开当前阶段
+    const initial: Record<string, boolean> = {};
+    if (project?.current_phase) {
+      initial[project.current_phase] = true;
+    }
+    return initial;
+  });
+  
+  const togglePhaseExpand = (phase: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setExpandedPhases(prev => ({
+      ...prev,
+      [phase]: !prev[phase]
+    }));
+  };
+
   const renderPhaseItem = (phase: string, isDraggable: boolean) => {
     const status = phaseStatus[phase] || "pending";
     const statusInfo = PHASE_STATUS[status] || PHASE_STATUS.pending;
     const isCurrent = phase === currentPhase;
     const isDragging = draggedPhase === phase;
     const isDragOver = dragOverPhase === phase;
+    const phaseFields = getPhaseFields(phase);
+    const isExpanded = expandedPhases[phase] ?? isCurrent;  // 当前阶段默认展开
     
     return (
       <div
@@ -325,41 +366,118 @@ export function ProgressPanel({
           isDragOver && "before:absolute before:inset-x-0 before:-top-1 before:h-0.5 before:bg-brand-500"
         )}
       >
-        <button
-          onClick={() => onPhaseClick?.(phase)}
-          className={cn(
-            "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left transition-colors",
-            isCurrent
-              ? "bg-brand-600/20 text-brand-400"
-              : "hover:bg-surface-3 text-zinc-300",
-            isDraggable && "cursor-grab active:cursor-grabbing"
+        <div className="flex items-center">
+          {/* 展开/折叠按钮 */}
+          {phaseFields.length > 0 && (
+            <button
+              onClick={(e) => togglePhaseExpand(phase, e)}
+              className="p-1 text-zinc-500 hover:text-zinc-300"
+            >
+              <span className={cn(
+                "inline-block transition-transform text-xs",
+                isExpanded ? "rotate-90" : ""
+              )}>▶</span>
+            </button>
           )}
-        >
-          {/* 拖拽手柄 */}
-          {isDraggable && (
-            <span className="text-zinc-600 text-xs select-none">⋮⋮</span>
-          )}
+          {/* 无字段时占位 */}
+          {phaseFields.length === 0 && <span className="w-6" />}
           
-          {/* 状态指示器 */}
-          <div
+          <button
+            onClick={() => onPhaseClick?.(phase)}
             className={cn(
-              "w-2 h-2 rounded-full flex-shrink-0",
-              status === "completed" && "bg-green-500",
-              status === "in_progress" && "bg-yellow-500",
-              status === "pending" && "bg-zinc-600"
+              "flex-1 flex items-center gap-3 px-2 py-2 rounded-lg text-left transition-colors",
+              isCurrent
+                ? "bg-brand-600/20 text-brand-400"
+                : "hover:bg-surface-3 text-zinc-300",
+              isDraggable && "cursor-grab active:cursor-grabbing"
             )}
-          />
-          
-          {/* 阶段名称 */}
-          <span className="flex-1 text-sm">
-            {PHASE_NAMES[phase] || phase}
-          </span>
-          
-          {/* 状态标签 */}
-          <span className={cn("text-xs", statusInfo.color)}>
-            {statusInfo.label}
-          </span>
-        </button>
+          >
+            {/* 拖拽手柄 */}
+            {isDraggable && (
+              <span className="text-zinc-600 text-xs select-none">⋮⋮</span>
+            )}
+            
+            {/* 状态指示器 */}
+            <div
+              className={cn(
+                "w-2 h-2 rounded-full flex-shrink-0",
+                status === "completed" && "bg-green-500",
+                status === "in_progress" && "bg-yellow-500",
+                status === "pending" && "bg-zinc-600"
+              )}
+            />
+            
+            {/* 阶段名称 */}
+            <span className="flex-1 text-sm">
+              {PHASE_NAMES[phase] || phase}
+            </span>
+            
+            {/* 字段数量 */}
+            {phaseFields.length > 0 && (
+              <span className="text-xs text-zinc-500">
+                {phaseFields.length}
+              </span>
+            )}
+            
+            {/* 状态标签 */}
+            <span className={cn("text-xs", statusInfo.color)}>
+              {statusInfo.label}
+            </span>
+          </button>
+        </div>
+        
+        {/* 阶段下的字段列表 */}
+        {isExpanded && phaseFields.length > 0 && (
+          <div className="ml-6 mt-1 space-y-0.5">
+            {phaseFields.map(field => {
+              const fieldStatus = field.status || "pending";
+              return (
+                <button
+                  key={field.id}
+                  onClick={() => {
+                    // 将字段转换为 ContentBlock 格式传递
+                    const virtualBlock: ContentBlock = {
+                      id: field.id,
+                      project_id: project?.id || "",
+                      parent_id: `virtual_phase_${phase}`,
+                      name: field.name,
+                      block_type: "field",
+                      depth: 1,
+                      order_index: 0,
+                      content: field.content || "",
+                      status: fieldStatus as "pending" | "in_progress" | "completed" | "failed",
+                      ai_prompt: field.ai_prompt || "",
+                      constraints: field.constraints || {},
+                      depends_on: field.dependencies?.depends_on || [],
+                      special_handler: null,
+                      need_review: field.need_review,
+                      is_collapsed: false,
+                      children: [],
+                      created_at: field.created_at,
+                      updated_at: field.updated_at,
+                    };
+                    onBlockSelect?.(virtualBlock);
+                  }}
+                  className="w-full flex items-center gap-2 px-3 py-1.5 rounded text-left text-sm hover:bg-surface-3 transition-colors"
+                >
+                  {/* 字段状态指示器 */}
+                  <div
+                    className={cn(
+                      "w-1.5 h-1.5 rounded-full flex-shrink-0",
+                      fieldStatus === "completed" && "bg-green-500",
+                      fieldStatus === "in_progress" && "bg-yellow-500",
+                      fieldStatus === "pending" && "bg-zinc-600"
+                    )}
+                  />
+                  {/* 字段名称 */}
+                  <span className="flex-1 text-zinc-400 truncate">
+                    {field.name}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
     );
   };

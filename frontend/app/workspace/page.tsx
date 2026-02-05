@@ -262,6 +262,7 @@ export default function WorkspacePage() {
               useFlexibleArchitecture={currentProject?.use_flexible_architecture || false}
               onFieldUpdate={handleFieldUpdate}
               onFieldsChange={() => currentProject && loadFields(currentProject.id)}
+              onBlockSelect={handleBlockSelect}
               onPhaseAdvance={async () => {
                 // 阶段推进后，刷新项目、字段和对话历史
                 if (currentProject) {

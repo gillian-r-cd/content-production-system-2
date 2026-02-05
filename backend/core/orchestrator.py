@@ -31,6 +31,8 @@ from core.tools.architecture_reader import (
     get_project_architecture, 
     format_architecture_for_llm,
     get_field_content,
+    get_intent_and_research,
+    get_dependency_contents,
 )
 import json as json_module  # 避免与局部变量冲突
 
@@ -99,8 +101,8 @@ class ContentProductionState(TypedDict):
     # Agent自主权设置
     autonomy_settings: Dict[str, bool]
     
-    # Golden Context
-    golden_context: Dict
+    # 创作者特质（全局注入到每个 LLM 调用）
+    creator_profile: str
     
     # 已生成的字段 {field_id: content}
     fields: Dict[str, str]
@@ -510,7 +512,7 @@ async def intent_analysis_node(state: ContentProductionState) -> ContentProducti
     
     关键：只统计【最近一轮】的问题，遇到意图分析结果就重置
     """
-    gc = state.get("golden_context", {})
+    creator_profile = state.get("creator_profile", "")
     user_input = state.get("user_input", "")
     chat_history = state.get("messages", [])
     
@@ -592,7 +594,7 @@ async def intent_analysis_node(state: ContentProductionState) -> ContentProducti
         # ===== 产出模式：生成意图分析 =====
         system_prompt = prompt_engine.INTENT_PRODUCING_PROMPT
         user_prompt = f"""项目背景:
-{gc.get('creator_profile', '')}
+{creator_profile}
 
 完整对话历史:
 {history_context}
@@ -613,14 +615,9 @@ async def intent_analysis_node(state: ContentProductionState) -> ContentProducti
         # 构建完整的 prompt 用于日志记录
         full_prompt = f"[System]\n{system_prompt}\n\n[User]\n{user_prompt}"
         
-        # ===== 关键：更新 Golden Context =====
-        # 将意图分析结果写入 golden_context，供后续阶段使用
-        new_gc = {
-            **gc,
-            "intent": response.content,  # 意图分析结果
-        }
-        
         # 构建简洁的确认消息（实际内容保存到字段）
+        # 注意：意图分析结果通过 agent_output 保存到 ProjectField
+        # 后续阶段通过字段依赖获取，不再存入全局 golden_context
         confirm_message = "✅ 已生成【意图分析】，请在左侧工作台查看。输入「继续」进入消费者调研阶段。"
         
         return {
@@ -629,7 +626,6 @@ async def intent_analysis_node(state: ContentProductionState) -> ContentProducti
             "display_output": confirm_message,  # 对话区显示简洁确认
             "messages": [AIMessage(content=confirm_message)],
             "phase_status": new_phase_status,
-            "golden_context": new_gc,  # 更新 golden_context
             "is_producing": True,
             "waiting_for_human": True,  # 关键：等待用户确认，不自动推进
             "tokens_in": response.tokens_in,
@@ -746,13 +742,16 @@ async def research_node(state: ContentProductionState) -> ContentProductionState
     """
     from core.tools import deep_research, quick_research
     
-    gc = state.get("golden_context", {})
+    creator_profile = state.get("creator_profile", "")
+    project_id = state.get("project_id", "")
     use_deep = state.get("use_deep_research", True)
     
     query = "消费者调研"
     
-    # 使用辅助函数规范化意图
-    intent = normalize_intent(gc.get("intent"))
+    # 从字段获取意图分析结果（通过字段依赖，而非 golden_context）
+    deps = get_intent_and_research(project_id)
+    intent = normalize_intent(deps.get("intent", ""))
+    
     if not intent:
         # fallback：使用用户输入（这不应该发生，意图分析应该先完成）
         intent = state.get("user_input", "")
@@ -802,11 +801,8 @@ async def research_node(state: ContentProductionState) -> ContentProductionState
         display_text += f"**总体概述**: {report.summary[:100]}...\n\n"
         display_text += f"**典型用户**: {', '.join([p['name'] for p in personas_data[:3]])}"
         
-        # 更新Golden Context（保存结构化数据）
-        new_gc = {
-            **gc,
-            "consumer_personas": report_content,  # JSON格式
-        }
+        # 注意：消费者调研结果通过 agent_output 保存到 ProjectField
+        # 后续阶段通过字段依赖获取，不再存入全局 golden_context
         
         # 构建 full_prompt 用于日志 - 记录完整上下文
         full_prompt = f"""[消费者调研 - 完整上下文]
@@ -816,7 +812,7 @@ async def research_node(state: ContentProductionState) -> ContentProductionState
 使用深度调研: {use_deep}
 
 === 2. 创作者特质 ===
-{gc.get('creator_profile', '未设置')}
+{creator_profile or '未设置'}
 
 === 3. 项目意图 (完整) ===
 {intent if intent else '未设置'}
@@ -863,7 +859,6 @@ async def research_node(state: ContentProductionState) -> ContentProductionState
             "display_output": confirm_text,   # 对话区显示确认消息
             "full_prompt": full_prompt,
             "messages": [AIMessage(content=confirm_text)],
-            "golden_context": new_gc,
             # 注意：不自动设置 completed，需要用户确认
             "phase_status": {**state.get("phase_status", {}), "research": "in_progress"},
             "current_phase": "research",
@@ -900,12 +895,13 @@ async def design_inner_node(state: ContentProductionState) -> ContentProductionS
     import json
     import re
     
-    gc = state.get("golden_context", {})
+    creator_profile = state.get("creator_profile", "")
+    project_id = state.get("project_id", "")
     
-    # Golden Context 只包含创作者特质
-    # intent 和 consumer_personas 通过 field_context 传递（作为依赖内容）
-    intent_str = normalize_intent(gc.get("intent"))
-    personas_str = normalize_consumer_personas(gc.get("consumer_personas"))
+    # 从字段获取依赖内容（意图分析、消费者调研）
+    deps = get_intent_and_research(project_id)
+    intent_str = normalize_intent(deps.get("intent", ""))
+    personas_str = normalize_consumer_personas(deps.get("research", ""))
     
     # 构建依赖内容（作为参考内容注入，而非全局上下文）
     field_context = ""
@@ -916,7 +912,7 @@ async def design_inner_node(state: ContentProductionState) -> ContentProductionS
     
     context = PromptContext(
         golden_context=GoldenContext(
-            creator_profile=gc.get("creator_profile", ""),
+            creator_profile=creator_profile,
         ),
         phase_context=prompt_engine.PHASE_PROMPTS["design_inner"],
         field_context=field_context.strip(),  # 依赖内容作为参考
@@ -989,14 +985,14 @@ async def produce_inner_node(state: ContentProductionState) -> ContentProduction
     
     根据设计方案生产内容
     """
-    gc = state.get("golden_context", {})
+    creator_profile = state.get("creator_profile", "")
+    project_id = state.get("project_id", "")
     user_input = state.get("user_input", "请生产内涵内容。")
     
-    # Golden Context 只包含创作者特质
-    # produce_inner 阶段的 intent/consumer_personas 应通过字段依赖传递
-    # 这里为向后兼容仍注入，但前端应配置字段依赖
-    intent_str = normalize_intent(gc.get("intent"))
-    personas_str = normalize_consumer_personas(gc.get("consumer_personas"))
+    # 从字段获取依赖内容（意图分析、消费者调研）
+    deps = get_intent_and_research(project_id)
+    intent_str = normalize_intent(deps.get("intent", ""))
+    personas_str = normalize_consumer_personas(deps.get("research", ""))
     
     field_context = ""
     if intent_str:
@@ -1006,7 +1002,7 @@ async def produce_inner_node(state: ContentProductionState) -> ContentProduction
     
     context = PromptContext(
         golden_context=GoldenContext(
-            creator_profile=gc.get("creator_profile", ""),
+            creator_profile=creator_profile,
         ),
         phase_context=prompt_engine.PHASE_PROMPTS["produce_inner"],
         field_context=field_context.strip(),
@@ -1051,10 +1047,13 @@ async def design_outer_node(state: ContentProductionState) -> ContentProductionS
     类似内涵设计，生成多个渠道方案供用户选择。
     每个渠道是一个独立的字段，用户可以选择/增删渠道。
     """
-    gc = state.get("golden_context", {})
+    creator_profile = state.get("creator_profile", "")
+    project_id = state.get("project_id", "")
     
-    intent_str = normalize_intent(gc.get("intent"))
-    personas_str = normalize_consumer_personas(gc.get("consumer_personas"))
+    # 从字段获取依赖内容
+    deps = get_intent_and_research(project_id)
+    intent_str = normalize_intent(deps.get("intent", ""))
+    personas_str = normalize_consumer_personas(deps.get("research", ""))
     
     field_context = ""
     if intent_str:
@@ -1065,7 +1064,7 @@ async def design_outer_node(state: ContentProductionState) -> ContentProductionS
     # 外延设计的系统提示词
     system_prompt = f"""你是一个专业的内容传播策略师。
 
-{gc.get("creator_profile", "")}
+{creator_profile}
 
 {field_context}
 
@@ -1146,11 +1145,14 @@ async def design_outer_node(state: ContentProductionState) -> ContentProductionS
 
 async def produce_outer_node(state: ContentProductionState) -> ContentProductionState:
     """外延生产节点"""
-    gc = state.get("golden_context", {})
+    creator_profile = state.get("creator_profile", "")
+    project_id = state.get("project_id", "")
     user_input = state.get("user_input", "请生产外延内容。")
     
-    intent_str = normalize_intent(gc.get("intent"))
-    personas_str = normalize_consumer_personas(gc.get("consumer_personas"))
+    # 从字段获取依赖内容
+    deps = get_intent_and_research(project_id)
+    intent_str = normalize_intent(deps.get("intent", ""))
+    personas_str = normalize_consumer_personas(deps.get("research", ""))
     
     field_context = ""
     if intent_str:
@@ -1160,7 +1162,7 @@ async def produce_outer_node(state: ContentProductionState) -> ContentProduction
     
     context = PromptContext(
         golden_context=GoldenContext(
-            creator_profile=gc.get("creator_profile", ""),
+            creator_profile=creator_profile,
         ),
         phase_context=prompt_engine.PHASE_PROMPTS["produce_outer"],
         field_context=field_context.strip(),
@@ -1198,11 +1200,14 @@ async def produce_outer_node(state: ContentProductionState) -> ContentProduction
 
 async def simulate_node(state: ContentProductionState) -> ContentProductionState:
     """消费者模拟节点"""
-    gc = state.get("golden_context", {})
+    creator_profile = state.get("creator_profile", "")
+    project_id = state.get("project_id", "")
     user_input = "请模拟用户体验并给出反馈。"
     
-    intent_str = normalize_intent(gc.get("intent"))
-    personas_str = normalize_consumer_personas(gc.get("consumer_personas"))
+    # 从字段获取依赖内容
+    deps = get_intent_and_research(project_id)
+    intent_str = normalize_intent(deps.get("intent", ""))
+    personas_str = normalize_consumer_personas(deps.get("research", ""))
     
     field_context = ""
     if intent_str:
@@ -1212,7 +1217,7 @@ async def simulate_node(state: ContentProductionState) -> ContentProductionState
     
     context = PromptContext(
         golden_context=GoldenContext(
-            creator_profile=gc.get("creator_profile", ""),
+            creator_profile=creator_profile,
         ),
         phase_context=prompt_engine.PHASE_PROMPTS["simulate"],
         field_context=field_context.strip(),
@@ -1250,11 +1255,14 @@ async def simulate_node(state: ContentProductionState) -> ContentProductionState
 
 async def evaluate_node(state: ContentProductionState) -> ContentProductionState:
     """评估节点"""
-    gc = state.get("golden_context", {})
+    creator_profile = state.get("creator_profile", "")
+    project_id = state.get("project_id", "")
     user_input = "请对项目进行全面评估。"
     
-    intent_str = normalize_intent(gc.get("intent"))
-    personas_str = normalize_consumer_personas(gc.get("consumer_personas"))
+    # 从字段获取依赖内容
+    deps = get_intent_and_research(project_id)
+    intent_str = normalize_intent(deps.get("intent", ""))
+    personas_str = normalize_consumer_personas(deps.get("research", ""))
     
     field_context = ""
     if intent_str:
@@ -1264,7 +1272,7 @@ async def evaluate_node(state: ContentProductionState) -> ContentProductionState
     
     context = PromptContext(
         golden_context=GoldenContext(
-            creator_profile=gc.get("creator_profile", ""),
+            creator_profile=creator_profile,
         ),
         phase_context=prompt_engine.PHASE_PROMPTS["evaluate"],
         field_context=field_context.strip(),
@@ -1308,7 +1316,8 @@ async def modify_node(state: ContentProductionState) -> ContentProductionState:
     
     根据用户指令修改已有字段内容
     """
-    gc = state.get("golden_context", {})
+    creator_profile = state.get("creator_profile", "")
+    project_id = state.get("project_id", "")
     target_field = state.get("parsed_target_field", "")
     operation = state.get("parsed_operation", "")
     referenced_contents = state.get("referenced_contents", {})
@@ -1337,12 +1346,16 @@ async def modify_node(state: ContentProductionState) -> ContentProductionState:
             "full_prompt": debug_prompt,  # 确保日志中能看到调试信息
         }
     
+    # 从字段获取依赖内容
+    deps = get_intent_and_research(project_id)
+    intent_str = normalize_intent(deps.get("intent", ""))
+    
     # 构建修改提示词
     system_prompt = f"""你是一个专业的内容编辑。请根据用户的修改指令，对原始内容进行修改。
 
 项目上下文:
-{gc.get('creator_profile', '')}
-{gc.get('intent', '')}
+{creator_profile}
+{intent_str}
 
 原始内容（字段名：{target_field}）:
 {original_content}
@@ -1392,7 +1405,7 @@ async def query_node(state: ContentProductionState) -> ContentProductionState:
     1. 字段内容查询
     2. 项目架构查询（阶段列表、字段列表等）
     """
-    gc = state.get("golden_context", {})
+    creator_profile = state.get("creator_profile", "")
     project_id = state.get("project_id", "")
     target_field = state.get("parsed_target_field", "")
     operation = state.get("parsed_operation", "")
@@ -1431,11 +1444,15 @@ async def query_node(state: ContentProductionState) -> ContentProductionState:
         for name, content in referenced_contents.items()
     ])
     
+    # 从字段获取依赖内容
+    deps = get_intent_and_research(project_id)
+    intent_str = normalize_intent(deps.get("intent", ""))
+    
     system_prompt = f"""你是一个专业的内容分析师。请根据用户的问题，分析和解释已有的内容或项目结构。
 
 项目上下文:
-{gc.get('creator_profile', '')}
-{gc.get('intent', '')}{arch_info}
+{creator_profile}
+{intent_str}{arch_info}
 
 引用的字段内容:
 {all_refs if all_refs else '(无引用字段)'}
@@ -1476,7 +1493,8 @@ async def chat_node(state: ContentProductionState) -> ContentProductionState:
     
     处理自由对话，注入 @ 引用的内容
     """
-    gc = state.get("golden_context", {})
+    creator_profile = state.get("creator_profile", "")
+    project_id = state.get("project_id", "")
     history = state.get("messages", [])
     referenced_contents = state.get("referenced_contents", {})
     references = state.get("references", [])
@@ -1494,6 +1512,10 @@ async def chat_node(state: ContentProductionState) -> ContentProductionState:
 用户引用的字段内容:
 {chr(10).join(ref_parts)}
 """
+    
+    # 从字段获取依赖内容
+    deps = get_intent_and_research(project_id)
+    intent_str = normalize_intent(deps.get("intent", ""))
     
     # 构建对话上下文
     current_phase = state.get('current_phase', 'intent')
@@ -1515,8 +1537,8 @@ async def chat_node(state: ContentProductionState) -> ContentProductionState:
 - **技能应用**: 使用不同写作风格
 
 ## 项目上下文
-{gc.get('creator_profile', '') or '（暂无创作者信息）'}
-{gc.get('intent', '') or '（暂无项目意图）'}
+{creator_profile or '（暂无创作者信息）'}
+{intent_str or '（暂无项目意图）'}
 
 当前阶段: {current_phase}{ref_context}
 
@@ -1608,7 +1630,8 @@ async def generate_field_node(state: ContentProductionState) -> ContentProductio
     """
     from core.tools.field_generator import generate_field
     
-    gc = state.get("golden_context", {})
+    creator_profile = state.get("creator_profile", "")
+    project_id = state.get("project_id", "")
     user_input = state.get("user_input", "")
     current_phase = state.get("current_phase", "intent")
     
@@ -1626,10 +1649,10 @@ async def generate_field_node(state: ContentProductionState) -> ContentProductio
     }
     field_name = field_names.get(current_phase, "内容")
     
-    # Golden Context 只包含创作者特质
-    # intent/consumer_personas 作为参考内容传入
-    intent_str = normalize_intent(gc.get("intent"))
-    personas_str = normalize_consumer_personas(gc.get("consumer_personas"))
+    # 从字段获取依赖内容
+    deps = get_intent_and_research(project_id)
+    intent_str = normalize_intent(deps.get("intent", ""))
+    personas_str = normalize_consumer_personas(deps.get("research", ""))
     
     field_context = ""
     if intent_str:
@@ -1639,7 +1662,7 @@ async def generate_field_node(state: ContentProductionState) -> ContentProductio
     
     context = PromptContext(
         golden_context=GoldenContext(
-            creator_profile=gc.get("creator_profile", ""),
+            creator_profile=creator_profile,
         ),
         phase_context=prompt_engine.PHASE_PROMPTS.get(current_phase, ""),
         field_context=field_context.strip(),
@@ -1707,13 +1730,13 @@ async def update_field_node(state: ContentProductionState) -> ContentProductionS
     
     修改已有字段内容
     """
-    gc = state.get("golden_context", {})
+    creator_profile = state.get("creator_profile", "")
     user_input = state.get("user_input", "")
     
-    # Golden Context 只包含创作者特质
+    # 创作者特质作为唯一的全局上下文
     context = PromptContext(
         golden_context=GoldenContext(
-            creator_profile=gc.get("creator_profile", ""),
+            creator_profile=creator_profile,
         ),
     )
     
@@ -2464,13 +2487,13 @@ class ContentProductionAgent:
         project_id: str,
         user_input: str,
         current_phase: str = "intent",
-        golden_context: Optional[dict] = None,
+        creator_profile: str = "",  # 重构：用 creator_profile 替代 golden_context
         autonomy_settings: Optional[dict] = None,
         use_deep_research: bool = True,
         thread_id: Optional[str] = None,
         chat_history: Optional[list] = None,
         phase_status: Optional[dict] = None,
-        phase_order: Optional[List[str]] = None,  # 新增：项目实际的阶段顺序
+        phase_order: Optional[List[str]] = None,  # 项目实际的阶段顺序
         references: Optional[List[str]] = None,  # @ 引用的字段名
         referenced_contents: Optional[Dict[str, str]] = None,  # 引用字段的内容
     ) -> ContentProductionState:
@@ -2481,7 +2504,7 @@ class ContentProductionAgent:
             project_id: 项目ID
             user_input: 用户输入
             current_phase: 当前阶段
-            golden_context: Golden Context
+            creator_profile: 创作者特质（全局注入到每个 LLM 调用）
             autonomy_settings: 自主权设置
             use_deep_research: 是否使用DeepResearch
             thread_id: 线程ID（用于状态持久化）
@@ -2522,7 +2545,7 @@ class ContentProductionAgent:
             "phase_order": actual_phase_order,  # 使用项目实际的阶段顺序！
             "phase_status": existing_phase_status,
             "autonomy_settings": autonomy_settings or {p: True for p in actual_phase_order},
-            "golden_context": golden_context or {},
+            "creator_profile": creator_profile,  # 创作者特质是唯一的全局上下文
             "fields": {},
             "messages": messages,  # 使用完整历史
             "user_input": user_input,
@@ -2576,7 +2599,7 @@ class ContentProductionAgent:
             "phase_order": PROJECT_PHASES.copy(),
             "phase_status": {p: "pending" for p in PROJECT_PHASES},
             "autonomy_settings": kwargs.get("autonomy_settings", {p: True for p in PROJECT_PHASES}),
-            "golden_context": kwargs.get("golden_context", {}),
+            "creator_profile": kwargs.get("creator_profile", ""),  # 创作者特质
             "fields": {},
             "messages": [HumanMessage(content=user_input)],
             "user_input": user_input,

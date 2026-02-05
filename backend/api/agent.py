@@ -184,12 +184,17 @@ async def chat(
         # 记录日志
         print(f"[Agent] @ 引用解析: {references} -> 找到 {len(referenced_contents)} 个字段")
     
+    # 获取创作者特质（全局注入到每个 LLM 调用）
+    creator_profile_str = ""
+    if project.creator_profile:
+        creator_profile_str = project.creator_profile.to_prompt_context()
+    
     # 运行Agent（传递历史对话、阶段状态、架构信息和引用内容）
     result = await content_agent.run(
         project_id=request.project_id,
         user_input=request.message,
         current_phase=current_phase,
-        golden_context=project.golden_context or {},
+        creator_profile=creator_profile_str,  # 重构：传递创作者特质而非 golden_context
         autonomy_settings=project.agent_autonomy or {},
         use_deep_research=project.use_deep_research if hasattr(project, 'use_deep_research') else True,
         chat_history=chat_history,
@@ -406,10 +411,9 @@ async def chat(
         project.phase_status = new_phase_status
         project_updated = True
     
-    # 更新Golden Context
-    if result.get("golden_context"):
-        project.golden_context = result["golden_context"]
-        project_updated = True
+    # 注意：不再更新 project.golden_context
+    # 意图分析、消费者调研结果已保存到 ProjectField
+    # 后续阶段通过字段依赖获取，而非全局 golden_context
     
     # 更新当前阶段
     if result_phase != project.current_phase:
@@ -510,12 +514,17 @@ async def retry_message(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
+    # 获取创作者特质
+    creator_profile_str = ""
+    if project.creator_profile:
+        creator_profile_str = project.creator_profile.to_prompt_context()
+    
     # 重新运行Agent
     result = await content_agent.run(
         project_id=user_msg.project_id,
         user_input=user_msg.content,
         current_phase=user_msg.message_metadata.get("phase", project.current_phase),
-        golden_context=project.golden_context or {},
+        creator_profile=creator_profile_str,
         autonomy_settings=project.agent_autonomy or {},
         use_deep_research=project.use_deep_research if hasattr(project, 'use_deep_research') else True,
         phase_status=project.phase_status or {},  # 传递现有阶段状态！
@@ -689,6 +698,11 @@ async def stream_chat(
         full_content = ""
         
         try:
+            # 获取创作者特质
+            creator_profile_str = ""
+            if project.creator_profile:
+                creator_profile_str = project.creator_profile.to_prompt_context()
+            
             # 1. 执行意图路由
             initial_state: ContentProductionState = {
                 "project_id": request.project_id,
@@ -696,7 +710,7 @@ async def stream_chat(
                 "phase_order": project.phase_order or PROJECT_PHASES.copy(),
                 "phase_status": project.phase_status or {p: "pending" for p in PROJECT_PHASES},
                 "autonomy_settings": project.agent_autonomy or {},
-                "golden_context": project.golden_context or {},
+                "creator_profile": creator_profile_str,  # 创作者特质
                 "fields": {},
                 "messages": chat_history,
                 "user_input": request.message,
@@ -711,7 +725,6 @@ async def stream_chat(
             }
             
             # 2. 意图分析阶段特殊处理（优先级最高）
-            gc = project.golden_context or {}
             phase_status = project.phase_status or {}
             intent_completed = phase_status.get("intent") == "completed"
             
@@ -822,7 +835,7 @@ async def stream_chat(
                         project_id=request.project_id,
                         user_input=request.message,
                         current_phase=current_phase,
-                        golden_context=gc,
+                        creator_profile=creator_profile_str,
                         autonomy_settings=project.agent_autonomy or {},
                         chat_history=chat_history,
                     )
@@ -900,11 +913,8 @@ async def stream_chat(
                         
                         print(f"[stream] 已保存 {save_phase} 阶段结果到字段: {field_name}")
                         
-                        # 更新项目的 golden_context（如果有新的上下文）
-                        new_gc = result.get("golden_context")
-                        if new_gc:
-                            project.golden_context = new_gc
-                            db.add(project)
+                        # 注意：不再更新 project.golden_context
+                        # 结果已保存到 ProjectField，后续阶段通过字段依赖获取
                         
                         # 更新阶段状态 - 使用正确的阶段
                         new_phase_status = project.phase_status or {}
@@ -982,9 +992,9 @@ async def stream_chat(
             )
             db.add(gen_log)
             
-            # 6. 如果是意图分析完成，更新项目状态
+            # 6. 如果是意图分析完成，更新项目状态和字段
             if route_target == "intent_produce":
-                # 解析生成的意图内容，存入 golden_context
+                # 解析生成的意图内容（用于保存到字段）
                 intent_data = {
                     "做什么": "",
                     "给谁看": "",
@@ -994,7 +1004,6 @@ async def stream_chat(
                 for line in full_content.split('\n'):
                     if "**做什么**" in line or "做什么:" in line or "做什么：" in line:
                         current_key = "做什么"
-                        # 尝试提取同行内容
                         if ":" in line or "：" in line:
                             intent_data[current_key] = line.split(":", 1)[-1].split("：", 1)[-1].strip().strip("*").strip()
                     elif "**给谁看**" in line or "给谁看:" in line or "给谁看：" in line:
@@ -1006,22 +1015,16 @@ async def stream_chat(
                         if ":" in line or "：" in line:
                             intent_data[current_key] = line.split(":", 1)[-1].split("：", 1)[-1].strip().strip("*").strip()
                     elif current_key and line.strip():
-                        # 追加内容
                         if not intent_data[current_key]:
                             intent_data[current_key] = line.strip()
                 
-                # 更新项目
-                new_gc = project.golden_context or {}
-                new_gc["intent"] = intent_data
-                project.golden_context = new_gc
-                
+                # 更新阶段状态（不再更新 golden_context）
                 new_phase_status = project.phase_status or {}
                 new_phase_status["intent"] = "completed"
                 project.phase_status = new_phase_status
-                
                 db.add(project)
                 
-                # 同时创建意图分析的字段
+                # 创建/更新意图分析字段
                 for field_name, content in intent_data.items():
                     if content:
                         existing = db.query(ProjectField).filter(
@@ -1044,7 +1047,7 @@ async def stream_chat(
                             )
                             db.add(new_field)
                 
-                print(f"[stream] 意图分析完成，已更新 golden_context 和字段")
+                print(f"[stream] 意图分析完成，已保存字段")
             
             # 7. 保存完整响应
             agent_msg = ChatMessage(

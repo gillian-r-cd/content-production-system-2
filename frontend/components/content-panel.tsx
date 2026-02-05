@@ -11,6 +11,7 @@ import { PHASE_NAMES, PROJECT_PHASES } from "@/lib/utils";
 import { fieldAPI, agentAPI, blockAPI } from "@/lib/api";
 import type { Field, ContentBlock } from "@/lib/api";
 import { ContentBlockEditor } from "./content-block-editor";
+import { ContentBlockCard } from "./content-block-card";
 import { SimulationPanel } from "./simulation-panel";
 import { ChannelSelector } from "./channel-selector";
 import { ResearchPanel } from "./research-panel";
@@ -272,52 +273,51 @@ export function ContentPanel({
     const phaseMatch = selectedBlock.id.match(/virtual_phase_(.+)/);
     const selectedPhase = phaseMatch ? phaseMatch[1] : selectedBlock.special_handler;
     
-    // 如果是真正的 ContentBlock 阶段（灵活架构），显示其子块
+    // 如果是真正的 ContentBlock 阶段/分组（灵活架构），显示其所有子节点
     if (!isVirtualBlock && selectedBlock.children && selectedBlock.children.length > 0) {
+      // 统计不同类型的子节点
+      const phaseCount = selectedBlock.children.filter(c => c.block_type === "phase").length;
+      const groupCount = selectedBlock.children.filter(c => c.block_type === "group").length;
+      const fieldCount = selectedBlock.children.filter(c => c.block_type === "field").length;
+      const otherCount = selectedBlock.children.length - phaseCount - groupCount - fieldCount;
+      
+      // 生成描述文字
+      const parts = [];
+      if (phaseCount > 0) parts.push(`${phaseCount} 个子阶段`);
+      if (groupCount > 0) parts.push(`${groupCount} 个分组`);
+      if (fieldCount > 0) parts.push(`${fieldCount} 个字段`);
+      if (otherCount > 0) parts.push(`${otherCount} 个其他`);
+      const description = parts.join("、") || "暂无内容";
+      
       return (
         <div className="h-full flex flex-col">
           <div className="p-4 border-b border-surface-3">
-            <h1 className="text-xl font-bold text-zinc-100">{selectedBlock.name}</h1>
+            <div className="flex items-center gap-2">
+              <span className={`px-2 py-0.5 text-xs rounded ${
+                selectedBlock.block_type === "phase" 
+                  ? "bg-purple-600/20 text-purple-400"
+                  : "bg-amber-600/20 text-amber-400"
+              }`}>
+                {selectedBlock.block_type === "phase" ? "阶段" : "分组"}
+              </span>
+              <h1 className="text-xl font-bold text-zinc-100">{selectedBlock.name}</h1>
+            </div>
             <p className="text-zinc-500 text-sm mt-1">
-              包含 {selectedBlock.children.length} 个字段，点击左侧字段查看详情
+              包含 {description}
             </p>
           </div>
           <div className="flex-1 overflow-y-auto p-4">
-            <div className="grid gap-3">
+            <div className="space-y-3">
               {selectedBlock.children.map((child) => (
-                <div
+                <ContentBlockCard
                   key={child.id}
-                  className="p-4 bg-surface-2 border border-surface-3 rounded-lg hover:border-brand-500/50 cursor-pointer transition-colors"
-                  onClick={() => onBlockSelect?.(child)}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="font-medium text-zinc-200">{child.name}</span>
-                    <span className={`text-xs px-2 py-0.5 rounded ${
-                      child.status === "completed" ? "bg-green-600/20 text-green-400" :
-                      child.status === "in_progress" ? "bg-yellow-600/20 text-yellow-400" :
-                      "bg-zinc-600/20 text-zinc-400"
-                    }`}>
-                      {child.status === "completed" ? "已完成" :
-                       child.status === "in_progress" ? "生成中" : "待生成"}
-                    </span>
-                  </div>
-                  {child.ai_prompt && (
-                    <p className="text-sm text-zinc-500 mt-2 line-clamp-2">{child.ai_prompt}</p>
-                  )}
-                  {child.depends_on && child.depends_on.length > 0 && (
-                    <div className="flex items-center gap-1 mt-2 text-xs text-zinc-600">
-                      <span>依赖:</span>
-                      {child.depends_on.map((depId, i) => {
-                        const depBlock = selectedBlock.children?.find(c => c.id === depId);
-                        return (
-                          <span key={i} className="px-1.5 py-0.5 bg-surface-3 rounded">
-                            {depBlock?.name || depId.slice(0, 8)}
-                          </span>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
+                  block={child}
+                  projectId={projectId || ""}
+                  allBlocks={allBlocks}
+                  isVirtual={false}
+                  onUpdate={onFieldsChange}
+                  onSelect={() => onBlockSelect?.(child)}
+                />
               ))}
             </div>
           </div>
@@ -405,62 +405,26 @@ export function ContentPanel({
         }
       }
       
-      // 外延生产阶段 - 显示渠道字段列表
+      // 外延生产阶段 - 显示渠道字段列表（使用 FieldCard 提供完整编辑功能）
       if (selectedPhase === "produce_outer" && phaseFields.length > 0) {
         return (
           <div className="h-full flex flex-col">
             <div className="p-4 border-b border-surface-3">
               <h1 className="text-xl font-bold text-zinc-100">外延生产</h1>
               <p className="text-zinc-500 text-sm mt-1">
-                点击左侧具体渠道查看和生成内容
+                共 {phaseFields.length} 个渠道 - 可展开编辑所有设置
               </p>
             </div>
             <div className="flex-1 overflow-y-auto p-4">
-              <div className="grid gap-3">
+              <div className="space-y-4">
                 {phaseFields.map(field => (
-                  <div
+                  <FieldCard
                     key={field.id}
-                    className="p-4 bg-surface-2 border border-surface-3 rounded-lg hover:border-brand-500/30 cursor-pointer transition-colors"
-                    onClick={() => {
-                      // 创建虚拟 ContentBlock 并选中
-                      const virtualBlock: ContentBlock = {
-                        id: field.id,
-                        project_id: projectId,
-                        parent_id: null,
-                        name: field.name,
-                        block_type: "field",
-                        depth: 1,
-                        order_index: 0,
-                        status: (field.status || "pending") as "pending" | "in_progress" | "completed" | "failed",
-                        content: field.content,
-                        ai_prompt: field.ai_prompt,
-                        depends_on: field.dependencies?.depends_on || [],
-                        constraints: field.constraints || {},
-                        special_handler: null,
-                        need_review: field.need_review || false,
-                        is_collapsed: false,
-                        children: [],
-                        created_at: field.created_at || new Date().toISOString(),
-                        updated_at: field.updated_at || new Date().toISOString(),
-                      };
-                      onBlockSelect?.(virtualBlock);
-                    }}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-medium text-zinc-200">{field.name}</span>
-                      <span className={`text-xs px-2 py-0.5 rounded ${
-                        field.status === "completed" ? "bg-green-600/20 text-green-400" :
-                        field.status === "generating" ? "bg-yellow-600/20 text-yellow-400" :
-                        "bg-zinc-600/20 text-zinc-400"
-                      }`}>
-                        {field.status === "completed" ? "已完成" :
-                         field.status === "generating" ? "生成中" : "待生成"}
-                      </span>
-                    </div>
-                    {field.ai_prompt && (
-                      <p className="text-sm text-zinc-500 mt-2 line-clamp-2">{field.ai_prompt}</p>
-                    )}
-                  </div>
+                    field={field}
+                    allFields={fields}
+                    onUpdate={(content) => onFieldUpdate?.(field.id, content)}
+                    onFieldsChange={onFieldsChange}
+                  />
                 ))}
               </div>
             </div>
@@ -479,7 +443,7 @@ export function ContentPanel({
         );
       }
       
-      // 内涵生产阶段 - 显示字段列表
+      // 内涵生产阶段 - 显示字段列表（使用 FieldCard 提供完整编辑功能）
       if (selectedPhase === "produce_inner" && phaseFields.length > 0) {
         return (
           <div className="h-full flex flex-col">
@@ -488,34 +452,19 @@ export function ContentPanel({
                 {PHASE_NAMES[selectedPhase] || selectedPhase}
               </h1>
               <p className="text-zinc-500 text-sm mt-1">
-                点击左侧具体字段查看和生成内容
+                共 {phaseFields.length} 个字段 - 可展开编辑所有设置
               </p>
             </div>
             <div className="flex-1 overflow-y-auto p-4">
-              <div className="grid gap-3">
+              <div className="space-y-4">
                 {phaseFields.map(field => (
-                  <div 
-                    key={field.id} 
-                    className="p-4 bg-surface-2 border border-surface-3 rounded-lg"
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-medium text-zinc-200">{field.name}</span>
-                      <span className={`px-2 py-0.5 rounded text-xs ${
-                        field.status === "completed" 
-                          ? "bg-green-600/20 text-green-400"
-                          : field.status === "in_progress"
-                          ? "bg-yellow-600/20 text-yellow-400"
-                          : "bg-zinc-600/20 text-zinc-400"
-                      }`}>
-                        {field.status === "completed" ? "已完成" 
-                          : field.status === "in_progress" ? "生成中" 
-                          : "待生成"}
-                      </span>
-                    </div>
-                    {field.ai_prompt && (
-                      <p className="text-sm text-zinc-500 mt-2 line-clamp-2">{field.ai_prompt}</p>
-                    )}
-                  </div>
+                  <FieldCard
+                    key={field.id}
+                    field={field}
+                    allFields={fields}
+                    onUpdate={(content) => onFieldUpdate?.(field.id, content)}
+                    onFieldsChange={onFieldsChange}
+                  />
                 ))}
               </div>
             </div>
@@ -558,6 +507,59 @@ export function ContentPanel({
   
   // 处理字段块点击
   if (selectedBlock && selectedBlock.block_type === "field") {
+    // ===== 检查 special_handler：显示对应的特殊界面 =====
+    
+    // 消费者模拟字段 - 使用 SimulationPanel
+    if (selectedBlock.special_handler === "consumer_simulation" || 
+        selectedBlock.special_handler === "simulate") {
+      return (
+        <SimulationPanel
+          projectId={projectId}
+          fields={fields}
+          onSimulationCreated={onFieldsChange}
+        />
+      );
+    }
+    
+    // 消费者调研字段 - 检查是否有结构化内容
+    if (selectedBlock.special_handler === "consumer_research" || 
+        selectedBlock.special_handler === "research") {
+      // 尝试解析内容
+      try {
+        const researchData = JSON.parse(selectedBlock.content || "{}");
+        if (researchData.summary && researchData.personas) {
+          return (
+            <ResearchPanel
+              projectId={projectId}
+              fieldId={selectedBlock.id}
+              content={selectedBlock.content}
+              onUpdate={onFieldsChange}
+              onAdvance={handleAdvancePhase}
+            />
+          );
+        }
+      } catch {
+        // JSON 解析失败，继续使用默认编辑器
+      }
+    }
+    
+    // 意图分析字段 - 由 Agent 处理，显示提示
+    if (selectedBlock.special_handler === "intent_analysis" || 
+        selectedBlock.special_handler === "intent") {
+      return (
+        <div className="h-full flex flex-col items-center justify-center p-6 text-center">
+          <div className="text-6xl mb-4">💬</div>
+          <h2 className="text-xl font-bold text-zinc-200 mb-2">意图分析</h2>
+          <p className="text-zinc-400 max-w-md">
+            意图分析由 AI Agent 通过对话完成。请在右侧对话框中输入"开始"来启动意图分析流程。
+          </p>
+          <p className="text-zinc-500 text-sm mt-4">
+            Agent 会问你 3 个问题来了解你的项目意图。
+          </p>
+        </div>
+      );
+    }
+    
     // 尝试找到对应的传统 Field（虚拟树形视图使用真实的 field.id）
     const matchingField = fields.find(f => f.id === selectedBlock.id);
     
@@ -582,10 +584,6 @@ export function ContentPanel({
           // JSON 解析失败，使用默认 FieldCard
         }
       }
-      
-      // 内涵设计方案字段 - 不再使用特殊处理
-      // 作为普通字段显示，用户可在字段中查看和编辑方案内容
-      // 方案导入功能将通过"从模板添加字段"功能提供
       
       // 默认：使用 FieldCard 显示完整功能
       return (

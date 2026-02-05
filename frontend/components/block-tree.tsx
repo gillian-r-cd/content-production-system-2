@@ -25,6 +25,7 @@ import {
   Undo2,
   Package,
   X,
+  Layers,
 } from "lucide-react";
 import { ContentBlock, blockAPI, settingsAPI } from "@/lib/api";
 
@@ -40,6 +41,7 @@ interface FieldTemplate {
     depends_on?: string[];
     need_review?: boolean;
     constraints?: any;
+    special_handler?: string;
   }[];
 }
 
@@ -172,6 +174,7 @@ function BlockNode({
           depends_on: mappedDependsOn,
           need_review: field.need_review !== undefined ? field.need_review : true,
           constraints: field.constraints || {},
+          special_handler: field.special_handler || null,
         });
         
         createdBlocks.push(createdBlock.id);
@@ -248,7 +251,7 @@ function BlockNode({
 
     setIsLoading(true);
     try {
-      const result = await blockAPI.delete(block.id);
+      const result = await blockAPI.delete(block.id) as { message: string; can_undo?: boolean; history_id?: string };
       // 通知父组件保存撤回信息
       if (result.can_undo && result.history_id) {
         onDeleteSuccess?.({
@@ -269,11 +272,16 @@ function BlockNode({
   // 处理添加子块
   const handleAddChild = async (blockType: string) => {
     setIsLoading(true);
+    const nameMap: Record<string, string> = {
+      field: "新字段",
+      group: "新分组",
+      phase: "新子阶段",
+    };
     try {
       await blockAPI.create({
         project_id: block.project_id,
         parent_id: block.id,
-        name: `新${blockType === "field" ? "字段" : "分组"}`,
+        name: nameMap[blockType] || "新内容块",
         block_type: blockType,
       });
       setIsCollapsed(false);
@@ -427,6 +435,13 @@ function BlockNode({
                     >
                       <Folder className="w-4 h-4" />
                       添加分组
+                    </button>
+                    <button
+                      onClick={() => handleAddChild("phase")}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-surface-2"
+                    >
+                      <Layers className="w-4 h-4" />
+                      添加子阶段
                     </button>
                   </>
                 )}

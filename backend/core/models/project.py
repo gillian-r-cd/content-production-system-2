@@ -50,7 +50,7 @@ class Project(BaseModel):
     内容生产项目
     
     Attributes:
-        creator_profile_id: 关联的创作者特质
+        creator_profile_id: 关联的创作者特质（通过关系获取 creator_profile.to_prompt_context()）
         name: 项目名称
         version: 版本号（从1开始）
         version_note: 版本说明
@@ -59,8 +59,12 @@ class Project(BaseModel):
         phase_order: 阶段顺序（可拖拽调整内涵/外延的顺序）
         phase_status: 每个阶段的状态
         agent_autonomy: Agent自主权设置，每阶段是否需人工确认
-        golden_context: 缓存的Golden Context（意图+用户画像）
         use_deep_research: 是否使用DeepResearch进行调研
+        use_flexible_architecture: 是否使用灵活的 ContentBlock 架构
+    
+    废弃字段（保留用于数据库兼容，不再使用）:
+        golden_context: 已废弃。创作者特质通过 creator_profile 关系获取，
+                        意图/消费者调研结果通过字段依赖关系传递。
     """
     __tablename__ = "projects"
 
@@ -86,6 +90,9 @@ class Project(BaseModel):
     agent_autonomy: Mapped[dict] = mapped_column(
         JSON, default=lambda: {phase: True for phase in PROJECT_PHASES}  # 默认都需要确认
     )
+    # 已废弃：不再使用此字段，保留用于数据库兼容
+    # 创作者特质通过 creator_profile 关系获取
+    # 意图分析/消费者调研结果通过字段内容和依赖关系传递
     golden_context: Mapped[dict] = mapped_column(JSON, default=dict)
     use_deep_research: Mapped[bool] = mapped_column(default=True)
     use_flexible_architecture: Mapped[bool] = mapped_column(default=False)  # 是否使用灵活的 ContentBlock 架构

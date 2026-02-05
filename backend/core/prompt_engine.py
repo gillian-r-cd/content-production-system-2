@@ -1,15 +1,20 @@
 # backend/core/prompt_engine.py
-# 功能: 提示词引擎，负责Golden Context构建、动态注入、@引用解析
+# 功能: 提示词引擎，负责创作者特质注入、字段依赖解析、@引用解析
 # 主要类: PromptEngine, GoldenContext
-# 主要函数: build_golden_context(), inject_context(), parse_references()
+# 主要函数: build_golden_context(), build_prompt_context(), parse_references()
 
 """
 提示词引擎
-核心职责:
-1. 构建Golden Context (创作者特质 + 项目意图 + 用户画像)
-2. 动态注入上下文到每次LLM调用
-3. 解析@引用语法
-4. 管理系统提示词
+
+核心设计原则（2026-02重构）:
+1. 创作者特质（creator_profile）是唯一的全局上下文，注入到每个 LLM 调用
+2. 意图分析、消费者调研等阶段输出通过「字段依赖关系」传递，而非全局上下文
+3. @引用语法用于用户手动引用特定字段内容
+
+关键概念区分:
+- GoldenContext: 只包含 creator_profile，每次 LLM 调用必须注入
+- field_context: 通过 depends_on 配置的字段内容，作为参考信息注入
+- 两者职责不同，不应混淆
 """
 
 import re
@@ -27,24 +32,21 @@ from core.models import (
 @dataclass
 class GoldenContext:
     """
-    Golden Context - 每次LLM调用必须注入的核心上下文
+    创作者特质上下文 - 每次LLM调用必须注入的唯一全局上下文
     
-    核心原则（2026-02更新）:
-    - 只有 creator_profile 全局注入到每个 LLM 调用
-    - intent 和 consumer_personas 必须通过字段依赖关系传递
-    - 消费者调研是唯一例外：硬性依赖意图分析
+    设计说明:
+    - 只包含 creator_profile（创作者的风格、语气、禁忌等）
+    - 这是项目级别的全局设置，与具体字段无关
     
-    包含:
-    - 创作者特质: 风格、语气、禁忌等（全局注入）
-    
-    不包含（应通过依赖传递）:
-    - 项目意图: 意图分析阶段的输出
-    - 用户画像: 消费者调研阶段的输出
+    不属于此处的内容（应通过字段依赖传递）:
+    - 意图分析结果 → 配置 depends_on: ["意图分析"]
+    - 消费者调研结果 → 配置 depends_on: ["消费者调研"] 
+    - 其他阶段输出 → 通过字段依赖关系获取
     """
     creator_profile: str = ""
     
     def to_prompt(self) -> str:
-        """转换为提示词格式 - 只输出创作者特质"""
+        """转换为提示词格式"""
         if self.creator_profile:
             return f"# 创作者特质\n{self.creator_profile}"
         return ""
@@ -260,36 +262,25 @@ class PromptEngine:
         self,
         project: Project,
         creator_profile: Optional[CreatorProfile] = None,
-        intent_field: Optional[ProjectField] = None,
-        research_field: Optional[ProjectField] = None,
     ) -> GoldenContext:
         """
-        构建Golden Context
+        构建Golden Context - 只包含创作者特质
+        
+        重要说明（2026-02重构）:
+        - GoldenContext 只包含 creator_profile，全局注入到每个 LLM 调用
+        - intent 和 consumer_personas 应通过字段依赖关系传递
+        - 不再从 project.golden_context 读取任何内容
         
         Args:
             project: 项目对象
             creator_profile: 创作者特质（可选，如未提供则从project关联获取）
-            intent_field: 意图分析字段（可选）
-            research_field: 消费者调研字段（可选）
         """
         gc = GoldenContext()
         
-        # 创作者特质
+        # 创作者特质 - 唯一的全局上下文
         profile = creator_profile or getattr(project, 'creator_profile', None)
         if profile:
             gc.creator_profile = profile.to_prompt_context()
-        
-        # 项目意图
-        if intent_field and intent_field.content:
-            gc.intent = intent_field.content
-        elif project.golden_context and project.golden_context.get("intent"):
-            gc.intent = project.golden_context["intent"]
-        
-        # 用户画像
-        if research_field and research_field.content:
-            gc.consumer_personas = research_field.content
-        elif project.golden_context and project.golden_context.get("consumer_personas"):
-            gc.consumer_personas = project.golden_context["consumer_personas"]
         
         return gc
     
