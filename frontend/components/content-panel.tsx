@@ -12,7 +12,6 @@ import { fieldAPI, agentAPI, blockAPI } from "@/lib/api";
 import type { Field, ContentBlock } from "@/lib/api";
 import { ContentBlockEditor } from "./content-block-editor";
 import { SimulationPanel } from "./simulation-panel";
-import { ProposalSelector } from "./proposal-selector";
 import { ChannelSelector } from "./channel-selector";
 import { ResearchPanel } from "./research-panel";
 import { FileText, Folder, Settings, ChevronRight } from "lucide-react";
@@ -213,23 +212,8 @@ export function ContentPanel({
   const isLastPhase = currentPhaseIndex === PROJECT_PHASES.length - 1;
   const nextPhase = isLastPhase ? null : PROJECT_PHASES[currentPhaseIndex + 1];
   
-  // 内涵设计阶段：检查是否是JSON方案格式（Hooks必须在顶层调用）
-  const designInnerField = phaseFields.find(
-    (f) => f.phase === "design_inner" && f.name === "内涵设计方案"
-  );
-  
-  // 尝试解析JSON方案（design_inner）
-  const isProposalFormat = useMemo(() => {
-    if (currentPhase !== "design_inner" || !designInnerField?.content) {
-      return false;
-    }
-    try {
-      const data = JSON.parse(designInnerField.content);
-      return data.proposals && Array.isArray(data.proposals);
-    } catch {
-      return false;
-    }
-  }, [currentPhase, designInnerField?.content]);
+  // 内涵设计阶段不再使用特殊的方案格式检测
+  // 改为与其他阶段一致的字段列表视图
 
   // 消费者调研阶段：检查是否是JSON格式
   const researchField = phaseFields.find(
@@ -314,44 +298,9 @@ export function ContentPanel({
         }
       }
       
-      // 内涵设计阶段
-      if (selectedPhase === "design_inner") {
-        const designField = phaseFields.find(f => f.name === "内容设计方案");
-        if (designField) {
-          try {
-            const proposalData = JSON.parse(designField.content || "{}");
-            if (proposalData.proposals && Array.isArray(proposalData.proposals)) {
-              return (
-                <div className="h-full flex flex-col">
-                  <div className="p-4 border-b border-surface-3">
-                    <h1 className="text-xl font-bold text-zinc-100">
-                      {PHASE_NAMES[selectedPhase] || selectedPhase}
-                    </h1>
-                    <p className="text-zinc-500 text-sm mt-1">
-                      请选择一个方案，调整字段设置后确认进入生产
-                    </p>
-                  </div>
-                  <div className="flex-1 overflow-hidden">
-                    <ProposalSelector
-                      projectId={projectId}
-                      fieldId={designField.id}
-                      content={designField.content}
-                      onConfirm={() => {
-                        onFieldsChange?.();
-                        onPhaseAdvance?.();
-                      }}
-                      onFieldsCreated={onFieldsChange}
-                      onSave={onFieldsChange}
-                    />
-                  </div>
-                </div>
-              );
-            }
-          } catch {
-            // JSON 解析失败
-          }
-        }
-      }
+      // 内涵设计阶段 - 不再使用特殊处理，与其他阶段一致
+      // 方案导入功能通过字段的 ProposalSelector 组件提供
+      // 用户点击"内涵设计方案"字段时可以查看和导入方案
       
       // 外延设计阶段 - 使用 ChannelSelector
       if (selectedPhase === "design_outer") {
@@ -568,31 +517,9 @@ export function ContentPanel({
         }
       }
       
-      // ===== 特殊处理：内涵设计方案 =====
-      if (matchingField.phase === "design_inner" && matchingField.name === "内容设计方案") {
-        try {
-          const proposalData = JSON.parse(matchingField.content || "{}");
-          if (proposalData.proposals && Array.isArray(proposalData.proposals)) {
-            return (
-              <div className="h-full flex flex-col">
-                <ProposalSelector
-                  projectId={projectId}
-                  fieldId={matchingField.id}
-                  content={matchingField.content}
-                  onConfirm={() => {
-                    onFieldsChange?.();
-                    onPhaseAdvance?.();
-                  }}
-                  onFieldsCreated={onFieldsChange}
-                  onSave={onFieldsChange}
-                />
-              </div>
-            );
-          }
-        } catch {
-          // JSON 解析失败，使用默认 FieldCard
-        }
-      }
+      // 内涵设计方案字段 - 不再使用特殊处理
+      // 作为普通字段显示，用户可在字段中查看和编辑方案内容
+      // 方案导入功能将通过"从模板添加字段"功能提供
       
       // 默认：使用 FieldCard 显示完整功能
       return (
@@ -657,34 +584,8 @@ export function ContentPanel({
     );
   }
 
-  // 如果是方案格式，使用方案选择器
-  if (currentPhase === "design_inner" && isProposalFormat && designInnerField) {
-    return (
-      <div className="h-full flex flex-col">
-        <div className="p-4 border-b border-surface-3">
-          <h1 className="text-xl font-bold text-zinc-100">
-            {PHASE_NAMES[currentPhase] || currentPhase}
-          </h1>
-          <p className="text-zinc-500 text-sm mt-1">
-            请选择一个方案，调整字段设置后确认进入生产
-          </p>
-        </div>
-        <div className="flex-1 overflow-hidden">
-          <ProposalSelector
-            projectId={projectId}
-            fieldId={designInnerField.id}
-            content={designInnerField.content}
-            onConfirm={() => {
-              onFieldsChange?.();
-              onPhaseAdvance?.();
-            }}
-            onFieldsCreated={onFieldsChange}
-            onSave={onFieldsChange}
-          />
-        </div>
-      </div>
-    );
-  }
+  // 内涵设计阶段不再使用特殊的 ProposalSelector
+  // 改为与其他阶段一致的字段列表视图
 
   // 构建字段ID到字段名称的映射（用于显示依赖）
   const fieldNameMap = Object.fromEntries(fields.map(f => [f.id, f.name]));
