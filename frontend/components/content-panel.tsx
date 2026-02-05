@@ -265,12 +265,78 @@ export function ContentPanel({
   
   // 处理阶段块点击（从树形视图点击阶段节点）
   if (selectedBlock && selectedBlock.block_type === "phase") {
+    // 判断是虚拟块还是真正的 ContentBlock
+    const isVirtualBlock = selectedBlock.id.startsWith("virtual_phase_");
+    
     // 从虚拟块ID中提取阶段名称（格式：virtual_phase_xxx）
     const phaseMatch = selectedBlock.id.match(/virtual_phase_(.+)/);
     const selectedPhase = phaseMatch ? phaseMatch[1] : selectedBlock.special_handler;
     
+    // 如果是真正的 ContentBlock 阶段（灵活架构），显示其子块
+    if (!isVirtualBlock && selectedBlock.children && selectedBlock.children.length > 0) {
+      return (
+        <div className="h-full flex flex-col">
+          <div className="p-4 border-b border-surface-3">
+            <h1 className="text-xl font-bold text-zinc-100">{selectedBlock.name}</h1>
+            <p className="text-zinc-500 text-sm mt-1">
+              包含 {selectedBlock.children.length} 个字段，点击左侧字段查看详情
+            </p>
+          </div>
+          <div className="flex-1 overflow-y-auto p-4">
+            <div className="grid gap-3">
+              {selectedBlock.children.map((child) => (
+                <div
+                  key={child.id}
+                  className="p-4 bg-surface-2 border border-surface-3 rounded-lg hover:border-brand-500/50 cursor-pointer transition-colors"
+                  onClick={() => onBlockSelect?.(child)}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium text-zinc-200">{child.name}</span>
+                    <span className={`text-xs px-2 py-0.5 rounded ${
+                      child.status === "completed" ? "bg-green-600/20 text-green-400" :
+                      child.status === "in_progress" ? "bg-yellow-600/20 text-yellow-400" :
+                      "bg-zinc-600/20 text-zinc-400"
+                    }`}>
+                      {child.status === "completed" ? "已完成" :
+                       child.status === "in_progress" ? "生成中" : "待生成"}
+                    </span>
+                  </div>
+                  {child.ai_prompt && (
+                    <p className="text-sm text-zinc-500 mt-2 line-clamp-2">{child.ai_prompt}</p>
+                  )}
+                  {child.depends_on && child.depends_on.length > 0 && (
+                    <div className="flex items-center gap-1 mt-2 text-xs text-zinc-600">
+                      <span>依赖:</span>
+                      {child.depends_on.map((depId, i) => {
+                        const depBlock = selectedBlock.children?.find(c => c.id === depId);
+                        return (
+                          <span key={i} className="px-1.5 py-0.5 bg-surface-3 rounded">
+                            {depBlock?.name || depId.slice(0, 8)}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      );
+    }
+    
+    // 如果是没有子块的阶段（空阶段或虚拟阶段）
+    if (!isVirtualBlock && (!selectedBlock.children || selectedBlock.children.length === 0)) {
+      return (
+        <div className="h-full flex flex-col items-center justify-center text-zinc-500">
+          <p className="text-lg mb-2">{selectedBlock.name}</p>
+          <p className="text-sm">该阶段暂无字段，请在左侧添加</p>
+        </div>
+      );
+    }
+    
     if (selectedPhase) {
-      // 获取该阶段的所有字段
+      // 获取该阶段的所有字段（虚拟块模式）
       const phaseFields = fields.filter(f => f.phase === selectedPhase);
       
       // ===== 特殊阶段处理 =====
