@@ -476,24 +476,28 @@ async def generate_block_content(
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
     
-    # 检查依赖是否满足
+    # 检查依赖是否满足（只要有内容就满足，不需要 status 是 completed）
     if block.depends_on:
         deps = db.query(ContentBlock).filter(
             ContentBlock.id.in_(block.depends_on)
         ).all()
         
-        incomplete = [d for d in deps if d.status != "completed"]
+        # 改为检查是否有内容，而不是状态
+        incomplete = [d for d in deps if not d.content or not d.content.strip()]
         if incomplete:
             raise HTTPException(
                 status_code=400,
-                detail=f"依赖未完成: {', '.join([d.name for d in incomplete])}"
+                detail=f"依赖内容为空: {', '.join([d.name for d in incomplete])}"
             )
     
-    # 构建 Golden Context
+    # 获取创作者特质（从关系获取，转换为提示词格式）
+    creator_profile_text = ""
+    if project.creator_profile:
+        creator_profile_text = project.creator_profile.to_prompt_context()
+    
+    # 构建 Golden Context（只包含 creator_profile）
     gc = GoldenContext(
-        creator_profile=project.golden_context.get("creator_profile", "") if project.golden_context else "",
-        intent=project.golden_context.get("intent", "") if project.golden_context else "",
-        consumer_personas=project.golden_context.get("consumer_personas", "") if project.golden_context else "",
+        creator_profile=creator_profile_text,
     )
     
     # 获取依赖内容
@@ -534,20 +538,41 @@ async def generate_block_content(
 """
     
     # 调用 AI
-    from core.ai_client import AIClient
+    from core.ai_client import AIClient, ChatMessage
     ai_client = AIClient()
     
     block.status = "in_progress"
     db.commit()
     
     try:
-        response = await ai_client.chat(
-            messages=[{"role": "user", "content": f"请生成「{block.name}」的内容。"}],
-            system_prompt=system_prompt,
-        )
+        # 将 system_prompt 作为第一条消息，使用 ChatMessage 对象
+        messages = [
+            ChatMessage(role="system", content=system_prompt),
+            ChatMessage(role="user", content=f"请生成「{block.name}」的内容。"),
+        ]
+        response = await ai_client.async_chat(messages=messages)
         
         block.content = response.content
         block.status = "completed" if not block.need_review else "in_progress"
+        
+        # 创建 GenerationLog 记录
+        from core.models import GenerationLog, generate_uuid
+        gen_log = GenerationLog(
+            id=generate_uuid(),
+            project_id=block.project_id,
+            field_id=block.id,  # 使用 block.id 作为 field_id
+            phase=block.parent_id or "content_block",  # 使用父级作为阶段标识
+            operation=f"block_generate_{block.name}",
+            model=response.model,
+            tokens_in=response.tokens_in,
+            tokens_out=response.tokens_out,
+            duration_ms=response.duration_ms,
+            prompt_input=system_prompt,
+            prompt_output=response.content,
+            cost=response.cost,
+            status="success",
+        )
+        db.add(gen_log)
         db.commit()
         
         return {
@@ -563,6 +588,159 @@ async def generate_block_content(
         block.status = "failed"
         db.commit()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{block_id}/generate/stream")
+async def generate_block_content_stream(
+    block_id: str,
+    db: Session = Depends(get_db),
+):
+    """流式生成内容块内容"""
+    import json
+    import time
+    from fastapi.responses import StreamingResponse
+    
+    block = db.query(ContentBlock).filter(
+        ContentBlock.id == block_id,
+        ContentBlock.deleted_at == None,
+    ).first()
+    if not block:
+        raise HTTPException(status_code=404, detail="内容块不存在")
+    
+    project = db.query(Project).filter(Project.id == block.project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    
+    # 检查依赖是否满足
+    if block.depends_on:
+        deps = db.query(ContentBlock).filter(
+            ContentBlock.id.in_(block.depends_on)
+        ).all()
+        incomplete = [d for d in deps if not d.content or not d.content.strip()]
+        if incomplete:
+            raise HTTPException(
+                status_code=400,
+                detail=f"依赖内容为空: {', '.join([d.name for d in incomplete])}"
+            )
+    
+    # 获取创作者特质
+    creator_profile_text = ""
+    if project.creator_profile:
+        creator_profile_text = project.creator_profile.to_prompt_context()
+    
+    gc = GoldenContext(creator_profile=creator_profile_text)
+    
+    # 获取依赖内容
+    dependency_content = ""
+    if block.depends_on:
+        all_blocks = db.query(ContentBlock).filter(
+            ContentBlock.project_id == block.project_id
+        ).all()
+        blocks_by_id = {b.id: b for b in all_blocks}
+        dependency_content = block.get_dependency_content(blocks_by_id)
+    
+    # 构建约束文本
+    constraints_text = ""
+    if block.constraints:
+        if block.constraints.get("max_length"):
+            constraints_text += f"字数限制：不超过 {block.constraints['max_length']} 字\n"
+        if block.constraints.get("output_format"):
+            format_map = {
+                "markdown": "Markdown 富文本",
+                "plain_text": "纯文本",
+                "json": "JSON 格式",
+                "list": "列表格式",
+            }
+            constraints_text += f"输出格式：{format_map.get(block.constraints['output_format'], block.constraints['output_format'])}\n"
+    
+    system_prompt = f"""{gc.to_prompt()}
+
+---
+
+# 当前任务
+{block.ai_prompt or '请生成内容。'}
+
+{f'---{chr(10)}# 参考内容{chr(10)}{dependency_content}' if dependency_content else ''}
+
+{f'---{chr(10)}# 生成约束（必须严格遵守！）{chr(10)}{constraints_text}' if constraints_text else ''}
+"""
+    
+    from core.ai_client import AIClient, ChatMessage
+    ai_client = AIClient()
+    
+    block.status = "in_progress"
+    db.commit()
+    
+    start_time = time.time()
+    
+    async def stream_generator():
+        content_parts = []
+        try:
+            messages = [
+                ChatMessage(role="system", content=system_prompt),
+                ChatMessage(role="user", content=f"请生成「{block.name}」的内容。"),
+            ]
+            
+            async for chunk in ai_client.stream_chat(messages=messages):
+                content_parts.append(chunk)
+                data = json.dumps({"chunk": chunk}, ensure_ascii=False)
+                yield f"data: {data}\n\n"
+            
+            # 保存完整内容
+            full_content = "".join(content_parts)
+            block.content = full_content
+            block.status = "completed" if not block.need_review else "in_progress"
+            
+            # 计算耗时和tokens（估算）
+            duration_ms = int((time.time() - start_time) * 1000)
+            tokens_in = len(system_prompt) // 4
+            tokens_out = len(full_content) // 4
+            
+            # 创建日志记录
+            from core.models import GenerationLog, generate_uuid
+            gen_log = GenerationLog(
+                id=generate_uuid(),
+                project_id=block.project_id,
+                field_id=block.id,
+                phase=block.parent_id or "content_block",
+                operation=f"block_generate_stream_{block.name}",
+                model="gpt-5.1",
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                duration_ms=duration_ms,
+                prompt_input=system_prompt,
+                prompt_output=full_content,
+                cost=GenerationLog.calculate_cost("gpt-5.1", tokens_in, tokens_out),
+                status="success",
+            )
+            db.add(gen_log)
+            db.commit()
+            
+            # 发送完成事件
+            done_data = json.dumps({
+                "done": True,
+                "block_id": block.id,
+                "content": full_content,
+                "status": block.status,
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+            }, ensure_ascii=False)
+            yield f"data: {done_data}\n\n"
+            
+        except Exception as e:
+            block.status = "failed"
+            db.commit()
+            error_data = json.dumps({"error": str(e)}, ensure_ascii=False)
+            yield f"data: {error_data}\n\n"
+    
+    return StreamingResponse(
+        stream_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+    )
 
 
 @router.post("/project/{project_id}/apply-template")

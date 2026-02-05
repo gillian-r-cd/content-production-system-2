@@ -183,15 +183,15 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
     .map(id => allBlocks.find(b => b.id === id))
     .filter(Boolean) as ContentBlock[];
 
-  // 检查依赖是否满足
-  const unmetDependencies = dependencyBlocks.filter(d => d.status !== "completed");
+  // 检查依赖是否满足（只要有内容就满足，不需要状态是 completed）
+  const unmetDependencies = dependencyBlocks.filter(d => !d.content || !d.content.trim());
   const canGenerate = unmetDependencies.length === 0;
 
-  // 生成内容
+  // 生成内容（使用流式 API）
   const handleGenerate = async () => {
-    // 前端检查依赖（允许重新生成已完成的内容）
-    if (!canGenerate && block.status !== "completed") {
-      alert(`请先完成以下依赖:\n${unmetDependencies.map(d => `• ${d.name}`).join("\n")}`);
+    // 前端检查依赖（只要依赖有内容就可以生成）
+    if (!canGenerate) {
+      alert(`以下依赖内容为空:\n${unmetDependencies.map(d => `• ${d.name}`).join("\n")}`);
       return;
     }
     
@@ -203,16 +203,56 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
         // 虚拟块使用 Field API 生成
         const result = await fieldAPI.generate(block.id, {});
         setEditedContent(result.content);
+        onUpdate?.();
       } else {
-        const result = await blockAPI.generate(block.id);
-        setEditedContent(result.content);
+        // 使用流式生成
+        const response = await blockAPI.generateStream(block.id);
+        if (!response.ok) {
+          const error = await response.json().catch(() => ({ detail: "生成失败" }));
+          throw new Error(error.detail || `HTTP ${response.status}`);
+        }
+        
+        const reader = response.body?.getReader();
+        if (!reader) throw new Error("无法获取响应流");
+        
+        const decoder = new TextDecoder();
+        let accumulatedContent = "";
+        
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split("\n");
+          
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                if (data.chunk) {
+                  accumulatedContent += data.chunk;
+                  setGeneratingContent(accumulatedContent);
+                }
+                if (data.done) {
+                  setEditedContent(data.content);
+                  onUpdate?.();
+                }
+                if (data.error) {
+                  throw new Error(data.error);
+                }
+              } catch (parseErr) {
+                // 忽略解析错误
+              }
+            }
+          }
+        }
       }
-      onUpdate?.();
     } catch (err) {
       console.error("生成失败:", err);
       alert("生成失败: " + (err instanceof Error ? err.message : "未知错误"));
     } finally {
       setIsGenerating(false);
+      setGeneratingContent("");
     }
   };
 
@@ -296,17 +336,17 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
                     ? "bg-brand-600 hover:bg-brand-700 text-white"
                     : "bg-zinc-700 text-zinc-500 cursor-not-allowed"
                 }`}
-                title={!canGenerate ? `依赖未完成: ${unmetDependencies.map(d => d.name).join(", ")}` : "生成内容"}
+                title={!canGenerate ? `依赖内容为空: ${unmetDependencies.map(d => d.name).join(", ")}` : "生成内容"}
               >
                 <Sparkles className="w-4 h-4" />
                 生成
               </button>
             )}
             
-            {/* 依赖未完成警告 */}
-            {!canGenerate && block.status !== "completed" && !isGenerating && (
-              <span className="text-xs text-amber-500" title={`依赖未完成: ${unmetDependencies.map(d => d.name).join(", ")}`}>
-                ⚠️ {unmetDependencies.length}个依赖未完成
+            {/* 依赖内容为空警告 */}
+            {!canGenerate && !isGenerating && (
+              <span className="text-xs text-amber-500" title={`依赖内容为空: ${unmetDependencies.map(d => d.name).join(", ")}`}>
+                ⚠️ {unmetDependencies.length}个依赖内容为空
               </span>
             )}
             

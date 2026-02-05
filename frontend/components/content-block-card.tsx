@@ -185,17 +185,17 @@ export function ContentBlockCard({
     );
   };
 
-  // 检查依赖是否满足
-  const unmetDependencies = dependencyBlocks.filter(d => d.status !== "completed");
+  // 检查依赖是否满足（只要有内容就满足，不需要状态是 completed）
+  const unmetDependencies = dependencyBlocks.filter(d => !d.content || !d.content.trim());
   const canGenerate = unmetDependencies.length === 0;
 
-  // 生成内容
+  // 生成内容（使用流式 API）
   const handleGenerate = async (e: React.MouseEvent) => {
     e.stopPropagation();
     
-    // 前端检查依赖
+    // 前端检查依赖（只要依赖有内容就可以生成）
     if (!canGenerate) {
-      alert(`请先完成以下依赖:\n${unmetDependencies.map(d => `• ${d.name}`).join("\n")}`);
+      alert(`以下依赖内容为空:\n${unmetDependencies.map(d => `• ${d.name}`).join("\n")}`);
       return;
     }
     
@@ -204,10 +204,44 @@ export function ContentBlockCard({
     try {
       if (useFieldAPI) {
         await fieldAPI.generate(block.id, {});
+        onUpdate?.();
       } else {
-        await blockAPI.generate(block.id);
+        // 使用流式生成
+        const response = await blockAPI.generateStream(block.id);
+        if (!response.ok) {
+          const error = await response.json().catch(() => ({ detail: "生成失败" }));
+          throw new Error(error.detail || `HTTP ${response.status}`);
+        }
+        
+        const reader = response.body?.getReader();
+        if (!reader) throw new Error("无法获取响应流");
+        
+        const decoder = new TextDecoder();
+        
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split("\n");
+          
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                if (data.done) {
+                  onUpdate?.();
+                }
+                if (data.error) {
+                  throw new Error(data.error);
+                }
+              } catch {
+                // 忽略解析错误
+              }
+            }
+          }
+        }
       }
-      onUpdate?.();
     } catch (err) {
       console.error("生成失败:", err);
       alert("生成失败: " + (err instanceof Error ? err.message : "未知错误"));
@@ -472,17 +506,17 @@ export function ContentBlockCard({
             {!isGenerating && (
               <button
                 onClick={handleGenerate}
-                disabled={!canGenerate && block.status !== "completed"}
+                disabled={!canGenerate}
                 className={`p-1.5 rounded transition-colors ${
-                  !canGenerate && block.status !== "completed"
+                  !canGenerate
                     ? "text-zinc-600 cursor-not-allowed"
                     : block.status === "completed"
                     ? "text-amber-400 hover:bg-amber-600/20"
                     : "text-brand-400 hover:bg-brand-600/20"
                 }`}
                 title={
-                  !canGenerate && block.status !== "completed"
-                    ? `依赖未完成: ${unmetDependencies.map(d => d.name).join(", ")}`
+                  !canGenerate
+                    ? `依赖内容为空: ${unmetDependencies.map(d => d.name).join(", ")}`
                     : block.status === "completed" ? "重新生成" : "生成内容"
                 }
               >

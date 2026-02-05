@@ -263,11 +263,14 @@ async def generate_field_content(
     # 设计阶段（design_inner, design_outer）需要全局上下文来生成方案
     is_design_phase = field.phase in ["design_inner", "design_outer", "intent", "research"]
     
+    # 获取创作者特质（从关系获取，转换为提示词格式）
+    creator_profile_text = ""
+    if project.creator_profile:
+        creator_profile_text = project.creator_profile.to_prompt_context()
+    
     gc = GoldenContext(
-        creator_profile=project.golden_context.get("creator_profile", "") if project.golden_context else "",
-        intent=project.golden_context.get("intent", "") if project.golden_context else "",
-        consumer_personas=project.golden_context.get("consumer_personas", "") if project.golden_context else "",
-        include_all_context=is_design_phase,  # 只有设计阶段才注入全部上下文
+        creator_profile=creator_profile_text,
+        # 意图和消费者画像不再放在 golden_context 中，通过字段依赖传递
     )
     
     # 获取依赖字段内容
@@ -320,8 +323,12 @@ async def generate_field_stream_api(
     # 构建上下文
     # 核心原则：Golden Context 只包含创作者特质
     # intent 和 consumer_personas 应该通过字段依赖传递
+    creator_profile_text = ""
+    if project.creator_profile:
+        creator_profile_text = project.creator_profile.to_prompt_context()
+    
     gc = GoldenContext(
-        creator_profile=project.golden_context.get("creator_profile", "") if project.golden_context else "",
+        creator_profile=creator_profile_text,
     )
     
     depends_on = field.dependencies.get("depends_on", [])
@@ -478,11 +485,13 @@ async def batch_generate_fields(
         raise HTTPException(status_code=400, detail=str(e))
     
     # 构建上下文（批量生成时使用完整上下文，因为可能跨阶段）
+    # 核心原则：Golden Context 只包含创作者特质
+    creator_profile_text = ""
+    if project.creator_profile:
+        creator_profile_text = project.creator_profile.to_prompt_context()
+    
     gc = GoldenContext(
-        creator_profile=project.golden_context.get("creator_profile", "") if project.golden_context else "",
-        intent=project.golden_context.get("intent", "") if project.golden_context else "",
-        consumer_personas=project.golden_context.get("consumer_personas", "") if project.golden_context else "",
-        include_all_context=True,  # 批量生成时使用完整上下文
+        creator_profile=creator_profile_text,
     )
     
     generated_ids = []
