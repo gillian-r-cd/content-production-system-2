@@ -1345,9 +1345,9 @@ function DependencyModal({ field, allFields, onClose, onSave }: DependencyModalP
     field.dependencies?.depends_on || []
   );
 
-  // 阶段显示名称映射
+  // 阶段显示名称映射（后端使用 intent, research 等）
   const phaseNameMap: Record<string, string> = {
-    intent_produce: "意图分析",
+    intent: "意图分析",
     research: "消费者调研",
     design_inner: "内涵设计",
     produce_inner: "内涵生产",
@@ -1361,7 +1361,7 @@ function DependencyModal({ field, allFields, onClose, onSave }: DependencyModalP
   const availableFields = allFields.filter((f) => f.id !== field.id);
 
   // 按阶段分组（全局字段在前）
-  const globalPhases = ["intent_produce", "research"];
+  const globalPhases = ["intent", "research"];
   const globalFields = availableFields.filter((f) => globalPhases.includes(f.phase));
   const currentPhaseFields = availableFields.filter((f) => f.phase === field.phase);
   const otherFields = availableFields.filter(

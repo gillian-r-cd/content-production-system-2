@@ -246,7 +246,8 @@ export function AgentPanel({
       let currentRoute = "";  // 跟踪当前路由
       
       // 产出类型路由（内容应显示在中间区，聊天区只显示简短确认）
-      const PRODUCE_ROUTES = ["intent_produce", "research", "design_inner", "produce_inner", 
+      // 后端使用的阶段名称：intent, research, design_inner 等
+      const PRODUCE_ROUTES = ["intent", "research", "design_inner", "produce_inner", 
                                "design_outer", "produce_outer", "simulate", "evaluate"];
 
       while (true) {
@@ -299,9 +300,9 @@ export function AgentPanel({
                   );
                 }
               } else if (data.type === "done") {
-                // 流式完成
+                // 流式完成（后端阶段名称使用 intent, research 等）
                 const routeNames: Record<string, string> = {
-                  "intent_produce": "意图分析",
+                  "intent": "意图分析",
                   "research": "消费者调研",
                   "design_inner": "内涵设计",
                   "produce_inner": "内涵生产",

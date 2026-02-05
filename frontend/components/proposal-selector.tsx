@@ -122,9 +122,9 @@ export function ProposalSelector({
   // 全局可引用字段（来自意图分析和消费者调研阶段）
   const [globalFields, setGlobalFields] = useState<GlobalField[]>([]);
   
-  // 阶段名称映射
+  // 阶段名称映射（后端使用 intent, research 等）
   const phaseNameMap: Record<string, string> = {
-    intent_produce: "意图分析",
+    intent: "意图分析",
     research: "消费者调研",
     design_inner: "内涵设计",
     produce_inner: "内涵生产",
@@ -141,10 +141,10 @@ export function ProposalSelector({
     
     const loadGlobalFields = async () => {
       try {
-        // 获取意图分析和消费者调研阶段的字段
+        // 获取意图分析和消费者调研阶段的字段（后端阶段名称是 intent, research）
         const allFields = await fieldAPI.listByProject(projectId);
         const referableFields = allFields.filter(
-          (f) => f.phase === "intent_produce" || f.phase === "research"
+          (f) => f.phase === "intent" || f.phase === "research"
         );
         
         // 转换为 GlobalField 格式
@@ -458,11 +458,21 @@ export function ProposalSelector({
       }
 
       // 第二步：更新依赖关系（使用真实ID）
+      // 注意：全局字段（意图分析、消费者调研）的ID已经是真实ID，不需要映射
+      const globalFieldIds = new Set(globalFields.map((f) => f.id));
+      
       for (const field of currentFields) {
         if (field.depends_on && field.depends_on.length > 0) {
           const realId = tempIdToRealId[field.id];
           const realDependsOn = field.depends_on
-            .map((depId) => tempIdToRealId[depId])
+            .map((depId) => {
+              // 如果是全局字段ID，直接使用（已经是真实ID）
+              if (globalFieldIds.has(depId)) {
+                return depId;
+              }
+              // 否则从映射中获取真实ID
+              return tempIdToRealId[depId];
+            })
             .filter(Boolean);
           
           if (realDependsOn.length > 0) {
