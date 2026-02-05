@@ -66,6 +66,7 @@ class AIClient:
                 api_key=settings.openai_api_key,
                 organization=settings.openai_org_id or None,
                 base_url=settings.openai_api_base or None,
+                timeout=120.0,  # 增加超时时间到 120 秒
             )
         return self._sync_client
     
@@ -77,6 +78,7 @@ class AIClient:
                 api_key=settings.openai_api_key,
                 organization=settings.openai_org_id or None,
                 base_url=settings.openai_api_base or None,
+                timeout=120.0,  # 增加超时时间到 120 秒
             )
         return self._async_client
     
