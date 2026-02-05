@@ -60,23 +60,21 @@ export function ProgressPanel({
   const currentPhase = project?.current_phase || "intent";
   
   // 加载内容块（树形视图用）
+  // 对于传统架构，等待 fields 加载完成后再构建虚拟块
+  // 对于灵活架构，从后端加载 ContentBlock
   useEffect(() => {
     if (viewMode === "tree" && project?.id) {
-      loadContentBlocks();
-    }
-  }, [viewMode, project?.id]);
-  
-  // 当 fields 变化时，重新构建虚拟树形结构（如果当前使用传统架构）
-  useEffect(() => {
-    if (viewMode === "tree" && project && fields.length > 0) {
-      // 传统架构项目始终从 ProjectField 构建虚拟块
-      if (!project.use_flexible_architecture) {
+      if (project.use_flexible_architecture) {
+        // 灵活架构：从后端加载
+        loadContentBlocks();
+      } else if (fields.length > 0) {
+        // 传统架构：等 fields 加载完成后构建虚拟块
         const virtualBlocks = buildVirtualBlocksFromFields(project, fields);
         setContentBlocks(virtualBlocks);
-        onBlocksChange?.(virtualBlocks);  // 通知父组件同步更新
+        onBlocksChange?.(virtualBlocks);
       }
     }
-  }, [fields, viewMode, project?.use_flexible_architecture]);
+  }, [viewMode, project?.id, project?.use_flexible_architecture, fields]);
   
   const loadContentBlocks = async () => {
     if (!project?.id) return;

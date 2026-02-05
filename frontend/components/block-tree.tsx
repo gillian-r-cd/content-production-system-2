@@ -92,7 +92,8 @@ function BlockNode({
   dragTarget,
   onDeleteSuccess,
 }: BlockNodeProps) {
-  const [isCollapsed, setIsCollapsed] = useState(block.is_collapsed);
+  // 默认展开（is_collapsed 默认为 false）
+  const [isCollapsed, setIsCollapsed] = useState(block.is_collapsed ?? false);
   const [showMenu, setShowMenu] = useState(false);
   const [isRenaming, setIsRenaming] = useState(false);
   const [newName, setNewName] = useState(block.name);
