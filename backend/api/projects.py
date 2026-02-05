@@ -27,6 +27,7 @@ class ProjectCreate(BaseModel):
     creator_profile_id: Optional[str] = None
     use_deep_research: bool = True
     use_flexible_architecture: bool = False  # 是否使用灵活的 ContentBlock 架构
+    phase_order: Optional[List[str]] = None  # 自定义阶段顺序，None 使用默认，[] 表示从零开始
 
 
 class ProjectUpdate(BaseModel):
@@ -93,17 +94,29 @@ def create_project(
         if creator_profile:
             golden_context["creator_profile"] = creator_profile.to_prompt_context()
     
+    # ===== 确定阶段顺序 =====
+    # 如果传入了 phase_order 参数：
+    #   - None: 使用默认的 PROJECT_PHASES
+    #   - []: 从零开始（空白项目，无任何阶段）
+    #   - [...]: 使用指定的阶段列表
+    if project.phase_order is not None:
+        actual_phase_order = project.phase_order
+    else:
+        actual_phase_order = PROJECT_PHASES.copy()
+    
+    # 确定初始阶段：如果有阶段则使用第一个，否则为空字符串
+    initial_phase = actual_phase_order[0] if actual_phase_order else ""
+    
     # ===== 关键：从AgentSettings读取默认自主权 =====
     from core.models.agent_settings import AgentSettings
     agent_settings = db.query(AgentSettings).filter(AgentSettings.name == "default").first()
     
-    # 如果有设置，使用设置中的默认值；否则全部设为True（自动执行）
+    # 根据实际阶段列表设置自主权
     if agent_settings and agent_settings.autonomy_defaults:
         default_autonomy = agent_settings.autonomy_defaults
-        # 确保所有阶段都有值
-        agent_autonomy = {p: default_autonomy.get(p, True) for p in PROJECT_PHASES}
+        agent_autonomy = {p: default_autonomy.get(p, True) for p in actual_phase_order}
     else:
-        agent_autonomy = {p: True for p in PROJECT_PHASES}
+        agent_autonomy = {p: True for p in actual_phase_order}
     
     db_project = Project(
         id=generate_uuid(),
@@ -112,9 +125,9 @@ def create_project(
         use_deep_research=project.use_deep_research,
         use_flexible_architecture=project.use_flexible_architecture,
         version=1,
-        current_phase="intent",
-        phase_order=PROJECT_PHASES.copy(),
-        phase_status={p: "pending" for p in PROJECT_PHASES},
+        current_phase=initial_phase,
+        phase_order=actual_phase_order,
+        phase_status={p: "pending" for p in actual_phase_order},
         agent_autonomy=agent_autonomy,  # 使用默认自主权
         golden_context=golden_context,
     )

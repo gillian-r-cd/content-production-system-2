@@ -121,10 +121,15 @@ export function CreateProjectModal({
 
     try {
       // 1. 创建项目
+      // 如果使用新架构，传递 use_flexible_architecture=true
+      // 如果没有选择模板（从零开始），后端会创建空的阶段结构
       const project = await projectAPI.create({
         name: name.trim(),
         creator_profile_id: creatorProfileId,
         use_deep_research: useDeepResearch,
+        use_flexible_architecture: useNewArchitecture,
+        // 如果从零开始（selectedTemplateId === null），传递空的 phase_order
+        phase_order: useNewArchitecture && selectedTemplateId === null ? [] : undefined,
       });
       
       // 2. 如果选择了使用新架构且选择了模板，应用模板
