@@ -78,11 +78,14 @@ export function CreateProjectModal({
     try {
       const data = await phaseTemplateAPI.list();
       setTemplates(data);
-      // 默认选中默认模板
+      // 默认选中默认模板（如果有）
       const defaultTemplate = data.find((t) => t.is_default);
       if (defaultTemplate) {
         setSelectedTemplateId(defaultTemplate.id);
         setExpandedTemplateId(defaultTemplate.id);
+      } else {
+        // 没有默认模板时，默认选择"从零开始"
+        setSelectedTemplateId(null);
       }
     } catch (err) {
       console.error("加载模板失败:", err);
@@ -299,6 +302,41 @@ export function CreateProjectModal({
                   </label>
                   
                   <div className="max-h-64 overflow-y-auto space-y-2">
+                    {/* 从零开始选项 */}
+                    <div
+                      className={`
+                        border rounded-lg overflow-hidden transition-all cursor-pointer
+                        ${selectedTemplateId === null 
+                          ? "border-brand-500 bg-brand-500/10" 
+                          : "border-surface-3 bg-surface-2 hover:border-surface-2"
+                        }
+                      `}
+                      onClick={() => setSelectedTemplateId(null)}
+                    >
+                      <div className="flex items-center gap-3 p-3">
+                        <div
+                          className={`
+                            w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0
+                            ${selectedTemplateId === null ? "border-brand-500 bg-brand-500" : "border-zinc-600"}
+                          `}
+                        >
+                          {selectedTemplateId === null && <Check className="w-2.5 h-2.5 text-white" />}
+                        </div>
+                        
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium text-zinc-200">
+                              从零开始
+                            </span>
+                          </div>
+                          <p className="text-xs text-zinc-500 mt-0.5">
+                            创建空白项目，自由添加阶段和字段
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    {/* 已有模板 */}
                     {templates.map((template) => {
                       const isSelected = selectedTemplateId === template.id;
                       const isExpanded = expandedTemplateId === template.id;
