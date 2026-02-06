@@ -676,6 +676,108 @@ Phase 5 (最后): 总结价值，询问决定
 
 # ============== Grader 系统 ==============
 
+async def run_individual_grader(
+    grader_name: str,
+    grader_type: str,
+    prompt_template: str,
+    dimensions: list,
+    content: str,
+    trial_result_data: dict,
+    process_transcript: str = "",
+) -> Tuple[dict, Optional[LLMCall]]:
+    """
+    运行单个 Grader，使用其自定义 prompt_template 和 dimensions 评分。
+    
+    Args:
+        grader_name: 评分器名称 (显示用)
+        grader_type: "content_only" / "content_and_process"
+        prompt_template: 评分提示词模板，支持占位符 {{content}}, {{process}}
+        dimensions: 评分维度列表
+        content: 被评估的内容
+        trial_result_data: 试验结果 (strengths, weaknesses, summary 等)
+        process_transcript: 互动过程记录 (对话类)
+    
+    Returns:
+        (grader_output_dict, LLMCall_or_None)
+        grader_output_dict 结构:
+          { grader_name, grader_type, overall, scores: {dim: score}, feedback }
+    """
+    # 构建维度评分要求
+    dims = dimensions or ["综合评价"]
+    dim_score_str = ", ".join([f'"{d}": 分数(1-10)' for d in dims])
+    dim_comment_str = ", ".join([f'"{d}": "评语"' for d in dims])
+    
+    # 替换 prompt_template 中的占位符
+    system_prompt = prompt_template or ""
+    if system_prompt:
+        system_prompt = system_prompt.replace("{{content}}", content[:2000])
+        system_prompt = system_prompt.replace("{{process}}", process_transcript[:2000] if process_transcript else "(无互动过程)")
+        system_prompt = system_prompt.replace("{content}", content[:2000])
+        system_prompt = system_prompt.replace("{process}", process_transcript[:2000] if process_transcript else "(无互动过程)")
+    else:
+        # 无自定义模板时使用默认
+        if grader_type == "content_and_process" and process_transcript:
+            system_prompt = f"""你是「{grader_name}」，请基于以下内容和互动过程进行评分。
+关注内容本身的质量以及互动过程中的表现。请客观、严谨地打分。"""
+        else:
+            system_prompt = f"""你是「{grader_name}」，请基于以下内容进行独立评分。
+关注内容的质量和表现。请客观、严谨地打分。"""
+
+    # 构建用户消息
+    context_parts = [f"【被评估内容摘要】\n{content[:2000]}"]
+    if trial_result_data:
+        strengths = trial_result_data.get("strengths", [])
+        weaknesses = trial_result_data.get("weaknesses", [])
+        summary = trial_result_data.get("summary", "")
+        if strengths or weaknesses or summary:
+            context_parts.append(f"【模拟器评估反馈】\n- 优点: {strengths}\n- 问题: {weaknesses}\n- 总结: {summary}")
+    if grader_type == "content_and_process" and process_transcript:
+        context_parts.append(f"【互动过程记录】\n{process_transcript[:3000]}")
+
+    user_message = "\n\n".join(context_parts) + f"""
+
+请对上述内容进行评分。评分维度: {', '.join(dims)}
+
+**严格输出以下JSON格式，不要输出其他内容**：
+{{
+    "scores": {{{dim_score_str}}},
+    "comments": {{{dim_comment_str}}},
+    "feedback": "整体评价和改进建议（100-200字）"
+}}"""
+
+    try:
+        text, call = await _call_llm(
+            system_prompt, user_message,
+            step=f"grader_{grader_name}",
+            temperature=0.4,
+        )
+        result = _parse_json_response(text)
+        
+        # 标准化输出格式
+        scores = result.get("scores", {})
+        # 计算 overall 分数
+        valid_scores = [v for v in scores.values() if isinstance(v, (int, float))]
+        overall = round(sum(valid_scores) / len(valid_scores), 2) if valid_scores else 0
+        
+        return {
+            "grader_name": grader_name,
+            "grader_type": grader_type,
+            "overall": overall,
+            "scores": scores,
+            "comments": result.get("comments", {}),
+            "feedback": result.get("feedback", result.get("analysis", "")),
+        }, call
+    except Exception as e:
+        return {
+            "grader_name": grader_name,
+            "grader_type": grader_type,
+            "overall": None,
+            "scores": {},
+            "feedback": f"评分失败: {str(e)}",
+            "error": str(e),
+        }, None
+
+
 async def _run_content_grader(
     content: str,
     trial_result_data: dict,
@@ -683,8 +785,7 @@ async def _run_content_grader(
     grader_cfg: dict,
 ) -> Tuple[dict, Optional[LLMCall]]:
     """
-    内容评分器 - 直接评价内容本身的质量
-    在 review 模式下使用
+    内容评分器 - 直接评价内容本身的质量（兼容旧逻辑）
     """
     custom_prompt = grader_cfg.get("custom_prompt", "")
     grader_type = grader_cfg.get("type", "content")
@@ -692,33 +793,15 @@ async def _run_content_grader(
     if grader_type not in ("content", "combined"):
         return {}, None
     
-    system_prompt = custom_prompt or """你是一个内容质量评分专家。基于之前角色的评估反馈，
-请对内容进行独立的质量评分，关注内容本身的客观质量。
-输出JSON格式的评分。"""
-    
-    user_message = f"""内容摘要（前1000字）：
-{content[:1000]}
-
-角色评估反馈摘要：
-- 优点: {trial_result_data.get('strengths', [])}
-- 问题: {trial_result_data.get('weaknesses', [])}
-- 总结: {trial_result_data.get('summary', '')}
-
-请输出JSON：
-{{
-    "grader_type": "content",
-    "quality_score": 分数(1-10),
-    "analysis": "内容质量分析（50-100字）",
-    "key_issues": ["关键问题1", "关键问题2"]
-}}"""
-
-    try:
-        text, call = await _call_llm(system_prompt, user_message, step="grader_content", temperature=0.4)
-        result = _parse_json_response(text)
-        result["grader_type"] = "content"
-        return result, call
-    except Exception:
-        return {"grader_type": "content", "error": "评分失败"}, None
+    # 转为新的 run_individual_grader
+    return await run_individual_grader(
+        grader_name="内容质量评分",
+        grader_type="content_only",
+        prompt_template=custom_prompt,
+        dimensions=dimensions or ["综合评价"],
+        content=content,
+        trial_result_data=trial_result_data,
+    )
 
 
 async def _run_process_grader(
@@ -727,37 +810,22 @@ async def _run_process_grader(
     grader_cfg: dict,
 ) -> Tuple[dict, Optional[LLMCall]]:
     """
-    过程评分器 - 评价互动过程的质量
-    在 dialogue/scenario 模式下使用
+    过程评分器 - 评价互动过程的质量（兼容旧逻辑）
     """
     grader_type = grader_cfg.get("type", "content")
     
     if grader_type not in ("process", "combined"):
         return {}, None
     
-    system_prompt = """你是一个交互过程评估专家。请分析以下对话过程的质量。
-关注：对话流畅性、问题解决效率、信息传递有效性、用户体验。"""
-
-    user_message = f"""对话记录：
-{dialogue_transcript}
-
-请输出JSON：
-{{
-    "grader_type": "process",
-    "process_score": 分数(1-10),
-    "dialogue_quality": "对话质量分析",
-    "information_delivery": "信息传递效率评估",
-    "user_experience": "用户体验评估",
-    "key_moments": ["对话中的关键时刻/转折点"]
-}}"""
-
-    try:
-        text, call = await _call_llm(system_prompt, user_message, step="grader_process", temperature=0.4)
-        result = _parse_json_response(text)
-        result["grader_type"] = "process"
-        return result, call
-    except Exception:
-        return {"grader_type": "process", "error": "评分失败"}, None
+    return await run_individual_grader(
+        grader_name="互动过程评分",
+        grader_type="content_and_process",
+        prompt_template="",
+        dimensions=["对话流畅性", "问题解决效率", "信息传递有效性", "用户体验"],
+        content="",
+        trial_result_data={},
+        process_transcript=dialogue_transcript,
+    )
 
 
 # ============== Diagnoser ==============
@@ -768,60 +836,59 @@ async def run_diagnoser(
     intent: str = "",
 ) -> Tuple[dict, Optional[LLMCall]]:
     """
-    跨 Trial 诊断器 - 分析多个 Trial 的结果，找出系统性问题
+    跨 Trial 综合诊断 - 不给分数，只做定性分析：
+    评估了哪些内容块、用了什么方法、好在哪、哪里需要提升。
     
     Returns:
         (diagnosis_dict, LLMCall_or_None)
     """
     if not trial_results:
-        return {"summary": "无可分析的Trial结果", "patterns": [], "priorities": []}, None
+        return {"summary": "无可分析的Trial结果", "content_blocks_evaluated": [], "improvements": []}, None
     
     trials_summary = []
     for tr in trial_results:
         if not tr.success:
             continue
-        # 优先使用配置的显示名称，避免用硬编码的 "教练/编辑/专家"
         display_name = tr.role_display_name or SIMULATOR_TYPES.get(tr.role, {}).get("name", tr.role)
-        type_icon = SIMULATOR_TYPES.get(tr.role, {}).get("icon", "🔍")
-        summary_text = f"""## {display_name} ({type_icon})
-- 评分: {tr.overall_score}/10 | 模式: {tr.interaction_mode}
+        mode_label = {"review": "审查模式", "dialogue": "对话模式", "scenario": "情景模式"}.get(tr.interaction_mode, tr.interaction_mode)
+        summary_text = f"""### {display_name}（{mode_label}）
 - 结果: {tr.result.get('outcome', 'N/A')}
 - 总结: {tr.result.get('summary', 'N/A')}
 - 优点: {', '.join(tr.result.get('strengths', []))}
 - 问题: {', '.join(tr.result.get('weaknesses', []))}
-- 建议: {', '.join(tr.result.get('suggestions', []))}
-- 评分: {json.dumps(tr.result.get('scores', {}), ensure_ascii=False)}"""
+- 建议: {', '.join(tr.result.get('suggestions', []))}"""
         trials_summary.append(summary_text)
     
     trials_text = "\n\n---\n\n".join(trials_summary)
     
-    system_prompt = """你是一位内容评估诊断专家。分析多个评估角色的反馈，找出：
-1. **跨角色一致性**: 多个角色是否指出了相同的问题？矛盾在哪？
-2. **系统性缺陷**: 被多个角色反复提到的问题是什么？
-3. **改进优先级**: 哪些问题最值得先修复？
-4. **核心发现**: 最重要的3-5个发现
+    system_prompt = """你是一位内容评估诊断专家。请基于多个试验的定性反馈，写一份简洁扼要的综合诊断报告。
 
-请输出严格的JSON格式。"""
+**重要：不要给出任何分数。** 只做定性分析。
+
+报告结构：
+1. 总览：一共评估了多少个内容块，每个用的什么评估方法（审查/对话/情景）
+2. 亮点：内容做得好的地方（跨试验共识）
+3. 待提升：需要改进的关键问题（按优先级排序）
+4. 建议：最值得先行动的 2-3 条改进建议
+
+请输出严格的JSON格式，语言简洁直接。"""
 
     user_message = f"""# 项目意图
 {intent or '未提供'}
 
-# 各角色评估结果
+# 各试验评估反馈（共 {len(trial_results)} 个试验）
 
 {trials_text}
 
-请进行跨角色诊断分析，输出JSON格式：
+请输出JSON格式：
 {{
-    "overall_score": 综合评分(1-10),
-    "consistency_analysis": "跨角色一致性分析",
-    "patterns": [
-        {{"pattern": "模式", "mentioned_by": ["角色"], "severity": "high/medium/low", "description": "描述"}}
+    "overview": "总览：评估了X个内容块，分别使用了...",
+    "strengths": ["亮点1", "亮点2", "亮点3"],
+    "improvements": [
+        {{"issue": "问题", "priority": "high/medium/low", "suggested_action": "建议"}}
     ],
-    "priorities": [
-        {{"priority": 1, "issue": "问题", "suggested_action": "建议", "expected_impact": "影响"}}
-    ],
-    "key_findings": ["发现1", "发现2", "发现3"],
-    "summary": "综合诊断总结（200-300字）"
+    "action_items": ["最优先的行动建议1", "行动建议2"],
+    "summary": "综合诊断总结（100-200字，不含分数）"
 }}"""
 
     try:
@@ -830,8 +897,8 @@ async def run_diagnoser(
         return result, call
     except Exception as e:
         return {
-            "overall_score": 0, "summary": f"诊断失败: {str(e)}",
-            "patterns": [], "priorities": [], "key_findings": [], "error": str(e),
+            "summary": f"诊断失败: {str(e)}",
+            "strengths": [], "improvements": [], "action_items": [], "error": str(e),
         }, None
 
 
@@ -1006,39 +1073,38 @@ def format_trial_result_markdown(trial: TrialResult) -> str:
 
 
 def format_diagnosis_markdown(diagnosis: dict) -> str:
-    """将诊断结果格式化为 Markdown"""
+    """将诊断结果格式化为 Markdown（定性分析，无分数）"""
     md = "## 🔍 综合诊断\n\n"
     
-    overall = diagnosis.get("overall_score")
-    if overall:
-        md += f"**综合评分: {overall}/10**\n\n"
+    overview = diagnosis.get("overview", "")
+    if overview:
+        md += f"{overview}\n\n"
     
-    consistency = diagnosis.get("consistency_analysis", "")
-    if consistency:
-        md += f"### 跨角色一致性\n{consistency}\n\n"
-    
-    patterns = diagnosis.get("patterns", [])
-    if patterns:
-        md += "### 系统性问题\n"
-        for p in patterns:
-            severity_icon = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(p.get("severity", ""), "⚪")
-            md += f"- {severity_icon} **{p.get('pattern', '')}** (提到: {', '.join(p.get('mentioned_by', []))})\n"
-            md += f"  {p.get('description', '')}\n"
+    strengths = diagnosis.get("strengths", [])
+    if strengths:
+        md += "### ✅ 亮点\n"
+        for s in strengths:
+            md += f"- {s}\n"
         md += "\n"
     
-    priorities = diagnosis.get("priorities", [])
-    if priorities:
-        md += "### 改进优先级\n"
-        for p in priorities:
-            md += f"**{p.get('priority', '?')}. {p.get('issue', '')}**\n"
-            md += f"- 建议操作: {p.get('suggested_action', '')}\n"
-            md += f"- 预期影响: {p.get('expected_impact', '')}\n\n"
+    improvements = diagnosis.get("improvements", [])
+    if improvements:
+        md += "### ⚠️ 待提升\n"
+        for imp in improvements:
+            if isinstance(imp, dict):
+                severity_icon = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(imp.get("priority", ""), "⚪")
+                md += f"- {severity_icon} **{imp.get('issue', '')}**\n"
+                if imp.get("suggested_action"):
+                    md += f"  → {imp['suggested_action']}\n"
+            else:
+                md += f"- {imp}\n"
+        md += "\n"
     
-    findings = diagnosis.get("key_findings", [])
-    if findings:
-        md += "### 核心发现\n"
-        for f in findings:
-            md += f"- {f}\n"
+    action_items = diagnosis.get("action_items", [])
+    if action_items:
+        md += "### 🎯 优先行动\n"
+        for i, a in enumerate(action_items, 1):
+            md += f"{i}. {a}\n"
         md += "\n"
     
     summary = diagnosis.get("summary", "")

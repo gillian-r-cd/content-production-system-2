@@ -1152,57 +1152,86 @@ export function EvalReportPanel({ block, projectId, onUpdate }: EvalFieldProps) 
             )}
           </div>
 
-          {/* ===== 试验得分概览条 ===== */}
+          {/* ===== 试验得分卡片列表 ===== */}
           <div className={`${CARD} p-4`}>
             <div className="flex items-center justify-between mb-3">
               <h4 className="text-sm font-medium text-zinc-300">各试验得分一览</h4>
               <span className="text-xs text-zinc-500">{scoredTrials.length} / {trials.length} 已评分</span>
             </div>
-            <div className="space-y-2">
+            <div className="space-y-2.5">
               {trials.map((trial: any, idx: number) => {
                 const style = getSimStyle(null, trial.simulator_type);
                 const score = trial.overall_score;
                 const isBelowStd = score != null && score < 6;
+                const graderEntries = trial.grader_scores ? Object.entries(trial.grader_scores) : [];
+                const hasGraders = graderEntries.length > 0;
                 return (
                   <div key={idx}
-                    className={`flex items-center gap-3 p-2.5 rounded-lg cursor-pointer transition-all hover:bg-surface-3/50 ${
-                      isBelowStd ? "bg-red-500/5 border border-red-500/15" : "bg-surface-1 border border-surface-3"
+                    className={`rounded-xl cursor-pointer transition-all hover:bg-surface-3/30 overflow-hidden ${
+                      isBelowStd ? "bg-red-500/5 border border-red-500/20" 
+                        : expandedTrial === idx ? "bg-surface-2 border border-brand-500/30 ring-1 ring-brand-500/20"
+                          : "bg-surface-1 border border-surface-3"
                     }`}
                     onClick={() => setExpandedTrial(expandedTrial === idx ? null : idx)}>
-                    <div className="w-6 h-6 rounded-full bg-surface-3 flex items-center justify-center flex-shrink-0">
-                      <span className="text-xs font-bold text-zinc-400">{idx + 1}</span>
-                    </div>
-                    <span className="text-sm flex-shrink-0">{style.icon}</span>
-                    <span className="text-sm text-zinc-200 flex-1 truncate">
-                      {trial.task_name}
-                      {trial.simulator_name && trial.simulator_name !== trial.simulator_type && (
-                        <span className="text-xs text-zinc-500 ml-1.5">({trial.simulator_name})</span>
-                      )}
-                    </span>
-                    {trial.persona_name && <span className="text-xs text-zinc-500">👤 {trial.persona_name}</span>}
-                    {/* Grader 分数标签 */}
-                    {trial.grader_scores && Object.entries(trial.grader_scores).map(([gName, gScore]: any) => (
-                      <span key={gName} className={`text-xs px-2 py-0.5 rounded border ${
-                        gScore >= 7 ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
-                          : gScore >= 6 ? "text-amber-400 bg-amber-500/10 border-amber-500/20"
-                            : "text-red-400 bg-red-500/10 border-red-500/20"
+                    {/* 第一行：试验名称 + 总分 */}
+                    <div className="px-4 py-3 flex items-center gap-3">
+                      <div className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 ${
+                        isBelowStd ? "bg-red-500/20" : "bg-surface-3"
                       }`}>
-                        {gName}: {gScore}
-                      </span>
-                    ))}
-                    {/* 总分 */}
-                    <div className="flex items-center gap-2 flex-shrink-0">
-                      {score != null ? (
-                        <span className={`text-lg font-bold ${scoreColor(score)}`}>
-                          {score}<span className="text-xs text-zinc-500">/10</span>
+                        <span className={`text-xs font-bold ${isBelowStd ? "text-red-400" : "text-zinc-400"}`}>{idx + 1}</span>
+                      </div>
+                      <span className="text-base flex-shrink-0">{style.icon}</span>
+                      <div className="flex-1 min-w-0">
+                        <span className="text-sm text-zinc-200 font-medium">
+                          {trial.task_name}
                         </span>
-                      ) : trial.status === "failed" ? (
-                        <XCircle className="w-5 h-5 text-red-400" />
-                      ) : (
-                        <Clock className="w-5 h-5 text-zinc-600" />
-                      )}
-                      {expandedTrial === idx ? <ChevronDown className="w-3.5 h-3.5 text-zinc-500" /> : <ChevronRight className="w-3.5 h-3.5 text-zinc-500" />}
+                        <div className="flex items-center gap-2 mt-0.5">
+                          {trial.simulator_name && (
+                            <span className={`text-xs px-1.5 py-0.5 rounded ${style.color}`}>
+                              {trial.simulator_name}
+                            </span>
+                          )}
+                          {trial.persona_name && (
+                            <span className="text-xs text-zinc-500">👤 {trial.persona_name}</span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3 flex-shrink-0">
+                        {isBelowStd && (
+                          <span className="text-xs px-2 py-0.5 rounded-full bg-red-500/20 text-red-400 border border-red-500/30 font-medium">
+                            不达标
+                          </span>
+                        )}
+                        {score != null ? (
+                          <div className="text-right">
+                            <span className={`text-xl font-bold ${scoreColor(score)}`}>
+                              {score}
+                            </span>
+                            <span className="text-xs text-zinc-500">/10</span>
+                          </div>
+                        ) : trial.status === "failed" ? (
+                          <XCircle className="w-5 h-5 text-red-400" />
+                        ) : (
+                          <Clock className="w-5 h-5 text-zinc-600" />
+                        )}
+                        {expandedTrial === idx ? <ChevronDown className="w-4 h-4 text-zinc-500" /> : <ChevronRight className="w-4 h-4 text-zinc-500" />}
+                      </div>
                     </div>
+                    {/* 第二行：各 Grader 分数标签 */}
+                    {hasGraders && (
+                      <div className="px-4 pb-3 -mt-1 flex flex-wrap gap-2">
+                        {graderEntries.map(([gName, gScore]: any) => (
+                          <span key={gName} className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg border font-medium ${
+                            gScore >= 7 ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
+                              : gScore >= 6 ? "text-amber-400 bg-amber-500/10 border-amber-500/20"
+                                : "text-red-400 bg-red-500/10 border-red-500/20"
+                          }`}>
+                            ⚖️ {gName}
+                            <span className="font-bold">{typeof gScore === 'number' ? gScore.toFixed(1) : gScore}</span>
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -1244,13 +1273,32 @@ export function EvalReportPanel({ block, projectId, onUpdate }: EvalFieldProps) 
                   )}
                 </div>
 
-                {/* ---- Grader 评分详情 ---- */}
+                {/* ---- Grader 评分详情（核心区域） ---- */}
                 {trial.grader_results && trial.grader_results.length > 0 && (
-                  <div className="px-5 py-4 bg-surface-1/50">
-                    <h4 className="text-sm font-medium text-zinc-300 mb-3 flex items-center gap-2">
-                      ⚖️ Grader 评分详情
-                      <span className="text-xs text-zinc-500 font-normal">({trial.grader_results.length} 个评分器)</span>
+                  <div className="px-5 py-4 border-t border-surface-3 bg-gradient-to-b from-surface-2/50 to-transparent">
+                    <h4 className="text-sm font-semibold text-zinc-200 mb-4 flex items-center gap-2">
+                      ⚖️ 各 Grader 评分
+                      <span className="text-xs text-zinc-500 font-normal">（{trial.grader_results.length} 个评分器独立打分）</span>
                     </h4>
+                    {/* Grader 总览栏 */}
+                    <div className="flex flex-wrap gap-3 mb-4">
+                      {trial.grader_results.map((gr: any, gi: number) => (
+                        <div key={gi} className={`flex items-center gap-2 px-3 py-2 rounded-lg border ${
+                          gr.overall != null && gr.overall >= 7 ? "border-emerald-500/25 bg-emerald-500/5"
+                            : gr.overall != null && gr.overall >= 6 ? "border-amber-500/25 bg-amber-500/5"
+                              : gr.overall != null ? "border-red-500/25 bg-red-500/5"
+                                : "border-surface-3 bg-surface-2"
+                        }`}>
+                          <span className="text-xs text-zinc-400">{gr.grader_name || `评分器 ${gi + 1}`}</span>
+                          {gr.overall != null && (
+                            <span className={`text-base font-bold ${scoreColor(gr.overall)}`}>
+                              {typeof gr.overall === 'number' ? gr.overall.toFixed(1) : gr.overall}
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    {/* Grader 详情卡片 */}
                     <div className="space-y-4">
                       {trial.grader_results.map((gr: any, gi: number) => (
                         <div key={gi} className={`${CARD_INNER} p-4`}>
@@ -1265,28 +1313,34 @@ export function EvalReportPanel({ block, projectId, onUpdate }: EvalFieldProps) 
                             </span>
                             {gr.overall != null && (
                               <span className={`text-lg font-bold ${scoreColor(gr.overall)}`}>
-                                {gr.overall}<span className="text-xs text-zinc-500">/10</span>
+                                {typeof gr.overall === 'number' ? gr.overall.toFixed(1) : gr.overall}<span className="text-xs text-zinc-500">/10</span>
                               </span>
                             )}
                           </div>
-                          {/* 分维度评分条 */}
+                          {/* 分维度评分条 + 评语 */}
                           {gr.scores && Object.keys(gr.scores).length > 0 && (
-                            <div className="space-y-2">
+                            <div className="space-y-2.5">
                               {Object.entries(gr.scores).map(([dim, score]: any) => (
-                                <div key={dim} className="flex items-center gap-3">
-                                  <span className="text-xs text-zinc-400 w-24 flex-shrink-0 truncate" title={dim}>{dim}</span>
-                                  <div className="flex-1 bg-surface-3 rounded-full h-2 overflow-hidden">
-                                    <div className={`h-full rounded-full transition-all ${scoreBg(score)}`}
-                                      style={{ width: `${(score / 10) * 100}%` }} />
+                                <div key={dim}>
+                                  <div className="flex items-center gap-3">
+                                    <span className="text-xs text-zinc-400 w-28 flex-shrink-0 truncate" title={dim}>{dim}</span>
+                                    <div className="flex-1 bg-surface-3 rounded-full h-2.5 overflow-hidden">
+                                      <div className={`h-full rounded-full transition-all ${scoreBg(score)}`}
+                                        style={{ width: `${(score / 10) * 100}%` }} />
+                                    </div>
+                                    <span className={`text-sm font-mono font-bold w-8 text-right ${scoreColor(score)}`}>{score}</span>
                                   </div>
-                                  <span className="text-xs font-mono text-zinc-300 w-6 text-right">{score}</span>
+                                  {/* 该维度的评语 */}
+                                  {gr.comments && gr.comments[dim] && (
+                                    <p className="text-xs text-zinc-500 ml-[7.5rem] mt-1 leading-relaxed">{gr.comments[dim]}</p>
+                                  )}
                                 </div>
                               ))}
                             </div>
                           )}
-                          {/* Grader 反馈 */}
+                          {/* Grader 综合反馈 */}
                           {gr.feedback && (
-                            <div className="mt-3 text-xs text-zinc-400 leading-relaxed bg-surface-2 p-3 rounded-lg border border-surface-3">
+                            <div className="mt-3 text-sm text-zinc-300 leading-relaxed bg-surface-2 p-3 rounded-lg border border-surface-3">
                               {gr.feedback}
                             </div>
                           )}

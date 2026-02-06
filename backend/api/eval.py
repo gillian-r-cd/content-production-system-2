@@ -989,9 +989,10 @@ async def _handle_eval_report(block, project, db):
     creator_profile = _get_creator_profile(project, db)
     intent = _get_project_intent(project, db)
 
-    # 3. 解析 grader_ids → grader_config，解析 simulator_id → 实际提示词
+    # 3. 解析 grader_ids → grader 信息列表，解析 simulator_id → 实际提示词
     from core.models.grader import Grader
     from core.models.simulator import Simulator
+    from core.tools.eval_engine import run_individual_grader
     
     grader_cache = {}
     simulator_cache = {}
@@ -999,6 +1000,7 @@ async def _handle_eval_report(block, project, db):
     for tc in all_trials_config:
         # --- 解析 Grader ---
         grader_ids = tc.get("grader_ids", [])
+        resolved_graders = []
         if grader_ids:
             dims_all = []
             for gid in grader_ids:
@@ -1007,13 +1009,22 @@ async def _handle_eval_report(block, project, db):
                     if grader:
                         grader_cache[gid] = grader
                 grader_obj = grader_cache.get(gid)
-                if grader_obj and grader_obj.dimensions:
-                    dims_all.extend(grader_obj.dimensions)
+                if grader_obj:
+                    resolved_graders.append({
+                        "id": grader_obj.id,
+                        "name": grader_obj.name,
+                        "grader_type": grader_obj.grader_type,
+                        "prompt_template": grader_obj.prompt_template or "",
+                        "dimensions": grader_obj.dimensions or ["综合评价"],
+                    })
+                    if grader_obj.dimensions:
+                        dims_all.extend(grader_obj.dimensions)
             tc["grader_config"] = {
                 "type": "content",
                 "dimensions": list(dict.fromkeys(dims_all)) if dims_all else ["综合评价"],
                 "grader_ids": grader_ids,
             }
+        tc["_resolved_graders"] = resolved_graders
         
         # --- 解析 Simulator：用后台配置的提示词替代硬编码 ---
         sim_id = tc.get("simulator_id", "")
@@ -1093,21 +1104,70 @@ async def _handle_eval_report(block, project, db):
             )
             db.add(trial)
 
-            # 构建 grader 级别评分详情
+            # ======= 运行每个选定的 Grader 独立评分 =======
             grader_results = []
             grader_scores = {}
-            for go in (tr.grader_outputs or []):
-                gname = go.get("grader_name", go.get("grader_type", "默认评分器"))
-                gscore = go.get("overall", go.get("score", None))
-                grader_results.append({
-                    "grader_name": gname,
-                    "grader_type": go.get("grader_type", "content_only"),
-                    "overall": gscore,
-                    "scores": go.get("scores", {}),
-                    "feedback": go.get("feedback", go.get("summary", "")),
-                })
-                if gscore is not None:
-                    grader_scores[gname] = gscore
+            extra_llm_calls = []
+            
+            resolved_graders = tc.get("_resolved_graders", [])
+            if resolved_graders and tr.success:
+                # 准备互动过程文本（对话类试验用）
+                process_transcript = ""
+                if tr.nodes:
+                    process_transcript = "\n".join(
+                        f"[{n.get('role', '?')}] {n.get('content', '')}" for n in tr.nodes
+                    )
+                
+                # 并行运行所有 Grader
+                grader_tasks = []
+                for rg in resolved_graders:
+                    grader_tasks.append(run_individual_grader(
+                        grader_name=rg["name"],
+                        grader_type=rg["grader_type"],
+                        prompt_template=rg["prompt_template"],
+                        dimensions=rg["dimensions"],
+                        content=content,
+                        trial_result_data=tr.result,
+                        process_transcript=process_transcript if rg["grader_type"] == "content_and_process" else "",
+                    ))
+                
+                grader_results_raw = await asyncio.gather(*grader_tasks, return_exceptions=True)
+                for gr_result in grader_results_raw:
+                    if isinstance(gr_result, Exception):
+                        continue
+                    go, go_call = gr_result
+                    grader_results.append(go)
+                    if go.get("overall") is not None:
+                        grader_scores[go["grader_name"]] = go["overall"]
+                    if go_call:
+                        extra_llm_calls.append(go_call)
+            
+            # 兼容：如果没有 resolved_graders，使用引擎自带的 grader_outputs
+            if not resolved_graders:
+                for go in (tr.grader_outputs or []):
+                    gname = go.get("grader_name", go.get("grader_type", "默认评分器"))
+                    gscore = go.get("overall", go.get("quality_score", go.get("process_score", go.get("score", None))))
+                    grader_results.append({
+                        "grader_name": gname,
+                        "grader_type": go.get("grader_type", "content_only"),
+                        "overall": gscore,
+                        "scores": go.get("scores", {}),
+                        "comments": go.get("comments", {}),
+                        "feedback": go.get("feedback", go.get("analysis", go.get("summary", ""))),
+                    })
+                    if gscore is not None:
+                        grader_scores[gname] = gscore
+            
+            # 如果有 grader 分数，重新计算 overall_score（各 grader 均分）
+            if grader_scores:
+                all_g_scores = [v for v in grader_scores.values() if isinstance(v, (int, float))]
+                if all_g_scores:
+                    tr.overall_score = round(sum(all_g_scores) / len(all_g_scores), 2)
+            
+            # 合并额外的 LLM 调用记录
+            all_llm_calls = [c.to_dict() if hasattr(c, 'to_dict') else c for c in (tr.llm_calls or [])]
+            for ec in extra_llm_calls:
+                all_llm_calls.append(ec.to_dict() if hasattr(ec, 'to_dict') else ec)
 
             trial_entry = {
                 "trial_id": trial.id,
@@ -1122,7 +1182,7 @@ async def _handle_eval_report(block, project, db):
                 "grader_scores": grader_scores,
                 "nodes": tr.nodes,
                 "result": tr.result,
-                "llm_calls": [c.to_dict() if hasattr(c, 'to_dict') else c for c in (tr.llm_calls or [])],
+                "llm_calls": all_llm_calls,
                 "tokens_in": tr.tokens_in,
                 "tokens_out": tr.tokens_out,
                 "cost": tr.cost,
