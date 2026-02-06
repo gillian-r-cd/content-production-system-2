@@ -5,7 +5,7 @@
 "use client";
 
 import { useState, useMemo, useCallback } from "react";
-import { fieldAPI } from "@/lib/api";
+import { fieldAPI, blockAPI } from "@/lib/api";
 
 // 人物小传类型 - 匹配实际 AI 输出格式
 interface Persona {
@@ -56,6 +56,7 @@ interface ResearchPanelProps {
   content: string;
   onUpdate?: () => void;
   onAdvance?: () => void;  // 确认进入下一阶段
+  isBlock?: boolean;  // true = 使用 blockAPI 保存（ContentBlock），false/undefined = 使用 fieldAPI（ProjectField）
 }
 
 export function ResearchPanel({
@@ -64,11 +65,35 @@ export function ResearchPanel({
   content,
   onUpdate,
   onAdvance,
+  isBlock = false,
 }: ResearchPanelProps) {
-  // 解析调研数据
+  // 解析调研数据（自动补全缺失字段防止渲染崩溃）
   const initialData = useMemo<ResearchData | null>(() => {
     try {
-      return JSON.parse(content);
+      const raw = JSON.parse(content);
+      if (!raw || typeof raw !== "object") return null;
+      return {
+        summary: raw.summary || "",
+        consumer_profile: raw.consumer_profile || {},
+        pain_points: raw.pain_points || raw.main_pain_points || [],
+        value_propositions: raw.value_propositions || raw.value_proposition || [],
+        personas: (raw.personas || []).map((p: any, idx: number) => {
+          // background 可能是 string 或 {story, context} 对象
+          let bg = p.background || p.story || "";
+          if (typeof bg === "object" && bg !== null) {
+            bg = bg.story || bg.context || JSON.stringify(bg);
+          }
+          return {
+            id: p.id || `persona_${idx}`,
+            name: p.name || `用户 ${idx + 1}`,
+            basic_info: p.basic_info || {},
+            background: String(bg),
+            pain_points: Array.isArray(p.pain_points) ? p.pain_points.map((pt: any) => typeof pt === "string" ? pt : JSON.stringify(pt)) : [],
+            selected: p.selected !== undefined ? p.selected : true,
+          };
+        }),
+        sources: raw.sources || [],
+      };
     } catch {
       return null;
     }
@@ -102,15 +127,18 @@ export function ResearchPanel({
     });
   }, [data]);
 
-  // 保存到服务器
+  // 保存到服务器（自动判断使用 blockAPI 或 fieldAPI）
   const handleSave = async () => {
     if (!data) return;
     
     setIsSaving(true);
     try {
-      await fieldAPI.update(fieldId, {
-        content: JSON.stringify(data, null, 2),
-      });
+      const payload = { content: JSON.stringify(data, null, 2) };
+      if (isBlock) {
+        await blockAPI.update(fieldId, payload);
+      } else {
+        await fieldAPI.update(fieldId, payload);
+      }
       onUpdate?.();
     } catch (err) {
       console.error("保存失败:", err);
@@ -129,7 +157,7 @@ export function ResearchPanel({
     );
   }
 
-  const selectedCount = data.personas.filter((p) => p.selected).length;
+  const selectedCount = (data.personas || []).filter((p) => p.selected).length;
 
   // 保存并进入下一步
   const handleSaveAndAdvance = async () => {
@@ -184,9 +212,9 @@ export function ResearchPanel({
                 <label className="text-xs font-medium text-zinc-400">职业类型</label>
                 <button
                   onClick={() => {
-                    const occupations = Array.isArray(data.consumer_profile.occupation) 
+                    const occupations: string[] = Array.isArray(data.consumer_profile.occupation) 
                       ? data.consumer_profile.occupation 
-                      : [data.consumer_profile.occupation];
+                      : [data.consumer_profile.occupation || ""];
                     setData({
                       ...data,
                       consumer_profile: {
@@ -210,9 +238,9 @@ export function ResearchPanel({
                       type="text"
                       value={occ || ""}
                       onChange={(e) => {
-                        const occupations = Array.isArray(data.consumer_profile.occupation) 
+                        const occupations: string[] = Array.isArray(data.consumer_profile.occupation) 
                           ? [...data.consumer_profile.occupation]
-                          : [data.consumer_profile.occupation];
+                          : [data.consumer_profile.occupation || ""];
                         occupations[idx] = e.target.value;
                         setData({
                           ...data,

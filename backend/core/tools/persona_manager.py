@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db
 from core.models import Project, ProjectField
+from core.models.content_block import ContentBlock
 from core.ai_client import ai_client, ChatMessage
 
 
@@ -94,6 +95,24 @@ def _get_research_field(project_id: str, db: Session) -> Optional[ProjectField]:
     ).first()
 
 
+def _get_persona_block(project_id: str, db: Session) -> Optional[ContentBlock]:
+    """获取目标消费者画像的 ContentBlock（eval_persona_setup handler）"""
+    return db.query(ContentBlock).filter(
+        ContentBlock.project_id == project_id,
+        ContentBlock.special_handler == "eval_persona_setup",
+        ContentBlock.deleted_at.is_(None),
+    ).first()
+
+
+def _get_research_block(project_id: str, db: Session) -> Optional[ContentBlock]:
+    """获取消费者调研的 ContentBlock（research handler）"""
+    return db.query(ContentBlock).filter(
+        ContentBlock.project_id == project_id,
+        ContentBlock.special_handler == "research",
+        ContentBlock.deleted_at.is_(None),
+    ).first()
+
+
 def _parse_personas(content: str) -> List[Persona]:
     """从调研报告内容中解析人物列表"""
     try:
@@ -114,6 +133,34 @@ def _save_personas(field: ProjectField, personas: List[Persona], db: Session):
     except Exception as e:
         db.rollback()
         raise e
+
+
+def _sync_personas_to_blocks(project_id: str, personas: List[Persona], db: Session):
+    """将 personas 同步到相关的 ContentBlock（eval_persona_setup 和 research）"""
+    persona_dicts = [p.to_dict() for p in personas]
+    
+    # 同步到 eval_persona_setup block
+    persona_block = _get_persona_block(project_id, db)
+    if persona_block:
+        try:
+            persona_block.content = json.dumps({
+                "personas": persona_dicts,
+                "source": "tool_synced",
+            }, ensure_ascii=False, indent=2)
+            db.flush()
+        except Exception:
+            pass  # 不影响主操作
+    
+    # 同步到 research block 的 personas 字段
+    research_block = _get_research_block(project_id, db)
+    if research_block and research_block.content:
+        try:
+            data = json.loads(research_block.content)
+            data["personas"] = persona_dicts
+            research_block.content = json.dumps(data, ensure_ascii=False, indent=2)
+            db.flush()
+        except Exception:
+            pass
 
 
 def list_personas(
@@ -172,6 +219,9 @@ def create_persona(
         
         personas.append(new_persona)
         _save_personas(field, personas, db)
+        # 同步到 ContentBlock
+        _sync_personas_to_blocks(project_id, personas, db)
+        db.commit()
         
         return PersonaResult(
             success=True,
@@ -237,6 +287,8 @@ def update_persona(
             target.selected = updates["selected"]
         
         _save_personas(field, personas, db)
+        _sync_personas_to_blocks(project_id, personas, db)
+        db.commit()
         
         return PersonaResult(
             success=True,
@@ -299,6 +351,8 @@ def delete_persona(
             )
         
         _save_personas(field, personas, db)
+        _sync_personas_to_blocks(project_id, personas, db)
+        db.commit()
         
         return PersonaResult(
             success=True,

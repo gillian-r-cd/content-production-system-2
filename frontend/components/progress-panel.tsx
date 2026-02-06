@@ -8,7 +8,7 @@
 import { useState, useRef, useEffect } from "react";
 import { cn, PHASE_NAMES, PHASE_STATUS } from "@/lib/utils";
 import type { Project, ContentBlock, Field } from "@/lib/api";
-import { blockAPI } from "@/lib/api";
+import { blockAPI, runAutoTriggerChain } from "@/lib/api";
 import BlockTree from "./block-tree";
 import { List, GitBranch } from "lucide-react";
 
@@ -129,6 +129,17 @@ export function ProgressPanel({
           setContentBlocks([]);
           onBlocksChange?.([]);
         }
+        
+        // 前端驱动自动触发链：找到可触发的块 → 逐个生成 → 递归
+        runAutoTriggerChain(project.id, () => {
+          // 每个块完成后刷新 UI
+          blockAPI.getProjectBlocks(project.id).then((freshData) => {
+            if (freshData.blocks) {
+              setContentBlocks(freshData.blocks);
+              onBlocksChange?.(flattenBlocks(freshData.blocks));
+            }
+          }).catch(console.error);
+        }).catch(console.error);
       } else {
         // 传统架构项目：始终从 ProjectField 构建虚拟块
         // 这确保了树形视图和传统视图显示相同的数据
@@ -180,6 +191,8 @@ export function ProgressPanel({
         constraints: {},
         depends_on: [],
         special_handler: PHASE_SPECIAL_HANDLERS[phase] || null,
+        pre_questions: [],
+        pre_answers: {},
         need_review: true,
         is_collapsed: false,
         children: phaseFields.map((field, fieldIdx) => ({
@@ -196,6 +209,8 @@ export function ProgressPanel({
           constraints: field.constraints || {},
           depends_on: field.dependencies?.depends_on || [],
           special_handler: null,
+          pre_questions: field.pre_questions || [],
+          pre_answers: field.pre_answers || {},
           need_review: field.need_review,
           is_collapsed: false,
           children: [],

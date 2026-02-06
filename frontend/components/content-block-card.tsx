@@ -8,7 +8,7 @@
 import { useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { blockAPI, fieldAPI } from "@/lib/api";
+import { blockAPI, fieldAPI, runAutoTriggerChain } from "@/lib/api";
 import type { ContentBlock } from "@/lib/api";
 import { 
   Sparkles, 
@@ -100,6 +100,11 @@ export function ContentBlockCard({
       setPreAnswersSaved(true);
       setTimeout(() => setPreAnswersSaved(false), 2000);
       onUpdate?.();
+      
+      // 保存后前端驱动自动触发链
+      if (projectId) {
+        runAutoTriggerChain(projectId, () => onUpdate?.()).catch(console.error);
+      }
     } catch (err) {
       console.error("保存答案失败:", err);
       alert("保存失败: " + (err instanceof Error ? err.message : "未知错误"));
@@ -308,10 +313,11 @@ export function ContentBlockCard({
                 if (data.done) {
                   setEditedContent(data.content || accumulatedContent);
                   onUpdate?.();
-                }
-                if (data.auto_triggered?.length > 0) {
-                  console.log(`[AUTO-TRIGGER] 自动触发了 ${data.auto_triggered.length} 个依赖块`);
-                  onUpdate?.(); // 刷新列表以显示被自动触发的块的状态变化
+                  
+                  // 前端驱动自动触发链：生成完成后检查并触发下游块
+                  if (projectId) {
+                    runAutoTriggerChain(projectId, () => onUpdate?.()).catch(console.error);
+                  }
                 }
                 if (data.error) {
                   throw new Error(data.error);

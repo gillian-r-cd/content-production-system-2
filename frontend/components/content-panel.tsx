@@ -274,6 +274,96 @@ export function ContentPanel({
     const phaseMatch = selectedBlock.id.match(/virtual_phase_(.+)/);
     const selectedPhase = phaseMatch ? phaseMatch[1] : selectedBlock.special_handler;
     
+    // ===== 意图分析阶段特殊处理 =====
+    if (selectedBlock.special_handler === "intent" || selectedPhase === "intent") {
+      const intentContent = selectedBlock.content?.trim();
+      if (intentContent) {
+        // 有内容时：显示意图分析结果，使用 ContentBlockEditor
+        return (
+          <ContentBlockEditor
+            block={selectedBlock}
+            projectId={projectId}
+            allBlocks={allBlocks}
+            isVirtual={isVirtualBlock}
+            onUpdate={onFieldsChange}
+          />
+        );
+      } else {
+        // 没有内容时显示引导占位
+        return (
+          <div className="h-full flex flex-col items-center justify-center p-6 text-center">
+            <div className="text-6xl mb-4">💬</div>
+            <h2 className="text-xl font-bold text-zinc-200 mb-2">意图分析</h2>
+            <p className="text-zinc-400 max-w-md">
+              意图分析由 AI Agent 通过对话完成。请在右侧对话框中输入"开始"来启动意图分析流程。
+            </p>
+            <p className="text-zinc-500 text-sm mt-4">
+              Agent 会问你 3 个问题来了解你的项目意图。
+            </p>
+          </div>
+        );
+      }
+    }
+    
+    // ===== 消费者调研阶段特殊处理 =====
+    if (selectedBlock.special_handler === "research" || selectedPhase === "research") {
+      const researchContent = selectedBlock.content?.trim();
+      if (researchContent) {
+        // 有内容：尝试用 ResearchPanel 展示
+        try {
+          const parsed = JSON.parse(researchContent);
+          // 只要是有效 JSON 且包含调研相关字段，就用 ResearchPanel
+          if (parsed && typeof parsed === "object" && (parsed.summary || parsed.consumer_profile || parsed.personas || parsed.pain_points)) {
+            // 确保 ResearchPanel 需要的字段存在（补全缺失字段）
+            const normalized = {
+              summary: parsed.summary || "",
+              consumer_profile: parsed.consumer_profile || {},
+              pain_points: parsed.pain_points || parsed.main_pain_points || [],
+              value_propositions: parsed.value_propositions || parsed.value_proposition || [],
+              personas: parsed.personas || [],
+              sources: parsed.sources || [],
+            };
+            return (
+              <ResearchPanel
+                projectId={projectId}
+                fieldId={selectedBlock.id}
+                content={JSON.stringify(normalized, null, 2)}
+                onUpdate={onFieldsChange}
+                onAdvance={handleAdvancePhase}
+                isBlock={!isVirtualBlock}
+              />
+            );
+          }
+        } catch {
+          // JSON 解析失败，用 ContentBlockEditor
+        }
+        // JSON 解析失败或格式不匹配 — 用 ContentBlockEditor 显示原始内容
+        return (
+          <ContentBlockEditor
+            block={selectedBlock}
+            projectId={projectId}
+            allBlocks={allBlocks}
+            isVirtual={isVirtualBlock}
+            onUpdate={onFieldsChange}
+          />
+        );
+      } else {
+        // 没有内容时显示引导占位
+        return (
+          <div className="h-full flex flex-col items-center justify-center p-6 text-center">
+            <div className="text-6xl mb-4">🔍</div>
+            <h2 className="text-xl font-bold text-zinc-200 mb-2">消费者调研</h2>
+            <p className="text-zinc-400 max-w-md">
+              消费者调研由 AI Agent 通过 DeepResearch 工具完成。请在右侧对话框中输入"开始调研"来启动。
+            </p>
+            <p className="text-zinc-500 text-sm mt-4">
+              Agent 会基于你的意图分析结果，搜索相关信息并生成调研报告。
+            </p>
+          </div>
+        );
+      }
+    }
+    
     // 如果是真正的 ContentBlock 阶段/分组（灵活架构），显示其所有子节点
     if (!isVirtualBlock && selectedBlock.children && selectedBlock.children.length > 0) {
       // 统计不同类型的子节点
@@ -524,17 +614,26 @@ export function ContentPanel({
     
     // 消费者调研字段 - 检查是否有结构化内容
     if (handler === "consumer_research" || handler === "research") {
-      // 尝试解析内容
       try {
-        const researchData = JSON.parse(selectedBlock.content || "{}");
-        if (researchData.summary && researchData.personas) {
+        const parsed = JSON.parse(selectedBlock.content || "{}");
+        if (parsed && typeof parsed === "object" && (parsed.summary || parsed.consumer_profile || parsed.personas || parsed.pain_points)) {
+          // 补全缺失字段，确保 ResearchPanel 可以正常渲染
+          const normalized = {
+            summary: parsed.summary || "",
+            consumer_profile: parsed.consumer_profile || {},
+            pain_points: parsed.pain_points || parsed.main_pain_points || [],
+            value_propositions: parsed.value_propositions || parsed.value_proposition || [],
+            personas: parsed.personas || [],
+            sources: parsed.sources || [],
+          };
           return (
             <ResearchPanel
               projectId={projectId}
               fieldId={selectedBlock.id}
-              content={selectedBlock.content}
+              content={JSON.stringify(normalized, null, 2)}
               onUpdate={onFieldsChange}
               onAdvance={handleAdvancePhase}
+              isBlock={true}
             />
           );
         }
@@ -543,20 +642,25 @@ export function ContentPanel({
       }
     }
     
-    // 意图分析字段 - 由 Agent 处理，显示提示
+    // 意图分析字段 - 由 Agent 处理
     if (handler === "intent_analysis" || handler === "intent") {
-      return (
-        <div className="h-full flex flex-col items-center justify-center p-6 text-center">
-          <div className="text-6xl mb-4">💬</div>
-          <h2 className="text-xl font-bold text-zinc-200 mb-2">意图分析</h2>
-          <p className="text-zinc-400 max-w-md">
-            意图分析由 AI Agent 通过对话完成。请在右侧对话框中输入"开始"来启动意图分析流程。
-          </p>
-          <p className="text-zinc-500 text-sm mt-4">
-            Agent 会问你 3 个问题来了解你的项目意图。
-          </p>
-        </div>
-      );
+      const hasContent = selectedBlock.content && selectedBlock.content.trim() !== "";
+      if (!hasContent) {
+        // 没有内容时显示引导占位
+        return (
+          <div className="h-full flex flex-col items-center justify-center p-6 text-center">
+            <div className="text-6xl mb-4">💬</div>
+            <h2 className="text-xl font-bold text-zinc-200 mb-2">意图分析</h2>
+            <p className="text-zinc-400 max-w-md">
+              意图分析由 AI Agent 通过对话完成。请在右侧对话框中输入"开始"来启动意图分析流程。
+            </p>
+            <p className="text-zinc-500 text-sm mt-4">
+              Agent 会问你 3 个问题来了解你的项目意图。
+            </p>
+          </div>
+        );
+      }
+      // 有内容时：使用通用 ContentBlockEditor 展示（可查看和编辑）
     }
     
     // 尝试找到对应的传统 Field（虚拟树形视图使用真实的 field.id）
@@ -898,13 +1002,17 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatingContent, setGeneratingContent] = useState("");
   // 预提问相关状态
-  const [showPreQuestions, setShowPreQuestions] = useState(false);
   const [preAnswers, setPreAnswers] = useState<Record<string, string>>(
     field.pre_answers || {}
   );
   const [isSavingPreAnswers, setIsSavingPreAnswers] = useState(false);
   const [preAnswersSaved, setPreAnswersSaved] = useState(false);
   const hasPreQuestions = field.pre_questions && field.pre_questions.length > 0;
+  // ===== 关键修复：预提问默认展开（如果有未回答的问题）=====
+  const hasUnansweredQuestions = hasPreQuestions && field.pre_questions!.some(
+    q => !preAnswers[q] || !preAnswers[q].trim()
+  );
+  const [showPreQuestions, setShowPreQuestions] = useState(hasUnansweredQuestions);
   
   // 复制状态
   const [copied, setCopied] = useState(false);
@@ -1109,6 +1217,11 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
                   : field.status === "generating" ? "生成中..." 
                   : "待生成"}
               </span>
+              {hasPreQuestions && hasUnansweredQuestions && (
+                <span className="text-xs px-2 py-0.5 rounded bg-amber-600/20 text-amber-400">
+                  📝 有未回答的提问
+                </span>
+              )}
             </div>
           </div>
           

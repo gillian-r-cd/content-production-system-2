@@ -75,10 +75,10 @@ interface BlockNodeProps {
   onDeleteSuccess?: (historyItem: UndoHistoryItem) => void;
 }
 
-// 状态颜色
+// 状态颜色（in_progress 带闪烁动画，方便用户识别正在执行的块）
 const statusColors: Record<string, string> = {
   pending: "bg-zinc-600",
-  in_progress: "bg-amber-500",
+  in_progress: "bg-amber-500 animate-pulse",
   completed: "bg-emerald-500",
   failed: "bg-red-500",
 };

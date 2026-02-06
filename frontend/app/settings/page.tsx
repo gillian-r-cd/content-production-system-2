@@ -5,11 +5,11 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { settingsAPI } from "@/lib/api";
-import type { CreatorProfile } from "@/lib/api";
+import { settingsAPI, graderAPI } from "@/lib/api";
+import type { CreatorProfile, GraderData } from "@/lib/api";
 import { Download, Upload } from "lucide-react";
 
-type Tab = "prompts" | "profiles" | "templates" | "channels" | "simulators" | "agent" | "logs";
+type Tab = "prompts" | "profiles" | "templates" | "channels" | "simulators" | "graders" | "agent" | "logs";
 
 // ============== 导入导出按钮组件 ==============
 interface ImportExportButtonsProps {
@@ -123,6 +123,7 @@ export default function SettingsPage() {
   const [templates, setTemplates] = useState<any[]>([]);
   const [channels, setChannels] = useState<any[]>([]);
   const [simulators, setSimulators] = useState<any[]>([]);
+  const [graders, setGraders] = useState<GraderData[]>([]);
   const [logs, setLogs] = useState<any[]>([]);
   const [prompts, setPrompts] = useState<any[]>([]);
   const [agentSettings, setAgentSettings] = useState<any>(null);
@@ -151,6 +152,9 @@ export default function SettingsPage() {
         case "simulators":
           setSimulators(await settingsAPI.listSimulators());
           break;
+        case "graders":
+          setGraders(await graderAPI.list());
+          break;
         case "agent":
           setAgentSettings(await settingsAPI.getAgentSettings());
           break;
@@ -171,6 +175,7 @@ export default function SettingsPage() {
     { id: "templates", label: "字段模板", icon: "📋" },
     { id: "channels", label: "渠道管理", icon: "📢" },
     { id: "simulators", label: "模拟器", icon: "🎭" },
+    { id: "graders", label: "评分器", icon: "⚖️" },
     { id: "agent", label: "Agent设置", icon: "🤖" },
     { id: "logs", label: "调试日志", icon: "📊" },
   ];
@@ -216,6 +221,7 @@ export default function SettingsPage() {
               {activeTab === "templates" && <TemplatesSection templates={templates} onRefresh={loadData} />}
               {activeTab === "channels" && <ChannelsSection channels={channels} onRefresh={loadData} />}
               {activeTab === "simulators" && <SimulatorsSection simulators={simulators} onRefresh={loadData} />}
+              {activeTab === "graders" && <GradersSection graders={graders} onRefresh={loadData} />}
               {activeTab === "agent" && <AgentSettingsSection settings={agentSettings} onRefresh={loadData} />}
               {activeTab === "logs" && <LogsSection logs={logs} onRefresh={loadData} />}
             </>
@@ -1311,13 +1317,48 @@ function SimulatorsSection({ simulators, onRefresh }: { simulators: any[]; onRef
           />
         </FormField>
 
-        <FormField label="系统提示词模板（可选）" hint="留空将使用默认模板">
+        <FormField
+          label={editForm.interaction_type === "decision" ? "销售方系统提示词" : "主系统提示词（审阅者/消费者）"}
+          hint="支持占位符：{persona} = 消费者画像, {content} = 被评内容"
+        >
           <textarea
             value={editForm.prompt_template || ""}
             onChange={(e) => setEditForm({ ...editForm, prompt_template: e.target.value })}
-            placeholder="可使用 {persona} 和 {content} 占位符..."
-            rows={4}
-            className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 text-sm"
+            placeholder={editForm.interaction_type === "decision"
+              ? "你是这个内容的销售顾问...{content}...{persona}..."
+              : editForm.interaction_type === "dialogue" || editForm.interaction_type === "exploration"
+                ? "你正在扮演一位真实用户...{persona}..."
+                : "你是一位资深的内容审阅者...{content}..."}
+            rows={8}
+            className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 text-sm font-mono"
+          />
+        </FormField>
+
+        {/* 对话类模拟器需要第二方提示词 */}
+        {(editForm.interaction_type === "dialogue" || editForm.interaction_type === "decision" || editForm.interaction_type === "exploration") && (
+          <FormField
+            label={editForm.interaction_type === "decision" ? "消费者回应提示词" : "内容代表/第二方提示词"}
+            hint="对话模式中另一方的系统提示词，支持 {content} 和 {persona}"
+          >
+            <textarea
+              value={editForm.secondary_prompt || ""}
+              onChange={(e) => setEditForm({ ...editForm, secondary_prompt: e.target.value })}
+              placeholder={editForm.interaction_type === "decision"
+                ? "你是一位真实的潜在用户...{persona}..."
+                : "你是内容的代表，严格基于以下内容回答问题...{content}..."}
+              rows={6}
+              className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 text-sm font-mono"
+            />
+          </FormField>
+        )}
+
+        <FormField label="评分提示词模板" hint="评估/评分时使用的提示词，支持 {process} = 对话记录, {content} = 被评内容">
+          <textarea
+            value={editForm.grader_template || ""}
+            onChange={(e) => setEditForm({ ...editForm, grader_template: e.target.value })}
+            placeholder="你是一位评估专家...{process}...{content}..."
+            rows={6}
+            className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 text-sm font-mono"
           />
         </FormField>
 
@@ -1387,6 +1428,240 @@ function SimulatorsSection({ simulators, onRefresh }: { simulators: any[]; onRef
     </div>
   );
 }
+
+// ============== 评分器管理 ==============
+
+const GRADER_TYPE_LABELS: Record<string, { label: string; desc: string; color: string }> = {
+  content_only: { label: "仅评内容", desc: "直接评价内容质量，不传互动过程", color: "text-blue-400 bg-blue-500/15 border-blue-500/30" },
+  content_and_process: { label: "评内容+互动", desc: "同时评价内容和互动过程", color: "text-purple-400 bg-purple-500/15 border-purple-500/30" },
+};
+
+function GradersSection({ graders, onRefresh }: { graders: GraderData[]; onRefresh: () => void }) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [isCreating, setIsCreating] = useState(false);
+  const [editForm, setEditForm] = useState<Partial<GraderData>>({});
+
+  const startCreate = () => {
+    setEditForm({
+      name: "",
+      grader_type: "content_only",
+      prompt_template: `请评估以下内容：
+
+【评估内容】
+{{content}}
+
+【评估维度】
+1. 维度一 (1-10): 描述
+2. 维度二 (1-10): 描述
+
+请输出 JSON 格式：
+{"scores": {"维度一": N, "维度二": N}, "overall": N, "feedback": "..."}`,
+      dimensions: [],
+      scoring_criteria: {},
+    });
+    setIsCreating(true);
+    setEditingId(null);
+  };
+
+  const startEdit = (g: GraderData) => {
+    setEditForm({ ...g });
+    setEditingId(g.id);
+    setIsCreating(false);
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setIsCreating(false);
+    setEditForm({});
+  };
+
+  const handleSave = async () => {
+    try {
+      if (isCreating) {
+        await graderAPI.create(editForm);
+      } else if (editingId) {
+        await graderAPI.update(editingId, editForm);
+      }
+      cancelEdit();
+      onRefresh();
+    } catch (err: any) {
+      alert("保存失败: " + (err.message || "未知错误"));
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm("确认删除此评分器？")) return;
+    try {
+      await graderAPI.delete(id);
+      onRefresh();
+    } catch (err: any) {
+      alert("删除失败: " + (err.message || "预置评分器不可删除"));
+    }
+  };
+
+  const addDimension = () => {
+    const dims = [...(editForm.dimensions || []), ""];
+    setEditForm({ ...editForm, dimensions: dims });
+  };
+
+  const removeDimension = (idx: number) => {
+    const dims = [...(editForm.dimensions || [])];
+    dims.splice(idx, 1);
+    setEditForm({ ...editForm, dimensions: dims });
+  };
+
+  const updateDimension = (idx: number, value: string) => {
+    const dims = [...(editForm.dimensions || [])];
+    dims[idx] = value;
+    setEditForm({ ...editForm, dimensions: dims });
+  };
+
+  const renderForm = () => (
+    <div className="p-5 bg-surface-2 border border-surface-3 rounded-xl space-y-4">
+      <FormField label="评分器名称">
+        <input
+          type="text"
+          value={editForm.name || ""}
+          onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+          className="w-full bg-surface-1 border border-surface-3 rounded-lg px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-brand-500"
+          placeholder="如：策略对齐评分器"
+        />
+      </FormField>
+
+      <FormField label="评分器类型" hint="content_only = 仅传内容给 LLM 评分；content_and_process = 传内容+互动过程">
+        <select
+          value={editForm.grader_type || "content_only"}
+          onChange={(e) => setEditForm({ ...editForm, grader_type: e.target.value })}
+          className="w-full bg-surface-1 border border-surface-3 rounded-lg px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-brand-500"
+        >
+          {Object.entries(GRADER_TYPE_LABELS).map(([k, v]) => (
+            <option key={k} value={k}>{v.label} — {v.desc}</option>
+          ))}
+        </select>
+      </FormField>
+
+      <FormField label="评分提示词模板" hint="支持占位符：{{content}} = 被评内容，{{process}} = 互动过程，{{field:字段名}} = 引用字段">
+        <textarea
+          value={editForm.prompt_template || ""}
+          onChange={(e) => setEditForm({ ...editForm, prompt_template: e.target.value })}
+          rows={12}
+          className="w-full bg-surface-1 border border-surface-3 rounded-lg px-3 py-2.5 text-sm text-zinc-200 font-mono focus:outline-none focus:ring-2 focus:ring-brand-500 resize-y"
+          placeholder="请评估以下内容：&#10;&#10;【评估内容】&#10;{{content}}&#10;..."
+        />
+      </FormField>
+
+      <FormField label="评分维度">
+        <div className="space-y-2">
+          {(editForm.dimensions || []).map((dim, idx) => (
+            <div key={idx} className="flex items-center gap-2">
+              <input
+                type="text"
+                value={dim}
+                onChange={(e) => updateDimension(idx, e.target.value)}
+                className="flex-1 bg-surface-1 border border-surface-3 rounded-lg px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                placeholder={`维度 ${idx + 1}`}
+              />
+              <button
+                onClick={() => removeDimension(idx)}
+                className="px-2 py-2 text-zinc-500 hover:text-red-400 transition-colors"
+              >✕</button>
+            </div>
+          ))}
+          <button
+            onClick={addDimension}
+            className="px-3 py-1.5 text-sm bg-surface-3 hover:bg-surface-4 rounded-lg text-zinc-400 hover:text-zinc-200 transition-colors"
+          >+ 添加维度</button>
+        </div>
+      </FormField>
+
+      <div className="flex gap-2 pt-2">
+        <button onClick={handleSave}
+          className="px-4 py-2 bg-brand-600 text-white rounded-lg text-sm hover:bg-brand-700 transition-colors">
+          {isCreating ? "创建" : "保存修改"}
+        </button>
+        <button onClick={cancelEdit}
+          className="px-4 py-2 bg-surface-3 text-zinc-300 rounded-lg text-sm hover:bg-surface-4 transition-colors">
+          取消
+        </button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-semibold text-zinc-100">评分器管理</h2>
+          <p className="text-sm text-zinc-500 mt-1">管理 Eval 评估使用的评分器，支持自定义提示词和评分维度</p>
+        </div>
+        <button onClick={startCreate}
+          className="px-4 py-2 bg-brand-600 text-white rounded-lg text-sm hover:bg-brand-700 transition-colors flex items-center gap-2">
+          + 新建评分器
+        </button>
+      </div>
+
+      {isCreating && renderForm()}
+
+      <div className="grid gap-4">
+        {graders.map((g) => (
+          <div key={g.id}>
+            {editingId === g.id ? renderForm() : (
+              <div className="p-5 bg-surface-2 border border-surface-3 rounded-xl">
+                <div className="flex items-start justify-between">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-3">
+                      <h3 className="text-base font-semibold text-zinc-100">{g.name}</h3>
+                      {g.is_preset && (
+                        <span className="text-xs px-2 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                          预置
+                        </span>
+                      )}
+                      <span className={`text-xs px-2 py-0.5 rounded border ${GRADER_TYPE_LABELS[g.grader_type]?.color || "text-zinc-400"}`}>
+                        {GRADER_TYPE_LABELS[g.grader_type]?.label || g.grader_type}
+                      </span>
+                    </div>
+                    {g.dimensions.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 mt-2">
+                        {g.dimensions.map((d, i) => (
+                          <span key={i} className="text-xs px-2 py-0.5 rounded bg-surface-3 text-zinc-400">
+                            {d}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {g.prompt_template && (
+                      <pre className="mt-3 text-xs text-zinc-500 bg-surface-1 border border-surface-3 rounded-lg p-3 max-h-24 overflow-auto whitespace-pre-wrap font-mono">
+                        {g.prompt_template.slice(0, 200)}{g.prompt_template.length > 200 ? "..." : ""}
+                      </pre>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 ml-4 flex-shrink-0">
+                    <button onClick={() => startEdit(g)}
+                      className="px-3 py-1.5 text-sm bg-surface-3 hover:bg-surface-4 rounded-lg text-zinc-400 hover:text-zinc-200 transition-colors">
+                      编辑
+                    </button>
+                    {!g.is_preset && (
+                      <button onClick={() => handleDelete(g.id)}
+                        className="px-3 py-1.5 text-sm bg-surface-3 hover:bg-red-500/20 rounded-lg text-zinc-400 hover:text-red-400 transition-colors">
+                        删除
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+        {graders.length === 0 && !isCreating && (
+          <div className="text-center py-12 text-zinc-500">
+            暂无评分器，点击「新建评分器」开始
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 
 // ============== Agent设置 ==============
 function AgentSettingsSection({ settings, onRefresh }: { settings: any; onRefresh: () => void }) {

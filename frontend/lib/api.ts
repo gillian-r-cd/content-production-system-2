@@ -19,6 +19,7 @@ export interface Project {
   agent_autonomy: Record<string, boolean>;
   golden_context: Record<string, string>;
   use_deep_research: boolean;
+  use_flexible_architecture?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -48,6 +49,8 @@ export interface Field {
   constraints?: FieldConstraints;   // 字段生产约束
   need_review: boolean;             // 是否需要人工确认（false = 自动生成）
   template_id: string | null;
+  version_warning?: string;         // 版本变更警告（更新时返回）
+  affected_fields?: string[];       // 受影响的字段名列表
   created_at: string;
   updated_at: string;
 }
@@ -107,6 +110,7 @@ export interface SimulationRecord {
     scores: Record<string, number>;
     comments: Record<string, string>;
     overall: string;
+    error?: string;
   };
   status: string;
   created_at: string;
@@ -184,6 +188,9 @@ export const projectAPI = {
       method: "POST",
       body: JSON.stringify({ version_note }),
     }),
+
+  duplicate: (id: string) =>
+    fetchAPI<Project>(`/api/projects/${id}/duplicate`, { method: "POST" }),
 };
 
 // ============== Field API ==============
@@ -423,6 +430,54 @@ export const settingsAPI = {
     const query = projectId ? `?project_id=${projectId}` : "";
     return fetchAPI<any>(`/api/settings/logs/export${query}`);
   },
+
+  // System Prompts Import/Export
+  exportSystemPrompts: (id?: string) => {
+    const query = id ? `?id=${id}` : "";
+    return fetchAPI<any>(`/api/settings/system-prompts/export${query}`);
+  },
+  importSystemPrompts: (data: any[]) =>
+    fetchAPI<any>("/api/settings/system-prompts/import", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  // Creator Profiles Import/Export
+  exportCreatorProfiles: (id?: string) => {
+    const query = id ? `?id=${id}` : "";
+    return fetchAPI<any>(`/api/settings/creator-profiles/export${query}`);
+  },
+  importCreatorProfiles: (data: any[]) =>
+    fetchAPI<any>("/api/settings/creator-profiles/import", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  // Field Templates Import/Export
+  exportFieldTemplates: (id?: string) => {
+    const query = id ? `?id=${id}` : "";
+    return fetchAPI<any>(`/api/settings/field-templates/export${query}`);
+  },
+  importFieldTemplates: (data: any[]) =>
+    fetchAPI<any>("/api/settings/field-templates/import", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  // Simulators Import/Export
+  exportSimulators: (id?: string) => {
+    const query = id ? `?id=${id}` : "";
+    return fetchAPI<any>(`/api/settings/simulators/export${query}`);
+  },
+  importSimulators: (data: any[]) =>
+    fetchAPI<any>("/api/settings/simulators/import", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  // Graders
+  listGraders: () =>
+    fetchAPI<any[]>("/api/graders"),
 };
 
 // ============== Simulation API ==============
@@ -469,19 +524,24 @@ export interface ContentBlock {
   parent_id: string | null;
   name: string;
   block_type: "phase" | "field" | "proposal" | "group";
-  depth: number;
+  depth?: number;
   order_index: number;
   content: string;
   status: "pending" | "in_progress" | "completed" | "failed";
-  ai_prompt: string;
-  constraints: FieldConstraints;
-  depends_on: string[];
-  special_handler: "intent" | "research" | "simulate" | "evaluate" | null;
-  need_review: boolean;
-  is_collapsed: boolean;
+  ai_prompt?: string;
+  constraints?: FieldConstraints;
+  depends_on?: string[];
+  special_handler: string | null;
+  pre_questions?: string[];
+  pre_answers?: Record<string, string>;
+  need_review?: boolean;
+  is_collapsed?: boolean;
   children: ContentBlock[];
   created_at: string | null;
   updated_at: string | null;
+  // 版本警告（当修改影响下游内容块时）
+  version_warning?: string | null;
+  affected_blocks?: string[] | null;
 }
 
 export interface BlockTree {
@@ -533,6 +593,8 @@ export const blockAPI = {
     constraints?: FieldConstraints;
     depends_on?: string[];
     special_handler?: string | null;
+    pre_questions?: string[];
+    pre_answers?: Record<string, string>;
     need_review?: boolean;
     order_index?: number;
   }) =>
@@ -549,6 +611,8 @@ export const blockAPI = {
     ai_prompt: string;
     constraints: FieldConstraints;
     depends_on: string[];
+    pre_questions: string[];
+    pre_answers: Record<string, string>;
     need_review: boolean;
     is_collapsed: boolean;
   }>) =>
@@ -608,7 +672,105 @@ export const blockAPI = {
       `/api/blocks/project/${projectId}/migrate`,
       { method: "POST" }
     ),
+
+  // 检查可自动触发的块（只返回 ID 列表，不做生成）
+  checkAutoTriggers: (projectId: string) =>
+    fetchAPI<{ eligible_ids: string[] }>(
+      `/api/blocks/project/${projectId}/check-auto-triggers`,
+      { method: "POST" }
+    ),
+
+  // 用户手动确认内容块 → 状态变为 completed
+  confirm: (blockId: string) =>
+    fetchAPI<ContentBlock>(`/api/blocks/${blockId}/confirm`, {
+      method: "POST",
+    }),
+
+  // 撤销操作
+  undo: (historyId: string) =>
+    fetchAPI<{ message: string }>(`/api/blocks/undo/${historyId}`, {
+      method: "POST",
+    }),
 };
+
+/**
+ * 前端驱动的自动触发链：
+ * 1. 调用 check-auto-triggers 获取可触发的块 ID
+ * 2. 对每个 eligible 块调用 generateStream 进行生成
+ * 3. 每个块完成后递归检查是否解锁了新的下游块
+ * 
+ * @param projectId 项目 ID
+ * @param onBlockUpdate 每次有块状态变化时的回调（刷新 UI）
+ * @param maxDepth 最大递归深度（防止无限循环），默认 10
+ */
+export async function runAutoTriggerChain(
+  projectId: string,
+  onBlockUpdate?: () => void,
+  maxDepth: number = 10,
+): Promise<string[]> {
+  if (maxDepth <= 0) return [];
+
+  const result = await blockAPI.checkAutoTriggers(projectId);
+  const eligibleIds = result.eligible_ids || [];
+  if (eligibleIds.length === 0) return [];
+
+  console.log(`[AUTO-CHAIN] Found ${eligibleIds.length} eligible blocks, generating...`);
+  const allTriggered: string[] = [];
+
+  for (const blockId of eligibleIds) {
+    try {
+      console.log(`[AUTO-CHAIN] Generating block ${blockId}...`);
+      const resp = await blockAPI.generateStream(blockId);
+      
+      if (!resp.ok) {
+        console.error(`[AUTO-CHAIN] Generate failed for ${blockId}: ${resp.status}`);
+        continue;
+      }
+
+      // 读取 SSE 流直到完成
+      const reader = resp.body?.getReader();
+      const decoder = new TextDecoder();
+      if (reader) {
+        let done = false;
+        while (!done) {
+          const { value, done: streamDone } = await reader.read();
+          done = streamDone;
+          if (value) {
+            const text = decoder.decode(value, { stream: true });
+            // 解析 SSE 事件中的 done 标记
+            const lines = text.split("\n");
+            for (const line of lines) {
+              if (line.startsWith("data: ")) {
+                try {
+                  const data = JSON.parse(line.substring(6));
+                  if (data.done) {
+                    console.log(`[AUTO-CHAIN] Block ${blockId} completed`);
+                    allTriggered.push(blockId);
+                  }
+                } catch {
+                  // 不是 JSON，是普通 chunk
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // 每个块完成后刷新 UI
+      onBlockUpdate?.();
+    } catch (err) {
+      console.error(`[AUTO-CHAIN] Error generating block ${blockId}:`, err);
+    }
+  }
+
+  // 递归：刚完成的块可能解锁了新的下游块
+  if (allTriggered.length > 0) {
+    const moreTriggered = await runAutoTriggerChain(projectId, onBlockUpdate, maxDepth - 1);
+    allTriggered.push(...moreTriggered);
+  }
+
+  return allTriggered;
+}
 
 // ============== Phase Template API (新架构) ==============
 
@@ -657,7 +819,7 @@ export const phaseTemplateAPI = {
     ),
 };
 
-// ============== Eval API ==============
+// ============== Eval V2 API ==============
 
 export interface EvalRun {
   id: string;
@@ -669,12 +831,41 @@ export interface EvalRun {
   role_scores: Record<string, number>;
   trial_count: number;
   content_block_id: string | null;
+  config: Record<string, any>;
   created_at: string;
+}
+
+export interface EvalTask {
+  id: string;
+  eval_run_id: string;
+  name: string;
+  simulator_type: string;
+  interaction_mode: string;
+  simulator_config: Record<string, any>;
+  persona_config: Record<string, any>;
+  target_block_ids: string[];
+  grader_config: Record<string, any>;
+  order_index: number;
+  status: string;
+  error: string;
+  created_at: string;
+}
+
+export interface LLMCall {
+  step: string;
+  input: { system_prompt: string; user_message: string };
+  output: string;
+  tokens_in: number;
+  tokens_out: number;
+  cost: number;
+  duration_ms: number;
+  timestamp: string;
 }
 
 export interface EvalTrial {
   id: string;
   eval_run_id: string;
+  eval_task_id: string | null;
   role: string;
   role_config: Record<string, any>;
   interaction_mode: string;
@@ -683,6 +874,7 @@ export interface EvalTrial {
   nodes: Array<{ role: string; content: string; turn?: number; phase?: string }>;
   result: Record<string, any>;
   grader_outputs: any[];
+  llm_calls: LLMCall[];
   overall_score: number | null;
   status: string;
   error: string;
@@ -692,17 +884,107 @@ export interface EvalTrial {
   created_at: string;
 }
 
+// Eval config types (from /api/eval/config)
+export interface SimulatorTypeInfo {
+  name: string;
+  icon: string;
+  description: string;
+  default_interaction: string;
+  default_dimensions: string[];
+  system_prompt: string;
+}
+
+export interface EvalConfig {
+  simulator_types: Record<string, SimulatorTypeInfo>;
+  interaction_modes: Record<string, { name: string; description: string }>;
+  grader_types: Record<string, { name: string; description: string }>;
+  roles: Record<string, any>;
+}
+
 export const evalAPI = {
-  getRoles: () => fetchAPI("/api/eval/roles"),
-  listRuns: (projectId) => fetchAPI("/api/eval/runs/" + projectId),
-  getRun: (runId) => fetchAPI("/api/eval/run/" + runId),
-  getTrials: (runId) => fetchAPI("/api/eval/run/" + runId + "/trials"),
-  getTrial: (trialId) => fetchAPI("/api/eval/trial/" + trialId),
-  runEval: (data) => fetchAPI("/api/eval/run", { method: "POST", body: JSON.stringify(data) }),
-  runSingleTrial: (data) => fetchAPI("/api/eval/trial", { method: "POST", body: JSON.stringify(data) }),
-  runDiagnosis: (runId) => fetchAPI("/api/eval/run/" + runId + "/diagnose", { method: "POST" }),
-  deleteRun: (runId) => fetchAPI("/api/eval/run/" + runId, { method: "DELETE" }),
+  // Config
+  getConfig: (): Promise<EvalConfig> => fetchAPI("/api/eval/config"),
+  getPersonas: (projectId: string) => fetchAPI("/api/eval/personas/" + projectId),
+
+  // EvalRun CRUD
+  listRuns: (projectId: string): Promise<EvalRun[]> => fetchAPI("/api/eval/runs/" + projectId),
+  createRun: (data: { project_id: string; name?: string }): Promise<EvalRun> =>
+    fetchAPI("/api/eval/runs", { method: "POST", body: JSON.stringify(data) }),
+  getRun: (runId: string): Promise<EvalRun> => fetchAPI("/api/eval/run/" + runId),
+  updateRun: (runId: string, data: any): Promise<EvalRun> =>
+    fetchAPI("/api/eval/run/" + runId, { method: "PUT", body: JSON.stringify(data) }),
+  deleteRun: (runId: string) =>
+    fetchAPI("/api/eval/run/" + runId, { method: "DELETE" }),
+
+  // EvalTask CRUD
+  listTasks: (runId: string): Promise<EvalTask[]> => fetchAPI("/api/eval/run/" + runId + "/tasks"),
+  createTask: (runId: string, data: Partial<EvalTask>): Promise<EvalTask> =>
+    fetchAPI("/api/eval/run/" + runId + "/tasks", { method: "POST", body: JSON.stringify(data) }),
+  updateTask: (taskId: string, data: Partial<EvalTask>): Promise<EvalTask> =>
+    fetchAPI("/api/eval/task/" + taskId, { method: "PUT", body: JSON.stringify(data) }),
+  deleteTask: (taskId: string) =>
+    fetchAPI("/api/eval/task/" + taskId, { method: "DELETE" }),
+  batchCreateTasks: (data: { project_id: string; eval_run_id: string; template: string; persona_ids?: string[] }) =>
+    fetchAPI("/api/eval/run/" + data.eval_run_id + "/batch-tasks", { method: "POST", body: JSON.stringify(data) }),
+
+  // Execute
+  executeRun: (runId: string) =>
+    fetchAPI("/api/eval/run/" + runId + "/execute", { method: "POST" }),
+  executeTask: (taskId: string): Promise<EvalTrial> =>
+    fetchAPI("/api/eval/task/" + taskId + "/execute", { method: "POST" }),
+
+  // Trials
+  getTrials: (runId: string): Promise<EvalTrial[]> => fetchAPI("/api/eval/run/" + runId + "/trials"),
+  getTrial: (trialId: string): Promise<EvalTrial> => fetchAPI("/api/eval/trial/" + trialId),
+
+  // Diagnosis
+  runDiagnosis: (runId: string) =>
+    fetchAPI("/api/eval/run/" + runId + "/diagnose", { method: "POST" }),
+
+  // Legacy: full regression in one call
+  runEval: (data: any): Promise<EvalRun> =>
+    fetchAPI("/api/eval/run", { method: "POST", body: JSON.stringify(data) }),
+
+  // Run a single trial
+  runSingleTrial: (data: any): Promise<any> =>
+    fetchAPI("/api/eval/trial/run", { method: "POST", body: JSON.stringify(data) }),
+
+  // Generate for ContentBlock
+  generateForBlock: (blockId: string) =>
+    fetchAPI("/api/eval/generate-for-block/" + blockId, { method: "POST" }),
 };
+
+
+// ============== Grader (评分器) ==============
+
+export interface GraderData {
+  id: string;
+  name: string;
+  grader_type: string;      // "content_only" | "content_and_process"
+  prompt_template: string;
+  dimensions: string[];
+  scoring_criteria: Record<string, string>;
+  is_preset: boolean;
+  project_id: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export const graderAPI = {
+  list: (): Promise<GraderData[]> => fetchAPI("/api/graders"),
+  listForProject: (projectId: string): Promise<GraderData[]> =>
+    fetchAPI(`/api/graders/project/${projectId}`),
+  get: (graderId: string): Promise<GraderData> =>
+    fetchAPI(`/api/graders/${graderId}`),
+  create: (data: Partial<GraderData>): Promise<GraderData> =>
+    fetchAPI("/api/graders", { method: "POST", body: JSON.stringify(data) }),
+  update: (graderId: string, data: Partial<GraderData>): Promise<GraderData> =>
+    fetchAPI(`/api/graders/${graderId}`, { method: "PUT", body: JSON.stringify(data) }),
+  delete: (graderId: string) =>
+    fetchAPI(`/api/graders/${graderId}`, { method: "DELETE" }),
+  getTypes: () => fetchAPI("/api/graders/types"),
+};
+
 
 // ============== Utilities ==============
 

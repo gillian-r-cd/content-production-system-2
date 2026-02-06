@@ -8,6 +8,15 @@ Content Production System - Backend Entry Point
 启动命令: python main.py
 """
 
+import sys
+import os
+
+# ===== 关键：Windows 下强制 UTF-8 输出，防止中文 print 导致后台任务崩溃 =====
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -47,6 +56,7 @@ def create_app() -> FastAPI:
     from api import projects, fields, agent, settings as settings_api, simulation, evaluation
     from api import blocks, phase_templates
     from api import eval as eval_api
+    from api import graders as graders_api
     
     app.include_router(projects.router, prefix="/api/projects", tags=["projects"])
     app.include_router(fields.router, prefix="/api/fields", tags=["fields"])
@@ -61,6 +71,9 @@ def create_app() -> FastAPI:
     
     # 新 Eval 体系
     app.include_router(eval_api.router)  # 路由前缀已在 eval.py 中定义
+    
+    # Grader 评分器管理
+    app.include_router(graders_api.router)
 
     return app
 

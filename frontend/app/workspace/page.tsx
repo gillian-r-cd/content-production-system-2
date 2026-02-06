@@ -127,12 +127,21 @@ export default function WorkspacePage() {
     }
   };
 
+  // 版本警告状态
+  const [fieldVersionWarning, setFieldVersionWarning] = useState<string | null>(null);
+  const [fieldAffectedNames, setFieldAffectedNames] = useState<string[] | null>(null);
+
   const handleFieldUpdate = async (fieldId: string, content: string) => {
     try {
-      await fieldAPI.update(fieldId, { content });
+      const result = await fieldAPI.update(fieldId, { content });
       // 重新加载字段
       if (currentProject) {
         loadFields(currentProject.id);
+      }
+      // 检查版本警告
+      if (result?.version_warning) {
+        setFieldVersionWarning(result.version_warning);
+        setFieldAffectedNames(result.affected_fields || null);
       }
     } catch (err) {
       console.error("更新字段失败:", err);
@@ -504,8 +513,35 @@ export default function WorkspacePage() {
                   const updatedProject = await projectAPI.get(currentProject.id);
                   setCurrentProject(updatedProject);
                   await loadFields(currentProject.id);
+                  // ===== 关键修复：切换 selectedBlock 到新阶段的虚拟块 =====
+                  // 防止停留在旧阶段的选中状态导致视觉上"跳过"新阶段
+                  const newPhase = updatedProject.current_phase;
+                  setSelectedBlock({
+                    id: `virtual_phase_${newPhase}`,
+                    project_id: currentProject.id,
+                    parent_id: null,
+                    name: newPhase,
+                    block_type: "phase",
+                    depth: 0,
+                    content: "",
+                    status: "in_progress",
+                    ai_prompt: "",
+                    constraints: {},
+                    depends_on: [],
+                    special_handler: newPhase,
+                    pre_questions: [],
+                    pre_answers: {},
+                    need_review: false,
+                    is_collapsed: false,
+                    order_index: 0,
+                    children: [],
+                    created_at: null,
+                    updated_at: null,
+                  } as ContentBlock);
                   // 触发右侧面板刷新（通过重新渲染 AgentPanel）
                   setRefreshKey(prev => prev + 1);
+                  // 同时刷新 ContentBlocks 树
+                  setBlocksRefreshKey(prev => prev + 1);
                 }
               }}
             />
@@ -553,6 +589,46 @@ export default function WorkspacePage() {
         onClose={() => setShowCreateModal(false)}
         onCreated={handleProjectCreated}
       />
+
+      {/* 版本警告弹窗（字段更新触发） */}
+      {fieldVersionWarning && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-surface-1 border border-surface-3 rounded-xl shadow-2xl max-w-md w-full mx-4">
+            <div className="px-5 py-4 border-b border-surface-3">
+              <h3 className="text-base font-semibold text-amber-400 flex items-center gap-2">
+                ⚠️ 上游内容变更提醒
+              </h3>
+            </div>
+            <div className="p-5 space-y-3">
+              <p className="text-sm text-zinc-300">{fieldVersionWarning}</p>
+              {fieldAffectedNames && fieldAffectedNames.length > 0 && (
+                <div className="bg-surface-2 rounded-lg p-3">
+                  <p className="text-xs text-zinc-400 mb-2">受影响的字段：</p>
+                  <ul className="space-y-1">
+                    {fieldAffectedNames.map((name, i) => (
+                      <li key={i} className="text-sm text-amber-300 flex items-center gap-1.5">
+                        <span className="text-amber-400">•</span> {name}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <p className="text-xs text-zinc-500">
+                建议：您可以选择创建新版本来保留修改前的内容，
+                或关闭此提示并手动重新生成受影响的字段。
+              </p>
+            </div>
+            <div className="px-5 py-4 border-t border-surface-3 flex justify-end gap-3">
+              <button
+                onClick={() => { setFieldVersionWarning(null); setFieldAffectedNames(null); }}
+                className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-200 bg-surface-2 hover:bg-surface-3 rounded-lg transition-colors"
+              >
+                知道了，稍后处理
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -9,7 +9,7 @@
 支持无限层级、拖拽排序、依赖引用
 """
 
-import asyncio
+import logging
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -17,6 +17,8 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db
 from datetime import datetime
+
+logger = logging.getLogger("blocks")
 from core.models import (
     ContentBlock,
     BlockHistory,
@@ -121,6 +123,9 @@ class BlockResponse(BaseModel):
     children: List["BlockResponse"] = Field(default_factory=list)
     created_at: Optional[str]
     updated_at: Optional[str]
+    # 版本提示信息
+    version_warning: Optional[str] = None
+    affected_blocks: Optional[List[str]] = None
 
     class Config:
         from_attributes = True
@@ -135,7 +140,12 @@ class BlockTreeResponse(BaseModel):
 
 # ========== 辅助函数 ==========
 
-def _block_to_response(block: ContentBlock, include_children: bool = False) -> BlockResponse:
+def _block_to_response(
+    block: ContentBlock,
+    version_warning: Optional[str] = None,
+    affected_blocks: Optional[List[str]] = None,
+    include_children: bool = False,
+) -> BlockResponse:
     """转换 ContentBlock 为响应模型（排除已删除的子块）"""
     children = []
     if include_children and block.children:
@@ -164,6 +174,8 @@ def _block_to_response(block: ContentBlock, include_children: bool = False) -> B
         children=children,
         created_at=block.created_at.isoformat() if block.created_at else None,
         updated_at=block.updated_at.isoformat() if block.updated_at else None,
+        version_warning=version_warning,
+        affected_blocks=affected_blocks,
     )
 
 
@@ -297,6 +309,61 @@ def get_project_blocks(
     )
 
 
+@router.post("/project/{project_id}/check-auto-triggers")
+def check_auto_triggers(
+    project_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    纯扫描：找出所有满足自动触发条件的块，返回它们的 ID。
+    不做任何生成！生成由前端逐个调用 generateStream 完成。
+    
+    自动触发条件：
+    1. need_review = False
+    2. status 是 pending/failed（或 in_progress 但无内容）
+    3. 没有已有内容
+    4. 有依赖且所有依赖都有内容
+    5. pre_questions 都已回答
+    """
+    all_blocks = db.query(ContentBlock).filter(
+        ContentBlock.project_id == project_id,
+        ContentBlock.deleted_at == None,
+    ).all()
+    blocks_by_id = {b.id: b for b in all_blocks}
+    
+    eligible_ids = []
+    for block in all_blocks:
+        if block.need_review:
+            continue
+        if block.status not in ("pending", "failed"):
+            if block.status == "in_progress" and (not block.content or not block.content.strip()):
+                pass  # 卡住的块也视为可触发
+            else:
+                continue
+        if block.content and block.content.strip():
+            continue
+        deps = block.depends_on or []
+        if not deps:
+            continue
+        all_deps_ready = True
+        for dep_id in deps:
+            dep = blocks_by_id.get(dep_id)
+            if not dep or not dep.content or not dep.content.strip():
+                all_deps_ready = False
+                break
+        if not all_deps_ready:
+            continue
+        if block.pre_questions and len(block.pre_questions) > 0:
+            answers = block.pre_answers or {}
+            if any(not answers.get(q, "").strip() for q in block.pre_questions):
+                continue
+        eligible_ids.append(block.id)
+    
+    return {
+        "eligible_ids": eligible_ids,
+    }
+
+
 @router.get("/{block_id}", response_model=BlockResponse)
 def get_block(
     block_id: str,
@@ -381,6 +448,12 @@ def update_block(
     if not block:
         raise HTTPException(status_code=404, detail="内容块不存在")
     
+    # 记录内容是否发生变化（用于版本警告）
+    content_changed = (
+        data.content is not None
+        and data.content != (block.content or "")
+    )
+    
     # 更新字段
     from sqlalchemy.orm.attributes import flag_modified
     
@@ -388,12 +461,13 @@ def update_block(
         block.name = data.name
     if data.content is not None:
         block.content = data.content
-        # ===== 关键修复：保存内容时自动更新状态 =====
-        # 只要有内容（无论是用户粘贴还是生成的），状态变为 completed
-        # 如果内容被清空，状态恢复为 pending
+        # ===== 保存内容时的状态逻辑 =====
+        # 如果没有显式传 status，根据 need_review 判断：
+        # - need_review=True: 有内容 → in_progress（等用户确认），无内容 → pending
+        # - need_review=False: 有内容 → completed，无内容 → pending
         if data.status is None:  # 没有显式传 status 时才自动设置
             if block.content and block.content.strip():
-                block.status = "completed"
+                block.status = "completed" if not block.need_review else "in_progress"
             else:
                 block.status = "pending"
     if data.status is not None:
@@ -425,6 +499,63 @@ def update_block(
     # ===== 关键修复：更新父级（阶段/组）的状态 =====
     # 当字段状态变化时，检查父级的所有子级是否全部完成
     if block.parent_id and block.block_type == "field":
+        _update_parent_status(block.parent_id, db)
+    
+    # ===== 版本警告：检查是否有下游已完成内容依赖于此块 =====
+    version_warning = None
+    affected_blocks = None
+    
+    if content_changed and block.block_type == "field":
+        # 找到同项目所有未删除的 field 块
+        all_blocks = db.query(ContentBlock).filter(
+            ContentBlock.project_id == block.project_id,
+            ContentBlock.id != block.id,
+            ContentBlock.deleted_at == None,
+            ContentBlock.block_type == "field",
+            ContentBlock.status.in_(["completed", "in_progress"]),
+        ).all()
+        
+        affected = []
+        for other in all_blocks:
+            deps = other.depends_on or []
+            if block.id in deps and other.content and other.content.strip():
+                affected.append(other.name)
+        
+        if affected:
+            version_warning = (
+                f"您修改了「{block.name}」的内容，以下内容块依赖于它且已有内容，"
+                f"可能需要重新生成或创建新版本：{', '.join(affected)}"
+            )
+            affected_blocks = affected
+    
+    return _block_to_response(block, version_warning, affected_blocks)
+
+
+@router.post("/{block_id}/confirm", response_model=BlockResponse)
+def confirm_block(
+    block_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    用户手动确认内容块 → 状态变为 completed
+    只有用户点确认按钮才走这里，AI 生成后不会自动调用
+    """
+    block = db.query(ContentBlock).filter(
+        ContentBlock.id == block_id,
+        ContentBlock.deleted_at == None,
+    ).first()
+    if not block:
+        raise HTTPException(status_code=404, detail="内容块不存在")
+    
+    if not block.content or not block.content.strip():
+        raise HTTPException(status_code=400, detail="内容为空，无法确认")
+    
+    block.status = "completed"
+    db.commit()
+    db.refresh(block)
+    
+    # 更新父级状态
+    if block.parent_id:
         _update_parent_status(block.parent_id, db)
     
     return _block_to_response(block)
@@ -736,7 +867,9 @@ async def generate_block_content(
         response = await ai_client.async_chat(messages=messages, max_tokens=16384)
         
         block.content = response.content
-        block.status = "completed"  # 生成成功即为完成，need_review 是独立的审核标记
+        # 关键逻辑：need_review=True 时，生成完成后状态为 in_progress（等待用户确认）
+        # need_review=False 时，才自动设为 completed
+        block.status = "completed" if not block.need_review else "in_progress"
         
         # 创建 GenerationLog 记录
         from core.models import GenerationLog, generate_uuid
@@ -762,17 +895,7 @@ async def generate_block_content(
         if block.parent_id:
             _update_parent_status(block.parent_id, db)
         
-        # 自动触发依赖此块的其他块（使用独立 DB session 避免冲突）
-        from core.database import get_session_maker
-        SessionLocal = get_session_maker()
-        trigger_db = SessionLocal()
-        try:
-            auto_triggered = await _trigger_dependent_blocks(block.id, block.project_id, trigger_db)
-        except Exception as trigger_error:
-            print(f"[AUTO-TRIGGER] 触发依赖块失败: {trigger_error}")
-            auto_triggered = []
-        finally:
-            trigger_db.close()
+        # 注意：不在后端触发下游块，由前端调用 check-auto-triggers 自行处理
         
         return {
             "block_id": block.id,
@@ -781,222 +904,12 @@ async def generate_block_content(
             "tokens_in": response.tokens_in,
             "tokens_out": response.tokens_out,
             "cost": response.cost,
-            "auto_triggered": auto_triggered,  # 返回被自动触发的块列表
         }
         
     except Exception as e:
         block.status = "failed"
         db.commit()
         raise HTTPException(status_code=500, detail=str(e))
-
-
-async def _trigger_dependent_blocks(completed_block_id: str, project_id: str, db: Session) -> List[str]:
-    """
-    自动触发依赖已完成块的其他块（并行执行）
-    
-    条件：
-    1. 依赖了刚完成的块
-    2. need_review = False（自动执行模式）
-    3. 所有依赖都有内容（满足生成条件）
-    4. 当前状态是 pending / failed / in_progress（无内容，即卡住的块）
-    5. 如果有 pre_questions，必须已填写 pre_answers
-    
-    Returns:
-        被触发的块 ID 列表
-    """
-    import asyncio
-    from core.ai_client import AIClient, ChatMessage
-    from core.prompt_engine import PromptEngine, GoldenContext
-    from core.models import GenerationLog, generate_uuid, Project
-    
-    print(f"\n[AUTO-TRIGGER] ========== 检查自动触发 ==========")
-    print(f"[AUTO-TRIGGER] 触发源块 ID: {completed_block_id}")
-    print(f"[AUTO-TRIGGER] 项目 ID: {project_id}")
-    
-    triggered_ids = []
-    
-    # 查找所有可能被触发的块（自动模式 + 可重新生成的状态）
-    dependent_blocks = db.query(ContentBlock).filter(
-        ContentBlock.project_id == project_id,
-        ContentBlock.deleted_at == None,
-        ContentBlock.need_review == False,  # 只有自动执行的才触发
-        ContentBlock.status.in_(["pending", "failed"]),  # pending 或 failed 可重试
-    ).all()
-    
-    # 也包含 in_progress 但没有内容的块（卡住的块）
-    stuck_blocks = db.query(ContentBlock).filter(
-        ContentBlock.project_id == project_id,
-        ContentBlock.deleted_at == None,
-        ContentBlock.need_review == False,
-        ContentBlock.status == "in_progress",
-        (ContentBlock.content == None) | (ContentBlock.content == ""),
-    ).all()
-    dependent_blocks.extend(stuck_blocks)
-    
-    print(f"[AUTO-TRIGGER] 找到 {len(dependent_blocks)} 个自动模式块 (pending/failed/stuck)")
-    
-    # 也检查 need_review=True 但有未回答提问的块（信息补充完即可触发）——不自动触发这些
-    # need_review=True 的块需要用户手动确认后再生成
-    
-    # 筛选出确实依赖了 completed_block_id 的块
-    blocks_to_trigger = []
-    for dep_block in dependent_blocks:
-        if completed_block_id in (dep_block.depends_on or []):
-            blocks_to_trigger.append(dep_block)
-        else:
-            print(f"[AUTO-TRIGGER]   - {dep_block.name}: 不依赖触发源块，跳过")
-    
-    if not blocks_to_trigger:
-        print(f"[AUTO-TRIGGER] 没有找到依赖触发源块的自动块，退出")
-        return []
-    
-    print(f"[AUTO-TRIGGER] 找到 {len(blocks_to_trigger)} 个依赖触发源块的块: {[b.name for b in blocks_to_trigger]}")
-    
-    # 检查每个块的所有依赖是否都满足
-    all_blocks = db.query(ContentBlock).filter(
-        ContentBlock.project_id == project_id,
-        ContentBlock.deleted_at == None,
-    ).all()
-    blocks_by_id = {b.id: b for b in all_blocks}
-    
-    project = db.query(Project).filter(Project.id == project_id).first()
-    
-    # 筛选出满足所有条件的块
-    ready_blocks = []
-    for block in blocks_to_trigger:
-        # 检查所有依赖是否都有内容
-        all_deps_ready = True
-        for dep_id in (block.depends_on or []):
-            dep = blocks_by_id.get(dep_id)
-            if not dep or not dep.content or not dep.content.strip():
-                all_deps_ready = False
-                print(f"[AUTO-TRIGGER]   - {block.name}: 依赖 '{dep.name if dep else dep_id}' 无内容，跳过")
-                break
-        
-        if not all_deps_ready:
-            continue
-        
-        # 检查 pre_questions：如果有提问但没有回答，不自动触发
-        if block.pre_questions and len(block.pre_questions) > 0:
-            answers = block.pre_answers or {}
-            unanswered = [q for q in block.pre_questions if not answers.get(q, "").strip()]
-            if unanswered:
-                print(f"[AUTO-TRIGGER]   - {block.name}: 有 {len(unanswered)} 个生成前提问未回答，跳过")
-                continue
-        
-        print(f"[AUTO-TRIGGER]   ✓ {block.name}: 所有条件满足，准备生成")
-        ready_blocks.append(block)
-    
-    if not ready_blocks:
-        print(f"[AUTO-TRIGGER] 没有满足所有条件的块，退出")
-        return []
-    
-    print(f"[AUTO-TRIGGER] 🚀 开始顺序生成 {len(ready_blocks)} 个块: {[b.name for b in ready_blocks]}")
-    
-    # 顺序执行每个块的生成（SQLite 不支持并行写入同一 session）
-    for block in ready_blocks:
-        block.status = "in_progress"
-        db.commit()
-        
-        try:
-            # 获取创作者特质
-            creator_profile_text = ""
-            if project and project.creator_profile:
-                creator_profile_text = project.creator_profile.to_prompt_context()
-            
-            gc = GoldenContext(creator_profile=creator_profile_text)
-            
-            # 获取依赖内容（每次重新加载，因为前面的块可能刚生成了新内容）
-            db.refresh(block)
-            # 重新构建 blocks_by_id（可能有更新）
-            fresh_blocks = db.query(ContentBlock).filter(
-                ContentBlock.project_id == project_id,
-                ContentBlock.deleted_at == None,
-            ).all()
-            fresh_blocks_by_id = {b.id: b for b in fresh_blocks}
-            
-            dependency_content = block.get_dependency_content(fresh_blocks_by_id)
-            
-            # 构建约束文本
-            constraints_text = _build_constraints_text(block.constraints)
-            
-            # 构建预提问答案文本
-            pre_answers_text = ""
-            if block.pre_answers:
-                answers = [f"- {q}: {a}" for q, a in block.pre_answers.items() if a]
-                if answers:
-                    pre_answers_text = f"---\n# 用户补充信息（生成前提问的回答）\n" + "\n".join(answers)
-            
-            system_prompt = f"""{gc.to_prompt()}
-
----
-
-# 当前任务
-{block.ai_prompt or '请生成内容。'}
-
-{pre_answers_text}
-
-{f'---{chr(10)}# 参考内容{chr(10)}{dependency_content}' if dependency_content else ''}
-
----
-# 生成约束（必须严格遵守！）
-{constraints_text}
-"""
-            
-            print(f"[AUTO-TRIGGER] 📝 {block.name} - 系统提示词长度: {len(system_prompt)} 字符")
-            
-            ai_client = AIClient()
-            
-            messages = [
-                ChatMessage(role="system", content=system_prompt),
-                ChatMessage(role="user", content=f"请生成「{block.name}」的内容。"),
-            ]
-            response = await ai_client.async_chat(messages=messages)
-            
-            block.content = response.content
-            block.status = "completed"
-            
-            gen_log = GenerationLog(
-                id=generate_uuid(),
-                project_id=block.project_id,
-                field_id=block.id,
-                phase=block.parent_id or "auto_trigger",
-                operation=f"auto_generate_{block.name}",
-                model=response.model,
-                tokens_in=response.tokens_in,
-                tokens_out=response.tokens_out,
-                duration_ms=response.duration_ms,
-                prompt_input=system_prompt,
-                prompt_output=response.content,
-                cost=response.cost,
-                status="success",
-            )
-            db.add(gen_log)
-            db.commit()
-            
-            print(f"[AUTO-TRIGGER] ✅ 自动生成 {block.name} 成功 (tokens: {response.tokens_in}+{response.tokens_out})")
-            triggered_ids.append(block.id)
-            
-        except Exception as e:
-            print(f"[AUTO-TRIGGER] ❌ 自动生成 {block.name} 失败: {e}")
-            import traceback
-            traceback.print_exc()
-            block.status = "pending"  # 重置为 pending 以便下次重试
-            db.commit()
-    
-    print(f"[AUTO-TRIGGER] 完成: {len(triggered_ids)}/{len(ready_blocks)} 成功")
-    
-    # 对所有成功完成的块，递归触发它们的下游依赖
-    for completed_id in list(triggered_ids):  # 用 list() 复制，因为递归会修改 triggered_ids
-        print(f"[AUTO-TRIGGER] 递归检查 {completed_id} 的下游依赖...")
-        try:
-            sub_triggered = await _trigger_dependent_blocks(completed_id, project_id, db)
-            triggered_ids.extend(sub_triggered)
-        except Exception as sub_error:
-            print(f"[AUTO-TRIGGER] 递归触发异常: {sub_error}")
-    
-    print(f"[AUTO-TRIGGER] ========== 触发完毕，共 {len(triggered_ids)} 个块 ==========\n")
-    return triggered_ids
 
 
 @router.post("/{block_id}/generate/stream")
@@ -1098,7 +1011,8 @@ async def generate_block_content_stream(
             # 保存完整内容
             full_content = "".join(content_parts)
             block.content = full_content
-            block.status = "completed"
+            # 关键逻辑：need_review=True 时等待用户确认，否则自动完成
+            block.status = "completed" if not block.need_review else "in_progress"
             
             # 计算耗时和tokens（估算）
             duration_ms = int((time.time() - start_time) * 1000)
@@ -1129,27 +1043,7 @@ async def generate_block_content_stream(
             if block.parent_id:
                 _update_parent_status(block.parent_id, db)
             
-            # 启动后台自动触发任务
-            completed_block_id = block.id
-            completed_project_id = block.project_id
-            
-            async def _background_auto_trigger():
-                from core.database import get_session_maker
-                SessionLocal = get_session_maker()
-                bg_db = SessionLocal()
-                try:
-                    print(f"[STREAM] 流式生成完成，后台检查自动触发...")
-                    auto_triggered = await _trigger_dependent_blocks(
-                        completed_block_id, completed_project_id, bg_db
-                    )
-                    if auto_triggered:
-                        print(f"[STREAM] ✅ 后台自动触发了 {len(auto_triggered)} 个块: {auto_triggered}")
-                except Exception as trigger_error:
-                    print(f"[AUTO-TRIGGER] 后台触发依赖块失败: {trigger_error}")
-                finally:
-                    bg_db.close()
-            
-            asyncio.create_task(_background_auto_trigger())
+            # 注意：不在后端触发下游块生成，由前端调用 check-auto-triggers 后自行触发
             
             # 发送完成事件
             done_data = json.dumps({
@@ -1206,11 +1100,11 @@ async def generate_block_content_stream(
                             )
                             save_db.add(gen_log)
                             save_db.commit()
-                            print(f"[STREAM] ⚠️ 客户端断开，已保存 {len(partial_content)} 字符的部分内容")
+                            print(f"[STREAM] [WARN] 客户端断开，已保存 {len(partial_content)} 字符的部分内容")
                     finally:
                         save_db.close()
                 except Exception as save_err:
-                    print(f"[STREAM] ❌ 保存中断内容失败: {save_err}")
+                    print(f"[STREAM] [FAIL] 保存中断内容失败: {save_err}")
             raise  # 重新抛出 BaseException，让 ASGI 正常处理
     
     return StreamingResponse(

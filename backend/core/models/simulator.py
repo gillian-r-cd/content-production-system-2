@@ -1,24 +1,31 @@
 # backend/core/models/simulator.py
-# 功能: 模拟器模型，用于消费者模拟
+# 功能: 通用模拟器模型，定义交互方式和反馈方式
 # 主要类: Simulator
-# 数据结构: 存储模拟器配置、交互类型、评估维度
+# 数据结构:
+#   - simulator_type: 模拟器角色类型 (coach/editor/expert/consumer/seller/custom)
+#   - interaction_mode: 交互模式 (review/dialogue/scenario)
+#   - prompt_template: 系统提示词模板
+#   - grader_template: 评估时的评分提示词模板
+#   - evaluation_dimensions: 评估维度列表
+#   - is_preset: 是否为系统预设
 
 """
-模拟器模型
-定义不同类型的消费者模拟方式
+通用模拟器模型
+Simulator = 交互引擎，定义 HOW to interact + HOW to collect feedback
+角色类型(WHO) 由 simulator_type 决定，但可完全自定义
 """
 
-from sqlalchemy import String, Text, JSON
+from sqlalchemy import String, Text, JSON, Boolean, Integer
 from sqlalchemy.orm import Mapped, mapped_column
 
 from core.models.base import BaseModel
 
 
-# 预置交互类型
+# 保留旧的交互类型（向后兼容）
 INTERACTION_TYPES = {
     "dialogue": {
         "name": "对话式",
-        "description": "多轮对话模拟，适用于Chatbot、客服场景",
+        "description": "多轮对话模拟，适用于Chatbot、客服、咨询场景",
         "evaluation_dimensions": ["响应相关性", "问题解决率", "交互体验"],
     },
     "reading": {
@@ -36,34 +43,50 @@ INTERACTION_TYPES = {
         "description": "带目的的内容探索，适用于产品文档、帮助中心",
         "evaluation_dimensions": ["找到答案效率", "信息完整性", "满意度"],
     },
-    "experience": {
-        "name": "体验式",
-        "description": "任务完成模拟，适用于交互产品、工具",
-        "evaluation_dimensions": ["易用性", "效率", "愉悦度"],
-    },
 }
 
 
 class Simulator(BaseModel):
     """
-    模拟器
+    通用模拟器
+    
+    定义了「交互方式 + 反馈方式 + 评估方式」的通用引擎。
+    simulator_type 决定了角色视角（WHO），interaction_mode 决定了交互方式（HOW）。
     
     Attributes:
         name: 模拟器名称
         description: 描述
-        interaction_type: 交互类型（dialogue/reading/decision/exploration/experience）
+        simulator_type: 角色类型 (coach/editor/expert/consumer/seller/custom)
+        interaction_type: 旧版交互类型（向后兼容）
+        interaction_mode: 新版交互模式 (review/dialogue/scenario)
         prompt_template: 模拟器系统提示词模板
+        grader_template: 评估/评分提示词模板
         evaluation_dimensions: 评估维度列表
-        max_turns: 最大交互轮数（对话式）
+        feedback_mode: 反馈方式 (structured/freeform)
+        max_turns: 最大交互轮数（对话/场景模式）
+        is_preset: 是否为系统预设（预设不可删除）
     """
     __tablename__ = "simulators"
 
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="")
+    
+    # 角色类型（新增）
+    simulator_type: Mapped[str] = mapped_column(String(50), default="custom")
+    
+    # 旧版兼容
     interaction_type: Mapped[str] = mapped_column(String(50), default="reading")
+    
+    # 新版交互模式
+    interaction_mode: Mapped[str] = mapped_column(String(50), default="review")
+    
     prompt_template: Mapped[str] = mapped_column(Text, default="")
+    secondary_prompt: Mapped[str] = mapped_column(Text, default="")  # 对话模式：第二方提示词（如内容代表/消费者回应）
+    grader_template: Mapped[str] = mapped_column(Text, default="")
     evaluation_dimensions: Mapped[list] = mapped_column(JSON, default=list)
-    max_turns: Mapped[int] = mapped_column(default=10)
+    feedback_mode: Mapped[str] = mapped_column(String(50), default="structured")
+    max_turns: Mapped[int] = mapped_column(Integer, default=10)
+    is_preset: Mapped[bool] = mapped_column(Boolean, default=False)
 
     @classmethod
     def get_default_template(cls, interaction_type: str) -> str:
@@ -114,15 +137,5 @@ class Simulator(BaseModel):
 2. 找到答案花了多长时间
 3. 答案是否完整解决了你的问题""",
             
-            "experience": """你是一位用户，具有以下特征：
-{persona}
-
-你需要完成以下任务：{task}
-
-请使用提供的工具/产品完成任务，并记录：
-1. 完成任务的步骤
-2. 遇到的困难
-3. 整体体验评分（1-10分）""",
         }
         return templates.get(interaction_type, templates["reading"])
-

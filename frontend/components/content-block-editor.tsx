@@ -7,12 +7,14 @@
 import { useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { blockAPI, fieldAPI } from "@/lib/api";
+import { blockAPI, fieldAPI, runAutoTriggerChain } from "@/lib/api";
 import type { ContentBlock } from "@/lib/api";
+import { getEvalFieldEditor } from "./eval-field-editors";
 import { 
   FileText, 
   Folder, 
-  ChevronRight, 
+  ChevronRight,
+  ChevronDown, 
   Sparkles, 
   Save, 
   Edit2, 
@@ -66,6 +68,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
   // 生成前提问状态
   const [preAnswers, setPreAnswers] = useState<Record<string, string>>(block.pre_answers || {});
   const hasPreQuestions = (block.pre_questions?.length || 0) > 0;
+  const [preQuestionsExpanded, setPreQuestionsExpanded] = useState(false);
   
   // 可选的依赖（排除自己和自己的子节点）
   // 允许选择：1. 所有 field 类型  2. 有特殊处理器的 phase 类型（如消费者调研、意图分析）
@@ -109,12 +112,31 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
     setPreAnswers(block.pre_answers || {});
   }, [block]);
   
-  // ===== 关键修复：如果 block 状态是 in_progress 但当前组件没在流式生成，则轮询刷新 =====
+  // ===== 关键修复 1：挂载或切换 block 时，从 API 获取最新状态 =====
+  // 解决：用户导航到其他块再回来时，本地缓存的 block 数据可能是旧的
+  // （例如后台正在执行 eval，status 已经是 in_progress，但本地缓存还是 pending/completed）
+  useEffect(() => {
+    if (!block.id || block.id.startsWith("virtual_")) return;
+    let cancelled = false;
+    
+    blockAPI.get(block.id).then(freshBlock => {
+      if (cancelled) return;
+      // 如果后端状态和本地不一致（例如后端是 in_progress 但本地不是），触发刷新
+      if (freshBlock.status !== block.status || freshBlock.content !== block.content) {
+        console.log(`[BlockEditor] 检测到数据不同步: block=${block.name}, local_status=${block.status}, server_status=${freshBlock.status}`);
+        onUpdate?.(); // 触发整个 allBlocks 刷新
+      }
+    }).catch(() => {}); // 静默忽略（可能是虚拟块等）
+    
+    return () => { cancelled = true; };
+  }, [block.id]);
+  
+  // ===== 关键修复 2：如果 block 状态是 in_progress 但当前组件没在流式生成，则轮询刷新 =====
   useEffect(() => {
     if (block.status === "in_progress" && !isGenerating) {
       const pollInterval = setInterval(() => {
         onUpdate?.(); // 触发父组件刷新数据
-      }, 2000);
+      }, 3000);
       return () => clearInterval(pollInterval);
     }
   }, [block.status, isGenerating]);
@@ -135,6 +157,11 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
       setPreAnswersSaved(true);
       setTimeout(() => setPreAnswersSaved(false), 2000);
       onUpdate?.();
+      
+      // 前端驱动自动触发链
+      if (projectId) {
+        runAutoTriggerChain(projectId, () => onUpdate?.()).catch(console.error);
+      }
     } catch (err) {
       console.error("保存预提问答案失败:", err);
       alert("保存失败: " + (err instanceof Error ? err.message : "未知错误"));
@@ -162,16 +189,29 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
     setIsEditingName(false);
   };
 
+  // 版本警告状态
+  const [versionWarning, setVersionWarning] = useState<string | null>(null);
+  const [affectedBlocks, setAffectedBlocks] = useState<string[] | null>(null);
+
   // 保存内容
   const handleSaveContent = async () => {
     try {
+      let result: any;
       if (useFieldAPI) {
-        await fieldAPI.update(block.id, { content: editedContent });
+        result = await fieldAPI.update(block.id, { content: editedContent });
       } else {
-        await blockAPI.update(block.id, { content: editedContent });
+        result = await blockAPI.update(block.id, { content: editedContent });
       }
       setIsEditing(false);
       onUpdate?.();
+      
+      // 检查是否有版本警告
+      const warning = result?.version_warning;
+      const affected = result?.affected_blocks || result?.affected_fields;
+      if (warning) {
+        setVersionWarning(warning);
+        setAffectedBlocks(affected || null);
+      }
     } catch (err) {
       console.error("保存失败:", err);
       alert("保存失败: " + (err instanceof Error ? err.message : "未知错误"));
@@ -314,10 +354,11 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
                     setEditedContent(data.content || accumulatedContent);
                   }
                   onUpdate?.();
-                }
-                if (data.auto_triggered?.length > 0) {
-                  console.log(`[AUTO-TRIGGER] 自动触发了 ${data.auto_triggered.length} 个依赖块`);
-                  onUpdate?.(); // 刷新列表以显示自动触发的块的状态变化
+                  
+                  // 前端驱动自动触发链
+                  if (projectId) {
+                    runAutoTriggerChain(projectId, () => onUpdate?.()).catch(console.error);
+                  }
                 }
                 if (data.error) {
                   throw new Error(data.error);
@@ -438,8 +479,26 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
               </span>
             )}
             
+            {/* 用户确认按钮：need_review 且有内容但未确认 */}
+            {block.need_review && block.status === "in_progress" && block.content && !isGenerating && (
+              <button
+                onClick={async () => {
+                  try {
+                    await blockAPI.confirm(block.id);
+                    onUpdate?.();
+                  } catch (err) {
+                    console.error("确认失败:", err);
+                    alert("确认失败: " + (err instanceof Error ? err.message : "未知错误"));
+                  }
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition-colors"
+              >
+                ✅ 确认
+              </button>
+            )}
+            
             {/* 重新生成按钮 */}
-            {block.status === "completed" && !isGenerating && (
+            {(block.status === "completed" || (block.status === "in_progress" && block.content)) && !isGenerating && (
               <button
                 onClick={handleGenerate}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-amber-600/20 hover:bg-amber-600/30 text-amber-400 border border-amber-500/30 rounded-lg transition-colors"
@@ -527,51 +586,76 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
           </span>
         </div>
 
-        {/* 生成前提问区域 */}
+        {/* 生成前提问区域（可折叠） */}
         {hasPreQuestions && (
-          <div className="px-5 py-4 bg-amber-900/10 border-b border-amber-600/20">
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-amber-400 text-sm font-medium">📝 生成前请先回答以下问题</span>
+          <div className="border-b border-amber-600/20">
+            <button
+              onClick={() => setPreQuestionsExpanded(!preQuestionsExpanded)}
+              className="w-full px-5 py-2.5 flex items-center justify-between bg-amber-900/10 hover:bg-amber-900/20 transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                {preQuestionsExpanded ? (
+                  <ChevronDown className="w-4 h-4 text-amber-400" />
+                ) : (
+                  <ChevronRight className="w-4 h-4 text-amber-400" />
+                )}
+                <span className="text-amber-400 text-sm font-medium">📝 生成前提问</span>
+                <span className="text-xs text-zinc-500">
+                  ({Object.values(preAnswers).filter(v => v && v.trim()).length}/{block.pre_questions?.length || 0} 已回答)
+                </span>
+              </div>
               <div className="flex items-center gap-2">
                 {preAnswersSaved && (
                   <span className="text-xs text-green-400">✓ 已保存</span>
                 )}
-                <button
-                  onClick={handleSavePreAnswers}
-                  disabled={isSavingPreAnswers}
-                  className="px-3 py-1 text-xs bg-amber-600 hover:bg-amber-700 disabled:bg-amber-800 text-white rounded transition-colors"
-                >
-                  {isSavingPreAnswers ? "保存中..." : "保存回答"}
-                </button>
               </div>
-            </div>
-            <div className="space-y-3">
-              {block.pre_questions?.map((question, idx) => (
-                <div key={idx} className="space-y-1">
-                  <label className="text-sm text-zinc-300">{idx + 1}. {question}</label>
-                  <input
-                    type="text"
-                    value={preAnswers[question] || ""}
-                    onChange={(e) => {
-                      const newAnswers = { ...preAnswers, [question]: e.target.value };
-                      setPreAnswers(newAnswers);
-                      setPreAnswersSaved(false);
-                    }}
-                    placeholder="请输入回答..."
-                    className="w-full px-3 py-2 bg-surface-2 border border-amber-500/30 rounded-lg text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-                  />
+            </button>
+            {preQuestionsExpanded && (
+              <div className="px-5 py-4 bg-amber-900/10">
+                <div className="space-y-3">
+                  {block.pre_questions?.map((question, idx) => (
+                    <div key={idx} className="space-y-1">
+                      <label className="text-sm text-zinc-300">{idx + 1}. {question}</label>
+                      <input
+                        type="text"
+                        value={preAnswers[question] || ""}
+                        onChange={(e) => {
+                          const newAnswers = { ...preAnswers, [question]: e.target.value };
+                          setPreAnswers(newAnswers);
+                          setPreAnswersSaved(false);
+                        }}
+                        placeholder="请输入回答..."
+                        className="w-full px-3 py-2 bg-surface-2 border border-amber-500/30 rounded-lg text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                      />
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-            <p className="mt-2 text-xs text-amber-500/60">
-              💡 填写完毕后请点击「保存回答」按钮，答案会作为生成内容的上下文传递给 AI
-            </p>
+                <div className="flex items-center justify-between mt-3">
+                  <p className="text-xs text-amber-500/60">
+                    💡 答案会作为生成内容的上下文传递给 AI
+                  </p>
+                  <button
+                    onClick={handleSavePreAnswers}
+                    disabled={isSavingPreAnswers}
+                    className="px-3 py-1 text-xs bg-amber-600 hover:bg-amber-700 disabled:bg-amber-800 text-white rounded transition-colors"
+                  >
+                    {isSavingPreAnswers ? "保存中..." : "保存回答"}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
         {/* 内容区域 */}
         <div className="flex-1 p-5 overflow-y-auto">
-          {isEditing ? (
+          {/* Eval V2 专用字段编辑器 */}
+          {block.special_handler && getEvalFieldEditor(block.special_handler) ? (
+            (() => {
+              const EvalEditor = getEvalFieldEditor(block.special_handler!)!;
+              return <EvalEditor block={block} projectId={projectId} onUpdate={onUpdate} />;
+            })()
+          ) : isEditing ? (
             <div className="h-full flex flex-col gap-3">
               <textarea
                 value={editedContent}
@@ -914,6 +998,47 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
               >
                 保存依赖关系
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== 版本警告弹窗 ===== */}
+      {versionWarning && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-surface-1 border border-surface-3 rounded-xl shadow-2xl max-w-md w-full mx-4">
+            <div className="px-5 py-4 border-b border-surface-3">
+              <h3 className="text-base font-semibold text-amber-400 flex items-center gap-2">
+                ⚠️ 上游内容变更提醒
+              </h3>
+            </div>
+            <div className="p-5 space-y-3">
+              <p className="text-sm text-zinc-300">{versionWarning}</p>
+              {affectedBlocks && affectedBlocks.length > 0 && (
+                <div className="bg-surface-2 rounded-lg p-3">
+                  <p className="text-xs text-zinc-400 mb-2">受影响的内容：</p>
+                  <ul className="space-y-1">
+                    {affectedBlocks.map((name, i) => (
+                      <li key={i} className="text-sm text-amber-300 flex items-center gap-1.5">
+                        <span className="text-amber-400">•</span> {name}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <p className="text-xs text-zinc-500">
+                建议：您可以选择创建新版本来保留修改前的内容，
+                或关闭此提示并手动重新生成受影响的字段。
+              </p>
+            </div>
+            <div className="px-5 py-4 border-t border-surface-3 flex justify-end gap-3">
+              <button
+                onClick={() => { setVersionWarning(null); setAffectedBlocks(null); }}
+                className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-200 bg-surface-2 hover:bg-surface-3 rounded-lg transition-colors"
+              >
+                知道了，稍后处理
+              </button>
+              {/* Future: Can add a "Create New Version" button that calls the version API */}
             </div>
           </div>
         </div>

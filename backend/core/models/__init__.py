@@ -24,7 +24,9 @@ from core.models.content_block import ContentBlock, BLOCK_TYPES, SPECIAL_HANDLER
 from core.models.block_history import BlockHistory, HISTORY_ACTIONS
 from core.models.phase_template import PhaseTemplate, DEFAULT_PHASE_TEMPLATE
 from core.models.eval_run import EvalRun, EVAL_ROLES, EVAL_RUN_STATUS
+from core.models.eval_task import EvalTask, SIMULATOR_TYPES, INTERACTION_MODES, GRADER_TYPES, EVAL_TASK_STATUS
 from core.models.eval_trial import EvalTrial, EVAL_TRIAL_STATUS
+from core.models.grader import Grader, GRADER_TYPE_CHOICES, PRESET_GRADERS
 
 __all__ = [
     # 基础
@@ -65,8 +67,18 @@ __all__ = [
     "EvalRun",
     "EVAL_ROLES",
     "EVAL_RUN_STATUS",
+    "EvalTask",
+    "SIMULATOR_TYPES",
+    "INTERACTION_MODES",
+    "GRADER_TYPES",
+    "EVAL_TASK_STATUS",
     "EvalTrial",
     "EVAL_TRIAL_STATUS",
+    
+    # 评分器（Grader）
+    "Grader",
+    "GRADER_TYPE_CHOICES",
+    "PRESET_GRADERS",
     
     # 日志
     "GenerationLog",

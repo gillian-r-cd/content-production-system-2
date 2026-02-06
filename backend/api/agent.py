@@ -10,9 +10,10 @@ Agent 对话 API
 """
 
 import json
+import asyncio
 from typing import Optional, List, Dict
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -203,19 +204,55 @@ async def chat(
         creator_profile_str = project.creator_profile.to_prompt_context()
     
     # 运行Agent（传递历史对话、阶段状态、架构信息和引用内容）
-    result = await content_agent.run(
-        project_id=request.project_id,
-        user_input=request.message,
-        current_phase=current_phase,
-        creator_profile=creator_profile_str,  # 重构：传递创作者特质而非 golden_context
-        autonomy_settings=project.agent_autonomy or {},
-        use_deep_research=project.use_deep_research if hasattr(project, 'use_deep_research') else True,
-        chat_history=chat_history,
-        phase_status=project.phase_status or {},
-        phase_order=project.phase_order,  # 传递项目实际的阶段顺序
-        references=references,  # @ 引用的字段名
-        referenced_contents=referenced_contents,  # 引用字段的内容
-    )
+    # 添加超时保护，防止 CORS 错误（当请求挂起太久时客户端可能断开）
+    try:
+        result = await asyncio.wait_for(
+            content_agent.run(
+                project_id=request.project_id,
+                user_input=request.message,
+                current_phase=current_phase,
+                creator_profile=creator_profile_str,
+                autonomy_settings=project.agent_autonomy or {},
+                use_deep_research=project.use_deep_research if hasattr(project, 'use_deep_research') else True,
+                chat_history=chat_history,
+                phase_status=project.phase_status or {},
+                phase_order=project.phase_order,
+                references=references,
+                referenced_contents=referenced_contents,
+            ),
+            timeout=300  # 5分钟超时
+        )
+    except asyncio.TimeoutError:
+        print(f"[Agent] /chat 超时 (300s), project={request.project_id}")
+        # 保存超时错误消息到对话历史
+        error_msg = ChatMessage(
+            id=generate_uuid(),
+            project_id=request.project_id,
+            role="assistant",
+            content="⚠️ 处理超时，请稍后重试或使用流式对话。",
+            message_metadata={"phase": current_phase, "error": "timeout"},
+        )
+        db.add(error_msg)
+        db.commit()
+        return JSONResponse(
+            status_code=504,
+            content={"detail": "Agent 处理超时，请稍后重试", "message": "⚠️ 处理超时，请使用流式对话。"},
+        )
+    except Exception as agent_err:
+        print(f"[Agent] /chat 异常: {agent_err}")
+        error_msg = ChatMessage(
+            id=generate_uuid(),
+            project_id=request.project_id,
+            role="assistant",
+            content=f"⚠️ 处理失败: {str(agent_err)[:200]}",
+            message_metadata={"phase": current_phase, "error": str(agent_err)[:200]},
+        )
+        db.add(error_msg)
+        db.commit()
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Agent 处理异常: {str(agent_err)[:200]}", "message": f"⚠️ 处理失败: {str(agent_err)[:200]}"},
+        )
     
     agent_output = result.get("agent_output", "")
     result_phase = result.get("current_phase", current_phase)

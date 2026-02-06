@@ -35,14 +35,22 @@ SPECIAL_HANDLERS = {
     "research": "消费者调研",
     "simulate": "消费者模拟",
     "evaluate": "项目评估",
-    # Eval 体系角色
+    # 新 Eval 体系字段 (作为 FieldTemplate 中的专用 UI 字段)
+    "eval_persona_setup": "目标消费者画像",
+    "eval_task_config": "评估任务配置",
+    "eval_report": "评估报告",
+    # 旧版别名（向后兼容）
+    "eval_execution": "评估执行与过程",
+    "eval_grader_report": "评分报告",
+    "eval_diagnosis": "综合诊断",
+    # 旧 Eval 体系角色（保留向后兼容）
     "eval_container": "综合评估",
     "eval_coach": "教练评审",
     "eval_editor": "编辑评审",
     "eval_expert": "专家评审",
     "eval_consumer": "消费者体验",
     "eval_seller": "内容销售测试",
-    "eval_diagnoser": "综合诊断",
+    "eval_diagnoser": "综合诊断(旧)",
 }
 
 # 内容块状态

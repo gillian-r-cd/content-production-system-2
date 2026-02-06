@@ -2,6 +2,7 @@
 # 功能: 评估运行模型，追踪一次完整的评估
 # 主要类: EvalRun
 # 数据结构: 存储评估配置、状态、综合结果
+# 关联: EvalRun → EvalTask[] → EvalTrial[]（三层结构）
 
 """
 EvalRun 模型
@@ -17,6 +18,7 @@ from core.models.base import BaseModel
 
 if TYPE_CHECKING:
     from core.models.project import Project
+    from core.models.eval_task import EvalTask
     from core.models.eval_trial import EvalTrial
 
 
@@ -111,6 +113,10 @@ class EvalRun(BaseModel):
 
     # 关联
     project: Mapped["Project"] = relationship("Project")
+    tasks: Mapped[List["EvalTask"]] = relationship(
+        "EvalTask", back_populates="eval_run",
+        cascade="all, delete-orphan"
+    )
     trials: Mapped[List["EvalTrial"]] = relationship(
         "EvalTrial", back_populates="eval_run",
         cascade="all, delete-orphan"

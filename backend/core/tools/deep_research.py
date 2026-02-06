@@ -120,6 +120,7 @@ async def synthesize_report(
     contents: List[str],
     query: str,
     intent: str,
+    source_urls: List[str] = None,
 ) -> ResearchReport:
     """
     综合分析生成调研报告
@@ -128,26 +129,46 @@ async def synthesize_report(
         contents: 网页内容列表
         query: 调研主题
         intent: 项目意图
+        source_urls: 与 contents 对应的源URL列表
     
     Returns:
         ResearchReport
     """
-    # 限制内容长度
-    combined = "\n\n---\n\n".join(contents[:5])
+    # 将内容与编号来源配对，以便 LLM 可以添加引用
+    source_urls = source_urls or []
+    numbered_sections = []
+    for idx, content in enumerate(contents[:5]):
+        url_label = source_urls[idx] if idx < len(source_urls) else f"来源{idx+1}"
+        # 限制每个源的长度
+        truncated = content[:3000] if len(content) > 3000 else content
+        numbered_sections.append(f"[来源{idx+1}] ({url_label})\n{truncated}")
+    
+    combined = "\n\n---\n\n".join(numbered_sections)
     if len(combined) > 15000:
         combined = combined[:15000] + "\n...(内容已截断)"
+    
+    # 构建引用列表供 LLM 参考
+    source_list = "\n".join(
+        f"[{idx+1}] {url}" for idx, url in enumerate(source_urls[:5])
+    ) if source_urls else "无来源URL"
     
     messages = [
         ChatMessage(
             role="system",
             content="""你是一个资深的用户研究专家。请基于搜索结果，生成一份详细的消费者调研报告。
 
+**重要：你必须在报告中添加内联引用。** 
+- 在 summary、pain_points、value_propositions 等文字中，凡是引用了某个来源的信息，都要标注 [来源N] 或 [N]。
+- 例如："消费者普遍关注产品安全性 [1][3]" 或 "根据调研 [来源2]，用户主要痛点是..."
+- 这样读者可以追溯每条信息的出处。
+
 输出JSON格式，包含以下字段：
-- summary: 总体概述（200字以内）
+- summary: 总体概述（200字以内，包含引用标注）
 - consumer_profile: 消费者画像对象 {age_range, occupation, characteristics, behaviors}
-- pain_points: 核心痛点列表（3-5个）
-- value_propositions: 价值主张列表（3-5个）
-- personas: 3个典型用户小传，每个包含 {name, background, story, pain_points}"""
+- pain_points: 核心痛点列表（3-5个，每个痛点描述中包含引用标注）
+- value_propositions: 价值主张列表（3-5个，每个主张描述中包含引用标注）
+- personas: 3个典型用户小传，每个包含 {name, background, story, pain_points}
+- sources: 引用来源URL列表（直接使用提供的来源URL）"""
         ),
         ChatMessage(
             role="user",
@@ -157,10 +178,13 @@ async def synthesize_report(
 # 项目意图
 {intent}
 
-# 搜索结果
+# 来源列表
+{source_list}
+
+# 搜索结果（已标注来源编号）
 {combined}
 
-请生成调研报告："""
+请生成调研报告（记得在文中添加引用标注 [1] [2] 等）："""
         ),
     ]
     
@@ -214,13 +238,22 @@ async def deep_research(
         read_with_jina(url) for url in unique_urls
     ], return_exceptions=True)
     
-    # 过滤有效内容
-    valid_contents = [c for c in contents if isinstance(c, str) and c]
+    # 过滤有效内容，保持URL与内容的对应关系
+    valid_contents = []
+    valid_urls = []
+    for url, content in zip(unique_urls, contents):
+        if isinstance(content, str) and content:
+            valid_contents.append(content)
+            valid_urls.append(url)
     
-    # 5. 综合分析
+    # 5. 综合分析（传入配对的URL以生成内联引用）
     combined_content = "\n\n---\n\n".join(valid_contents[:5])
-    report = await synthesize_report(valid_contents, query, intent)
-    report.sources = unique_urls
+    report = await synthesize_report(
+        valid_contents, query, intent, source_urls=valid_urls
+    )
+    # 确保 sources 包含所有成功读取的 URL
+    if not report.sources:
+        report.sources = valid_urls
     report.search_queries = search_queries
     report.content_length = len(combined_content)
     
@@ -250,14 +283,16 @@ async def quick_research(
             role="system",
             content="""你是一个资深的用户研究专家。请基于你的知识，为以下项目生成消费者调研报告。
 
-注意：这是基于通用知识的推测，建议后续补充真实调研数据。
+注意：这是基于通用知识的推测（非实时搜索），建议后续补充真实调研数据。
+由于没有网络搜索来源，请勿添加引用标注。
 
 输出JSON格式，包含以下字段：
 - summary: 总体概述（200字以内）
 - consumer_profile: 消费者画像对象 {age_range, occupation, characteristics, behaviors}
 - pain_points: 核心痛点列表（3-5个）
 - value_propositions: 价值主张列表（3-5个）
-- personas: 3个典型用户小传，每个包含 {name, background, story, pain_points}"""
+- personas: 3个典型用户小传，每个包含 {name, background, story, pain_points}
+- sources: 空列表（因为未使用网络搜索）"""
         ),
         ChatMessage(
             role="user",
