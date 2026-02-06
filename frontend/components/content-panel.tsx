@@ -885,7 +885,25 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
   const [preAnswers, setPreAnswers] = useState<Record<string, string>>(
     field.pre_answers || {}
   );
+  const [isSavingPreAnswers, setIsSavingPreAnswers] = useState(false);
+  const [preAnswersSaved, setPreAnswersSaved] = useState(false);
   const hasPreQuestions = field.pre_questions && field.pre_questions.length > 0;
+  
+  // 保存预提问答案
+  const handleSavePreAnswers = async () => {
+    setIsSavingPreAnswers(true);
+    try {
+      await fieldAPI.update(field.id, { pre_answers: preAnswers });
+      setPreAnswersSaved(true);
+      setTimeout(() => setPreAnswersSaved(false), 2000);
+      onFieldsChange?.();
+    } catch (err) {
+      console.error("保存答案失败:", err);
+      alert("保存失败: " + (err instanceof Error ? err.message : "未知错误"));
+    } finally {
+      setIsSavingPreAnswers(false);
+    }
+  };
 
   useEffect(() => {
     setContent(field.content);
@@ -1204,10 +1222,24 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
       {/* 预提问区域（模板定义的生成前提问） */}
       {showPreQuestions && hasPreQuestions && (
         <div className="mx-4 mb-4 p-4 bg-surface-1 border border-amber-500/30 rounded-lg">
-          <h4 className="text-sm font-medium text-amber-400 mb-3 flex items-center gap-2">
-            <span>📝</span>
-            生成前请先回答以下问题
-          </h4>
+          <div className="flex items-center justify-between mb-3">
+            <h4 className="text-sm font-medium text-amber-400 flex items-center gap-2">
+              <span>📝</span>
+              生成前请先回答以下问题
+            </h4>
+            <div className="flex items-center gap-2">
+              {preAnswersSaved && (
+                <span className="text-xs text-green-400">✓ 已保存</span>
+              )}
+              <button
+                onClick={handleSavePreAnswers}
+                disabled={isSavingPreAnswers}
+                className="px-3 py-1 text-xs bg-amber-600 hover:bg-amber-700 disabled:bg-amber-800 text-white rounded transition-colors"
+              >
+                {isSavingPreAnswers ? "保存中..." : "保存回答"}
+              </button>
+            </div>
+          </div>
           <div className="space-y-3">
             {field.pre_questions.map((question: string, index: number) => (
               <div key={index}>
@@ -1217,16 +1249,22 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
                 <input
                   type="text"
                   value={preAnswers[question] || ""}
-                  onChange={(e) => setPreAnswers({
-                    ...preAnswers,
-                    [question]: e.target.value,
-                  })}
+                  onChange={(e) => {
+                    setPreAnswers({
+                      ...preAnswers,
+                      [question]: e.target.value,
+                    });
+                    setPreAnswersSaved(false);
+                  }}
                   placeholder="请输入您的回答..."
                   className="w-full bg-surface-2 border border-surface-3 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-brand-500"
                 />
               </div>
             ))}
           </div>
+          <p className="mt-2 text-xs text-zinc-500">
+            💡 填写完毕后请点击「保存回答」按钮保存答案
+          </p>
           <div className="mt-4 flex gap-2 justify-end">
             <button
               onClick={() => setShowPreQuestions(false)}

@@ -85,17 +85,27 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
     setPreAnswers(block.pre_answers || {});
   }, [block]);
   
+  // 保存预提问答案状态
+  const [isSavingPreAnswers, setIsSavingPreAnswers] = useState(false);
+  const [preAnswersSaved, setPreAnswersSaved] = useState(false);
+  
   // 保存预提问答案
   const handleSavePreAnswers = async () => {
+    setIsSavingPreAnswers(true);
     try {
       if (useFieldAPI) {
         await fieldAPI.update(block.id, { pre_answers: preAnswers });
       } else {
         await blockAPI.update(block.id, { pre_answers: preAnswers });
       }
+      setPreAnswersSaved(true);
+      setTimeout(() => setPreAnswersSaved(false), 2000);
       onUpdate?.();
     } catch (err) {
       console.error("保存预提问答案失败:", err);
+      alert("保存失败: " + (err instanceof Error ? err.message : "未知错误"));
+    } finally {
+      setIsSavingPreAnswers(false);
     }
   };
 
@@ -466,9 +476,20 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
         {/* 生成前提问区域 */}
         {hasPreQuestions && (
           <div className="px-5 py-4 bg-amber-900/10 border-b border-amber-600/20">
-            <div className="flex items-center gap-2 mb-3">
+            <div className="flex items-center justify-between mb-3">
               <span className="text-amber-400 text-sm font-medium">📝 生成前请先回答以下问题</span>
-              <span className="text-xs text-amber-500/60">（回答后内容将自动保存）</span>
+              <div className="flex items-center gap-2">
+                {preAnswersSaved && (
+                  <span className="text-xs text-green-400">✓ 已保存</span>
+                )}
+                <button
+                  onClick={handleSavePreAnswers}
+                  disabled={isSavingPreAnswers}
+                  className="px-3 py-1 text-xs bg-amber-600 hover:bg-amber-700 disabled:bg-amber-800 text-white rounded transition-colors"
+                >
+                  {isSavingPreAnswers ? "保存中..." : "保存回答"}
+                </button>
+              </div>
             </div>
             <div className="space-y-3">
               {block.pre_questions?.map((question, idx) => (
@@ -480,14 +501,17 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
                     onChange={(e) => {
                       const newAnswers = { ...preAnswers, [question]: e.target.value };
                       setPreAnswers(newAnswers);
+                      setPreAnswersSaved(false);
                     }}
-                    onBlur={handleSavePreAnswers}
                     placeholder="请输入回答..."
                     className="w-full px-3 py-2 bg-surface-2 border border-amber-500/30 rounded-lg text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-500/50"
                   />
                 </div>
               ))}
             </div>
+            <p className="mt-2 text-xs text-amber-500/60">
+              💡 填写完毕后请点击「保存回答」按钮，答案会作为生成内容的上下文传递给 AI
+            </p>
           </div>
         )}
 

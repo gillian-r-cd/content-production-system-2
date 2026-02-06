@@ -68,7 +68,29 @@ export function ContentBlockCard({
   
   // 生成前提问答案
   const [preAnswers, setPreAnswers] = useState<Record<string, string>>(block.pre_answers || {});
+  const [isSavingPreAnswers, setIsSavingPreAnswers] = useState(false);
+  const [preAnswersSaved, setPreAnswersSaved] = useState(false);
   const hasPreQuestions = (block.pre_questions?.length || 0) > 0;
+  
+  // 保存预提问答案
+  const handleSavePreAnswers = async () => {
+    setIsSavingPreAnswers(true);
+    try {
+      if (useFieldAPI) {
+        await fieldAPI.update(block.id, { pre_answers: preAnswers } as any);
+      } else {
+        await blockAPI.update(block.id, { pre_answers: preAnswers });
+      }
+      setPreAnswersSaved(true);
+      setTimeout(() => setPreAnswersSaved(false), 2000);
+      onBlocksChange?.();
+    } catch (err) {
+      console.error("保存答案失败:", err);
+      alert("保存失败: " + (err instanceof Error ? err.message : "未知错误"));
+    } finally {
+      setIsSavingPreAnswers(false);
+    }
+  };
   
   // 可选的依赖（排除自己和自己的子节点）
   const availableDependencies = allBlocks.filter(b => {
@@ -581,31 +603,32 @@ export function ContentBlockCard({
           {/* 生成前提问区域 */}
           {hasPreQuestions && (
             <div className="p-4 bg-amber-900/10 border-b border-amber-600/20">
-              <div className="flex items-center gap-2 mb-3">
+              <div className="flex items-center justify-between mb-3">
                 <span className="text-amber-400 text-sm font-medium">📝 生成前请先回答以下问题</span>
+                <div className="flex items-center gap-2">
+                  {preAnswersSaved && (
+                    <span className="text-xs text-green-400">✓ 已保存</span>
+                  )}
+                  <button
+                    onClick={handleSavePreAnswers}
+                    disabled={isSavingPreAnswers}
+                    className="px-3 py-1 text-xs bg-amber-600 hover:bg-amber-700 disabled:bg-amber-800 text-white rounded transition-colors"
+                  >
+                    {isSavingPreAnswers ? "保存中..." : "保存回答"}
+                  </button>
+                </div>
               </div>
               <div className="space-y-3">
                 {block.pre_questions?.map((question, idx) => (
                   <div key={idx} className="space-y-1">
-                    <label className="text-sm text-zinc-300">{question}</label>
+                    <label className="text-sm text-zinc-300">{idx + 1}. {question}</label>
                     <input
                       type="text"
                       value={preAnswers[question] || ""}
                       onChange={(e) => {
                         const newAnswers = { ...preAnswers, [question]: e.target.value };
                         setPreAnswers(newAnswers);
-                      }}
-                      onBlur={async () => {
-                        // 自动保存答案
-                        try {
-                          if (useFieldAPI) {
-                            await fieldAPI.update(block.id, { pre_answers: preAnswers } as any);
-                          } else {
-                            await blockAPI.update(block.id, { pre_answers: preAnswers } as any);
-                          }
-                        } catch (err) {
-                          console.error("保存答案失败:", err);
-                        }
+                        setPreAnswersSaved(false);
                       }}
                       className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/50"
                       placeholder="请输入您的答案..."
@@ -614,7 +637,7 @@ export function ContentBlockCard({
                 ))}
               </div>
               <p className="mt-3 text-xs text-zinc-500">
-                答案会作为生成内容的上下文传递给 AI，帮助生成更精准的内容。
+                💡 填写完毕后请点击「保存回答」按钮，答案会作为生成内容的上下文传递给 AI
               </p>
             </div>
           )}
