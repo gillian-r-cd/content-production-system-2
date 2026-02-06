@@ -42,6 +42,7 @@ interface FieldTemplate {
     need_review?: boolean;
     constraints?: any;
     special_handler?: string;
+    pre_questions?: string[];  // 生成前提问
   }[];
 }
 
@@ -175,6 +176,7 @@ function BlockNode({
           need_review: field.need_review !== undefined ? field.need_review : true,
           constraints: field.constraints || {},
           special_handler: field.special_handler || null,
+          pre_questions: field.pre_questions || [],  // 传递生成前提问！
         });
         
         createdBlocks.push(createdBlock.id);

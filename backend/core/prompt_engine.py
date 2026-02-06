@@ -407,14 +407,24 @@ class PromptEngine:
         
         if constraints.get("max_length"):
             constraints_lines.append(f"- 字数限制：不超过 {constraints['max_length']} 字")
-        if constraints.get("output_format"):
+        
+        # 输出格式处理
+        output_format = constraints.get("output_format", "markdown")
+        if output_format == "markdown":
+            constraints_lines.append("- 输出格式：**Markdown 富文本**")
+            constraints_lines.append("  - 必须使用标准 Markdown 语法")
+            constraints_lines.append("  - 标题使用 # ## ### 格式")
+            constraints_lines.append("  - 表格必须包含表头分隔行（如 | --- | --- |）")
+            constraints_lines.append("  - 列表使用 - 或 1. 格式")
+            constraints_lines.append("  - 重点内容使用 **粗体** 或 *斜体*")
+        elif output_format:
             format_names = {
-                "markdown": "Markdown 富文本",
-                "plain_text": "纯文本",
-                "json": "JSON 格式",
+                "plain_text": "纯文本（不使用任何格式化符号）",
+                "json": "JSON 格式（必须是有效的 JSON）",
                 "list": "列表格式（每行一项）"
             }
-            constraints_lines.append(f"- 输出格式：{format_names.get(constraints['output_format'], constraints['output_format'])}")
+            constraints_lines.append(f"- 输出格式：{format_names.get(output_format, output_format)}")
+        
         if constraints.get("structure"):
             constraints_lines.append(f"- 结构要求：{constraints['structure']}")
         if constraints.get("example"):

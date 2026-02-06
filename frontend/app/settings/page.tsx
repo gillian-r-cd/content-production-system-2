@@ -4,11 +4,118 @@
 
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { settingsAPI } from "@/lib/api";
 import type { CreatorProfile } from "@/lib/api";
+import { Download, Upload } from "lucide-react";
 
 type Tab = "prompts" | "profiles" | "templates" | "channels" | "simulators" | "agent" | "logs";
+
+// ============== 导入导出按钮组件 ==============
+interface ImportExportButtonsProps {
+  onExportAll: () => Promise<void>;
+  onExportSingle?: (id: string) => Promise<void>;
+  onImport: (data: any[]) => Promise<void>;
+  typeName: string;  // 如 "字段模板"
+}
+
+function ImportExportButtons({ onExportAll, onImport, typeName }: ImportExportButtonsProps) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [importing, setImporting] = useState(false);
+
+  const handleImportClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setImporting(true);
+    try {
+      const text = await file.text();
+      const json = JSON.parse(text);
+      
+      // 支持两种格式：直接数组 或 { data: [...] }
+      const data = Array.isArray(json) ? json : (json.data || []);
+      await onImport(data);
+      alert(`导入${typeName}成功！`);
+    } catch (err) {
+      console.error("导入失败:", err);
+      alert(`导入失败: ${err instanceof Error ? err.message : "文件格式错误"}`);
+    } finally {
+      setImporting(false);
+      // 清空 input 以便重复选择同一文件
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-2">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".json"
+        onChange={handleFileChange}
+        className="hidden"
+      />
+      <button
+        onClick={handleImportClick}
+        disabled={importing}
+        className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-surface-3 hover:bg-surface-4 rounded-lg transition-colors disabled:opacity-50"
+      >
+        <Upload className="w-4 h-4" />
+        {importing ? "导入中..." : "导入"}
+      </button>
+      <button
+        onClick={onExportAll}
+        className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-surface-3 hover:bg-surface-4 rounded-lg transition-colors"
+      >
+        <Download className="w-4 h-4" />
+        导出全部
+      </button>
+    </div>
+  );
+}
+
+// 单个项目导出按钮
+function SingleExportButton({ onExport, title }: { onExport: () => Promise<void>; title?: string }) {
+  const [exporting, setExporting] = useState(false);
+  
+  const handleClick = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setExporting(true);
+    try {
+      await onExport();
+    } finally {
+      setExporting(false);
+    }
+  };
+  
+  return (
+    <button
+      onClick={handleClick}
+      disabled={exporting}
+      className="px-2 py-1 text-xs bg-surface-3 hover:bg-surface-4 rounded text-zinc-400 hover:text-zinc-200 transition-colors disabled:opacity-50"
+      title={title || "导出"}
+    >
+      <Download className="w-3.5 h-3.5" />
+    </button>
+  );
+}
+
+// 下载 JSON 文件的工具函数
+function downloadJSON(data: any, filename: string) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<Tab>("prompts");
@@ -134,13 +241,17 @@ function FormField({ label, hint, children }: { label: string; hint?: string; ch
 function TagInput({ value, onChange, placeholder }: { value: string[]; onChange: (v: string[]) => void; placeholder?: string }) {
   const [input, setInput] = useState("");
   
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && input.trim()) {
-      e.preventDefault();
-      if (!value.includes(input.trim())) {
-        onChange([...value, input.trim()]);
-      }
+  const addTag = () => {
+    if (input.trim() && !value.includes(input.trim())) {
+      onChange([...value, input.trim()]);
       setInput("");
+    }
+  };
+  
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addTag();
     }
   };
   
@@ -158,14 +269,27 @@ function TagInput({ value, onChange, placeholder }: { value: string[]; onChange:
           </span>
         ))}
       </div>
-      <input
-        type="text"
-        value={input}
-        onChange={(e) => setInput(e.target.value)}
-        onKeyDown={handleKeyDown}
-        placeholder={placeholder || "输入后按回车添加..."}
-        className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
-      />
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder={placeholder || "输入后按回车添加..."}
+          className="flex-1 px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+        />
+        <button
+          type="button"
+          onClick={addTag}
+          disabled={!input.trim()}
+          className="px-3 py-2 bg-brand-600 hover:bg-brand-700 disabled:bg-zinc-700 disabled:cursor-not-allowed text-white rounded-lg text-sm transition-colors"
+        >
+          添加
+        </button>
+      </div>
+      {value.length === 0 && (
+        <p className="text-xs text-zinc-500">输入问题后按 Enter 键或点击「添加」按钮</p>
+      )}
     </div>
   );
 }
@@ -271,13 +395,44 @@ function SystemPromptsSection({ prompts, onRefresh }: { prompts: any[]; onRefres
     }
   };
 
+  const handleExportAll = async () => {
+    try {
+      const result = await settingsAPI.exportSystemPrompts();
+      downloadJSON(result, `system_prompts_${new Date().toISOString().split("T")[0]}.json`);
+    } catch (err) {
+      alert("导出失败");
+    }
+  };
+
+  const handleExportSingle = async (id: string) => {
+    try {
+      const result = await settingsAPI.exportSystemPrompts(id);
+      const prompt = prompts.find(p => p.id === id);
+      downloadJSON(result, `system_prompt_${prompt?.phase || id}.json`);
+    } catch (err) {
+      alert("导出失败");
+    }
+  };
+
+  const handleImport = async (data: any[]) => {
+    await settingsAPI.importSystemPrompts(data);
+    onRefresh();
+  };
+
   return (
     <div>
-      <div className="mb-6">
-        <h2 className="text-xl font-semibold text-zinc-100">系统提示词</h2>
-        <p className="text-sm text-zinc-500 mt-1">
-          每个阶段的系统提示词会自动注入到该阶段的所有 AI 生成任务中
-        </p>
+      <div className="flex justify-between items-center mb-6">
+        <div>
+          <h2 className="text-xl font-semibold text-zinc-100">系统提示词</h2>
+          <p className="text-sm text-zinc-500 mt-1">
+            每个阶段的系统提示词会自动注入到该阶段的所有 AI 生成任务中
+          </p>
+        </div>
+        <ImportExportButtons
+          typeName="系统提示词"
+          onExportAll={handleExportAll}
+          onImport={handleImport}
+        />
       </div>
 
       <div className="space-y-4">
@@ -326,9 +481,12 @@ function SystemPromptsSection({ prompts, onRefresh }: { prompts: any[]; onRefres
                       {PHASE_NAMES[prompt.phase] || prompt.phase}
                     </span>
                   </div>
-                  <button onClick={() => handleEdit(prompt)} className="px-3 py-1 text-sm bg-surface-3 hover:bg-surface-4 rounded-lg">
-                    编辑
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <SingleExportButton onExport={() => handleExportSingle(prompt.id)} title="导出此提示词" />
+                    <button onClick={() => handleEdit(prompt)} className="px-3 py-1 text-sm bg-surface-3 hover:bg-surface-4 rounded-lg">
+                      编辑
+                    </button>
+                  </div>
                 </div>
                 <p className="text-sm text-zinc-500 mt-3 whitespace-pre-wrap line-clamp-3">{prompt.content}</p>
               </div>
@@ -353,6 +511,30 @@ function ProfilesSection({ profiles, onRefresh }: { profiles: CreatorProfile[]; 
     { key: "personality", label: "人格特点", placeholder: "如：理性、感性、务实" },
     { key: "taboos", label: "禁忌内容", placeholder: "如：过度营销、夸大其词" },
   ];
+
+  const handleExportAll = async () => {
+    try {
+      const result = await settingsAPI.exportCreatorProfiles();
+      downloadJSON(result, `creator_profiles_${new Date().toISOString().split("T")[0]}.json`);
+    } catch (err) {
+      alert("导出失败");
+    }
+  };
+
+  const handleExportSingle = async (id: string) => {
+    try {
+      const result = await settingsAPI.exportCreatorProfiles(id);
+      const profile = profiles.find(p => p.id === id);
+      downloadJSON(result, `creator_profile_${profile?.name || id}.json`);
+    } catch (err) {
+      alert("导出失败");
+    }
+  };
+
+  const handleImport = async (data: any[]) => {
+    await settingsAPI.importCreatorProfiles(data);
+    onRefresh();
+  };
 
   const handleCreate = () => {
     setIsCreating(true);
@@ -451,9 +633,16 @@ function ProfilesSection({ profiles, onRefresh }: { profiles: CreatorProfile[]; 
           <h2 className="text-xl font-semibold text-zinc-100">创作者特质</h2>
           <p className="text-sm text-zinc-500 mt-1">定义不同的创作风格，创建项目时可以选择</p>
         </div>
-        <button onClick={handleCreate} className="px-4 py-2 bg-brand-600 hover:bg-brand-700 rounded-lg">
-          + 新建特质
-        </button>
+        <div className="flex items-center gap-3">
+          <ImportExportButtons
+            typeName="创作者特质"
+            onExportAll={handleExportAll}
+            onImport={handleImport}
+          />
+          <button onClick={handleCreate} className="px-4 py-2 bg-brand-600 hover:bg-brand-700 rounded-lg">
+            + 新建特质
+          </button>
+        </div>
       </div>
 
       {isCreating && renderForm()}
@@ -478,7 +667,8 @@ function ProfilesSection({ profiles, onRefresh }: { profiles: CreatorProfile[]; 
                       </div>
                     )}
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex items-center gap-2">
+                    <SingleExportButton onExport={() => handleExportSingle(profile.id)} title="导出此特质" />
                     <button onClick={() => handleEdit(profile)} className="px-3 py-1 text-sm bg-surface-3 hover:bg-surface-4 rounded-lg">编辑</button>
                     <button onClick={() => handleDelete(profile.id)} className="px-3 py-1 text-sm bg-red-600/20 text-red-400 hover:bg-red-600/30 rounded-lg">删除</button>
                   </div>
@@ -502,6 +692,30 @@ function TemplatesSection({ templates, onRefresh }: { templates: any[]; onRefres
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<any>({});
   const [isCreating, setIsCreating] = useState(false);
+
+  const handleExportAll = async () => {
+    try {
+      const result = await settingsAPI.exportFieldTemplates();
+      downloadJSON(result, `field_templates_${new Date().toISOString().split("T")[0]}.json`);
+    } catch (err) {
+      alert("导出失败");
+    }
+  };
+
+  const handleExportSingle = async (id: string) => {
+    try {
+      const result = await settingsAPI.exportFieldTemplates(id);
+      const template = templates.find(t => t.id === id);
+      downloadJSON(result, `field_template_${template?.name || id}.json`);
+    } catch (err) {
+      alert("导出失败");
+    }
+  };
+
+  const handleImport = async (data: any[]) => {
+    await settingsAPI.importFieldTemplates(data);
+    onRefresh();
+  };
 
   const handleCreate = () => {
     setIsCreating(true);
@@ -730,9 +944,16 @@ function TemplatesSection({ templates, onRefresh }: { templates: any[]; onRefres
           <h2 className="text-xl font-semibold text-zinc-100">字段模板</h2>
           <p className="text-sm text-zinc-500 mt-1">定义可复用的内容字段结构，创建项目时可以引用</p>
         </div>
-        <button onClick={handleCreate} className="px-4 py-2 bg-brand-600 hover:bg-brand-700 rounded-lg">
-          + 新建模板
-        </button>
+        <div className="flex items-center gap-3">
+          <ImportExportButtons
+            typeName="字段模板"
+            onExportAll={handleExportAll}
+            onImport={handleImport}
+          />
+          <button onClick={handleCreate} className="px-4 py-2 bg-brand-600 hover:bg-brand-700 rounded-lg">
+            + 新建模板
+          </button>
+        </div>
       </div>
 
       {isCreating && renderForm()}
@@ -759,7 +980,8 @@ function TemplatesSection({ templates, onRefresh }: { templates: any[]; onRefres
                       </div>
                     )}
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex items-center gap-2">
+                    <SingleExportButton onExport={() => handleExportSingle(template.id)} title="导出此模板" />
                     <button onClick={() => handleEdit(template)} className="px-3 py-1 text-sm bg-surface-3 hover:bg-surface-4 rounded-lg">编辑</button>
                     <button onClick={() => handleDelete(template.id)} className="px-3 py-1 text-sm bg-red-600/20 text-red-400 hover:bg-red-600/30 rounded-lg">删除</button>
                   </div>
@@ -957,6 +1179,30 @@ function SimulatorsSection({ simulators, onRefresh }: { simulators: any[]; onRef
     { value: "experience", label: "体验式", desc: "完成特定任务，适合产品功能", icon: "✋" },
   ];
 
+  const handleExportAll = async () => {
+    try {
+      const result = await settingsAPI.exportSimulators();
+      downloadJSON(result, `simulators_${new Date().toISOString().split("T")[0]}.json`);
+    } catch (err) {
+      alert("导出失败");
+    }
+  };
+
+  const handleExportSingle = async (id: string) => {
+    try {
+      const result = await settingsAPI.exportSimulators(id);
+      const simulator = simulators.find(s => s.id === id);
+      downloadJSON(result, `simulator_${simulator?.name || id}.json`);
+    } catch (err) {
+      alert("导出失败");
+    }
+  };
+
+  const handleImport = async (data: any[]) => {
+    await settingsAPI.importSimulators(data);
+    onRefresh();
+  };
+
   const handleCreate = () => {
     setIsCreating(true);
     setEditForm({ name: "", description: "", interaction_type: "reading", prompt_template: "", evaluation_dimensions: [], max_turns: 10 });
@@ -1090,7 +1336,14 @@ function SimulatorsSection({ simulators, onRefresh }: { simulators: any[]; onRef
           <h2 className="text-xl font-semibold text-zinc-100">模拟器管理</h2>
           <p className="text-sm text-zinc-500 mt-1">配置消费者体验模拟的类型和评估维度</p>
         </div>
-        <button onClick={handleCreate} className="px-4 py-2 bg-brand-600 hover:bg-brand-700 rounded-lg">+ 新建模拟器</button>
+        <div className="flex items-center gap-3">
+          <ImportExportButtons
+            typeName="模拟器"
+            onExportAll={handleExportAll}
+            onImport={handleImport}
+          />
+          <button onClick={handleCreate} className="px-4 py-2 bg-brand-600 hover:bg-brand-700 rounded-lg">+ 新建模拟器</button>
+        </div>
       </div>
 
       {isCreating && renderForm()}
@@ -1120,7 +1373,8 @@ function SimulatorsSection({ simulators, onRefresh }: { simulators: any[]; onRef
                       </div>
                     )}
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex items-center gap-2">
+                    <SingleExportButton onExport={() => handleExportSingle(simulator.id)} title="导出此模拟器" />
                     <button onClick={() => handleEdit(simulator)} className="px-3 py-1 text-sm bg-surface-3 hover:bg-surface-4 rounded-lg">编辑</button>
                     <button onClick={() => handleDelete(simulator.id)} className="px-3 py-1 text-sm bg-red-600/20 text-red-400 hover:bg-red-600/30 rounded-lg">删除</button>
                   </div>

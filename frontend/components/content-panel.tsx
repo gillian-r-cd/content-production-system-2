@@ -508,10 +508,10 @@ export function ContentPanel({
   // 处理字段块点击
   if (selectedBlock && selectedBlock.block_type === "field") {
     // ===== 检查 special_handler：显示对应的特殊界面 =====
+    const handler = selectedBlock.special_handler as string | null | undefined;
     
     // 消费者模拟字段 - 使用 SimulationPanel
-    if (selectedBlock.special_handler === "consumer_simulation" || 
-        selectedBlock.special_handler === "simulate") {
+    if (handler === "consumer_simulation" || handler === "simulate") {
       return (
         <SimulationPanel
           projectId={projectId}
@@ -522,8 +522,7 @@ export function ContentPanel({
     }
     
     // 消费者调研字段 - 检查是否有结构化内容
-    if (selectedBlock.special_handler === "consumer_research" || 
-        selectedBlock.special_handler === "research") {
+    if (handler === "consumer_research" || handler === "research") {
       // 尝试解析内容
       try {
         const researchData = JSON.parse(selectedBlock.content || "{}");
@@ -544,8 +543,7 @@ export function ContentPanel({
     }
     
     // 意图分析字段 - 由 Agent 处理，显示提示
-    if (selectedBlock.special_handler === "intent_analysis" || 
-        selectedBlock.special_handler === "intent") {
+    if (handler === "intent_analysis" || handler === "intent") {
       return (
         <div className="h-full flex flex-col items-center justify-center p-6 text-center">
           <div className="text-6xl mb-4">💬</div>
@@ -1246,6 +1244,24 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
         </div>
       )}
 
+      {/* 预提问提示（显示在内容区域上方） */}
+      {hasPreQuestions && !showPreQuestions && !field.content && (
+        <div className="mx-4 mb-2 p-3 bg-amber-900/20 border border-amber-500/30 rounded-lg">
+          <div className="flex items-center gap-2 text-sm text-amber-400">
+            <span>📝</span>
+            <span>此字段有 {field.pre_questions.length} 个预设问题需要回答</span>
+          </div>
+          <ul className="mt-2 space-y-1 text-xs text-zinc-400">
+            {field.pre_questions.slice(0, 3).map((q: string, i: number) => (
+              <li key={i}>• {q}</li>
+            ))}
+            {field.pre_questions.length > 3 && (
+              <li className="text-zinc-500">...还有 {field.pre_questions.length - 3} 个问题</li>
+            )}
+          </ul>
+        </div>
+      )}
+
       {/* 字段内容 */}
       <div className="p-4">
         {isGenerating ? (
@@ -1262,16 +1278,31 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
             className="w-full min-h-[200px] bg-surface-1 border border-surface-3 rounded-lg p-3 text-zinc-200 resize-y focus:outline-none focus:ring-2 focus:ring-brand-500"
           />
         ) : (
-          <div className="prose prose-invert max-w-none prose-headings:text-zinc-100 prose-p:text-zinc-300 prose-li:text-zinc-300 prose-strong:text-zinc-200">
-            {field.content ? (
-              <ReactMarkdown>{field.content}</ReactMarkdown>
-            ) : hasPreQuestions && !showPreQuestions ? (
-              <p className="text-zinc-500 italic">
-                此字段有预设问题需要回答，点击"生成"按钮开始
-              </p>
-            ) : (
-              <p className="text-zinc-500 italic">暂无内容，点击"生成"按钮开始</p>
+          <div className="relative">
+            {/* 复制按钮 */}
+            {field.content && (
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(field.content);
+                  alert("已复制到剪贴板！");
+                }}
+                className="absolute top-2 right-2 px-2 py-1 text-xs bg-surface-3 hover:bg-surface-4 text-zinc-400 hover:text-zinc-200 rounded transition-colors z-10"
+                title="复制全文（Markdown格式）"
+              >
+                📋 复制
+              </button>
             )}
+            <div className="prose prose-invert max-w-none prose-headings:text-zinc-100 prose-p:text-zinc-300 prose-li:text-zinc-300 prose-strong:text-zinc-200">
+              {field.content ? (
+                <ReactMarkdown>{field.content}</ReactMarkdown>
+              ) : hasPreQuestions && !showPreQuestions ? (
+                <p className="text-zinc-500 italic">
+                  此字段有预设问题需要回答，点击"生成"按钮开始
+                </p>
+              ) : (
+                <p className="text-zinc-500 italic">暂无内容，点击"生成"按钮开始</p>
+              )}
+            </div>
           </div>
         )}
       </div>

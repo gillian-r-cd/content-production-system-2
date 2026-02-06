@@ -66,6 +66,10 @@ export function ContentBlockCard({
   const [editedConstraints, setEditedConstraints] = useState(block.constraints || {});
   const [selectedDependencies, setSelectedDependencies] = useState<string[]>(block.depends_on || []);
   
+  // 生成前提问答案
+  const [preAnswers, setPreAnswers] = useState<Record<string, string>>(block.pre_answers || {});
+  const hasPreQuestions = (block.pre_questions?.length || 0) > 0;
+  
   // 可选的依赖（排除自己和自己的子节点）
   const availableDependencies = allBlocks.filter(b => {
     if (b.id === block.id) return false;
@@ -86,6 +90,7 @@ export function ContentBlockCard({
     setEditedPrompt(block.ai_prompt || "");
     setEditedConstraints(block.constraints || {});
     setSelectedDependencies(block.depends_on || []);
+    setPreAnswers(block.pre_answers || {});
   }, [block]);
 
   // 保存名称
@@ -573,6 +578,47 @@ export function ContentBlockCard({
       {/* 展开的详情区域 */}
       {isExpanded && (
         <div className="border-t border-surface-3">
+          {/* 生成前提问区域 */}
+          {hasPreQuestions && (
+            <div className="p-4 bg-amber-900/10 border-b border-amber-600/20">
+              <div className="flex items-center gap-2 mb-3">
+                <span className="text-amber-400 text-sm font-medium">📝 生成前请先回答以下问题</span>
+              </div>
+              <div className="space-y-3">
+                {block.pre_questions?.map((question, idx) => (
+                  <div key={idx} className="space-y-1">
+                    <label className="text-sm text-zinc-300">{question}</label>
+                    <input
+                      type="text"
+                      value={preAnswers[question] || ""}
+                      onChange={(e) => {
+                        const newAnswers = { ...preAnswers, [question]: e.target.value };
+                        setPreAnswers(newAnswers);
+                      }}
+                      onBlur={async () => {
+                        // 自动保存答案
+                        try {
+                          if (useFieldAPI) {
+                            await fieldAPI.update(block.id, { pre_answers: preAnswers } as any);
+                          } else {
+                            await blockAPI.update(block.id, { pre_answers: preAnswers } as any);
+                          }
+                        } catch (err) {
+                          console.error("保存答案失败:", err);
+                        }
+                      }}
+                      className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                      placeholder="请输入您的答案..."
+                    />
+                  </div>
+                ))}
+              </div>
+              <p className="mt-3 text-xs text-zinc-500">
+                答案会作为生成内容的上下文传递给 AI，帮助生成更精准的内容。
+              </p>
+            </div>
+          )}
+          
           {/* 内容区域 */}
           <div className="p-4">
             {isEditing ? (

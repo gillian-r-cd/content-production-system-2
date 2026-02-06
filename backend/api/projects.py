@@ -177,15 +177,136 @@ def delete_project(
     project_id: str,
     db: Session = Depends(get_db),
 ):
-    """删除项目"""
+    """删除项目（包括所有关联数据）"""
+    from core.models import ProjectField
+    from core.models.chat_history import ChatMessage
+    
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
+    # 删除关联的对话记录
+    db.query(ChatMessage).filter(ChatMessage.project_id == project_id).delete()
+    
+    # 删除关联的字段
+    db.query(ProjectField).filter(ProjectField.project_id == project_id).delete()
+    
+    # 删除项目本身
     db.delete(project)
     db.commit()
     
     return {"message": "Project deleted"}
+
+
+@router.post("/{project_id}/duplicate", response_model=ProjectResponse)
+def duplicate_project(
+    project_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    复制项目（完整复刻）
+    
+    复制内容包括：
+    - 项目本身（新名称加 "(副本)" 后缀）
+    - 所有字段 (ProjectField)
+    - 所有对话记录 (ChatMessage)
+    """
+    from core.models import ProjectField
+    from core.models.chat_history import ChatMessage
+    
+    # 获取原项目
+    old_project = db.query(Project).filter(Project.id == project_id).first()
+    if not old_project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    # 创建新项目
+    new_project = Project(
+        id=generate_uuid(),
+        name=f"{old_project.name} (副本)",
+        creator_profile_id=old_project.creator_profile_id,
+        version=1,
+        version_note="从项目复制",
+        current_phase=old_project.current_phase,
+        phase_order=old_project.phase_order.copy() if old_project.phase_order else PROJECT_PHASES.copy(),
+        phase_status=old_project.phase_status.copy() if old_project.phase_status else {},
+        agent_autonomy=old_project.agent_autonomy.copy() if old_project.agent_autonomy else {},
+        golden_context=old_project.golden_context.copy() if old_project.golden_context else {},
+        use_deep_research=old_project.use_deep_research,
+        use_flexible_architecture=old_project.use_flexible_architecture if hasattr(old_project, 'use_flexible_architecture') else False,
+    )
+    
+    db.add(new_project)
+    db.flush()  # 获取新项目ID
+    
+    # 复制所有字段
+    old_fields = db.query(ProjectField).filter(
+        ProjectField.project_id == old_project.id
+    ).all()
+    
+    # 创建字段ID映射（旧ID -> 新ID）用于更新依赖关系
+    field_id_mapping = {}
+    new_fields = []
+    
+    for old_field in old_fields:
+        new_field_id = generate_uuid()
+        field_id_mapping[old_field.id] = new_field_id
+        
+        new_field = ProjectField(
+            id=new_field_id,
+            project_id=new_project.id,
+            template_id=old_field.template_id,
+            phase=old_field.phase,
+            name=old_field.name,
+            field_type=old_field.field_type,
+            content=old_field.content,
+            status=old_field.status,
+            ai_prompt=old_field.ai_prompt,
+            pre_questions=old_field.pre_questions.copy() if old_field.pre_questions else [],
+            pre_answers=old_field.pre_answers.copy() if old_field.pre_answers else {},
+            dependencies=old_field.dependencies.copy() if old_field.dependencies else {"depends_on": [], "dependency_type": "all"},
+            constraints=old_field.constraints.copy() if hasattr(old_field, 'constraints') and old_field.constraints else None,
+            need_review=old_field.need_review if hasattr(old_field, 'need_review') else True,
+            order=old_field.order if hasattr(old_field, 'order') else 0,
+        )
+        new_fields.append(new_field)
+    
+    # 更新依赖关系中的字段ID
+    for new_field in new_fields:
+        if new_field.dependencies and new_field.dependencies.get("depends_on"):
+            old_deps = new_field.dependencies["depends_on"]
+            new_deps = [field_id_mapping.get(dep_id, dep_id) for dep_id in old_deps]
+            new_field.dependencies = {
+                **new_field.dependencies,
+                "depends_on": new_deps,
+            }
+        db.add(new_field)
+    
+    # 复制对话记录
+    old_messages = db.query(ChatMessage).filter(
+        ChatMessage.project_id == old_project.id
+    ).order_by(ChatMessage.created_at).all()
+    
+    message_id_mapping = {}
+    for old_msg in old_messages:
+        new_msg_id = generate_uuid()
+        message_id_mapping[old_msg.id] = new_msg_id
+        
+        new_msg = ChatMessage(
+            id=new_msg_id,
+            project_id=new_project.id,
+            role=old_msg.role,
+            content=old_msg.content,
+            original_content=old_msg.original_content,
+            is_edited=old_msg.is_edited,
+            message_metadata=old_msg.message_metadata.copy() if old_msg.message_metadata else {},
+            parent_message_id=message_id_mapping.get(old_msg.parent_message_id) if old_msg.parent_message_id else None,
+        )
+        db.add(new_msg)
+    
+    db.commit()
+    db.refresh(new_project)
+    
+    return _project_to_response(new_project)
 
 
 @router.post("/{project_id}/versions", response_model=ProjectResponse)

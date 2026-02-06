@@ -184,6 +184,11 @@ export const projectAPI = {
       method: "POST",
       body: JSON.stringify({ version_note }),
     }),
+  
+  duplicate: (id: string) =>
+    fetchAPI<Project>(`/api/projects/${id}/duplicate`, {
+      method: "POST",
+    }),
 };
 
 // ============== Field API ==============
@@ -423,6 +428,52 @@ export const settingsAPI = {
     const query = projectId ? `?project_id=${projectId}` : "";
     return fetchAPI<any>(`/api/settings/logs/export${query}`);
   },
+  
+  // ===== 导入导出 =====
+  
+  // 字段模板
+  exportFieldTemplates: (templateId?: string) => {
+    const query = templateId ? `?template_id=${templateId}` : "";
+    return fetchAPI<{ type: string; data: any[]; count: number }>(`/api/settings/field-templates/export${query}`);
+  },
+  importFieldTemplates: (data: any[]) =>
+    fetchAPI<{ message: string; imported: number }>("/api/settings/field-templates/import", {
+      method: "POST",
+      body: JSON.stringify({ data }),
+    }),
+  
+  // 创作者特质
+  exportCreatorProfiles: (profileId?: string) => {
+    const query = profileId ? `?profile_id=${profileId}` : "";
+    return fetchAPI<{ type: string; data: any[]; count: number }>(`/api/settings/creator-profiles/export${query}`);
+  },
+  importCreatorProfiles: (data: any[]) =>
+    fetchAPI<{ message: string; imported: number }>("/api/settings/creator-profiles/import", {
+      method: "POST",
+      body: JSON.stringify({ data }),
+    }),
+  
+  // 模拟器
+  exportSimulators: (simulatorId?: string) => {
+    const query = simulatorId ? `?simulator_id=${simulatorId}` : "";
+    return fetchAPI<{ type: string; data: any[]; count: number }>(`/api/settings/simulators/export${query}`);
+  },
+  importSimulators: (data: any[]) =>
+    fetchAPI<{ message: string; imported: number }>("/api/settings/simulators/import", {
+      method: "POST",
+      body: JSON.stringify({ data }),
+    }),
+  
+  // 系统提示词
+  exportSystemPrompts: (promptId?: string) => {
+    const query = promptId ? `?prompt_id=${promptId}` : "";
+    return fetchAPI<{ type: string; data: any[]; count: number }>(`/api/settings/system-prompts/export${query}`);
+  },
+  importSystemPrompts: (data: any[]) =>
+    fetchAPI<{ message: string; imported: number; updated?: number }>("/api/settings/system-prompts/import", {
+      method: "POST",
+      body: JSON.stringify({ data }),
+    }),
 };
 
 // ============== Simulation API ==============
@@ -475,6 +526,8 @@ export interface ContentBlock {
   status: "pending" | "in_progress" | "completed" | "failed";
   ai_prompt: string;
   constraints: FieldConstraints;
+  pre_questions: string[];           // 生成前提问
+  pre_answers: Record<string, string>; // 提问答案
   depends_on: string[];
   special_handler: "intent" | "research" | "simulate" | "evaluate" | null;
   need_review: boolean;
@@ -535,6 +588,7 @@ export const blockAPI = {
     special_handler?: string | null;
     need_review?: boolean;
     order_index?: number;
+    pre_questions?: string[];  // 生成前提问
   }) =>
     fetchAPI<ContentBlock>("/api/blocks/", {
       method: "POST",
@@ -548,6 +602,8 @@ export const blockAPI = {
     status: string;
     ai_prompt: string;
     constraints: FieldConstraints;
+    pre_questions: string[];
+    pre_answers: Record<string, string>;
     depends_on: string[];
     need_review: boolean;
     is_collapsed: boolean;
@@ -584,6 +640,15 @@ export const blockAPI = {
       cost: number;
     }>(`/api/blocks/${blockId}/generate`, {
       method: "POST",
+    }),
+
+  // 流式生成内容块内容
+  generateStream: (blockId: string) =>
+    fetch(`${API_BASE}/api/blocks/${blockId}/generate/stream`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
     }),
 
   // 应用模板到项目

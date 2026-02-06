@@ -30,6 +30,36 @@ from core.prompt_engine import PromptEngine, GoldenContext
 router = APIRouter(prefix="/api/blocks", tags=["content-blocks"])
 
 
+def _build_constraints_text(constraints: Optional[Dict]) -> str:
+    """构建约束文本，强调 Markdown 格式"""
+    lines = []
+    
+    if constraints:
+        if constraints.get("max_length"):
+            lines.append(f"- 字数限制：不超过 {constraints['max_length']} 字")
+        
+        output_format = constraints.get("output_format", "markdown")
+    else:
+        output_format = "markdown"
+    
+    if output_format == "markdown":
+        lines.append("- 输出格式：**Markdown 富文本**")
+        lines.append("  - 必须使用标准 Markdown 语法")
+        lines.append("  - 标题使用 # ## ### 格式")
+        lines.append("  - 表格必须包含表头分隔行（如 | --- | --- |）")
+        lines.append("  - 列表使用 - 或 1. 格式")
+        lines.append("  - 重点内容使用 **粗体** 或 *斜体*")
+    elif output_format:
+        format_map = {
+            "plain_text": "纯文本（不使用任何格式化符号）",
+            "json": "JSON 格式（必须是有效的 JSON）",
+            "list": "列表格式（每行一项）",
+        }
+        lines.append(f"- 输出格式：{format_map.get(output_format, output_format)}")
+    
+    return "\n".join(lines)
+
+
 # ========== Pydantic 模型 ==========
 
 class BlockCreate(BaseModel):
@@ -45,6 +75,7 @@ class BlockCreate(BaseModel):
     special_handler: Optional[str] = None
     need_review: bool = True
     order_index: Optional[int] = None
+    pre_questions: List[str] = Field(default_factory=list)  # 生成前提问
 
 
 class BlockUpdate(BaseModel):
@@ -54,6 +85,8 @@ class BlockUpdate(BaseModel):
     status: Optional[str] = None
     ai_prompt: Optional[str] = None
     constraints: Optional[Dict] = None
+    pre_questions: Optional[List[str]] = None
+    pre_answers: Optional[Dict] = None
     depends_on: Optional[List[str]] = None
     need_review: Optional[bool] = None
     is_collapsed: Optional[bool] = None
@@ -78,6 +111,8 @@ class BlockResponse(BaseModel):
     status: str
     ai_prompt: str
     constraints: Dict
+    pre_questions: List[str] = Field(default_factory=list)
+    pre_answers: Dict = Field(default_factory=dict)
     depends_on: List[str]
     special_handler: Optional[str]
     need_review: bool
@@ -119,6 +154,8 @@ def _block_to_response(block: ContentBlock, include_children: bool = False) -> B
         status=block.status or "pending",
         ai_prompt=block.ai_prompt or "",
         constraints=block.constraints or {},
+        pre_questions=block.pre_questions or [],  # 生成前提问
+        pre_answers=block.pre_answers or {},      # 用户回答
         depends_on=block.depends_on or [],
         special_handler=block.special_handler,
         need_review=block.need_review,
@@ -256,6 +293,7 @@ def create_block(
         depends_on=data.depends_on,
         special_handler=data.special_handler,
         need_review=data.need_review,
+        pre_questions=data.pre_questions,  # 保存生成前提问
     )
     
     db.add(block)
@@ -512,18 +550,7 @@ async def generate_block_content(
     # 构建提示词
     prompt_engine = PromptEngine()
     
-    constraints_text = ""
-    if block.constraints:
-        if block.constraints.get("max_length"):
-            constraints_text += f"字数限制：不超过 {block.constraints['max_length']} 字\n"
-        if block.constraints.get("output_format"):
-            format_map = {
-                "markdown": "Markdown 富文本",
-                "plain_text": "纯文本",
-                "json": "JSON 格式",
-                "list": "列表格式",
-            }
-            constraints_text += f"输出格式：{format_map.get(block.constraints['output_format'], block.constraints['output_format'])}\n"
+    constraints_text = _build_constraints_text(block.constraints)
     
     system_prompt = f"""{gc.to_prompt()}
 
@@ -534,7 +561,9 @@ async def generate_block_content(
 
 {f'---{chr(10)}# 参考内容{chr(10)}{dependency_content}' if dependency_content else ''}
 
-{f'---{chr(10)}# 生成约束（必须严格遵守！）{chr(10)}{constraints_text}' if constraints_text else ''}
+---
+# 生成约束（必须严格遵守！）
+{constraints_text}
 """
     
     # 调用 AI
@@ -575,6 +604,9 @@ async def generate_block_content(
         db.add(gen_log)
         db.commit()
         
+        # 自动触发依赖此块的其他块（如果它们设置了 need_review=False 且依赖已满足）
+        auto_triggered = await _trigger_dependent_blocks(block.id, block.project_id, db)
+        
         return {
             "block_id": block.id,
             "content": response.content,
@@ -582,12 +614,145 @@ async def generate_block_content(
             "tokens_in": response.tokens_in,
             "tokens_out": response.tokens_out,
             "cost": response.cost,
+            "auto_triggered": auto_triggered,  # 返回被自动触发的块列表
         }
         
     except Exception as e:
         block.status = "failed"
         db.commit()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+async def _trigger_dependent_blocks(completed_block_id: str, project_id: str, db: Session) -> List[str]:
+    """
+    自动触发依赖已完成块的其他块
+    
+    条件：
+    1. 依赖了刚完成的块
+    2. need_review = False（自动执行模式）
+    3. 所有依赖都有内容（满足生成条件）
+    4. 当前状态是 pending
+    
+    Returns:
+        被触发的块 ID 列表
+    """
+    from core.ai_client import AIClient, ChatMessage
+    from core.prompt_engine import PromptEngine, GoldenContext
+    from core.models import GenerationLog, generate_uuid, Project
+    
+    triggered_ids = []
+    
+    # 查找所有依赖此块的块
+    dependent_blocks = db.query(ContentBlock).filter(
+        ContentBlock.project_id == project_id,
+        ContentBlock.deleted_at == None,
+        ContentBlock.need_review == False,  # 只有自动执行的才触发
+        ContentBlock.status == "pending",    # 只有待处理的才触发
+    ).all()
+    
+    # 筛选出确实依赖了 completed_block_id 的块
+    blocks_to_trigger = []
+    for dep_block in dependent_blocks:
+        if completed_block_id in (dep_block.depends_on or []):
+            blocks_to_trigger.append(dep_block)
+    
+    if not blocks_to_trigger:
+        return []
+    
+    # 检查每个块的所有依赖是否都满足
+    all_blocks = db.query(ContentBlock).filter(
+        ContentBlock.project_id == project_id,
+        ContentBlock.deleted_at == None,
+    ).all()
+    blocks_by_id = {b.id: b for b in all_blocks}
+    
+    project = db.query(Project).filter(Project.id == project_id).first()
+    
+    for block in blocks_to_trigger:
+        # 检查所有依赖是否都有内容
+        all_deps_ready = True
+        for dep_id in (block.depends_on or []):
+            dep = blocks_by_id.get(dep_id)
+            if not dep or not dep.content or not dep.content.strip():
+                all_deps_ready = False
+                break
+        
+        if not all_deps_ready:
+            continue
+        
+        # 触发生成
+        try:
+            # 获取创作者特质
+            creator_profile_text = ""
+            if project and project.creator_profile:
+                creator_profile_text = project.creator_profile.to_prompt_context()
+            
+            gc = GoldenContext(creator_profile=creator_profile_text)
+            
+            # 获取依赖内容
+            dependency_content = block.get_dependency_content(blocks_by_id)
+            
+            # 构建约束文本
+            constraints_text = _build_constraints_text(block.constraints)
+            
+            system_prompt = f"""{gc.to_prompt()}
+
+---
+
+# 当前任务
+{block.ai_prompt or '请生成内容。'}
+
+{f'---{chr(10)}# 参考内容{chr(10)}{dependency_content}' if dependency_content else ''}
+
+---
+# 生成约束（必须严格遵守！）
+{constraints_text}
+"""
+            
+            ai_client = AIClient()
+            block.status = "in_progress"
+            db.commit()
+            
+            messages = [
+                ChatMessage(role="system", content=system_prompt),
+                ChatMessage(role="user", content=f"请生成「{block.name}」的内容。"),
+            ]
+            response = await ai_client.async_chat(messages=messages)
+            
+            block.content = response.content
+            block.status = "completed"
+            
+            gen_log = GenerationLog(
+                id=generate_uuid(),
+                project_id=block.project_id,
+                field_id=block.id,
+                phase=block.parent_id or "auto_trigger",
+                operation=f"auto_generate_{block.name}",
+                model=response.model,
+                tokens_in=response.tokens_in,
+                tokens_out=response.tokens_out,
+                duration_ms=response.duration_ms,
+                prompt_input=system_prompt,
+                prompt_output=response.content,
+                cost=response.cost,
+                status="success",
+            )
+            db.add(gen_log)
+            db.commit()
+            
+            triggered_ids.append(block.id)
+            print(f"[AUTO-TRIGGER] 自动生成 {block.name} 成功")
+            
+            # 递归触发这个块的依赖块
+            sub_triggered = await _trigger_dependent_blocks(block.id, project_id, db)
+            triggered_ids.extend(sub_triggered)
+            
+        except Exception as e:
+            print(f"[AUTO-TRIGGER] 自动生成 {block.name} 失败: {e}")
+            block.status = "failed"
+            db.commit()
+    
+    return triggered_ids
 
 
 @router.post("/{block_id}/generate/stream")
@@ -640,18 +805,7 @@ async def generate_block_content_stream(
         dependency_content = block.get_dependency_content(blocks_by_id)
     
     # 构建约束文本
-    constraints_text = ""
-    if block.constraints:
-        if block.constraints.get("max_length"):
-            constraints_text += f"字数限制：不超过 {block.constraints['max_length']} 字\n"
-        if block.constraints.get("output_format"):
-            format_map = {
-                "markdown": "Markdown 富文本",
-                "plain_text": "纯文本",
-                "json": "JSON 格式",
-                "list": "列表格式",
-            }
-            constraints_text += f"输出格式：{format_map.get(block.constraints['output_format'], block.constraints['output_format'])}\n"
+    constraints_text = _build_constraints_text(block.constraints)
     
     system_prompt = f"""{gc.to_prompt()}
 
@@ -662,7 +816,9 @@ async def generate_block_content_stream(
 
 {f'---{chr(10)}# 参考内容{chr(10)}{dependency_content}' if dependency_content else ''}
 
-{f'---{chr(10)}# 生成约束（必须严格遵守！）{chr(10)}{constraints_text}' if constraints_text else ''}
+---
+# 生成约束（必须严格遵守！）
+{constraints_text}
 """
     
     from core.ai_client import AIClient, ChatMessage
@@ -716,6 +872,13 @@ async def generate_block_content_stream(
             db.add(gen_log)
             db.commit()
             
+            # 自动触发依赖此块的其他块
+            try:
+                auto_triggered = await _trigger_dependent_blocks(block.id, block.project_id, db)
+            except Exception as trigger_error:
+                print(f"[AUTO-TRIGGER] 触发依赖块失败: {trigger_error}")
+                auto_triggered = []
+            
             # 发送完成事件
             done_data = json.dumps({
                 "done": True,
@@ -724,6 +887,7 @@ async def generate_block_content_stream(
                 "status": block.status,
                 "tokens_in": tokens_in,
                 "tokens_out": tokens_out,
+                "auto_triggered": auto_triggered,
             }, ensure_ascii=False)
             yield f"data: {done_data}\n\n"
             

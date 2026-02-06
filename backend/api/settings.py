@@ -201,6 +201,8 @@ def update_creator_profile(
     db: Session = Depends(get_db),
 ):
     """更新创作者特质"""
+    from sqlalchemy.orm.attributes import flag_modified
+    
     profile = db.query(CreatorProfile).filter(CreatorProfile.id == profile_id).first()
     if not profile:
         raise HTTPException(status_code=404, detail="Not found")
@@ -208,6 +210,9 @@ def update_creator_profile(
     update_data = update.model_dump(exclude_unset=True)
     for key, value in update_data.items():
         setattr(profile, key, value)
+        # 对于 JSON 字段（如 traits），需要标记为已修改
+        if key == "traits":
+            flag_modified(profile, "traits")
     
     db.commit()
     db.refresh(profile)
@@ -285,6 +290,8 @@ def update_field_template(
     db: Session = Depends(get_db),
 ):
     """更新字段模板"""
+    from sqlalchemy.orm.attributes import flag_modified
+    
     template = db.query(FieldTemplate).filter(FieldTemplate.id == template_id).first()
     if not template:
         raise HTTPException(status_code=404, detail="Not found")
@@ -292,6 +299,9 @@ def update_field_template(
     update_data = update.model_dump(exclude_unset=True)
     for key, value in update_data.items():
         setattr(template, key, value)
+        # 对于 JSON 字段（如 fields），需要标记为已修改
+        if key == "fields":
+            flag_modified(template, "fields")
     
     db.commit()
     db.refresh(template)
@@ -459,6 +469,8 @@ def update_simulator(
     db: Session = Depends(get_db),
 ):
     """更新模拟器"""
+    from sqlalchemy.orm.attributes import flag_modified
+    
     simulator = db.query(Simulator).filter(Simulator.id == simulator_id).first()
     if not simulator:
         raise HTTPException(status_code=404, detail="Not found")
@@ -466,6 +478,9 @@ def update_simulator(
     update_data = update.model_dump(exclude_unset=True)
     for key, value in update_data.items():
         setattr(simulator, key, value)
+        # 对于 JSON 字段（如 evaluation_dimensions），需要标记为已修改
+        if key == "evaluation_dimensions":
+            flag_modified(simulator, "evaluation_dimensions")
     
     db.commit()
     db.refresh(simulator)
@@ -681,3 +696,251 @@ def _to_log_response(log: GenerationLog) -> LogResponse:
         error_message=log.error_message or "",
         created_at=log.created_at.isoformat() if log.created_at else "",
     )
+
+
+# ============== 导入导出 API ==============
+
+class ImportRequest(BaseModel):
+    """导入请求"""
+    data: list
+
+
+# --- 字段模板导入导出 ---
+
+@router.get("/field-templates/export")
+def export_field_templates(
+    template_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    导出字段模板
+    
+    Args:
+        template_id: 单个模板ID（不传则导出全部）
+    """
+    if template_id:
+        template = db.query(FieldTemplate).filter(FieldTemplate.id == template_id).first()
+        if not template:
+            raise HTTPException(status_code=404, detail="Template not found")
+        templates = [template]
+    else:
+        templates = db.query(FieldTemplate).all()
+    
+    export_data = []
+    for t in templates:
+        export_data.append({
+            "name": t.name,
+            "description": t.description or "",
+            "category": t.category or "通用",
+            "fields": t.fields or [],
+        })
+    
+    return {"type": "field_templates", "data": export_data, "count": len(export_data)}
+
+
+@router.post("/field-templates/import")
+def import_field_templates(
+    request: ImportRequest,
+    db: Session = Depends(get_db),
+):
+    """导入字段模板"""
+    imported = 0
+    for item in request.data:
+        db_template = FieldTemplate(
+            id=generate_uuid(),
+            name=item.get("name", "导入模板"),
+            description=item.get("description", ""),
+            category=item.get("category", "通用"),
+            fields=item.get("fields", []),
+        )
+        db.add(db_template)
+        imported += 1
+    
+    db.commit()
+    return {"message": f"成功导入 {imported} 个字段模板", "imported": imported}
+
+
+# --- 创作者特质导入导出 ---
+
+@router.get("/creator-profiles/export")
+def export_creator_profiles(
+    profile_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    导出创作者特质
+    
+    Args:
+        profile_id: 单个特质ID（不传则导出全部）
+    """
+    if profile_id:
+        profile = db.query(CreatorProfile).filter(CreatorProfile.id == profile_id).first()
+        if not profile:
+            raise HTTPException(status_code=404, detail="Profile not found")
+        profiles = [profile]
+    else:
+        profiles = db.query(CreatorProfile).all()
+    
+    export_data = []
+    for p in profiles:
+        export_data.append({
+            "name": p.name,
+            "description": p.description or "",
+            "traits": p.traits or {},
+        })
+    
+    return {"type": "creator_profiles", "data": export_data, "count": len(export_data)}
+
+
+@router.post("/creator-profiles/import")
+def import_creator_profiles(
+    request: ImportRequest,
+    db: Session = Depends(get_db),
+):
+    """导入创作者特质"""
+    imported = 0
+    for item in request.data:
+        db_profile = CreatorProfile(
+            id=generate_uuid(),
+            name=item.get("name", "导入特质"),
+            description=item.get("description", ""),
+            traits=item.get("traits", {}),
+        )
+        db.add(db_profile)
+        imported += 1
+    
+    db.commit()
+    return {"message": f"成功导入 {imported} 个创作者特质", "imported": imported}
+
+
+# --- 模拟器导入导出 ---
+
+@router.get("/simulators/export")
+def export_simulators(
+    simulator_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    导出模拟器
+    
+    Args:
+        simulator_id: 单个模拟器ID（不传则导出全部）
+    """
+    if simulator_id:
+        simulator = db.query(Simulator).filter(Simulator.id == simulator_id).first()
+        if not simulator:
+            raise HTTPException(status_code=404, detail="Simulator not found")
+        simulators = [simulator]
+    else:
+        simulators = db.query(Simulator).all()
+    
+    export_data = []
+    for s in simulators:
+        export_data.append({
+            "name": s.name,
+            "description": s.description or "",
+            "interaction_type": s.interaction_type or "reading",
+            "prompt_template": s.prompt_template or "",
+            "evaluation_dimensions": s.evaluation_dimensions or [],
+            "max_turns": s.max_turns or 10,
+        })
+    
+    return {"type": "simulators", "data": export_data, "count": len(export_data)}
+
+
+@router.post("/simulators/import")
+def import_simulators(
+    request: ImportRequest,
+    db: Session = Depends(get_db),
+):
+    """导入模拟器"""
+    imported = 0
+    for item in request.data:
+        db_simulator = Simulator(
+            id=generate_uuid(),
+            name=item.get("name", "导入模拟器"),
+            description=item.get("description", ""),
+            interaction_type=item.get("interaction_type", "reading"),
+            prompt_template=item.get("prompt_template", ""),
+            evaluation_dimensions=item.get("evaluation_dimensions", []),
+            max_turns=item.get("max_turns", 10),
+        )
+        db.add(db_simulator)
+        imported += 1
+    
+    db.commit()
+    return {"message": f"成功导入 {imported} 个模拟器", "imported": imported}
+
+
+# --- 系统提示词导入导出 ---
+
+@router.get("/system-prompts/export")
+def export_system_prompts(
+    prompt_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    导出系统提示词
+    
+    Args:
+        prompt_id: 单个提示词ID（不传则导出全部）
+    """
+    if prompt_id:
+        prompt = db.query(SystemPrompt).filter(SystemPrompt.id == prompt_id).first()
+        if not prompt:
+            raise HTTPException(status_code=404, detail="Prompt not found")
+        prompts = [prompt]
+    else:
+        prompts = db.query(SystemPrompt).all()
+    
+    export_data = []
+    for p in prompts:
+        export_data.append({
+            "name": p.name,
+            "phase": p.phase or "",
+            "content": p.content or "",
+            "description": p.description or "",
+        })
+    
+    return {"type": "system_prompts", "data": export_data, "count": len(export_data)}
+
+
+@router.post("/system-prompts/import")
+def import_system_prompts(
+    request: ImportRequest,
+    db: Session = Depends(get_db),
+):
+    """导入系统提示词（会覆盖同 phase 的已有提示词）"""
+    imported = 0
+    updated = 0
+    
+    for item in request.data:
+        phase = item.get("phase", "")
+        
+        # 检查是否已存在同 phase 的提示词
+        existing = db.query(SystemPrompt).filter(SystemPrompt.phase == phase).first()
+        
+        if existing:
+            # 更新现有的
+            existing.name = item.get("name", existing.name)
+            existing.content = item.get("content", existing.content)
+            existing.description = item.get("description", existing.description)
+            updated += 1
+        else:
+            # 创建新的
+            db_prompt = SystemPrompt(
+                id=generate_uuid(),
+                name=item.get("name", "导入提示词"),
+                phase=phase,
+                content=item.get("content", ""),
+                description=item.get("description", ""),
+            )
+            db.add(db_prompt)
+            imported += 1
+    
+    db.commit()
+    return {
+        "message": f"成功导入 {imported} 个、更新 {updated} 个系统提示词",
+        "imported": imported,
+        "updated": updated,
+    }

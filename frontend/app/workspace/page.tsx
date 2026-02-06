@@ -4,7 +4,7 @@
 
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { WorkspaceLayout } from "@/components/layout/workspace-layout";
 import { ProgressPanel } from "@/components/progress-panel";
 import { ContentPanel } from "@/components/content-panel";
@@ -12,6 +12,7 @@ import { AgentPanel } from "@/components/agent-panel";
 import { CreateProjectModal } from "@/components/create-project-modal";
 import { projectAPI, fieldAPI, agentAPI } from "@/lib/api";
 import type { Project, Field, ContentBlock } from "@/lib/api";
+import { Copy, Trash2, ChevronDown, CheckSquare, Square, X } from "lucide-react";
 
 export default function WorkspacePage() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -23,6 +24,24 @@ export default function WorkspacePage() {
   const [refreshKey, setRefreshKey] = useState(0);  // 用于触发子组件刷新
   const [selectedBlock, setSelectedBlock] = useState<ContentBlock | null>(null); // 树形视图选中的内容块
   const [allBlocks, setAllBlocks] = useState<ContentBlock[]>([]); // 所有内容块（用于依赖选择）
+  const [showProjectMenu, setShowProjectMenu] = useState(false); // 项目下拉菜单
+  const projectMenuRef = useRef<HTMLDivElement>(null);
+  
+  // 批量选择相关状态
+  const [isBatchMode, setIsBatchMode] = useState(false);
+  const [selectedProjectIds, setSelectedProjectIds] = useState<Set<string>>(new Set());
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  // 点击外部关闭下拉菜单
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (projectMenuRef.current && !projectMenuRef.current.contains(e.target as Node)) {
+        setShowProjectMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   // 加载项目列表
   useEffect(() => {
@@ -178,6 +197,99 @@ export default function WorkspacePage() {
     setCurrentProject(project);
   };
 
+  const handleDuplicateProject = async (projectId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      const duplicated = await projectAPI.duplicate(projectId);
+      setProjects([...projects, duplicated]);
+      setCurrentProject(duplicated);
+      setShowProjectMenu(false);
+    } catch (err) {
+      console.error("复制项目失败:", err);
+      setError("复制项目失败");
+    }
+  };
+
+  const handleDeleteProject = async (projectId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirm("确定删除此项目？此操作将删除项目的所有数据，包括字段和对话记录。")) return;
+    
+    try {
+      await projectAPI.delete(projectId);
+      const newProjects = projects.filter(p => p.id !== projectId);
+      setProjects(newProjects);
+      if (currentProject?.id === projectId) {
+        setCurrentProject(newProjects[0] || null);
+      }
+      setShowProjectMenu(false);
+    } catch (err) {
+      console.error("删除项目失败:", err);
+      setError("删除项目失败");
+    }
+  };
+
+  // 批量选择相关函数
+  const toggleProjectSelection = (projectId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const newSelected = new Set(selectedProjectIds);
+    if (newSelected.has(projectId)) {
+      newSelected.delete(projectId);
+    } else {
+      newSelected.add(projectId);
+    }
+    setSelectedProjectIds(newSelected);
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedProjectIds.size === projects.length) {
+      setSelectedProjectIds(new Set());
+    } else {
+      setSelectedProjectIds(new Set(projects.map(p => p.id)));
+    }
+  };
+
+  const exitBatchMode = () => {
+    setIsBatchMode(false);
+    setSelectedProjectIds(new Set());
+  };
+
+  const handleBatchDelete = async () => {
+    if (selectedProjectIds.size === 0) return;
+    
+    const count = selectedProjectIds.size;
+    if (!confirm(`确定删除选中的 ${count} 个项目？此操作将删除所有选中项目的数据，包括字段和对话记录。`)) return;
+    
+    setIsDeleting(true);
+    try {
+      // 逐个删除
+      const deletePromises = Array.from(selectedProjectIds).map(id => 
+        projectAPI.delete(id).catch(err => {
+          console.error(`删除项目 ${id} 失败:`, err);
+          return null; // 失败的返回 null
+        })
+      );
+      
+      await Promise.all(deletePromises);
+      
+      // 更新项目列表
+      const newProjects = projects.filter(p => !selectedProjectIds.has(p.id));
+      setProjects(newProjects);
+      
+      // 如果当前项目被删除，切换到第一个项目
+      if (currentProject && selectedProjectIds.has(currentProject.id)) {
+        setCurrentProject(newProjects[0] || null);
+      }
+      
+      // 退出批量模式
+      exitBatchMode();
+    } catch (err) {
+      console.error("批量删除失败:", err);
+      setError("批量删除失败");
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-screen bg-surface-0">
@@ -195,22 +307,134 @@ export default function WorkspacePage() {
             内容生产系统
           </h1>
           
-          {/* 项目选择器 */}
-          <select
-            value={currentProject?.id || ""}
-            onChange={(e) => {
-              const project = projects.find((p) => p.id === e.target.value);
-              setCurrentProject(project || null);
-            }}
-            className="px-3 py-1.5 bg-surface-2 border border-surface-3 rounded-lg text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-brand-500"
-          >
-            <option value="">选择项目</option>
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name} (v{p.version})
-              </option>
-            ))}
-          </select>
+          {/* 项目选择器（带复制/删除功能） */}
+          <div className="relative" ref={projectMenuRef}>
+            <button
+              onClick={() => setShowProjectMenu(!showProjectMenu)}
+              className="flex items-center gap-2 px-3 py-1.5 bg-surface-2 border border-surface-3 rounded-lg text-sm text-zinc-200 hover:border-surface-4 min-w-[200px] justify-between"
+            >
+              <span className="truncate">
+                {currentProject ? `${currentProject.name} (v${currentProject.version})` : "选择项目"}
+              </span>
+              <ChevronDown className="w-4 h-4 text-zinc-400" />
+            </button>
+            
+            {showProjectMenu && (
+              <div className="absolute top-full left-0 mt-1 w-96 bg-surface-1 border border-surface-3 rounded-lg shadow-xl z-50 overflow-hidden">
+                {/* 顶部操作栏 */}
+                <div className="px-3 py-2 border-b border-surface-3 flex items-center justify-between bg-surface-2">
+                  {isBatchMode ? (
+                    <>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={toggleSelectAll}
+                          className="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-zinc-200"
+                        >
+                          {selectedProjectIds.size === projects.length ? (
+                            <CheckSquare className="w-4 h-4 text-brand-400" />
+                          ) : (
+                            <Square className="w-4 h-4" />
+                          )}
+                          全选
+                        </button>
+                        <span className="text-xs text-zinc-500">
+                          已选 {selectedProjectIds.size} / {projects.length}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={handleBatchDelete}
+                          disabled={selectedProjectIds.size === 0 || isDeleting}
+                          className="flex items-center gap-1 px-2 py-1 text-xs bg-red-600/20 text-red-400 hover:bg-red-600/30 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          {isDeleting ? "删除中..." : "批量删除"}
+                        </button>
+                        <button
+                          onClick={exitBatchMode}
+                          className="p-1 text-zinc-400 hover:text-zinc-200 hover:bg-surface-3 rounded"
+                          title="退出批量模式"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-xs text-zinc-500">{projects.length} 个项目</span>
+                      <button
+                        onClick={() => setIsBatchMode(true)}
+                        className="text-xs text-zinc-400 hover:text-zinc-200"
+                        disabled={projects.length === 0}
+                      >
+                        批量管理
+                      </button>
+                    </>
+                  )}
+                </div>
+                
+                {/* 项目列表 */}
+                <div className="max-h-72 overflow-y-auto py-1">
+                  {projects.length === 0 ? (
+                    <div className="px-3 py-4 text-sm text-zinc-500 text-center">暂无项目</div>
+                  ) : (
+                    projects.map((p) => (
+                      <div
+                        key={p.id}
+                        className={`flex items-center gap-2 px-3 py-2 hover:bg-surface-2 cursor-pointer group ${
+                          !isBatchMode && currentProject?.id === p.id ? "bg-brand-600/10" : ""
+                        } ${isBatchMode && selectedProjectIds.has(p.id) ? "bg-brand-600/10" : ""}`}
+                        onClick={(e) => {
+                          if (isBatchMode) {
+                            toggleProjectSelection(p.id, e);
+                          } else {
+                            setCurrentProject(p);
+                            setShowProjectMenu(false);
+                          }
+                        }}
+                      >
+                        {/* 批量选择复选框 */}
+                        {isBatchMode && (
+                          <div className="flex-shrink-0">
+                            {selectedProjectIds.has(p.id) ? (
+                              <CheckSquare className="w-4 h-4 text-brand-400" />
+                            ) : (
+                              <Square className="w-4 h-4 text-zinc-500" />
+                            )}
+                          </div>
+                        )}
+                        
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm text-zinc-200 truncate">{p.name}</div>
+                          <div className="text-xs text-zinc-500">v{p.version}</div>
+                        </div>
+                        
+                        {/* 单项操作按钮（非批量模式） */}
+                        {!isBatchMode && (
+                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button
+                              onClick={(e) => handleDuplicateProject(p.id, e)}
+                              className="p-1.5 hover:bg-surface-3 rounded text-zinc-400 hover:text-brand-400"
+                              title="复制项目"
+                            >
+                              <Copy className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={(e) => handleDeleteProject(p.id, e)}
+                              className="p-1.5 hover:bg-surface-3 rounded text-zinc-400 hover:text-red-400"
+                              title="删除项目"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
           
           <button
             onClick={handleCreateProject}
