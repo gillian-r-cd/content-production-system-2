@@ -48,6 +48,10 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
   const [editedConstraints, setEditedConstraints] = useState(block.constraints || {});
   const [selectedDependencies, setSelectedDependencies] = useState<string[]>(block.depends_on || []);
   
+  // 生成前提问状态
+  const [preAnswers, setPreAnswers] = useState<Record<string, string>>(block.pre_answers || {});
+  const hasPreQuestions = (block.pre_questions?.length || 0) > 0;
+  
   // 可选的依赖（排除自己和自己的子节点）
   // 允许选择：1. 所有 field 类型  2. 有特殊处理器的 phase 类型（如消费者调研、意图分析）
   const availableDependencies = allBlocks.filter(b => {
@@ -78,7 +82,22 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
     setEditedPrompt(block.ai_prompt || "");
     setEditedConstraints(block.constraints || {});
     setSelectedDependencies(block.depends_on || []);
+    setPreAnswers(block.pre_answers || {});
   }, [block]);
+  
+  // 保存预提问答案
+  const handleSavePreAnswers = async () => {
+    try {
+      if (useFieldAPI) {
+        await fieldAPI.update(block.id, { pre_answers: preAnswers });
+      } else {
+        await blockAPI.update(block.id, { pre_answers: preAnswers });
+      }
+      onUpdate?.();
+    } catch (err) {
+      console.error("保存预提问答案失败:", err);
+    }
+  };
 
   // 保存名称
   const handleSaveName = async () => {
@@ -195,17 +214,22 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
       return;
     }
     
+    // 先保存预提问答案
+    if (hasPreQuestions && Object.keys(preAnswers).length > 0) {
+      await handleSavePreAnswers();
+    }
+    
     setIsGenerating(true);
     setGeneratingContent("");
     
     try {
       if (useFieldAPI) {
-        // 虚拟块使用 Field API 生成
-        const result = await fieldAPI.generate(block.id, {});
+        // 虚拟块使用 Field API 生成，传递预提问答案
+        const result = await fieldAPI.generate(block.id, preAnswers);
         setEditedContent(result.content);
         onUpdate?.();
       } else {
-        // 使用流式生成
+        // 使用流式生成（预提问答案已保存到后端）
         const response = await blockAPI.generateStream(block.id);
         if (!response.ok) {
           const error = await response.json().catch(() => ({ detail: "生成失败" }));
@@ -438,6 +462,34 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
             {block.need_review ? "需要人工确认" : "自动执行"}
           </span>
         </div>
+
+        {/* 生成前提问区域 */}
+        {hasPreQuestions && (
+          <div className="px-5 py-4 bg-amber-900/10 border-b border-amber-600/20">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-amber-400 text-sm font-medium">📝 生成前请先回答以下问题</span>
+              <span className="text-xs text-amber-500/60">（回答后内容将自动保存）</span>
+            </div>
+            <div className="space-y-3">
+              {block.pre_questions?.map((question, idx) => (
+                <div key={idx} className="space-y-1">
+                  <label className="text-sm text-zinc-300">{idx + 1}. {question}</label>
+                  <input
+                    type="text"
+                    value={preAnswers[question] || ""}
+                    onChange={(e) => {
+                      const newAnswers = { ...preAnswers, [question]: e.target.value };
+                      setPreAnswers(newAnswers);
+                    }}
+                    onBlur={handleSavePreAnswers}
+                    placeholder="请输入回答..."
+                    className="w-full px-3 py-2 bg-surface-2 border border-amber-500/30 rounded-lg text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* 内容区域 */}
         <div className="flex-1 p-5 overflow-y-auto">
