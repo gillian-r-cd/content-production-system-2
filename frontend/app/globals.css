@@ -40,3 +40,64 @@ body {
   color: white;
 }
 
+/* Markdown 表格样式（暗色主题） */
+.prose table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1em 0;
+  font-size: 0.875rem;
+}
+
+.prose thead {
+  border-bottom: 2px solid #3f3f46;
+}
+
+.prose th {
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  font-weight: 600;
+  color: #e4e4e7;
+  background: #27272a;
+}
+
+.prose td {
+  padding: 0.5rem 0.75rem;
+  border-top: 1px solid #27272a;
+  color: #d4d4d8;
+}
+
+.prose tbody tr:hover {
+  background: #18181b;
+}
+
+/* Markdown 代码块样式 */
+.prose pre {
+  background: #18181b;
+  border: 1px solid #27272a;
+  border-radius: 0.5rem;
+  padding: 1rem;
+  overflow-x: auto;
+}
+
+.prose code {
+  color: #a78bfa;
+  font-size: 0.85em;
+}
+
+.prose pre code {
+  color: #d4d4d8;
+}
+
+/* Markdown 引用块 */
+.prose blockquote {
+  border-left: 3px solid #4f46e5;
+  padding-left: 1rem;
+  color: #a1a1aa;
+  font-style: italic;
+}
+
+/* Markdown 水平线 */
+.prose hr {
+  border-color: #27272a;
+}
+

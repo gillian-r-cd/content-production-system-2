@@ -5,8 +5,9 @@
 
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { blockAPI, fieldAPI } from "@/lib/api";
 import type { ContentBlock } from "@/lib/api";
 import { 
@@ -26,7 +27,9 @@ import {
   Folder,
   FolderOpen,
   FileText,
-  Layers
+  Layers,
+  Copy,
+  Check
 } from "lucide-react";
 
 interface ContentBlockCardProps {
@@ -55,6 +58,8 @@ export function ContentBlockCard({
   const [editedName, setEditedName] = useState(block.name);
   const [editedContent, setEditedContent] = useState(block.content || "");
   const [isGenerating, setIsGenerating] = useState(false);
+  const [generatingContent, setGeneratingContent] = useState("");
+  const generatingRef = useRef(false); // 防止切换时丢失生成状态
   
   // 模态框状态
   const [showPromptModal, setShowPromptModal] = useState(false);
@@ -71,6 +76,17 @@ export function ContentBlockCard({
   const [isSavingPreAnswers, setIsSavingPreAnswers] = useState(false);
   const [preAnswersSaved, setPreAnswersSaved] = useState(false);
   const hasPreQuestions = (block.pre_questions?.length || 0) > 0;
+  const [copied, setCopied] = useState(false);
+  
+  const handleCopyContent = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const content = block.content || editedContent;
+    if (content) {
+      navigator.clipboard.writeText(content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
   
   // 保存预提问答案
   const handleSavePreAnswers = async () => {
@@ -83,7 +99,7 @@ export function ContentBlockCard({
       }
       setPreAnswersSaved(true);
       setTimeout(() => setPreAnswersSaved(false), 2000);
-      onBlocksChange?.();
+      onUpdate?.();
     } catch (err) {
       console.error("保存答案失败:", err);
       alert("保存失败: " + (err instanceof Error ? err.message : "未知错误"));
@@ -107,7 +123,10 @@ export function ContentBlockCard({
     .filter(Boolean) as ContentBlock[];
   
   useEffect(() => {
-    setEditedContent(block.content || "");
+    // 生成中不要重置内容（会覆盖流式输出）
+    if (!generatingRef.current) {
+      setEditedContent(block.content || "");
+    }
     setEditedName(block.name);
     setEditedPrompt(block.ai_prompt || "");
     setEditedConstraints(block.constraints || {});
@@ -227,10 +246,23 @@ export function ContentBlockCard({
     }
     
     setIsGenerating(true);
+    setGeneratingContent("");
+    generatingRef.current = true;
+    setIsExpanded(true); // 自动展开显示生成内容
+    setIsEditing(false); // 退出编辑模式以显示流式内容
     
     try {
+      // 先保存预提问答案（确保生成时能读到最新答案）
+      if (hasPreQuestions && Object.keys(preAnswers).length > 0) {
+        if (useFieldAPI) {
+          await fieldAPI.update(block.id, { pre_answers: preAnswers } as any);
+        } else {
+          await blockAPI.update(block.id, { pre_answers: preAnswers });
+        }
+      }
+      
       if (useFieldAPI) {
-        await fieldAPI.generate(block.id, {});
+        await fieldAPI.generate(block.id, preAnswers);
         onUpdate?.();
       } else {
         // 使用流式生成
@@ -244,6 +276,7 @@ export function ContentBlockCard({
         if (!reader) throw new Error("无法获取响应流");
         
         const decoder = new TextDecoder();
+        let accumulatedContent = "";
         
         while (true) {
           const { done, value } = await reader.read();
@@ -256,8 +289,17 @@ export function ContentBlockCard({
             if (line.startsWith("data: ")) {
               try {
                 const data = JSON.parse(line.slice(6));
+                if (data.chunk) {
+                  accumulatedContent += data.chunk;
+                  setGeneratingContent(accumulatedContent);
+                }
                 if (data.done) {
+                  setEditedContent(data.content || accumulatedContent);
                   onUpdate?.();
+                }
+                if (data.auto_triggered?.length > 0) {
+                  console.log(`[AUTO-TRIGGER] 自动触发了 ${data.auto_triggered.length} 个依赖块`);
+                  onUpdate?.(); // 刷新列表以显示被自动触发的块的状态变化
                 }
                 if (data.error) {
                   throw new Error(data.error);
@@ -274,6 +316,8 @@ export function ContentBlockCard({
       alert("生成失败: " + (err instanceof Error ? err.message : "未知错误"));
     } finally {
       setIsGenerating(false);
+      setGeneratingContent("");
+      generatingRef.current = false;
     }
   };
 
@@ -361,10 +405,12 @@ export function ContentBlockCard({
               <span className={`px-2 py-0.5 text-xs rounded flex-shrink-0 ${
                 block.status === "completed" ? "bg-emerald-600/20 text-emerald-400" :
                 block.status === "in_progress" ? "bg-amber-600/20 text-amber-400" :
+                block.status === "failed" ? "bg-red-600/20 text-red-400" :
                 "bg-zinc-700 text-zinc-400"
               }`}>
                 {block.status === "completed" ? "已完成" :
-                 block.status === "in_progress" ? "进行中" : "待处理"}
+                 block.status === "in_progress" ? "生成中" :
+                 block.status === "failed" ? "生成失败" : "待处理"}
               </span>
             </div>
             
@@ -404,7 +450,7 @@ export function ContentBlockCard({
       {/* 卡片头部 - 始终显示 */}
       <div 
         className="px-4 py-3 cursor-pointer hover:bg-surface-3/50 transition-colors"
-        onClick={() => setIsExpanded(!isExpanded)}
+        onClick={() => !isGenerating && setIsExpanded(!isExpanded)}
       >
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 flex-1 min-w-0">
@@ -413,7 +459,7 @@ export function ContentBlockCard({
               className="p-0.5 text-zinc-500 hover:text-zinc-300 flex-shrink-0"
               onClick={(e) => {
                 e.stopPropagation();
-                setIsExpanded(!isExpanded);
+                if (!isGenerating) setIsExpanded(!isExpanded);
               }}
             >
               {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
@@ -454,15 +500,17 @@ export function ContentBlockCard({
               </span>
             )}
             
-            {/* 状态标签 */}
-            <span className={`px-2 py-0.5 text-xs rounded flex-shrink-0 ${
-              block.status === "completed" ? "bg-emerald-600/20 text-emerald-400" :
-              block.status === "in_progress" ? "bg-amber-600/20 text-amber-400" :
-              "bg-zinc-700 text-zinc-400"
-            }`}>
-              {block.status === "completed" ? "已完成" :
-               block.status === "in_progress" ? "进行中" : "待处理"}
-            </span>
+              {/* 状态标签 */}
+              <span className={`px-2 py-0.5 text-xs rounded flex-shrink-0 ${
+                block.status === "completed" ? "bg-emerald-600/20 text-emerald-400" :
+                block.status === "in_progress" ? "bg-amber-600/20 text-amber-400" :
+                block.status === "failed" ? "bg-red-600/20 text-red-400" :
+                "bg-zinc-700 text-zinc-400"
+              }`}>
+                {block.status === "completed" ? "已完成" :
+                 block.status === "in_progress" ? "生成中" :
+                 block.status === "failed" ? "生成失败" : "待处理"}
+              </span>
           </div>
           
           {/* 快速操作按钮 */}
@@ -579,7 +627,7 @@ export function ContentBlockCard({
           {dependencyBlocks.length > 0 && (
             <span className="flex items-center gap-1">
               📎 依赖 {dependencyBlocks.length} 项
-              {dependencyBlocks.some(d => d.status !== "completed") && (
+              {dependencyBlocks.some(d => !d.content || d.content.trim() === "") && (
                 <span className="text-red-400">（未完成）</span>
               )}
             </span>
@@ -644,7 +692,19 @@ export function ContentBlockCard({
           
           {/* 内容区域 */}
           <div className="p-4">
-            {isEditing ? (
+            {isGenerating ? (
+              /* 流式生成中 — 实时显示内容 */
+              <div className="min-h-[80px]">
+                <div className="prose prose-invert prose-sm max-w-none">
+                  {generatingContent ? (
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{generatingContent}</ReactMarkdown>
+                  ) : (
+                    <p className="text-zinc-500 animate-pulse">正在生成内容...</p>
+                  )}
+                  <span className="inline-block w-2 h-4 bg-brand-500 animate-pulse ml-0.5" />
+                </div>
+              </div>
+            ) : isEditing ? (
               <div className="space-y-3">
                 <textarea
                   value={editedContent}
@@ -678,14 +738,25 @@ export function ContentBlockCard({
               >
                 {block.content ? (
                   <div className="relative">
-                    <div className="absolute top-0 right-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button className="flex items-center gap-1 px-2 py-1 text-xs bg-surface-3 text-zinc-400 hover:text-zinc-200 rounded">
+                    <div className="absolute top-0 right-0 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleCopyContent(e); }}
+                        className="flex items-center gap-1 px-2 py-1 text-xs bg-surface-3 text-zinc-400 hover:text-zinc-200 rounded"
+                        title="复制全文（Markdown格式）"
+                      >
+                        {copied ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+                        {copied ? "已复制" : "复制"}
+                      </button>
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); setIsEditing(true); }}
+                        className="flex items-center gap-1 px-2 py-1 text-xs bg-surface-3 text-zinc-400 hover:text-zinc-200 rounded"
+                      >
                         <Edit2 className="w-3 h-3" />
                         编辑
                       </button>
                     </div>
                     <div className="prose prose-invert prose-sm max-w-none">
-                      <ReactMarkdown>{block.content}</ReactMarkdown>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{block.content}</ReactMarkdown>
                     </div>
                   </div>
                 ) : (
@@ -886,11 +957,11 @@ export function ContentBlockCard({
                             </span>
                           )}
                           <span className={`px-1.5 py-0.5 text-xs rounded ${
-                            dep.status === "completed" 
+                            (dep.content && dep.content.trim() !== "")
                               ? "bg-green-600/20 text-green-400" 
                               : "bg-zinc-700 text-zinc-400"
                           }`}>
-                            {dep.status === "completed" ? "已完成" : "未完成"}
+                            {(dep.content && dep.content.trim() !== "") ? "已完成" : "未完成"}
                           </span>
                         </div>
                       </div>

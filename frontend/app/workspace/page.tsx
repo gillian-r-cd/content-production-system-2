@@ -48,10 +48,11 @@ export default function WorkspacePage() {
     loadProjects();
   }, []);
 
-  // 加载当前项目的字段
+  // 加载当前项目的字段 & 记住选中项目
   useEffect(() => {
     if (currentProject) {
       loadFields(currentProject.id);
+      localStorage.setItem("lastProjectId", currentProject.id);
     }
   }, [currentProject?.id]);
 
@@ -60,9 +61,11 @@ export default function WorkspacePage() {
       const data = await projectAPI.list();
       setProjects(data);
       
-      // 自动选择第一个项目
+      // 恢复上次选中的项目，或自动选择第一个
       if (data.length > 0 && !currentProject) {
-        setCurrentProject(data[0]);
+        const savedId = localStorage.getItem("lastProjectId");
+        const saved = savedId ? data.find((p: Project) => p.id === savedId) : null;
+        setCurrentProject(saved || data[0]);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载项目失败");

@@ -7,6 +7,7 @@
 
 import { useState, useEffect, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { PHASE_NAMES, PROJECT_PHASES } from "@/lib/utils";
 import { fieldAPI, agentAPI, blockAPI } from "@/lib/api";
 import type { Field, ContentBlock } from "@/lib/api";
@@ -622,6 +623,22 @@ export function ContentPanel({
     );
   }
   
+  // 灵活架构项目：没有选中块时，提示用户从左侧树形结构选择
+  if (useFlexibleArchitecture && !selectedBlock) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center p-6 text-center">
+        <div className="text-6xl mb-4">🌲</div>
+        <h2 className="text-xl font-bold text-zinc-200 mb-2">树形架构模式</h2>
+        <p className="text-zinc-400 max-w-md">
+          请在左侧树形结构中选择一个阶段或字段来查看和编辑内容。
+        </p>
+        <p className="text-zinc-500 text-sm mt-4">
+          传统视图已锁定，所有操作通过树形结构进行。
+        </p>
+      </div>
+    );
+  }
+
   // 消费者模拟阶段使用专用面板
   if (currentPhase === "simulate") {
     return (
@@ -888,6 +905,17 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
   const [isSavingPreAnswers, setIsSavingPreAnswers] = useState(false);
   const [preAnswersSaved, setPreAnswersSaved] = useState(false);
   const hasPreQuestions = field.pre_questions && field.pre_questions.length > 0;
+  
+  // 复制状态
+  const [copied, setCopied] = useState(false);
+  const handleCopyContent = () => {
+    const text = field.content || content;
+    if (text) {
+      navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
   
   // 保存预提问答案
   const handleSavePreAnswers = async () => {
@@ -1320,19 +1348,16 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
             {/* 复制按钮 */}
             {field.content && (
               <button
-                onClick={() => {
-                  navigator.clipboard.writeText(field.content);
-                  alert("已复制到剪贴板！");
-                }}
-                className="absolute top-2 right-2 px-2 py-1 text-xs bg-surface-3 hover:bg-surface-4 text-zinc-400 hover:text-zinc-200 rounded transition-colors z-10"
+                onClick={handleCopyContent}
+                className="absolute top-2 right-2 flex items-center gap-1 px-2 py-1 text-xs bg-surface-3 hover:bg-surface-4 text-zinc-400 hover:text-zinc-200 rounded transition-colors z-10"
                 title="复制全文（Markdown格式）"
               >
-                📋 复制
+                {copied ? "✓ 已复制" : "📋 复制"}
               </button>
             )}
             <div className="prose prose-invert max-w-none prose-headings:text-zinc-100 prose-p:text-zinc-300 prose-li:text-zinc-300 prose-strong:text-zinc-200">
               {field.content ? (
-                <ReactMarkdown>{field.content}</ReactMarkdown>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{field.content}</ReactMarkdown>
               ) : hasPreQuestions && !showPreQuestions ? (
                 <p className="text-zinc-500 italic">
                   此字段有预设问题需要回答，点击"生成"按钮开始

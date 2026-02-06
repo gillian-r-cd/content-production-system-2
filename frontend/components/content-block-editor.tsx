@@ -4,8 +4,9 @@
 
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { blockAPI, fieldAPI } from "@/lib/api";
 import type { ContentBlock } from "@/lib/api";
 import { 
@@ -19,7 +20,9 @@ import {
   Settings,
   Link,
   RefreshCw,
-  X
+  X,
+  Copy,
+  Check
 } from "lucide-react";
 
 interface ContentBlockEditorProps {
@@ -39,6 +42,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
   const [editedContent, setEditedContent] = useState(block.content || "");
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatingContent, setGeneratingContent] = useState("");
+  const generatingBlockIdRef = useRef<string | null>(null); // 正在生成的block ID
   const [showPromptModal, setShowPromptModal] = useState(false);
   const [showConstraintsModal, setShowConstraintsModal] = useState(false);
   const [showDependencyModal, setShowDependencyModal] = useState(false);
@@ -47,6 +51,17 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
   const [editedPrompt, setEditedPrompt] = useState(block.ai_prompt || "");
   const [editedConstraints, setEditedConstraints] = useState(block.constraints || {});
   const [selectedDependencies, setSelectedDependencies] = useState<string[]>(block.depends_on || []);
+  
+  // 复制状态
+  const [copied, setCopied] = useState(false);
+  const handleCopyContent = () => {
+    const content = block.content || editedContent;
+    if (content) {
+      navigator.clipboard.writeText(content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
   
   // 生成前提问状态
   const [preAnswers, setPreAnswers] = useState<Record<string, string>>(block.pre_answers || {});
@@ -77,7 +92,16 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
   );
   
   useEffect(() => {
-    setEditedContent(block.content || "");
+    const isSameBlockGenerating = generatingBlockIdRef.current === block.id;
+    // 生成中不要重置内容状态（会覆盖流式输出）
+    if (!isSameBlockGenerating) {
+      setEditedContent(block.content || "");
+      // 切换到其他块时，清除生成显示状态（生成仍在后台继续）
+      if (generatingBlockIdRef.current && generatingBlockIdRef.current !== block.id) {
+        setGeneratingContent("");
+        setIsGenerating(false);
+      }
+    }
     setEditedName(block.name);
     setEditedPrompt(block.ai_prompt || "");
     setEditedConstraints(block.constraints || {});
@@ -229,14 +253,19 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
       await handleSavePreAnswers();
     }
     
+    const currentBlockId = block.id;
+    generatingBlockIdRef.current = currentBlockId;
     setIsGenerating(true);
     setGeneratingContent("");
+    setIsEditing(false); // 退出编辑模式以显示流式内容
     
     try {
       if (useFieldAPI) {
         // 虚拟块使用 Field API 生成，传递预提问答案
         const result = await fieldAPI.generate(block.id, preAnswers);
-        setEditedContent(result.content);
+        if (generatingBlockIdRef.current === currentBlockId) {
+          setEditedContent(result.content);
+        }
         onUpdate?.();
       } else {
         // 使用流式生成（预提问答案已保存到后端）
@@ -265,11 +294,20 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
                 const data = JSON.parse(line.slice(6));
                 if (data.chunk) {
                   accumulatedContent += data.chunk;
-                  setGeneratingContent(accumulatedContent);
+                  // 只有当前编辑器还在看这个block时才更新UI
+                  if (generatingBlockIdRef.current === currentBlockId) {
+                    setGeneratingContent(accumulatedContent);
+                  }
                 }
                 if (data.done) {
-                  setEditedContent(data.content);
+                  if (generatingBlockIdRef.current === currentBlockId) {
+                    setEditedContent(data.content || accumulatedContent);
+                  }
                   onUpdate?.();
+                }
+                if (data.auto_triggered?.length > 0) {
+                  console.log(`[AUTO-TRIGGER] 自动触发了 ${data.auto_triggered.length} 个依赖块`);
+                  onUpdate?.(); // 刷新列表以显示自动触发的块的状态变化
                 }
                 if (data.error) {
                   throw new Error(data.error);
@@ -283,10 +321,16 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
       }
     } catch (err) {
       console.error("生成失败:", err);
-      alert("生成失败: " + (err instanceof Error ? err.message : "未知错误"));
+      if (generatingBlockIdRef.current === currentBlockId) {
+        alert("生成失败: " + (err instanceof Error ? err.message : "未知错误"));
+      }
     } finally {
-      setIsGenerating(false);
-      setGeneratingContent("");
+      // 只有当前block还是正在生成的block时才重置状态
+      if (generatingBlockIdRef.current === currentBlockId) {
+        setIsGenerating(false);
+        setGeneratingContent("");
+        generatingBlockIdRef.current = null;
+      }
     }
   };
 
@@ -450,7 +494,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
                 依赖:
                 {dependencyBlocks.map(dep => (
                   <span key={dep.id} className={`px-1.5 py-0.5 rounded ${
-                    dep.status === "completed" 
+                    (dep.content && dep.content.trim() !== "")
                       ? "bg-green-600/20 text-green-400" 
                       : "bg-red-600/20 text-red-400"
                   }`}>
@@ -551,19 +595,30 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
             >
               {isGenerating ? (
                 <div className="prose prose-invert prose-sm max-w-none">
-                  <ReactMarkdown>{generatingContent || "正在生成..."}</ReactMarkdown>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{generatingContent || "正在生成..."}</ReactMarkdown>
                   <span className="inline-block w-2 h-4 bg-brand-500 animate-pulse" />
                 </div>
               ) : block.content ? (
                 <div className="relative">
-                  <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button className="flex items-center gap-1 px-2 py-1 text-xs bg-surface-2 border border-surface-3 text-zinc-400 hover:text-zinc-200 rounded">
+                  <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                    <button 
+                      onClick={(e) => { e.stopPropagation(); handleCopyContent(); }}
+                      className="flex items-center gap-1 px-2 py-1 text-xs bg-surface-2 border border-surface-3 text-zinc-400 hover:text-zinc-200 rounded"
+                      title="复制全文（Markdown格式）"
+                    >
+                      {copied ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+                      {copied ? "已复制" : "复制"}
+                    </button>
+                    <button 
+                      onClick={(e) => { e.stopPropagation(); setIsEditing(true); }}
+                      className="flex items-center gap-1 px-2 py-1 text-xs bg-surface-2 border border-surface-3 text-zinc-400 hover:text-zinc-200 rounded"
+                    >
                       <Edit2 className="w-3 h-3" />
                       编辑
                     </button>
                   </div>
                   <div className="prose prose-invert prose-sm max-w-none">
-                    <ReactMarkdown>{block.content}</ReactMarkdown>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{block.content}</ReactMarkdown>
                   </div>
                 </div>
               ) : (
@@ -768,11 +823,11 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
                                    dep.special_handler === "evaluate" ? "评估结果" : dep.special_handler}
                                 </span>
                                 <span className={`px-1.5 py-0.5 text-xs rounded ${
-                                  dep.status === "completed" 
+                                  (dep.content && dep.content.trim() !== "")
                                     ? "bg-green-600/20 text-green-400" 
                                     : "bg-zinc-700 text-zinc-400"
                                 }`}>
-                                  {dep.status === "completed" ? "已完成" : "未完成"}
+                                  {(dep.content && dep.content.trim() !== "") ? "已完成" : "未完成"}
                                 </span>
                               </div>
                             </div>
@@ -808,11 +863,11 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
                               <div className="flex items-center gap-2">
                                 <span className="text-sm text-zinc-200">{dep.name}</span>
                                 <span className={`px-1.5 py-0.5 text-xs rounded ${
-                                  dep.status === "completed" 
+                                  (dep.content && dep.content.trim() !== "")
                                     ? "bg-green-600/20 text-green-400" 
                                     : "bg-zinc-700 text-zinc-400"
                                 }`}>
-                                  {dep.status === "completed" ? "已完成" : "未完成"}
+                                  {(dep.content && dep.content.trim() !== "") ? "已完成" : "未完成"}
                                 </span>
                               </div>
                             </div>

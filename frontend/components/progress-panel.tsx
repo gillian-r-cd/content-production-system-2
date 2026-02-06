@@ -64,11 +64,26 @@ export function ProgressPanel({
   onBlocksChange,
 }: ProgressPanelProps) {
   const [showAutonomySettings, setShowAutonomySettings] = useState(false);
-  const [viewMode, setViewMode] = useState<ViewMode>("classic");
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    if (typeof window !== "undefined") {
+      return (localStorage.getItem("viewMode") as ViewMode) || "classic";
+    }
+    return "classic";
+  });
   const [contentBlocks, setContentBlocks] = useState<ContentBlock[]>([]);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [isLoadingBlocks, setIsLoadingBlocks] = useState(false);
   const [isMigrating, setIsMigrating] = useState(false);
+  
+  // 灵活架构项目强制使用树形视图，锁死传统视图
+  const isFlexibleArch = project?.use_flexible_architecture === true;
+  
+  useEffect(() => {
+    if (isFlexibleArch && viewMode !== "tree") {
+      setViewMode("tree");
+      localStorage.setItem("viewMode", "tree");
+    }
+  }, [isFlexibleArch, viewMode]);
   
   const allPhases = project?.phase_order || [];
   const phaseStatus = project?.phase_status || {};
@@ -500,19 +515,29 @@ export function ProgressPanel({
       {project && (
         <div className="flex items-center gap-1 mb-4 p-1 bg-surface-1 rounded-lg">
           <button
-            onClick={() => setViewMode("classic")}
+            onClick={() => { 
+              if (!isFlexibleArch) {
+                setViewMode("classic"); 
+                localStorage.setItem("viewMode", "classic"); 
+              }
+            }}
+            disabled={isFlexibleArch}
             className={cn(
               "flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
-              viewMode === "classic"
-                ? "bg-surface-3 text-zinc-200"
-                : "text-zinc-500 hover:text-zinc-300"
+              isFlexibleArch
+                ? "text-zinc-600 cursor-not-allowed opacity-50"
+                : viewMode === "classic"
+                  ? "bg-surface-3 text-zinc-200"
+                  : "text-zinc-500 hover:text-zinc-300"
             )}
+            title={isFlexibleArch ? "已迁移至树形架构，无法切换回传统视图" : "切换到传统视图"}
           >
             <List className="w-3.5 h-3.5" />
             传统
+            {isFlexibleArch && <span className="ml-0.5">🔒</span>}
           </button>
           <button
-            onClick={() => setViewMode("tree")}
+            onClick={() => { setViewMode("tree"); localStorage.setItem("viewMode", "tree"); }}
             className={cn(
               "flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
               viewMode === "tree"
