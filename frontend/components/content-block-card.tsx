@@ -132,7 +132,19 @@ export function ContentBlockCard({
     setEditedConstraints(block.constraints || {});
     setSelectedDependencies(block.depends_on || []);
     setPreAnswers(block.pre_answers || {});
-  }, [block]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [block.id, block.content, block.name, block.ai_prompt, block.depends_on, block.pre_answers]);
+  
+  // ===== 关键修复：如果 block 状态是 in_progress 但当前组件没在流式生成，则轮询刷新 =====
+  useEffect(() => {
+    if (block.status === "in_progress" && !isGenerating) {
+      const pollInterval = setInterval(() => {
+        onUpdate?.(); // 触发父组件刷新数据
+      }, 2000);
+      return () => clearInterval(pollInterval);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [block.status, isGenerating]);
 
   // 保存名称
   const handleSaveName = async () => {
@@ -444,6 +456,76 @@ export function ContentBlockCard({
     );
   }
 
+  // ========== 特殊字段类型的紧凑渲染（意图分析、消费者调研、消费者模拟）==========
+  const specialHandler = block.special_handler as string | null | undefined;
+  const isSpecialField = specialHandler && [
+    "intent_analysis", "intent",
+    "consumer_research", "research",
+    "consumer_simulation", "simulate",
+    "eval_coach", "eval_editor", "eval_expert", "eval_consumer", "eval_seller", "eval_diagnoser", "eval_container",
+  ].includes(specialHandler);
+  
+  if (isSpecialField) {
+    const specialLabels: Record<string, { icon: string; title: string; desc: string }> = {
+      "intent_analysis": { icon: "💬", title: "意图分析", desc: "由 Agent 通过对话完成，请点击进入字段查看" },
+      "intent": { icon: "💬", title: "意图分析", desc: "由 Agent 通过对话完成，请点击进入字段查看" },
+      "consumer_research": { icon: "🔍", title: "消费者调研", desc: "包含 DeepResearch 调研结果和消费者画像" },
+      "research": { icon: "🔍", title: "消费者调研", desc: "包含 DeepResearch 调研结果和消费者画像" },
+      "consumer_simulation": { icon: "🎭", title: "消费者模拟", desc: "模拟消费者体验和反馈" },
+      "simulate": { icon: "🎭", title: "消费者模拟", desc: "模拟消费者体验和反馈" },
+      "eval_container": { icon: "📊", title: "综合评估", desc: "评估容器，请进入查看各角色评估结果" },
+      "eval_coach": { icon: "🎯", title: "教练评审", desc: "从策略视角评估内容方向和定位" },
+      "eval_editor": { icon: "✍️", title: "编辑评审", desc: "从手艺视角评估内容质量和结构" },
+      "eval_expert": { icon: "🔬", title: "专家评审", desc: "从专业视角评估内容准确性和深度" },
+      "eval_consumer": { icon: "👤", title: "消费者体验", desc: "以目标消费者身份体验和评价内容" },
+      "eval_seller": { icon: "💰", title: "内容销售测试", desc: "模拟销售对话测试内容转化能力" },
+      "eval_diagnoser": { icon: "🔍", title: "综合诊断", desc: "跨角色诊断分析，需先完成其他评估" },
+    };
+    const info = specialLabels[specialHandler] || { icon: "⚡", title: specialHandler, desc: "特殊处理字段" };
+    
+    return (
+      <div className="bg-surface-2 border border-surface-3 rounded-lg overflow-hidden">
+        <div 
+          className="px-4 py-3 cursor-pointer hover:bg-surface-3/50 transition-colors"
+          onClick={() => onSelect?.()}
+        >
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3 flex-1 min-w-0">
+              <span className="text-xl flex-shrink-0">{info.icon}</span>
+              <span className="font-medium text-zinc-200 truncate">{block.name}</span>
+              <span className="px-2 py-0.5 text-xs rounded flex-shrink-0 bg-purple-600/20 text-purple-400">
+                {info.title}
+              </span>
+              {/* 状态标签 */}
+              <span className={`px-2 py-0.5 text-xs rounded flex-shrink-0 ${
+                block.status === "completed" ? "bg-emerald-600/20 text-emerald-400" :
+                block.status === "in_progress" ? "bg-amber-600/20 text-amber-400" :
+                block.status === "failed" ? "bg-red-600/20 text-red-400" :
+                "bg-zinc-700 text-zinc-400"
+              }`}>
+                {block.status === "completed" ? "已完成" :
+                 block.status === "in_progress" ? "进行中" :
+                 block.status === "failed" ? "失败" : "待处理"}
+              </span>
+            </div>
+            <span className="text-zinc-500 text-sm flex items-center gap-1 flex-shrink-0">
+              点击进入
+              <ChevronRight className="w-4 h-4" />
+            </span>
+          </div>
+          <div className="mt-1.5 text-xs text-zinc-500 pl-8">
+            {info.desc}
+          </div>
+          {block.content && (
+            <div className="mt-1 text-xs text-emerald-500 pl-8">
+              ✓ 已有内容
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   // ========== 字段类型的渲染 ==========
   return (
     <div className="bg-surface-2 border border-surface-3 rounded-lg overflow-hidden">
@@ -703,6 +785,12 @@ export function ContentBlockCard({
                   )}
                   <span className="inline-block w-2 h-4 bg-brand-500 animate-pulse ml-0.5" />
                 </div>
+              </div>
+            ) : block.status === "in_progress" && !block.content ? (
+              /* 后台生成中（用户导航离开后回来） */
+              <div className="flex items-center gap-2 py-4 justify-center">
+                <span className="inline-block w-2 h-4 bg-brand-500 animate-pulse" />
+                <span className="text-sm text-brand-400 animate-pulse">后台生成中，请稍候...</span>
               </div>
             ) : isEditing ? (
               <div className="space-y-3">

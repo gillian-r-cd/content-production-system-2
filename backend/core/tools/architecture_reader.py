@@ -219,6 +219,8 @@ def get_field_content(project_id: str, field_name: str, db: Optional[Session] = 
     """
     根据字段名获取字段完整内容
     
+    同时搜索 ProjectField（传统架构）和 ContentBlock（灵活架构）
+    
     Args:
         project_id: 项目ID
         field_name: 字段名称
@@ -230,25 +232,48 @@ def get_field_content(project_id: str, field_name: str, db: Optional[Session] = 
     if db is None:
         db = next(get_db())
     
+    # 1. 先搜索 ProjectField（传统架构）
     field = db.query(ProjectField).filter(
         ProjectField.project_id == project_id,
         ProjectField.name == field_name
     ).first()
     
-    if not field:
-        return None
+    if field:
+        return {
+            "id": field.id,
+            "name": field.name,
+            "phase": field.phase,
+            "status": field.status,
+            "content": field.content,
+            "ai_prompt": field.ai_prompt,
+            "constraints": field.constraints,
+            "dependencies": field.dependencies,
+            "need_review": field.need_review,
+            "source": "project_field",
+        }
     
-    return {
-        "id": field.id,
-        "name": field.name,
-        "phase": field.phase,
-        "status": field.status,
-        "content": field.content,
-        "ai_prompt": field.ai_prompt,
-        "constraints": field.constraints,
-        "dependencies": field.dependencies,
-        "need_review": field.need_review,
-    }
+    # 2. 搜索 ContentBlock（灵活架构）
+    block = db.query(ContentBlock).filter(
+        ContentBlock.project_id == project_id,
+        ContentBlock.name == field_name,
+        ContentBlock.deleted_at == None,
+    ).first()
+    
+    if block:
+        return {
+            "id": block.id,
+            "name": block.name,
+            "phase": "",  # ContentBlock 没有 phase
+            "status": block.status,
+            "content": block.content,
+            "ai_prompt": block.ai_prompt,
+            "constraints": block.constraints,
+            "dependencies": {"depends_on": block.depends_on or []},
+            "need_review": block.need_review,
+            "source": "content_block",
+        }
+    
+    return None
 
 
 def get_content_block_tree(project_id: str, db: Optional[Session] = None) -> List[Dict[str, Any]]:
@@ -265,10 +290,11 @@ def get_content_block_tree(project_id: str, db: Optional[Session] = None) -> Lis
     if db is None:
         db = next(get_db())
     
-    # 获取所有顶层块
+    # 获取所有顶层块（排除已删除的）
     root_blocks = db.query(ContentBlock).filter(
         ContentBlock.project_id == project_id,
-        ContentBlock.parent_id == None
+        ContentBlock.parent_id == None,
+        ContentBlock.deleted_at == None,
     ).order_by(ContentBlock.order_index).all()
     
     def block_to_dict(block: ContentBlock) -> Dict[str, Any]:
@@ -293,6 +319,7 @@ def get_dependency_contents(
     """
     获取多个依赖字段的内容
     
+    同时搜索 ProjectField（传统架构）和 ContentBlock（灵活架构）
     用于注入到 LLM 提示词中的字段依赖上下文
     
     Args:
@@ -308,6 +335,7 @@ def get_dependency_contents(
     
     result = {}
     for name in dependency_names:
+        # 1. 先搜索 ProjectField
         field = db.query(ProjectField).filter(
             ProjectField.project_id == project_id,
             ProjectField.name == name
@@ -315,6 +343,17 @@ def get_dependency_contents(
         
         if field and field.content:
             result[name] = field.content
+            continue
+        
+        # 2. 搜索 ContentBlock
+        block = db.query(ContentBlock).filter(
+            ContentBlock.project_id == project_id,
+            ContentBlock.name == name,
+            ContentBlock.deleted_at == None,
+        ).first()
+        
+        if block and block.content:
+            result[name] = block.content
     
     return result
 
@@ -360,22 +399,45 @@ def format_architecture_for_llm(arch: ProjectArchitecture) -> str:
         f"架构类型: {'灵活架构' if arch.use_flexible_architecture else '传统流程'}",
         f"进度: {arch.completed_fields}/{arch.total_fields} 字段已完成",
         "",
-        "### 阶段列表:",
     ]
     
-    for phase in arch.phases:
-        status_icon = "✅" if phase.status == "completed" else "🔄" if phase.status == "in_progress" else "⏳"
-        lines.append(f"{status_icon} {phase.display_name} ({phase.field_count} 个字段)")
-        
-        if phase.fields:
-            for field in phase.fields:
-                field_icon = "📝" if field.has_content else "📄"
-                lines.append(f"    {field_icon} {field.name}: {field.status}")
-    
-    if arch.content_blocks:
-        lines.append("")
+    if arch.use_flexible_architecture:
+        # 灵活架构：展示完整的块树形结构，包含所有字段名
         lines.append("### 内容块结构（灵活架构）:")
-        for block in arch.content_blocks:
-            lines.append(f"  - {block.name} [{block.block_type}]: {block.status}")
+        if arch.content_blocks:
+            for block in arch.content_blocks:
+                lines.append(f"  - {block.name} [{block.block_type}]: {block.status}")
+        
+        # 从数据库获取完整的嵌套结构（包含所有字段名）
+        try:
+            block_tree = get_content_block_tree(arch.project_id)
+            if block_tree:
+                lines.append("")
+                lines.append("### 所有字段列表（可用 @ 引用的名称）:")
+                def list_fields(blocks, indent=0):
+                    for b in blocks:
+                        prefix = "  " * indent
+                        has_content_icon = "📝" if b.get("content_preview") else "📄"
+                        status = b.get("status", "pending")
+                        if b.get("block_type") == "field":
+                            lines.append(f"{prefix}{has_content_icon} 「{b['name']}」 ({status})")
+                        else:
+                            lines.append(f"{prefix}📁 {b['name']} [{b.get('block_type', 'unknown')}]")
+                        if b.get("children"):
+                            list_fields(b["children"], indent + 1)
+                list_fields(block_tree)
+        except Exception as e:
+            lines.append(f"  (获取详细结构失败: {str(e)})")
+    else:
+        # 传统架构
+        lines.append("### 阶段列表:")
+        for phase in arch.phases:
+            status_icon = "✅" if phase.status == "completed" else "🔄" if phase.status == "in_progress" else "⏳"
+            lines.append(f"{status_icon} {phase.display_name} ({phase.field_count} 个字段)")
+            
+            if phase.fields:
+                for field in phase.fields:
+                    field_icon = "📝" if field.has_content else "📄"
+                    lines.append(f"    {field_icon} 「{field.name}」: {field.status}")
     
     return "\n".join(lines)

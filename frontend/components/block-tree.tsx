@@ -271,6 +271,33 @@ function BlockNode({
     }
   };
 
+  // 处理复制字段
+  const handleDuplicate = async () => {
+    setIsLoading(true);
+    setShowMenu(false);
+    try {
+      await blockAPI.create({
+        project_id: block.project_id,
+        parent_id: block.parent_id,
+        name: `${block.name} (副本)`,
+        block_type: block.block_type,
+        content: block.content || "",
+        ai_prompt: block.ai_prompt || "",
+        constraints: block.constraints,
+        depends_on: block.depends_on || [],
+        special_handler: block.special_handler,
+        need_review: block.need_review,
+        order_index: (block.order_index ?? 0) + 1,
+      });
+      onBlocksChange?.();
+    } catch (err) {
+      console.error("复制失败:", err);
+      alert("复制失败: " + (err instanceof Error ? err.message : "未知错误"));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   // 处理添加子块
   const handleAddChild = async (blockType: string) => {
     setIsLoading(true);
@@ -457,6 +484,14 @@ function BlockNode({
                     生成内容
                   </button>
                 )}
+
+                <button
+                  onClick={handleDuplicate}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-surface-2"
+                >
+                  <Copy className="w-4 h-4" />
+                  复制字段
+                </button>
 
                 <hr className="my-1 border-surface-3" />
 
@@ -699,12 +734,16 @@ export default function BlockTree({
     }
   }, [dragSource, dragTarget, blocks, onBlocksChange]);
 
-  // 添加顶级阶段
+  // 添加顶级阶段（自动编号）
   const handleAddPhase = async () => {
     try {
+      // 计算现有阶段数量，自动生成编号
+      const phaseCount = blocks.filter(b => b.block_type === "phase").length;
+      const phaseName = `新阶段 ${phaseCount + 1}`;
+      
       await blockAPI.create({
         project_id: projectId,
-        name: "新阶段",
+        name: phaseName,
         block_type: "phase",
       });
       onBlocksChange?.();

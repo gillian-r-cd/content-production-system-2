@@ -23,6 +23,8 @@ from core.models.chat_history import ChatMessage
 from core.models.content_block import ContentBlock, BLOCK_TYPES, SPECIAL_HANDLERS, BLOCK_STATUS
 from core.models.block_history import BlockHistory, HISTORY_ACTIONS
 from core.models.phase_template import PhaseTemplate, DEFAULT_PHASE_TEMPLATE
+from core.models.eval_run import EvalRun, EVAL_ROLES, EVAL_RUN_STATUS
+from core.models.eval_trial import EvalTrial, EVAL_TRIAL_STATUS
 
 __all__ = [
     # 基础
@@ -55,9 +57,16 @@ __all__ = [
     "INTERACTION_TYPES",
     "SimulationRecord",
     
-    # 评估
+    # 评估（旧）
     "EvaluationTemplate",
     "EvaluationReport",
+    
+    # 评估（新 Eval 体系）
+    "EvalRun",
+    "EVAL_ROLES",
+    "EVAL_RUN_STATUS",
+    "EvalTrial",
+    "EVAL_TRIAL_STATUS",
     
     # 日志
     "GenerationLog",

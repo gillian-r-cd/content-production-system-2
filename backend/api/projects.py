@@ -178,17 +178,35 @@ def delete_project(
     db: Session = Depends(get_db),
 ):
     """删除项目（包括所有关联数据）"""
-    from core.models import ProjectField
+    from core.models import ProjectField, ContentBlock, BlockHistory
     from core.models.chat_history import ChatMessage
+    from core.models.generation_log import GenerationLog
+    from core.models.simulation_record import SimulationRecord
+    from core.models.evaluation import EvaluationReport
     
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
+    # 删除关联的生成日志
+    db.query(GenerationLog).filter(GenerationLog.project_id == project_id).delete()
+    
+    # 删除关联的块历史记录
+    db.query(BlockHistory).filter(BlockHistory.project_id == project_id).delete()
+    
+    # 删除关联的模拟记录
+    db.query(SimulationRecord).filter(SimulationRecord.project_id == project_id).delete()
+    
+    # 删除关联的评估记录
+    db.query(EvaluationReport).filter(EvaluationReport.project_id == project_id).delete()
+    
+    # 删除关联的内容块（灵活架构）
+    db.query(ContentBlock).filter(ContentBlock.project_id == project_id).delete()
+    
     # 删除关联的对话记录
     db.query(ChatMessage).filter(ChatMessage.project_id == project_id).delete()
     
-    # 删除关联的字段
+    # 删除关联的字段（传统架构）
     db.query(ProjectField).filter(ProjectField.project_id == project_id).delete()
     
     # 删除项目本身
@@ -416,7 +434,7 @@ def _project_to_response(project: Project) -> ProjectResponse:
         version_note=project.version_note or "",
         creator_profile_id=project.creator_profile_id,
         current_phase=project.current_phase,
-        phase_order=project.phase_order or PROJECT_PHASES.copy(),
+        phase_order=project.phase_order if project.phase_order is not None else PROJECT_PHASES.copy(),
         phase_status=project.phase_status or {},
         agent_autonomy=project.agent_autonomy or {},
         golden_context=project.golden_context or {},

@@ -8,14 +8,24 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { cn, PHASE_NAMES } from "@/lib/utils";
 import { agentAPI, parseReferences, API_BASE } from "@/lib/api";
-import type { Field, ChatMessageRecord } from "@/lib/api";
+import type { Field, ChatMessageRecord, ContentBlock } from "@/lib/api";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { settingsAPI } from "@/lib/api";
 
+// 统一的可引用项（兼容 Field 和 ContentBlock）
+interface MentionItem {
+  id: string;
+  name: string;
+  label: string;  // 显示在下拉菜单的分类标签（如阶段名或父级名）
+  hasContent: boolean;
+}
+
 interface AgentPanelProps {
   projectId: string | null;
   fields?: Field[];
+  allBlocks?: ContentBlock[];  // 灵活架构的内容块
+  useFlexibleArchitecture?: boolean;
   onSendMessage?: (message: string) => Promise<string>;
   onContentUpdate?: () => void;  // 当Agent生成内容后刷新
   isLoading?: boolean;
@@ -47,6 +57,8 @@ const TOOL_DESCS: Record<string, string> = {
 export function AgentPanel({
   projectId,
   fields = [],
+  allBlocks = [],
+  useFlexibleArchitecture = false,
   onSendMessage,
   onContentUpdate,
   isLoading = false,
@@ -68,10 +80,58 @@ export function AgentPanel({
   const inputRef = useRef<HTMLInputElement>(null);
   const mentionStartPos = useRef<number>(-1);
 
-  const completedFields = fields.filter((f) => f.status === "completed");
-  const filteredFields = completedFields.filter((f) =>
-    f.name.toLowerCase().includes(mentionFilter.toLowerCase()) ||
-    f.phase.toLowerCase().includes(mentionFilter.toLowerCase())
+  // 构建统一的可引用项列表（兼容传统字段和灵活架构内容块）
+  const mentionItems: MentionItem[] = (() => {
+    const seen = new Set<string>(); // 用于去重
+    
+    if (useFlexibleArchitecture && allBlocks.length > 0) {
+      // 灵活架构：从 allBlocks 扁平列表中提取有内容的字段
+      // 注意：allBlocks 是扁平数组，不应递归 children（会重复）
+      const items: MentionItem[] = [];
+      
+      // 构建 ID→名称映射用于显示父级标签
+      const blockById = new Map<string, ContentBlock>();
+      for (const block of allBlocks) {
+        blockById.set(block.id, block);
+      }
+      
+      for (const block of allBlocks) {
+        // 只选有内容的 field 类型
+        if (block.block_type === "field" && block.content && block.content.trim()) {
+          if (seen.has(block.id)) continue;
+          seen.add(block.id);
+          
+          const parentBlock = block.parent_id ? blockById.get(block.parent_id) : null;
+          items.push({
+            id: block.id,
+            name: block.name,
+            label: parentBlock?.name || "内容块",
+            hasContent: true,
+          });
+        }
+      }
+      return items;
+    } else {
+      // 传统架构：使用 ProjectField，只要有内容就可引用
+      return fields
+        .filter((f) => {
+          if (!f.content || !f.content.trim()) return false;
+          if (seen.has(f.id)) return false;
+          seen.add(f.id);
+          return true;
+        })
+        .map((f) => ({
+          id: f.id,
+          name: f.name,
+          label: PHASE_NAMES[f.phase] || f.phase,
+          hasContent: true,
+        }));
+    }
+  })();
+
+  const filteredMentionItems = mentionItems.filter((item) =>
+    item.name.toLowerCase().includes(mentionFilter.toLowerCase()) ||
+    item.label.toLowerCase().includes(mentionFilter.toLowerCase())
   );
 
   // 加载对话历史
@@ -123,10 +183,10 @@ export function AgentPanel({
     }
   };
 
-  const insertMention = useCallback((field: Field) => {
+  const insertMention = useCallback((item: MentionItem) => {
     const beforeMention = input.slice(0, mentionStartPos.current);
     const afterMention = input.slice(cursorPosition);
-    const newInput = `${beforeMention}@${field.name}${afterMention}`;
+    const newInput = `${beforeMention}@${item.name}${afterMention}`;
     setInput(newInput);
     setShowMentions(false);
     setMentionFilter("");
@@ -156,20 +216,20 @@ export function AgentPanel({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (showMentions && filteredFields.length > 0) {
+    if (showMentions && filteredMentionItems.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setMentionIndex((prev) => (prev + 1) % filteredFields.length);
+        setMentionIndex((prev) => (prev + 1) % filteredMentionItems.length);
         return;
       }
       if (e.key === "ArrowUp") {
         e.preventDefault();
-        setMentionIndex((prev) => (prev - 1 + filteredFields.length) % filteredFields.length);
+        setMentionIndex((prev) => (prev - 1 + filteredMentionItems.length) % filteredMentionItems.length);
         return;
       }
       if (e.key === "Enter" || e.key === "Tab") {
         e.preventDefault();
-        insertMention(filteredFields[mentionIndex]);
+        insertMention(filteredMentionItems[mentionIndex]);
         return;
       }
       if (e.key === "Escape") {
@@ -505,6 +565,10 @@ export function AgentPanel({
     try {
       await agentAPI.callTool(projectId, toolId, {});
       await loadHistory();
+      // 工具可能生成了内容，刷新中间面板
+      if (onContentUpdate) {
+        onContentUpdate();
+      }
     } catch (err) {
       console.error("Tool调用失败:", err);
     } finally {
@@ -579,22 +643,22 @@ export function AgentPanel({
       <div className="p-4 border-t border-surface-3">
         <div className="relative">
           {/* @引用下拉菜单 */}
-          {showMentions && filteredFields.length > 0 && (
+          {showMentions && filteredMentionItems.length > 0 && (
             <div className="absolute bottom-full left-0 right-0 mb-1 bg-surface-2 border border-surface-3 rounded-lg shadow-xl max-h-48 overflow-y-auto z-10">
               <div className="p-2 text-xs text-zinc-500 border-b border-surface-3">
-                选择要引用的字段
+                选择要引用的字段（{filteredMentionItems.length} 个有内容的字段）
               </div>
-              {filteredFields.map((field, idx) => (
+              {filteredMentionItems.map((item, idx) => (
                 <button
-                  key={field.id}
-                  onClick={() => insertMention(field)}
+                  key={`${item.id}-${idx}`}
+                  onClick={() => insertMention(item)}
                   className={cn(
                     "w-full px-3 py-2 text-left hover:bg-surface-3 flex items-center gap-2",
                     idx === mentionIndex && "bg-surface-3"
                   )}
                 >
-                  <span className="text-xs text-zinc-500">{PHASE_NAMES[field.phase] || field.phase}</span>
-                  <span className="text-sm text-zinc-200">{field.name}</span>
+                  <span className="text-xs text-zinc-500">{item.label}</span>
+                  <span className="text-sm text-zinc-200">{item.name}</span>
                 </button>
               ))}
             </div>
@@ -626,7 +690,7 @@ export function AgentPanel({
               value={input}
               onChange={handleInputChange}
               onKeyDown={handleKeyDown}
-              placeholder={projectId ? "输入消息... 使用 @ 引用字段" : "请先选择项目"}
+              placeholder={projectId ? `输入消息... 使用 @ 引用字段${mentionItems.length > 0 ? ` (${mentionItems.length}个可用)` : ""}` : "请先选择项目"}
               disabled={!projectId || sending}
               className="flex-1 px-4 py-2 bg-surface-2 border border-surface-3 rounded-lg text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:opacity-50"
             />

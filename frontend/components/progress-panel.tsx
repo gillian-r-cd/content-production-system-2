@@ -45,6 +45,7 @@ type ViewMode = "classic" | "tree";
 interface ProgressPanelProps {
   project: Project | null;
   fields?: Field[];  // 传统字段数据，用于构建虚拟树形视图
+  blocksRefreshKey?: number;  // 外部触发 ContentBlocks 重新加载
   onPhaseClick?: (phase: string) => void;
   onPhaseReorder?: (phases: string[]) => void;
   onAutonomyChange?: (autonomy: Record<string, boolean>) => void;
@@ -56,6 +57,7 @@ interface ProgressPanelProps {
 export function ProgressPanel({
   project,
   fields = [],
+  blocksRefreshKey = 0,
   onPhaseClick,
   onPhaseReorder,
   onAutonomyChange,
@@ -104,7 +106,7 @@ export function ProgressPanel({
         onBlocksChange?.(flattenBlocks(virtualBlocks));
       }
     }
-  }, [viewMode, project?.id, project?.use_flexible_architecture, fields]);
+  }, [viewMode, project?.id, project?.use_flexible_architecture, fields, blocksRefreshKey]);
   
   const loadContentBlocks = async () => {
     if (!project?.id) return;

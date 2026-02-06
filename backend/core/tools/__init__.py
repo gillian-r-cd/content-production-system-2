@@ -100,6 +100,17 @@ from core.tools.skill_manager import (
     SkillResult,
 )
 
+from core.tools.eval_engine import (
+    run_eval,
+    run_review_trial,
+    run_consumer_dialogue_trial,
+    run_seller_dialogue_trial,
+    run_diagnoser,
+    format_trial_result_markdown,
+    format_diagnosis_markdown,
+    TrialResult,
+)
+
 __all__ = [
     # DeepResearch
     "deep_research",
@@ -184,4 +195,14 @@ __all__ = [
     "SkillOperation",
     "Skill",
     "SkillResult",
+    
+    # Eval Engine
+    "run_eval",
+    "run_review_trial",
+    "run_consumer_dialogue_trial",
+    "run_seller_dialogue_trial",
+    "run_diagnoser",
+    "format_trial_result_markdown",
+    "format_diagnosis_markdown",
+    "TrialResult",
 ]

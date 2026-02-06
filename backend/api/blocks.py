@@ -177,6 +177,51 @@ def _calculate_depth(block: ContentBlock, db: Session) -> int:
     return parent.depth + 1
 
 
+def _update_parent_status(parent_id: str, db: Session):
+    """
+    根据子级状态自动更新父级（阶段/组）状态：
+    - 所有子级都 completed → 父级 completed
+    - 任一子级 in_progress → 父级 in_progress
+    - 否则 → 父级 pending
+    递归向上更新。
+    """
+    parent = db.query(ContentBlock).filter(
+        ContentBlock.id == parent_id,
+        ContentBlock.deleted_at == None,
+    ).first()
+    if not parent:
+        return
+    
+    children = db.query(ContentBlock).filter(
+        ContentBlock.parent_id == parent_id,
+        ContentBlock.deleted_at == None,
+    ).all()
+    
+    if not children:
+        return
+    
+    all_completed = all(c.status == "completed" for c in children)
+    any_in_progress = any(c.status == "in_progress" for c in children)
+    
+    if all_completed:
+        parent.status = "completed"
+    elif any_in_progress:
+        parent.status = "in_progress"
+    else:
+        # 部分完成
+        completed_count = sum(1 for c in children if c.status == "completed")
+        if completed_count > 0:
+            parent.status = "in_progress"
+        else:
+            parent.status = "pending"
+    
+    db.commit()
+    
+    # 递归向上更新
+    if parent.parent_id:
+        _update_parent_status(parent.parent_id, db)
+
+
 def _get_next_order_index(project_id: str, parent_id: Optional[str], db: Session) -> int:
     """获取下一个排序索引"""
     query = db.query(ContentBlock).filter(
@@ -211,7 +256,8 @@ def get_project_blocks(
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
     
-    # 自动修复卡住的块：in_progress 但无内容 → 重置为 pending
+    # 自动修复卡住的块：in_progress 但无内容且超过 5 分钟 → 重置为 pending
+    # 注意：刚开始生成的块也是 in_progress + 无内容，不能立即重置，否则会干扰正常生成！
     stuck_blocks = db.query(ContentBlock).filter(
         ContentBlock.project_id == project_id,
         ContentBlock.deleted_at == None,
@@ -219,9 +265,13 @@ def get_project_blocks(
         (ContentBlock.content == None) | (ContentBlock.content == ""),
     ).all()
     if stuck_blocks:
+        now = datetime.utcnow()
         for sb in stuck_blocks:
-            print(f"[RECOVERY] 重置卡住的块: {sb.name} (in_progress → pending)")
-            sb.status = "pending"
+            # 只重置超过 5 分钟的卡住块（给正在生成的块足够时间）
+            updated = sb.updated_at or sb.created_at
+            if updated and (now - updated).total_seconds() > 300:
+                print(f"[RECOVERY] 重置卡住的块: {sb.name} (in_progress → pending, 卡住 {(now - updated).total_seconds():.0f}s)")
+                sb.status = "pending"
         db.commit()
     
     # 获取所有顶级块（parent_id = None，排除已删除）
@@ -338,6 +388,14 @@ def update_block(
         block.name = data.name
     if data.content is not None:
         block.content = data.content
+        # ===== 关键修复：保存内容时自动更新状态 =====
+        # 只要有内容（无论是用户粘贴还是生成的），状态变为 completed
+        # 如果内容被清空，状态恢复为 pending
+        if data.status is None:  # 没有显式传 status 时才自动设置
+            if block.content and block.content.strip():
+                block.status = "completed"
+            else:
+                block.status = "pending"
     if data.status is not None:
         if data.status not in BLOCK_STATUS:
             raise HTTPException(status_code=400, detail=f"无效的状态: {data.status}")
@@ -363,6 +421,11 @@ def update_block(
     
     db.commit()
     db.refresh(block)
+    
+    # ===== 关键修复：更新父级（阶段/组）的状态 =====
+    # 当字段状态变化时，检查父级的所有子级是否全部完成
+    if block.parent_id and block.block_type == "field":
+        _update_parent_status(block.parent_id, db)
     
     return _block_to_response(block)
 
@@ -521,6 +584,82 @@ def move_block(
     return _block_to_response(block)
 
 
+def _resolve_dependencies(block: ContentBlock, db: Session) -> tuple:
+    """
+    智能解析依赖关系，处理以下场景：
+    1. depends_on 中的 ID 指向已删除的块 → 按名称在同项目中查找替代
+    2. depends_on 中的 ID 不存在 → 按名称查找
+    3. 自动修复 block.depends_on（将过期 ID 更新为正确 ID）
+    
+    Returns:
+        (resolved_deps: List[ContentBlock], dependency_content: str, error_msg: Optional[str])
+    """
+    if not block.depends_on:
+        return [], "", None
+    
+    # 获取项目中所有活跃的块（未删除）
+    active_blocks = db.query(ContentBlock).filter(
+        ContentBlock.project_id == block.project_id,
+        ContentBlock.deleted_at == None,
+    ).all()
+    active_by_id = {b.id: b for b in active_blocks}
+    active_by_name = {}
+    for b in active_blocks:
+        if b.id != block.id:  # 排除自己
+            active_by_name[b.name] = b
+    
+    resolved_deps = []
+    updated_depends_on = []
+    needs_update = False
+    
+    for dep_id in block.depends_on:
+        # 1. 先尝试用 ID 在活跃块中查找
+        dep_block = active_by_id.get(dep_id)
+        if dep_block:
+            resolved_deps.append(dep_block)
+            updated_depends_on.append(dep_id)
+            continue
+        
+        # 2. ID 未找到（已删除或不存在），尝试查找该 ID 对应的旧块获取名称
+        old_block = db.query(ContentBlock).filter(
+            ContentBlock.id == dep_id,
+        ).first()
+        
+        dep_name = old_block.name if old_block else dep_id  # dep_id 本身可能就是名称
+        
+        # 3. 按名称在活跃块中查找替代
+        replacement = active_by_name.get(dep_name)
+        if replacement:
+            resolved_deps.append(replacement)
+            updated_depends_on.append(replacement.id)
+            needs_update = True
+            print(f"[依赖修复] {block.name}: 依赖 '{dep_name}' 的 ID 已更新 {dep_id} -> {replacement.id}")
+        else:
+            # 彻底找不到，跳过（不再把无效 ID 留在 depends_on 中）
+            needs_update = True
+            print(f"[依赖修复] {block.name}: 依赖 ID '{dep_id}' (名称: {dep_name}) 已不存在，已移除")
+    
+    # 4. 自动修复 depends_on
+    if needs_update:
+        block.depends_on = updated_depends_on
+        db.flush()
+        print(f"[依赖修复] {block.name}: depends_on 已自动修复为 {updated_depends_on}")
+    
+    # 5. 检查依赖内容
+    incomplete = [d for d in resolved_deps if not d.content or not d.content.strip()]
+    if incomplete:
+        return resolved_deps, "", f"依赖内容为空: {', '.join([d.name for d in incomplete])}"
+    
+    # 6. 构建依赖内容文本
+    context_parts = []
+    for dep in resolved_deps:
+        if dep.content:
+            context_parts.append(f"## {dep.name}\n{dep.content}")
+    dependency_content = "\n\n".join(context_parts)
+    
+    return resolved_deps, dependency_content, None
+
+
 @router.post("/{block_id}/generate")
 async def generate_block_content(
     block_id: str,
@@ -538,19 +677,10 @@ async def generate_block_content(
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
     
-    # 检查依赖是否满足（只要有内容就满足，不需要 status 是 completed）
-    if block.depends_on:
-        deps = db.query(ContentBlock).filter(
-            ContentBlock.id.in_(block.depends_on)
-        ).all()
-        
-        # 改为检查是否有内容，而不是状态
-        incomplete = [d for d in deps if not d.content or not d.content.strip()]
-        if incomplete:
-            raise HTTPException(
-                status_code=400,
-                detail=f"依赖内容为空: {', '.join([d.name for d in incomplete])}"
-            )
+    # 智能解析依赖（自动修复过期 ID、按名称查找替代）
+    resolved_deps, dependency_content, dep_error = _resolve_dependencies(block, db)
+    if dep_error:
+        raise HTTPException(status_code=400, detail=dep_error)
     
     # 获取创作者特质（从关系获取，转换为提示词格式）
     creator_profile_text = ""
@@ -561,15 +691,6 @@ async def generate_block_content(
     gc = GoldenContext(
         creator_profile=creator_profile_text,
     )
-    
-    # 获取依赖内容
-    dependency_content = ""
-    if block.depends_on:
-        all_blocks = db.query(ContentBlock).filter(
-            ContentBlock.project_id == block.project_id
-        ).all()
-        blocks_by_id = {b.id: b for b in all_blocks}
-        dependency_content = block.get_dependency_content(blocks_by_id)
     
     # 构建提示词
     prompt_engine = PromptEngine()
@@ -612,7 +733,7 @@ async def generate_block_content(
             ChatMessage(role="system", content=system_prompt),
             ChatMessage(role="user", content=f"请生成「{block.name}」的内容。"),
         ]
-        response = await ai_client.async_chat(messages=messages)
+        response = await ai_client.async_chat(messages=messages, max_tokens=16384)
         
         block.content = response.content
         block.status = "completed"  # 生成成功即为完成，need_review 是独立的审核标记
@@ -636,6 +757,10 @@ async def generate_block_content(
         )
         db.add(gen_log)
         db.commit()
+        
+        # 更新父级状态（递归向上）
+        if block.parent_id:
+            _update_parent_status(block.parent_id, db)
         
         # 自动触发依赖此块的其他块（使用独立 DB session 避免冲突）
         from core.database import get_session_maker
@@ -891,21 +1016,25 @@ async def generate_block_content_stream(
     if not block:
         raise HTTPException(status_code=404, detail="内容块不存在")
     
+    # 如果是 eval 特殊字段，重定向到 eval API
+    if block.special_handler and block.special_handler.startswith("eval_"):
+        from api.eval import generate_eval_for_block
+        result = await generate_eval_for_block(block_id, db)
+        # 将结果包装为 SSE 格式
+        async def eval_stream():
+            content = result.get("content", "")
+            yield f"data: {json.dumps({'chunk': content}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'done': True, 'content': content}, ensure_ascii=False)}\n\n"
+        return StreamingResponse(eval_stream(), media_type="text/event-stream")
+    
     project = db.query(Project).filter(Project.id == block.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
     
-    # 检查依赖是否满足
-    if block.depends_on:
-        deps = db.query(ContentBlock).filter(
-            ContentBlock.id.in_(block.depends_on)
-        ).all()
-        incomplete = [d for d in deps if not d.content or not d.content.strip()]
-        if incomplete:
-            raise HTTPException(
-                status_code=400,
-                detail=f"依赖内容为空: {', '.join([d.name for d in incomplete])}"
-            )
+    # 智能解析依赖（自动修复过期 ID、按名称查找替代）
+    resolved_deps, dependency_content, dep_error = _resolve_dependencies(block, db)
+    if dep_error:
+        raise HTTPException(status_code=400, detail=dep_error)
     
     # 获取创作者特质
     creator_profile_text = ""
@@ -913,15 +1042,6 @@ async def generate_block_content_stream(
         creator_profile_text = project.creator_profile.to_prompt_context()
     
     gc = GoldenContext(creator_profile=creator_profile_text)
-    
-    # 获取依赖内容
-    dependency_content = ""
-    if block.depends_on:
-        all_blocks = db.query(ContentBlock).filter(
-            ContentBlock.project_id == block.project_id
-        ).all()
-        blocks_by_id = {b.id: b for b in all_blocks}
-        dependency_content = block.get_dependency_content(blocks_by_id)
     
     # 构建约束文本
     constraints_text = _build_constraints_text(block.constraints)
@@ -959,21 +1079,26 @@ async def generate_block_content_stream(
     
     async def stream_generator():
         content_parts = []
+        stream_completed = False  # 标记流式生成是否完整完成
+        
         try:
             messages = [
                 ChatMessage(role="system", content=system_prompt),
                 ChatMessage(role="user", content=f"请生成「{block.name}」的内容。"),
             ]
             
-            async for chunk in ai_client.stream_chat(messages=messages):
+            async for chunk in ai_client.stream_chat(messages=messages, max_tokens=16384):
                 content_parts.append(chunk)
                 data = json.dumps({"chunk": chunk}, ensure_ascii=False)
                 yield f"data: {data}\n\n"
             
+            # AI 流完整结束
+            stream_completed = True
+            
             # 保存完整内容
             full_content = "".join(content_parts)
             block.content = full_content
-            block.status = "completed"  # 生成成功即为完成，need_review 是独立的审核标记
+            block.status = "completed"
             
             # 计算耗时和tokens（估算）
             duration_ms = int((time.time() - start_time) * 1000)
@@ -1000,14 +1125,15 @@ async def generate_block_content_stream(
             db.add(gen_log)
             db.commit()
             
-            # 在发送完成事件之前，启动后台自动触发任务
-            # 必须在 yield 之前启动，因为 yield done 后客户端会关闭连接，
-            # 导致 generator 被取消，后续代码不会执行
+            # 更新父级状态（递归向上）
+            if block.parent_id:
+                _update_parent_status(block.parent_id, db)
+            
+            # 启动后台自动触发任务
             completed_block_id = block.id
             completed_project_id = block.project_id
             
             async def _background_auto_trigger():
-                """后台自动触发任务（使用独立的 DB session）"""
                 from core.database import get_session_maker
                 SessionLocal = get_session_maker()
                 bg_db = SessionLocal()
@@ -1018,16 +1144,11 @@ async def generate_block_content_stream(
                     )
                     if auto_triggered:
                         print(f"[STREAM] ✅ 后台自动触发了 {len(auto_triggered)} 个块: {auto_triggered}")
-                    else:
-                        print(f"[STREAM] 没有需要自动触发的块")
                 except Exception as trigger_error:
                     print(f"[AUTO-TRIGGER] 后台触发依赖块失败: {trigger_error}")
-                    import traceback
-                    traceback.print_exc()
                 finally:
                     bg_db.close()
             
-            # 启动后台任务（不等待完成）
             asyncio.create_task(_background_auto_trigger())
             
             # 发送完成事件
@@ -1046,6 +1167,51 @@ async def generate_block_content_stream(
             db.commit()
             error_data = json.dumps({"error": str(e)}, ensure_ascii=False)
             yield f"data: {error_data}\n\n"
+            
+        except BaseException:
+            # ===== 关键修复 =====
+            # 当用户导航离开时，ASGI 取消 generator，抛出 GeneratorExit（继承 BaseException）
+            # 必须在这里保存已积累的内容，否则内容会丢失！
+            if content_parts and not stream_completed:
+                try:
+                    from core.database import get_session_maker
+                    SessionLocal = get_session_maker()
+                    save_db = SessionLocal()
+                    try:
+                        save_block = save_db.query(ContentBlock).filter(
+                            ContentBlock.id == block_id
+                        ).first()
+                        if save_block:
+                            partial_content = "".join(content_parts)
+                            save_block.content = partial_content
+                            save_block.status = "completed"
+                            
+                            # 记录日志
+                            from core.models import GenerationLog, generate_uuid
+                            duration_ms = int((time.time() - start_time) * 1000)
+                            gen_log = GenerationLog(
+                                id=generate_uuid(),
+                                project_id=save_block.project_id,
+                                field_id=save_block.id,
+                                phase=save_block.parent_id or "content_block",
+                                operation=f"block_generate_stream_interrupted_{save_block.name}",
+                                model="gpt-5.1",
+                                tokens_in=len(system_prompt) // 4,
+                                tokens_out=len(partial_content) // 4,
+                                duration_ms=duration_ms,
+                                prompt_input=system_prompt,
+                                prompt_output=partial_content,
+                                cost=0,
+                                status="interrupted",
+                            )
+                            save_db.add(gen_log)
+                            save_db.commit()
+                            print(f"[STREAM] ⚠️ 客户端断开，已保存 {len(partial_content)} 字符的部分内容")
+                    finally:
+                        save_db.close()
+                except Exception as save_err:
+                    print(f"[STREAM] ❌ 保存中断内容失败: {save_err}")
+            raise  # 重新抛出 BaseException，让 ASGI 正常处理
     
     return StreamingResponse(
         stream_generator(),

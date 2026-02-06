@@ -35,6 +35,14 @@ SPECIAL_HANDLERS = {
     "research": "消费者调研",
     "simulate": "消费者模拟",
     "evaluate": "项目评估",
+    # Eval 体系角色
+    "eval_container": "综合评估",
+    "eval_coach": "教练评审",
+    "eval_editor": "编辑评审",
+    "eval_expert": "专家评审",
+    "eval_consumer": "消费者体验",
+    "eval_seller": "内容销售测试",
+    "eval_diagnoser": "综合诊断",
 }
 
 # 内容块状态

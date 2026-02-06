@@ -22,6 +22,7 @@ export default function WorkspacePage() {
   const [error, setError] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);  // 用于触发子组件刷新
+  const [blocksRefreshKey, setBlocksRefreshKey] = useState(0); // 用于触发 ContentBlocks 刷新
   const [selectedBlock, setSelectedBlock] = useState<ContentBlock | null>(null); // 树形视图选中的内容块
   const [allBlocks, setAllBlocks] = useState<ContentBlock[]>([]); // 所有内容块（用于依赖选择）
   const [showProjectMenu, setShowProjectMenu] = useState(false); // 项目下拉菜单
@@ -464,6 +465,7 @@ export default function WorkspacePage() {
             <ProgressPanel
               project={currentProject}
               fields={fields}
+              blocksRefreshKey={blocksRefreshKey}
               onPhaseClick={handlePhaseClick}
               onPhaseReorder={handlePhaseReorder}
               onAutonomyChange={handleAutonomyChange}
@@ -488,7 +490,13 @@ export default function WorkspacePage() {
               allBlocks={allBlocks}
               useFlexibleArchitecture={currentProject?.use_flexible_architecture || false}
               onFieldUpdate={handleFieldUpdate}
-              onFieldsChange={() => currentProject && loadFields(currentProject.id)}
+              onFieldsChange={() => {
+                if (currentProject) {
+                  loadFields(currentProject.id);
+                  // 同时刷新 ContentBlocks（确保树形视图和内容面板同步）
+                  setBlocksRefreshKey(prev => prev + 1);
+                }
+              }}
               onBlockSelect={handleBlockSelect}
               onPhaseAdvance={async () => {
                 // 阶段推进后，刷新项目、字段和对话历史
@@ -507,14 +515,18 @@ export default function WorkspacePage() {
               key={refreshKey}  // 触发刷新
               projectId={currentProject?.id || null}
               fields={fields}
+              allBlocks={allBlocks}
+              useFlexibleArchitecture={currentProject?.use_flexible_architecture || false}
               onSendMessage={handleSendMessage}
               onContentUpdate={async () => {
-                // Agent生成内容后，刷新字段和项目状态
+                // Agent生成内容后，刷新字段、内容块和项目状态
                 if (currentProject) {
                   await loadFields(currentProject.id);
                   // 重新加载项目以获取最新的phase_status
                   const updatedProject = await projectAPI.get(currentProject.id);
                   setCurrentProject(updatedProject);
+                  // 刷新内容块（灵活架构）
+                  setBlocksRefreshKey(prev => prev + 1);
                 }
               }}
             />

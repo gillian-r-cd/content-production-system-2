@@ -109,6 +109,16 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
     setPreAnswers(block.pre_answers || {});
   }, [block]);
   
+  // ===== 关键修复：如果 block 状态是 in_progress 但当前组件没在流式生成，则轮询刷新 =====
+  useEffect(() => {
+    if (block.status === "in_progress" && !isGenerating) {
+      const pollInterval = setInterval(() => {
+        onUpdate?.(); // 触发父组件刷新数据
+      }, 2000);
+      return () => clearInterval(pollInterval);
+    }
+  }, [block.status, isGenerating]);
+  
   // 保存预提问答案状态
   const [isSavingPreAnswers, setIsSavingPreAnswers] = useState(false);
   const [preAnswersSaved, setPreAnswersSaved] = useState(false);
@@ -597,6 +607,11 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
                 <div className="prose prose-invert prose-sm max-w-none">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{generatingContent || "正在生成..."}</ReactMarkdown>
                   <span className="inline-block w-2 h-4 bg-brand-500 animate-pulse" />
+                </div>
+              ) : block.status === "in_progress" && !block.content ? (
+                <div className="flex items-center gap-2 py-8 justify-center">
+                  <span className="inline-block w-2 h-4 bg-brand-500 animate-pulse" />
+                  <span className="text-sm text-brand-400 animate-pulse">后台生成中，请稍候...</span>
                 </div>
               ) : block.content ? (
                 <div className="relative">

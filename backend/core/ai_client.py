@@ -111,7 +111,8 @@ class AIClient:
             "temperature": temperature,
         }
         if max_tokens is not None:
-            kwargs["max_tokens"] = max_tokens
+            # gpt-4o / gpt-5.x 等新模型使用 max_completion_tokens
+            kwargs["max_completion_tokens"] = max_tokens
         
         response = self.sync_client.chat.completions.create(**kwargs)
         
@@ -150,7 +151,8 @@ class AIClient:
             "temperature": temperature,
         }
         if max_tokens is not None:
-            kwargs["max_tokens"] = max_tokens
+            # gpt-4o / gpt-5.x 等新模型使用 max_completion_tokens
+            kwargs["max_completion_tokens"] = max_tokens
         
         response = await self.async_client.chat.completions.create(**kwargs)
         
@@ -198,7 +200,8 @@ class AIClient:
             "stream": True,
         }
         if max_tokens is not None:
-            kwargs["max_tokens"] = max_tokens
+            # gpt-4o / gpt-5.x 等新模型使用 max_completion_tokens
+            kwargs["max_completion_tokens"] = max_tokens
         
         stream = await self.async_client.chat.completions.create(**kwargs)
         

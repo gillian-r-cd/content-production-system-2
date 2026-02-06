@@ -1326,24 +1326,55 @@ async def modify_node(state: ContentProductionState) -> ContentProductionState:
     original_content = referenced_contents.get(target_field, "")
     user_input = state.get("user_input", "")
     
+    # 如果引用中没有找到，尝试直接从数据库查找（支持用户直接输入字段名而不用 @）
+    if not original_content and target_field and project_id:
+        try:
+            field_data = get_field_content(project_id, target_field)
+            if field_data and field_data.get("content"):
+                original_content = field_data["content"]
+                referenced_contents[target_field] = original_content
+                print(f"[modify_node] 通过数据库直接查找到字段: {target_field}")
+        except Exception as e:
+            print(f"[modify_node] 查找字段失败: {e}")
+    
     if not original_content:
-        # 即使失败也要记录完整的调试信息
+        # 列出所有可用的字段名（同时搜索 ProjectField 和 ContentBlock）
+        all_available = list(referenced_contents.keys())
+        try:
+            from core.database import get_db
+            from core.models import ProjectField
+            db = next(get_db())
+            # 搜索 ProjectField
+            pf_names = [f.name for f in db.query(ProjectField).filter(
+                ProjectField.project_id == project_id
+            ).all() if f.content and f.content.strip()]
+            # 搜索 ContentBlock
+            from core.models.content_block import ContentBlock
+            cb_names = [b.name for b in db.query(ContentBlock).filter(
+                ContentBlock.project_id == project_id,
+                ContentBlock.block_type == "field",
+                ContentBlock.deleted_at == None,
+            ).all() if b.content and b.content.strip()]
+            all_available = list(set(pf_names + cb_names))
+        except Exception:
+            pass
+        
         references = state.get("references", [])
         debug_prompt = f"""[modify_node 失败调试信息]
 目标字段: {target_field}
 用户输入: {user_input}
 引用解析: {references}
-可用字段: {list(referenced_contents.keys())}
+可用字段: {all_available}
 
 解析操作: {operation}
 当前阶段: {state.get('current_phase', 'unknown')}
 """
         return {
             **state,
-            "agent_output": f"未找到字段「{target_field}」的内容，无法修改。\n\n可用字段: {list(referenced_contents.keys())}",
+            "agent_output": f"未找到字段「{target_field}」的内容，无法修改。\n\n可用字段: {all_available}",
             "is_producing": False,
             "waiting_for_human": False,
-            "full_prompt": debug_prompt,  # 确保日志中能看到调试信息
+            "full_prompt": debug_prompt,
         }
     
     # 从字段获取依赖内容

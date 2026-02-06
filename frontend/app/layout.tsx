@@ -13,6 +13,9 @@ const inter = Inter({
 export const metadata: Metadata = {
   title: "内容生产系统",
   description: "AI Agent 驱动的商业内容生产平台",
+  icons: {
+    icon: "/icon.svg",
+  },
 };
 
 export default function RootLayout({

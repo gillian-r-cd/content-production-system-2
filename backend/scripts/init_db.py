@@ -424,6 +424,75 @@ def seed_default_data():
             db.add_all(templates)
             print(f"  - 创建了 {len(templates)} 个字段模板")
         
+        # 5.5 预置综合评估模板（新 Eval 体系）
+        eval_template_exists = db.query(FieldTemplate).filter(
+            FieldTemplate.name == "综合评估模板"
+        ).first()
+        if not eval_template_exists:
+            eval_template = FieldTemplate(
+                name="综合评估模板",
+                description="5角色评估体系：教练（策略）+ 编辑（手艺）+ 专家（专业）+ 消费者（体验）+ 销售（转化）+ 综合诊断",
+                category="评估",
+                fields=[
+                    {
+                        "name": "教练评审",
+                        "type": "richtext",
+                        "ai_prompt": "从策略视角评估内容：方向是否正确？意图是否对齐？定位是否清晰？",
+                        "pre_questions": [],
+                        "depends_on": [],
+                        "dependency_type": "all",
+                        "special_handler": "eval_coach",
+                    },
+                    {
+                        "name": "编辑评审",
+                        "type": "richtext",
+                        "ai_prompt": "从编辑视角评估内容：结构是否合理？语言质量？风格一致性？",
+                        "pre_questions": [],
+                        "depends_on": [],
+                        "dependency_type": "all",
+                        "special_handler": "eval_editor",
+                    },
+                    {
+                        "name": "领域专家评审",
+                        "type": "richtext",
+                        "ai_prompt": "从专业视角评估内容：事实准确性？专业深度？数据支撑？",
+                        "pre_questions": [],
+                        "depends_on": [],
+                        "dependency_type": "all",
+                        "special_handler": "eval_expert",
+                    },
+                    {
+                        "name": "消费者体验",
+                        "type": "richtext",
+                        "ai_prompt": "以目标消费者身份体验内容：是否有用？能解决问题吗？会推荐吗？",
+                        "pre_questions": [],
+                        "depends_on": [],
+                        "dependency_type": "all",
+                        "special_handler": "eval_consumer",
+                    },
+                    {
+                        "name": "内容销售测试",
+                        "type": "richtext",
+                        "ai_prompt": "模拟销售场景：销售顾问向目标消费者推介内容，测试转化能力。",
+                        "pre_questions": [],
+                        "depends_on": [],
+                        "dependency_type": "all",
+                        "special_handler": "eval_seller",
+                    },
+                    {
+                        "name": "综合诊断",
+                        "type": "richtext",
+                        "ai_prompt": "跨角色诊断分析：综合所有评估结果，找出系统性问题和改进优先级。",
+                        "pre_questions": [],
+                        "depends_on": ["教练评审", "编辑评审", "领域专家评审", "消费者体验", "内容销售测试"],
+                        "dependency_type": "all",
+                        "special_handler": "eval_diagnoser",
+                    },
+                ]
+            )
+            db.add(eval_template)
+            print("  - 创建了综合评估模板")
+        
         db.commit()
         print("预置数据插入完成！")
         
