@@ -335,11 +335,9 @@ def check_auto_triggers(
     for block in all_blocks:
         if block.need_review:
             continue
+        # 只触发 pending 和 failed 的块；in_progress 的块说明正在生成中，不重复触发
         if block.status not in ("pending", "failed"):
-            if block.status == "in_progress" and (not block.content or not block.content.strip()):
-                pass  # 卡住的块也视为可触发
-            else:
-                continue
+            continue
         if block.content and block.content.strip():
             continue
         deps = block.depends_on or []

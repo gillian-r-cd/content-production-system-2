@@ -291,3 +291,4 @@ class TestDefaultTemplates:
         reading_template = Simulator.get_default_template("reading")
         assert template == reading_template
 
+

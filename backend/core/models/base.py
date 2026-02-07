@@ -52,3 +52,4 @@ class BaseModel(Base):
             for column in self.__table__.columns
         }
 
+

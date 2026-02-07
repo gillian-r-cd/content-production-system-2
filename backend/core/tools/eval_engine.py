@@ -184,15 +184,22 @@ async def run_task_trial(
     # 获取模拟器显示名称（优先用后台配置的名称，其次用硬编码名称）
     display_name = config.get("simulator_name", "") or SIMULATOR_TYPES.get(simulator_type, {}).get("name", simulator_type)
     
-    if interaction_mode == "review":
+    # ===== 兼容旧版 interaction_type → 新版 interaction_mode 映射 =====
+    # reading → review（阅读式 = 一次性审查）
+    # decision → scenario（决策式 = 场景对话）
+    # exploration → dialogue（探索式 = 多轮对话）
+    MODE_COMPAT = {
+        "reading": "review",
+        "decision": "scenario",
+        "exploration": "dialogue",
+    }
+    effective_mode = MODE_COMPAT.get(interaction_mode, interaction_mode)
+    
+    if effective_mode == "review":
         result = await _run_review(
             simulator_type, content, creator_profile, intent, persona, config, grader_cfg
         )
-    elif interaction_mode == "dialogue":
-        result = await _run_dialogue(
-            simulator_type, content, creator_profile, intent, persona, config, grader_cfg, content_field_names
-        )
-    elif interaction_mode == "scenario":
+    elif effective_mode in ("dialogue", "scenario"):
         result = await _run_dialogue(
             simulator_type, content, creator_profile, intent, persona, config, grader_cfg, content_field_names
         )

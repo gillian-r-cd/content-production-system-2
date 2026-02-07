@@ -34,3 +34,4 @@ class AgentSettings(BaseModel):
     autonomy_defaults: Mapped[dict] = mapped_column(JSON, default=dict)
     tool_prompts: Mapped[dict] = mapped_column(JSON, default=dict)
 
+

@@ -1123,11 +1123,17 @@ export function EvalReportPanel({ block, projectId, onUpdate }: EvalFieldProps) 
               </div>
 
               {/* 统计网格 */}
-              <div className="grid grid-cols-4 gap-3 flex-1">
+              <div className={`grid ${failedTrials.length > 0 ? "grid-cols-5" : "grid-cols-4"} gap-3 flex-1`}>
                 <div className="rounded-xl p-3 text-center border border-emerald-500/20 bg-emerald-500/10">
                   <div className="text-xl font-bold text-emerald-400">{completedTrials.length}</div>
                   <div className="text-xs text-emerald-400/70 mt-0.5">完成</div>
                 </div>
+                {failedTrials.length > 0 && (
+                  <div className="rounded-xl p-3 text-center border border-orange-500/20 bg-orange-500/10">
+                    <div className="text-xl font-bold text-orange-400">{failedTrials.length}</div>
+                    <div className="text-xs text-orange-400/70 mt-0.5">失败</div>
+                  </div>
+                )}
                 <div className="rounded-xl p-3 text-center border border-red-500/20 bg-red-500/10">
                   <div className="text-xl font-bold text-red-400">{belowStandard}</div>
                   <div className="text-xs text-red-400/70 mt-0.5">不达标 (&lt;60%)</div>
@@ -1210,15 +1216,24 @@ export function EvalReportPanel({ block, projectId, onUpdate }: EvalFieldProps) 
                             <span className="text-xs text-zinc-500">/10</span>
                           </div>
                         ) : trial.status === "failed" ? (
-                          <XCircle className="w-5 h-5 text-red-400" />
+                          <div className="flex items-center gap-1.5">
+                            <XCircle className="w-5 h-5 text-red-400" />
+                            <span className="text-xs text-red-400">失败</span>
+                          </div>
                         ) : (
                           <Clock className="w-5 h-5 text-zinc-600" />
                         )}
                         {expandedTrial === idx ? <ChevronDown className="w-4 h-4 text-zinc-500" /> : <ChevronRight className="w-4 h-4 text-zinc-500" />}
                       </div>
                     </div>
-                    {/* 第二行：各 Grader 分数标签 */}
-                    {hasGraders && (
+                    {/* 第二行：各 Grader 分数标签 / 错误信息 */}
+                    {trial.status === "failed" && trial.error ? (
+                      <div className="px-4 pb-3 -mt-1">
+                        <span className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-2.5 py-1 inline-block">
+                          ❌ {trial.error.length > 120 ? trial.error.slice(0, 120) + "..." : trial.error}
+                        </span>
+                      </div>
+                    ) : hasGraders ? (
                       <div className="px-4 pb-3 -mt-1 flex flex-wrap gap-2">
                         {graderEntries.map(([gName, gScore]: any) => (
                           <span key={gName} className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg border font-medium ${
@@ -1231,7 +1246,7 @@ export function EvalReportPanel({ block, projectId, onUpdate }: EvalFieldProps) 
                           </span>
                         ))}
                       </div>
-                    )}
+                    ) : null}
                   </div>
                 );
               })}
@@ -1272,6 +1287,18 @@ export function EvalReportPanel({ block, projectId, onUpdate }: EvalFieldProps) 
                     </div>
                   )}
                 </div>
+
+                {/* ---- 失败错误信息 ---- */}
+                {trial.status === "failed" && trial.error && (
+                  <div className="px-5 py-4 border-t border-red-500/30 bg-red-500/5">
+                    <h4 className="text-sm font-medium text-red-400 mb-2 flex items-center gap-2">
+                      <XCircle className="w-4 h-4" /> 执行失败
+                    </h4>
+                    <pre className="text-xs text-red-300/80 bg-red-500/10 p-3 rounded-lg border border-red-500/20 whitespace-pre-wrap break-words font-mono">
+                      {trial.error}
+                    </pre>
+                  </div>
+                )}
 
                 {/* ---- Grader 评分详情（核心区域） ---- */}
                 {trial.grader_results && trial.grader_results.length > 0 && (

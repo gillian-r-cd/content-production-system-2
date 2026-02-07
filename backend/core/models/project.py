@@ -137,3 +137,4 @@ class Project(BaseModel):
         phase = phase or self.current_phase
         return self.agent_autonomy.get(phase, True)
 
+

@@ -31,3 +31,4 @@ class SystemPrompt(BaseModel):
     content: Mapped[str] = mapped_column(Text, default="")
     description: Mapped[str] = mapped_column(Text, default="")
 
+

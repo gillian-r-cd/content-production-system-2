@@ -696,14 +696,42 @@ export const blockAPI = {
 /**
  * 前端驱动的自动触发链：
  * 1. 调用 check-auto-triggers 获取可触发的块 ID
- * 2. 对每个 eligible 块调用 generateStream 进行生成
- * 3. 每个块完成后递归检查是否解锁了新的下游块
+ * 2. 对所有 eligible 块 **并行** 调用 generateStream 进行生成
+ * 3. 全部完成后递归检查是否解锁了新的下游块
+ * 
+ * 去重机制：全局锁防止多个调用方同时启动链条（如 progress-panel +
+ * content-block-editor + content-block-card 都会在 onUpdate 时触发）。
  * 
  * @param projectId 项目 ID
  * @param onBlockUpdate 每次有块状态变化时的回调（刷新 UI）
  * @param maxDepth 最大递归深度（防止无限循环），默认 10
  */
+
+// ===== 全局去重锁（按 projectId）=====
+const _autoChainLocks = new Map<string, boolean>();
+
 export async function runAutoTriggerChain(
+  projectId: string,
+  onBlockUpdate?: () => void,
+  maxDepth: number = 10,
+): Promise<string[]> {
+  if (maxDepth <= 0) return [];
+
+  // 去重：如果已经有一个链正在运行，跳过
+  if (_autoChainLocks.get(projectId)) {
+    console.log(`[AUTO-CHAIN] Already running for project ${projectId}, skipping`);
+    return [];
+  }
+  _autoChainLocks.set(projectId, true);
+
+  try {
+    return await _runAutoTriggerChainInner(projectId, onBlockUpdate, maxDepth);
+  } finally {
+    _autoChainLocks.set(projectId, false);
+  }
+}
+
+async function _runAutoTriggerChainInner(
   projectId: string,
   onBlockUpdate?: () => void,
   maxDepth: number = 10,
@@ -714,62 +742,75 @@ export async function runAutoTriggerChain(
   const eligibleIds = result.eligible_ids || [];
   if (eligibleIds.length === 0) return [];
 
-  console.log(`[AUTO-CHAIN] Found ${eligibleIds.length} eligible blocks, generating...`);
+  console.log(`[AUTO-CHAIN] Found ${eligibleIds.length} eligible blocks, generating in PARALLEL...`);
+
+  // ===== 关键改动：并行生成所有 eligible 块 =====
+  const promises = eligibleIds.map((blockId) => _generateSingleBlock(blockId));
+  const results = await Promise.allSettled(promises);
+
   const allTriggered: string[] = [];
-
-  for (const blockId of eligibleIds) {
-    try {
-      console.log(`[AUTO-CHAIN] Generating block ${blockId}...`);
-      const resp = await blockAPI.generateStream(blockId);
-      
-      if (!resp.ok) {
-        console.error(`[AUTO-CHAIN] Generate failed for ${blockId}: ${resp.status}`);
-        continue;
-      }
-
-      // 读取 SSE 流直到完成
-      const reader = resp.body?.getReader();
-      const decoder = new TextDecoder();
-      if (reader) {
-        let done = false;
-        while (!done) {
-          const { value, done: streamDone } = await reader.read();
-          done = streamDone;
-          if (value) {
-            const text = decoder.decode(value, { stream: true });
-            // 解析 SSE 事件中的 done 标记
-            const lines = text.split("\n");
-            for (const line of lines) {
-              if (line.startsWith("data: ")) {
-                try {
-                  const data = JSON.parse(line.substring(6));
-                  if (data.done) {
-                    console.log(`[AUTO-CHAIN] Block ${blockId} completed`);
-                    allTriggered.push(blockId);
-                  }
-                } catch {
-                  // 不是 JSON，是普通 chunk
-                }
-              }
-            }
-          }
-        }
-      }
-
-      // 每个块完成后刷新 UI
-      onBlockUpdate?.();
-    } catch (err) {
-      console.error(`[AUTO-CHAIN] Error generating block ${blockId}:`, err);
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    if (r.status === "fulfilled" && r.value) {
+      allTriggered.push(eligibleIds[i]);
+    } else if (r.status === "rejected") {
+      console.error(`[AUTO-CHAIN] Error generating block ${eligibleIds[i]}:`, r.reason);
     }
+  }
+
+  // 所有并行块完成后刷新一次 UI
+  if (allTriggered.length > 0) {
+    onBlockUpdate?.();
   }
 
   // 递归：刚完成的块可能解锁了新的下游块
   if (allTriggered.length > 0) {
-    const moreTriggered = await runAutoTriggerChain(projectId, onBlockUpdate, maxDepth - 1);
+    const moreTriggered = await _runAutoTriggerChainInner(projectId, onBlockUpdate, maxDepth - 1);
     allTriggered.push(...moreTriggered);
   }
 
   return allTriggered;
+}
+
+/** 生成单个块并读完 SSE 流，返回是否成功 */
+async function _generateSingleBlock(blockId: string): Promise<boolean> {
+  console.log(`[AUTO-CHAIN] Generating block ${blockId}...`);
+  const resp = await blockAPI.generateStream(blockId);
+
+  if (!resp.ok) {
+    console.error(`[AUTO-CHAIN] Generate failed for ${blockId}: ${resp.status}`);
+    return false;
+  }
+
+  // 读取 SSE 流直到完成
+  const reader = resp.body?.getReader();
+  const decoder = new TextDecoder();
+  let success = false;
+  if (reader) {
+    let done = false;
+    while (!done) {
+      const { value, done: streamDone } = await reader.read();
+      done = streamDone;
+      if (value) {
+        const text = decoder.decode(value, { stream: true });
+        const lines = text.split("\n");
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            try {
+              const data = JSON.parse(line.substring(6));
+              if (data.done) {
+                console.log(`[AUTO-CHAIN] Block ${blockId} completed`);
+                success = true;
+              }
+            } catch {
+              // chunk, not JSON
+            }
+          }
+        }
+      }
+    }
+  }
+  return success;
 }
 
 // ============== Phase Template API (新架构) ==============

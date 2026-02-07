@@ -229,3 +229,4 @@ class EvalTask(BaseModel):
         type_info = SIMULATOR_TYPES.get(self.simulator_type, {})
         return type_info.get("system_prompt", "请评估以下内容。")
 
+

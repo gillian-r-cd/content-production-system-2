@@ -83,3 +83,4 @@ class SimulationRecord(BaseModel):
             return None
         return sum(scores.values()) / len(scores)
 
+
