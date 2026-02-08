@@ -1435,25 +1435,35 @@ export function EvalReportPanel({ block, projectId, onUpdate }: EvalFieldProps) 
                     </div>
                     {expandedSection[`nodes-${idx}`] && (
                       <div className="px-5 pb-4 space-y-2.5 max-h-[400px] overflow-y-auto">
-                        {trial.nodes.map((node: any, ni: number) => (
-                          <div key={ni} className={`flex ${node.role === "consumer" ? "justify-start" : "justify-end"}`}>
-                            <div className={`max-w-[80%] rounded-xl px-4 py-3 text-sm ${
-                              node.role === "consumer"
-                                ? "bg-blue-500/15 text-blue-200 border border-blue-500/20"
-                                : node.role === "seller"
-                                  ? "bg-purple-500/15 text-purple-200 border border-purple-500/20"
-                                  : "bg-surface-3 text-zinc-300"
-                            }`}>
+                        {trial.nodes.map((node: any, ni: number) => {
+                          // 根据 role 确定显示样式
+                          const isLeft = node.role === "consumer" || node.role === "user";
+                          const roleLabel = node.role === "consumer" ? `🗣 ${trial.persona_name || "消费者"}`
+                            : node.role === "seller" ? "💼 销售顾问"
+                            : node.role === "system" ? "⚙️ 系统提示"
+                            : node.role === "user" ? "📝 评估请求"
+                            : node.role === "assistant" ? "🤖 评估反馈"
+                            : node.role === "content_rep" ? "📄 内容代表"
+                            : `📋 ${node.role}`;
+                          const bgClass = node.role === "consumer" || node.role === "user"
+                            ? "bg-blue-500/15 text-blue-200 border border-blue-500/20"
+                            : node.role === "seller"
+                              ? "bg-purple-500/15 text-purple-200 border border-purple-500/20"
+                            : node.role === "system"
+                              ? "bg-zinc-800/50 text-zinc-400 border border-zinc-700/50"
+                              : "bg-surface-3 text-zinc-300";
+                          return (
+                          <div key={ni} className={`flex ${isLeft ? "justify-start" : "justify-end"}`}>
+                            <div className={`max-w-[80%] rounded-xl px-4 py-3 text-sm ${bgClass}`}>
                               <div className="text-xs font-medium mb-1.5 opacity-70">
-                                {node.role === "consumer" ? `🗣 ${trial.persona_name || "消费者"}`
-                                  : node.role === "seller" ? "💼 销售顾问"
-                                    : "📄 内容代表"}
+                                {roleLabel}
                                 {node.turn && ` · 第${node.turn}轮`}
                               </div>
-                              <div className="leading-relaxed">{node.content}</div>
+                              <div className="leading-relaxed whitespace-pre-wrap">{node.content}</div>
                             </div>
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     )}
                   </div>

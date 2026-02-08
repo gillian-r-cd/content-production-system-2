@@ -286,12 +286,15 @@ def seed_default_data():
         
         # 3. 预置模拟器
         if db.query(Simulator).count() == 0:
+            # interaction_type（旧版）→ interaction_mode（新版）映射
+            _TYPE_TO_MODE = {"reading": "review", "dialogue": "dialogue", "decision": "scenario", "exploration": "dialogue"}
             simulators = []
             for type_id, type_info in INTERACTION_TYPES.items():
                 simulator = Simulator(
                     name=f"默认{type_info['name']}模拟器",
                     description=type_info["description"],
                     interaction_type=type_id,
+                    interaction_mode=_TYPE_TO_MODE.get(type_id, "review"),
                     prompt_template=Simulator.get_default_template(type_id),
                     evaluation_dimensions=type_info["evaluation_dimensions"],
                 )

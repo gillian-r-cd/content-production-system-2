@@ -687,13 +687,24 @@ def _to_channel_response(c: Channel) -> ChannelResponse:
 
 
 def _to_simulator_response(s: Simulator) -> SimulatorResponse:
+    # 从 interaction_type（旧版，实际源数据）正确推导 interaction_mode（新版）
+    # 避免 interaction_mode 始终为 DB 默认值 "review" 的问题
+    itype = s.interaction_type or "reading"
+    raw_mode = getattr(s, 'interaction_mode', None) or ""
+    # 如果 interaction_mode 未被显式设置（仍是默认 review），从 interaction_type 推导
+    _TYPE_TO_MODE = {"reading": "review", "dialogue": "dialogue", "decision": "scenario", "exploration": "dialogue"}
+    if not raw_mode or raw_mode == "review":
+        derived_mode = _TYPE_TO_MODE.get(itype, "review")
+    else:
+        derived_mode = raw_mode
+    
     return SimulatorResponse(
         id=s.id,
         name=s.name,
         description=s.description or "",
         simulator_type=getattr(s, 'simulator_type', 'custom') or "custom",
-        interaction_type=s.interaction_type or "reading",
-        interaction_mode=getattr(s, 'interaction_mode', 'review') or "review",
+        interaction_type=itype,
+        interaction_mode=derived_mode,
         prompt_template=s.prompt_template or "",
         secondary_prompt=getattr(s, 'secondary_prompt', '') or "",
         grader_template=getattr(s, 'grader_template', '') or "",

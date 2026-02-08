@@ -1043,6 +1043,13 @@ async def _handle_eval_report(block, project, db):
                 sim_config["interaction_type"] = sim_obj.interaction_type or ""  # 关键：传递交互类型
                 sim_config.setdefault("max_turns", sim_obj.max_turns or 5)
                 tc["simulator_config"] = sim_config
+                
+                # 修正 interaction_mode：如果 trial 配置的 mode 与 simulator 的 type 不一致，以 type 为准
+                _TYPE_TO_MODE = {"reading": "review", "dialogue": "dialogue", "decision": "scenario", "exploration": "dialogue"}
+                correct_mode = _TYPE_TO_MODE.get(sim_obj.interaction_type or "", "")
+                if correct_mode and tc.get("interaction_mode") != correct_mode:
+                    print(f"[eval] 修正 interaction_mode: {tc.get('interaction_mode')} → {correct_mode} (simulator: {sim_obj.name})")
+                    tc["interaction_mode"] = correct_mode
     
     block.status = "in_progress"
     db.commit()
