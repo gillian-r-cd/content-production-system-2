@@ -362,24 +362,89 @@ def get_intent_and_research(project_id: str, db: Optional[Session] = None) -> Di
     """
     获取意图分析和消费者调研结果
     
-    这是最常用的依赖组合，专门提供一个便捷函数
-    
-    Args:
-        project_id: 项目ID
-        db: 数据库会话
+    意图分析字段可能存储为：
+    - 3个独立字段: "做什么"、"给谁看"、"核心价值" (stream端点)
+    - 1个字段: "项目意图" (非stream端点JSON解析失败时)
+    - ContentBlock: name 含 "意图分析" 或 special_handler == "intent"
     
     Returns:
         {"intent": ..., "research": ...} 字典，缺失的字段为空字符串
     """
-    contents = get_dependency_contents(
-        project_id, 
-        ["意图分析", "消费者调研"],
-        db
-    )
+    if db is None:
+        db = next(get_db())
+    
+    # === 1. 获取意图分析 ===
+    intent_parts = []
+    
+    # 方案A: 查找3个独立字段 (做什么/给谁看/核心价值)
+    intent_field_names = ["做什么", "给谁看", "核心价值"]
+    for fname in intent_field_names:
+        field = db.query(ProjectField).filter(
+            ProjectField.project_id == project_id,
+            ProjectField.phase == "intent",
+            ProjectField.name == fname,
+        ).first()
+        if field and field.content:
+            intent_parts.append(f"**{fname}**: {field.content}")
+    
+    # 方案B: 如果没有3个独立字段，查找 "项目意图" 字段
+    if not intent_parts:
+        fallback_names = ["项目意图", "意图分析"]
+        for fname in fallback_names:
+            field = db.query(ProjectField).filter(
+                ProjectField.project_id == project_id,
+                ProjectField.name == fname,
+            ).first()
+            if field and field.content:
+                intent_parts.append(field.content)
+                break
+    
+    # 方案C: 查找 ContentBlock (灵活架构)
+    if not intent_parts:
+        intent_block = db.query(ContentBlock).filter(
+            ContentBlock.project_id == project_id,
+            ContentBlock.name.in_(["意图分析", "项目意图", "Intent"]),
+            ContentBlock.deleted_at == None,
+        ).first()
+        if intent_block and intent_block.content:
+            intent_parts.append(intent_block.content)
+    
+    # 方案D: 查找所有 phase="intent" 的字段（兜底）
+    if not intent_parts:
+        all_intent_fields = db.query(ProjectField).filter(
+            ProjectField.project_id == project_id,
+            ProjectField.phase == "intent",
+        ).all()
+        for f in all_intent_fields:
+            if f.content:
+                intent_parts.append(f"**{f.name}**: {f.content}")
+    
+    intent_str = "\n".join(intent_parts)
+    
+    # === 2. 获取消费者调研 ===
+    research_str = ""
+    research_names = ["消费者调研报告", "消费者调研"]
+    for rname in research_names:
+        field = db.query(ProjectField).filter(
+            ProjectField.project_id == project_id,
+            ProjectField.name == rname,
+        ).first()
+        if field and field.content:
+            research_str = field.content
+            break
+    
+    if not research_str:
+        research_block = db.query(ContentBlock).filter(
+            ContentBlock.project_id == project_id,
+            ContentBlock.name.in_(research_names),
+            ContentBlock.deleted_at == None,
+        ).first()
+        if research_block and research_block.content:
+            research_str = research_block.content
     
     return {
-        "intent": contents.get("意图分析", ""),
-        "research": contents.get("消费者调研", ""),
+        "intent": intent_str,
+        "research": research_str,
     }
 
 

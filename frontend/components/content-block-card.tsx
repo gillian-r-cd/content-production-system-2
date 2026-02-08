@@ -9,6 +9,7 @@ import { useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { blockAPI, fieldAPI, runAutoTriggerChain } from "@/lib/api";
+import { sendNotification } from "@/lib/utils";
 import type { ContentBlock } from "@/lib/api";
 import { 
   Sparkles, 
@@ -60,6 +61,7 @@ export function ContentBlockCard({
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatingContent, setGeneratingContent] = useState("");
   const generatingRef = useRef(false); // 防止切换时丢失生成状态
+  const abortControllerRef = useRef<AbortController | null>(null); // 用于停止生成
   
   // 模态框状态
   const [showPromptModal, setShowPromptModal] = useState(false);
@@ -265,6 +267,8 @@ export function ContentBlockCard({
     setIsGenerating(true);
     setGeneratingContent("");
     generatingRef.current = true;
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
     setIsExpanded(true); // 自动展开显示生成内容
     setIsEditing(false); // 退出编辑模式以显示流式内容
     
@@ -283,7 +287,7 @@ export function ContentBlockCard({
         onUpdate?.();
       } else {
         // 使用流式生成
-        const response = await blockAPI.generateStream(block.id);
+        const response = await blockAPI.generateStream(block.id, abortController.signal);
         if (!response.ok) {
           const error = await response.json().catch(() => ({ detail: "生成失败" }));
           throw new Error(error.detail || `HTTP ${response.status}`);
@@ -314,6 +318,9 @@ export function ContentBlockCard({
                   setEditedContent(data.content || accumulatedContent);
                   onUpdate?.();
                   
+                  // 浏览器通知
+                  sendNotification("内容生成完成", `「${block.name}」已生成完毕，点击查看`);
+                  
                   // 前端驱动自动触发链：生成完成后检查并触发下游块
                   if (projectId) {
                     runAutoTriggerChain(projectId, () => onUpdate?.()).catch(console.error);
@@ -330,12 +337,27 @@ export function ContentBlockCard({
         }
       }
     } catch (err) {
-      console.error("生成失败:", err);
-      alert("生成失败: " + (err instanceof Error ? err.message : "未知错误"));
+      if (err instanceof DOMException && err.name === "AbortError") {
+        console.log("[BlockCard] 用户停止了生成");
+        onUpdate?.();
+      } else {
+        console.error("生成失败:", err);
+        alert("生成失败: " + (err instanceof Error ? err.message : "未知错误"));
+      }
     } finally {
       setIsGenerating(false);
       setGeneratingContent("");
       generatingRef.current = false;
+      abortControllerRef.current = null;
+    }
+  };
+
+  // 停止生成
+  const handleStopGeneration = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
     }
   };
 
@@ -688,7 +710,14 @@ export function ContentBlockCard({
             )}
             
             {isGenerating && (
-              <span className="text-xs text-brand-400 animate-pulse px-2">生成中...</span>
+              <button
+                onClick={handleStopGeneration}
+                className="flex items-center gap-1 px-2 py-1 text-xs bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/30 rounded transition-colors"
+                title="停止生成"
+              >
+                <svg className="w-3 h-3" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="3" width="10" height="10" rx="1" /></svg>
+                停止
+              </button>
             )}
             
             {/* 删除按钮 */}

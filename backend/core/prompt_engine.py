@@ -75,31 +75,59 @@ class PromptContext:
     custom_context: str = ""
     
     def to_system_prompt(self) -> str:
-        """构建完整的系统提示词"""
-        parts = []
+        """
+        构建完整的系统提示词。
         
-        # Golden Context（必须）
-        gc = self.golden_context.to_prompt()
-        if gc:
-            parts.append(gc)
+        核心原则：phase_context 就是完整模板（所见即所得）。
+        引擎只负责替换占位符 {creator_profile} / {dependencies} / {channel}。
+        如果模板中没有占位符（旧格式兼容），则使用传统拼接方式。
+        """
+        creator_profile_text = self.golden_context.creator_profile or "（暂无创作者特质）"
+        dependencies_text = self.field_context or "（无依赖内容）"
+        channel_text = self.channel_context or "（无渠道信息）"
         
-        # 阶段上下文
-        if self.phase_context:
-            parts.append(f"# 当前任务\n{self.phase_context}")
+        template = self.phase_context or ""
         
-        # 字段依赖上下文
-        if self.field_context:
-            parts.append(f"# 参考内容\n{self.field_context}")
+        # 检测是否为新格式模板（包含占位符）
+        has_placeholders = (
+            "{creator_profile}" in template
+            or "{dependencies}" in template
+            or "{channel}" in template
+        )
         
-        # 渠道上下文
-        if self.channel_context:
-            parts.append(f"# 目标渠道\n{self.channel_context}")
-        
-        # 自定义上下文
-        if self.custom_context:
-            parts.append(self.custom_context)
-        
-        return "\n\n---\n\n".join(parts)
+        if has_placeholders:
+            # 新格式：直接替换占位符，模板即最终提示词
+            result = template
+            result = result.replace("{creator_profile}", creator_profile_text)
+            result = result.replace("{dependencies}", dependencies_text)
+            result = result.replace("{channel}", channel_text)
+            
+            # 追加自定义上下文（如有）
+            if self.custom_context:
+                result += f"\n\n---\n\n{self.custom_context}"
+            
+            return result
+        else:
+            # 旧格式兼容：拼接各段
+            parts = []
+            
+            gc = self.golden_context.to_prompt()
+            if gc:
+                parts.append(gc)
+            
+            if self.phase_context:
+                parts.append(f"# 当前任务\n{self.phase_context}")
+            
+            if self.field_context:
+                parts.append(f"# 参考内容\n{self.field_context}")
+            
+            if self.channel_context:
+                parts.append(f"# 目标渠道\n{self.channel_context}")
+            
+            if self.custom_context:
+                parts.append(self.custom_context)
+            
+            return "\n\n---\n\n".join(parts)
 
 
 class PromptEngine:
@@ -150,11 +178,25 @@ class PromptEngine:
 
 请基于用户的所有回答，生成完整、具体、可操作的意图分析报告。"""
     
-    # 阶段系统提示词模板
+    # 阶段系统提示词模板（完整版，所见即所得）
+    # 核心原则：这里的内容就是 LLM 收到的完整 system_prompt
+    # 引擎只负责替换占位符，不额外拼接任何内容
+    # 支持的占位符：
+    #   {creator_profile}  → 创作者特质（全局上下文）
+    #   {dependencies}     → 依赖字段的内容
+    #   {channel}          → 目标渠道信息（外延生产时）
     PHASE_PROMPTS = {
-        "intent": INTENT_QUESTIONING_PROMPT,  # 默认用提问模式
+        "intent": INTENT_QUESTIONING_PROMPT,  # 意图分析是对话模式，不走此模板
 
-        "research": """你是一个资深的用户研究专家。基于用户的项目意图，进行消费者调研。
+        "research": """【创作者特质】
+{creator_profile}
+
+---
+
+你是一个资深的用户研究专家。基于以下参考内容，进行消费者调研。
+
+【参考内容】
+{dependencies}
 
 你需要输出：
 1. 总体用户画像（年龄、职业、特征）
@@ -164,19 +206,27 @@ class PromptEngine:
 
 输出格式要求结构化、具体、可操作。""",
 
-        "design_inner": """你是一个资深的内容架构师。基于项目意图和用户调研，设计3个不同的内容生产方案供用户选择。
+        "design_inner": """【创作者特质】
+{creator_profile}
+
+---
+
+你是一个资深的内容架构师。基于以下参考内容，设计3个不同的内容生产方案供用户选择。
+
+【参考内容】
+{dependencies}
 
 你必须输出严格的JSON格式（不要添加任何其他内容），包含3个方案：
 
 ```json
-{
+{{
   "proposals": [
-    {
+    {{
       "id": "proposal_1",
       "name": "方案名称（简洁有力）",
       "description": "方案核心思路描述（2-3句话）",
       "fields": [
-        {
+        {{
           "id": "field_1",
           "name": "字段名称",
           "field_type": "richtext",
@@ -184,8 +234,8 @@ class PromptEngine:
           "depends_on": [],
           "order": 1,
           "need_review": true
-        },
-        {
+        }},
+        {{
           "id": "field_2",
           "name": "第二个字段",
           "field_type": "richtext",
@@ -193,13 +243,13 @@ class PromptEngine:
           "depends_on": ["field_1"],
           "order": 2,
           "need_review": false
-        }
+        }}
       ]
-    },
-    { ... },
-    { ... }
+    }},
+    {{ ... }},
+    {{ ... }}
   ]
-}
+}}
 ```
 
 要求：
@@ -209,7 +259,15 @@ class PromptEngine:
 4. need_review=true 表示重要字段需要人工确认
 5. 紧扣用户痛点和项目意图""",
 
-        "produce_inner": """你是一个专业的内容创作者。根据内涵设计方案，生产具体的内容。
+        "produce_inner": """【创作者特质】
+{creator_profile}
+
+---
+
+你是一个专业的内容创作者。根据以下参考内容，生产具体的内容。
+
+【参考内容】
+{dependencies}
 
 要求：
 1. 严格遵循创作者特质和风格
@@ -217,7 +275,15 @@ class PromptEngine:
 3. 回应用户痛点
 4. 输出高质量、可直接使用的内容""",
 
-        "design_outer": """你是一个资深的营销策略专家。基于已生产的内涵内容，设计外延传播方案。
+        "design_outer": """【创作者特质】
+{creator_profile}
+
+---
+
+你是一个资深的营销策略专家。基于以下已生产的内涵内容，设计外延传播方案。
+
+【参考内容】
+{dependencies}
 
 你需要输出：
 1. 推荐的传播渠道及理由
@@ -225,7 +291,18 @@ class PromptEngine:
 3. 核心传播信息提炼
 4. 关键注意事项""",
 
-        "produce_outer": """你是一个全渠道内容运营专家。根据外延设计方案，为指定渠道生产内容。
+        "produce_outer": """【创作者特质】
+{creator_profile}
+
+---
+
+你是一个全渠道内容运营专家。根据以下外延设计方案，为指定渠道生产内容。
+
+【参考内容】
+{dependencies}
+
+【目标渠道】
+{channel}
 
 要求：
 1. 严格遵循渠道规范和限制
@@ -233,15 +310,15 @@ class PromptEngine:
 3. 适配渠道用户的阅读习惯
 4. 输出可直接发布的内容""",
 
-        "simulate": """你是一个真实的目标用户。请根据你的人物设定，真实地体验和评价内容。
+        "evaluate": """【创作者特质】
+{creator_profile}
 
-注意：
-1. 完全代入人物角色
-2. 给出真实、具体的反馈
-3. 指出优点和不足
-4. 提供改进建议""",
+---
 
-        "evaluate": """你是一个资深的内容评审专家。请对整个项目进行全面评估。
+你是一个资深的内容评审专家。请对以下内容进行全面评估。
+
+【参考内容】
+{dependencies}
 
 评估维度：
 1. 意图对齐度
@@ -258,6 +335,28 @@ class PromptEngine:
     def __init__(self):
         pass
     
+    def _get_phase_prompt(self, phase: str, db=None) -> str:
+        """
+        获取阶段提示词。
+        优先级：DB system_prompts 表（后台可编辑）> 内置 PHASE_PROMPTS
+        
+        Args:
+            phase: 阶段标识 (intent, research, design_inner, ...)
+            db: SQLAlchemy Session（可选）
+        """
+        if db:
+            try:
+                from core.models.system_prompt import SystemPrompt
+                db_prompt = db.query(SystemPrompt).filter(
+                    SystemPrompt.phase == phase
+                ).first()
+                if db_prompt and db_prompt.content:
+                    return db_prompt.content
+            except Exception:
+                pass
+        # 兜底使用内置
+        return self.PHASE_PROMPTS.get(phase, "")
+
     def build_golden_context(
         self,
         project: Project,
@@ -292,6 +391,7 @@ class PromptEngine:
         dependent_fields: Optional[list[ProjectField]] = None,
         channel: Optional[Channel] = None,
         custom_prompt: str = "",
+        db=None,
     ) -> PromptContext:
         """
         构建完整的提示词上下文
@@ -303,14 +403,15 @@ class PromptEngine:
             dependent_fields: 依赖的字段列表
             channel: 目标渠道（外延生产时）
             custom_prompt: 自定义提示词
+            db: SQLAlchemy Session（可选，传入则从 DB 加载后台配置的提示词）
         """
         ctx = PromptContext()
         
         # Golden Context
         ctx.golden_context = golden_context or self.build_golden_context(project)
         
-        # 阶段提示词
-        ctx.phase_context = self.PHASE_PROMPTS.get(phase, "")
+        # 阶段提示词：优先从DB加载（后台可编辑），兜底使用内置
+        ctx.phase_context = self._get_phase_prompt(phase, db=db)
         
         # 字段依赖上下文
         if dependent_fields:

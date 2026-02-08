@@ -121,19 +121,24 @@ async def _call_llm_multi(
     response = await ai_client.async_chat(messages, temperature=temperature)
     duration_ms = int((time.time() - start_time) * 1000)
     
-    # 提取系统和用户消息用于日志
+    # 提取完整对话历史用于日志（不能只记最后2条，否则用户看不到对话全貌）
     system_prompt = ""
-    user_messages = []
+    conversation_parts = []
     for m in messages:
         if m.role == "system":
             system_prompt = m.content
+        elif m.role == "assistant":
+            conversation_parts.append(f"[我方(assistant)]: {m.content}")
         elif m.role == "user":
-            user_messages.append(m.content)
+            conversation_parts.append(f"[对方(user)]: {m.content}")
+    
+    # 将完整对话历史作为 input_user，让用户能看到每一轮谁说了什么
+    full_history = "\n---\n".join(conversation_parts) if conversation_parts else ""
     
     call = LLMCall(
         step=step,
         input_system=system_prompt,
-        input_user="\n---\n".join(user_messages[-2:]) if user_messages else "",  # 最近2条
+        input_user=full_history,
         output=response.content,
         tokens_in=response.tokens_in,
         tokens_out=response.tokens_out,
@@ -228,21 +233,21 @@ async def _run_review(
     # 获取系统提示词（优先后台配置 > 硬编码 SIMULATOR_TYPES）
     type_info = SIMULATOR_TYPES.get(simulator_type, {})
     custom_prompt = config.get("system_prompt", "")
+    persona_text = json.dumps(persona, ensure_ascii=False) if persona else ""
+    
     if custom_prompt:
-        # 替换占位符
-        persona_text_for_sub = json.dumps(persona, ensure_ascii=False) if persona else ""
-        base_prompt = custom_prompt.replace("{content}", content).replace("{persona}", persona_text_for_sub)
+        # 自定义模板：{content} 占位符指向 user_message，不在 system 里展开
+        base_prompt = custom_prompt.replace("{content}", "（见下方待评估内容）").replace("{persona}", persona_text)
     else:
         base_prompt = type_info.get("system_prompt", "请评估以下内容。")
     
-    # 注入上下文
+    # 注入上下文（角色背景放 system，内容放 user）
     system_prompt = base_prompt
     if creator_profile:
         system_prompt += f"\n\n【创作者特质】\n{creator_profile}"
     if intent:
         system_prompt += f"\n\n【项目意图】\n{intent}"
     if persona:
-        persona_text = json.dumps(persona, ensure_ascii=False)
         system_prompt += f"\n\n【目标消费者】\n{persona_text}"
     
     # 获取评分维度
@@ -250,8 +255,8 @@ async def _run_review(
     dim_str = ", ".join([f'"{d}": 分数(1-10)' for d in dimensions])
     dim_comment_str = ", ".join([f'"{d}": "具体评语（至少2句话）"' for d in dimensions])
     
-    user_message = f"""以下是要评估的内容：
-
+    # user_message: 只在这里传内容（唯一一次）
+    user_message = f"""【待评估内容】
 {content}
 
 请以你的专业身份进行评估。
@@ -347,9 +352,12 @@ async def _run_dialogue(
     if content_field_names:
         content_name = f"《{content_field_names[0]}》" if len(content_field_names) == 1 else f"《{content_field_names[0]}》等{len(content_field_names)}篇"
     
-    # 根据 simulator_type 确定对话方向
-    if simulator_type == "seller":
-        # 销售模式：销售方主动，消费者回应
+    # 根据 simulator_type 或 interaction_type 确定对话方向
+    # decision 类型模拟器 = 销售方主动 → prompt_template 是卖方提示词
+    # 必须路由到 _run_seller_dialogue，否则角色会倒置
+    interaction_type = config.get("interaction_type", "")
+    if simulator_type == "seller" or interaction_type == "decision":
+        # 销售/决策模式：内容代表主动，消费者回应
         return await _run_seller_dialogue(
             content, persona, config, grader_cfg, llm_calls, content_field_names
         )
@@ -693,64 +701,61 @@ async def run_individual_grader(
     process_transcript: str = "",
 ) -> Tuple[dict, Optional[LLMCall]]:
     """
-    运行单个 Grader，使用其自定义 prompt_template 和 dimensions 评分。
+    运行单个 Grader。
+    
+    核心原则：prompt_template 就是发送给 LLM 的完整 system_prompt。
+    引擎只负责替换占位符 {content} / {process}，不额外拼接任何内容。
+    用户在后台看到的提示词 = LLM 实际收到的提示词。
     
     Args:
-        grader_name: 评分器名称 (显示用)
+        grader_name: 评分器名称
         grader_type: "content_only" / "content_and_process"
-        prompt_template: 评分提示词模板，支持占位符 {{content}}, {{process}}
-        dimensions: 评分维度列表
+        prompt_template: 完整的评分提示词，支持 {content} 和 {process} 占位符
+        dimensions: 评分维度列表（用于解析结果）
         content: 被评估的内容
-        trial_result_data: 试验结果 (strengths, weaknesses, summary 等)
-        process_transcript: 互动过程记录 (对话类)
+        trial_result_data: 试验结果（备用，模板中无引用则不使用）
+        process_transcript: 互动过程记录
     
     Returns:
         (grader_output_dict, LLMCall_or_None)
-        grader_output_dict 结构:
-          { grader_name, grader_type, overall, scores: {dim: score}, feedback }
     """
-    # 构建维度评分要求
     dims = dimensions or ["综合评价"]
-    dim_score_str = ", ".join([f'"{d}": 分数(1-10)' for d in dims])
-    dim_comment_str = ", ".join([f'"{d}": "评语"' for d in dims])
     
-    # 替换 prompt_template 中的占位符
-    system_prompt = prompt_template or ""
-    if system_prompt:
-        system_prompt = system_prompt.replace("{{content}}", content[:2000])
-        system_prompt = system_prompt.replace("{{process}}", process_transcript[:2000] if process_transcript else "(无互动过程)")
-        system_prompt = system_prompt.replace("{content}", content[:2000])
-        system_prompt = system_prompt.replace("{process}", process_transcript[:2000] if process_transcript else "(无互动过程)")
-    else:
-        # 无自定义模板时使用默认
+    # ===== 核心：模板就是最终提示词，只做占位符替换 =====
+    raw_template = prompt_template or ""
+    
+    if raw_template:
+        # 直接替换占位符
+        system_prompt = raw_template
+        system_prompt = system_prompt.replace("{content}", content[:6000] if content else "（无内容）")
+        
+        # {process}: content_and_process 类型才填充，否则标注无
         if grader_type == "content_and_process" and process_transcript:
-            system_prompt = f"""你是「{grader_name}」，请基于以下内容和互动过程进行评分。
-关注内容本身的质量以及互动过程中的表现。请客观、严谨地打分。"""
+            system_prompt = system_prompt.replace("{process}", process_transcript[:4000])
         else:
-            system_prompt = f"""你是「{grader_name}」，请基于以下内容进行独立评分。
-关注内容的质量和表现。请客观、严谨地打分。"""
+            system_prompt = system_prompt.replace("{process}", "（无互动过程）")
+    else:
+        # 无模板时的兜底（不应发生，预置评分器都有模板）
+        dim_score_str = ", ".join([f'"{d}": 分数(1-10)' for d in dims])
+        dim_comment_str = ", ".join([f'"{d}": "评语"' for d in dims])
+        
+        process_section = ""
+        if grader_type == "content_and_process" and process_transcript:
+            process_section = f"\n\n【互动过程记录】\n{process_transcript[:4000]}"
+        
+        system_prompt = f"""你是「{grader_name}」，请对以下内容进行客观、严谨的评分。
 
-    # 构建用户消息
-    context_parts = [f"【被评估内容摘要】\n{content[:2000]}"]
-    if trial_result_data:
-        strengths = trial_result_data.get("strengths", [])
-        weaknesses = trial_result_data.get("weaknesses", [])
-        summary = trial_result_data.get("summary", "")
-        if strengths or weaknesses or summary:
-            context_parts.append(f"【模拟器评估反馈】\n- 优点: {strengths}\n- 问题: {weaknesses}\n- 总结: {summary}")
-    if grader_type == "content_and_process" and process_transcript:
-        context_parts.append(f"【互动过程记录】\n{process_transcript[:3000]}")
+【被评估内容】
+{content[:6000] if content else '（无内容）'}{process_section}
 
-    user_message = "\n\n".join(context_parts) + f"""
+【评估维度】
+{chr(10).join([f'{i+1}. {d} (1-10)' for i, d in enumerate(dims)])}
 
-请对上述内容进行评分。评分维度: {', '.join(dims)}
+请严格输出以下 JSON 格式，不要输出其他内容：
+{{"scores": {{{dim_score_str}}}, "comments": {{{dim_comment_str}}}, "feedback": "整体评价和改进建议（100-200字）"}}"""
 
-**严格输出以下JSON格式，不要输出其他内容**：
-{{
-    "scores": {{{dim_score_str}}},
-    "comments": {{{dim_comment_str}}},
-    "feedback": "整体评价和改进建议（100-200字）"
-}}"""
+    # user_message: 简单指令即可，所有信息已在 system_prompt 中
+    user_message = "请根据上述要求进行评分，严格按照指定的 JSON 格式输出。"
 
     try:
         text, call = await _call_llm(
@@ -760,9 +765,7 @@ async def run_individual_grader(
         )
         result = _parse_json_response(text)
         
-        # 标准化输出格式
         scores = result.get("scores", {})
-        # 计算 overall 分数
         valid_scores = [v for v in scores.values() if isinstance(v, (int, float))]
         overall = round(sum(valid_scores) / len(valid_scores), 2) if valid_scores else 0
         

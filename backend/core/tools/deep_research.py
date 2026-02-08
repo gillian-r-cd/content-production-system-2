@@ -1,19 +1,28 @@
 # backend/core/tools/deep_research.py
-# 功能: DeepResearch工具，零额外成本的深度调研
-# 主要函数: deep_research(), search_ddg(), read_with_jina()
-# 数据结构: ResearchReport
+# 功能: DeepResearch工具，基于 Tavily Search API 的深度调研
+# 主要函数: deep_research(), quick_research(), search_tavily()
+# 数据结构: ResearchReport, ConsumerPersona
 
 """
 DeepResearch 工具
-使用 DuckDuckGo + Jina Reader + OpenAI 实现零额外成本的深度调研
+使用 Tavily Search API + OpenAI 实现实时深度调研
+
+流程:
+  1. plan_search_queries(): LLM 生成 3-5 个针对性搜索查询词
+  2. search_tavily(): Tavily 搜索（返回 URL + 提取后的正文，一步搞定）
+  3. synthesize_report(): LLM 综合分析生成调研报告（含引用）
+
+成本:
+  - Tavily: 免费 1000 次/月（一个项目约 5-10 次搜索）
+  - OpenAI: 项目已有的 LLM API
 """
 
+import os
 import asyncio
 from typing import Optional, List
 from pydantic import BaseModel, Field
 
-import httpx
-from duckduckgo_search import DDGS
+from tavily import TavilyClient
 
 from core.ai_client import ai_client, ChatMessage
 
@@ -35,122 +44,135 @@ class ResearchReport(BaseModel):
     pain_points: List[str] = Field(description="核心痛点列表")
     value_propositions: List[str] = Field(description="价值主张列表")
     personas: List[ConsumerPersona] = Field(description="典型用户小传")
-    sources: List[str] = Field(default_factory=list, description="信息来源")
+    sources: List[str] = Field(default_factory=list, description="信息来源URL")
     # 调试信息
     search_queries: List[str] = Field(default_factory=list, description="搜索查询词")
     content_length: int = Field(default=0, description="实际使用的内容长度")
 
 
-def search_ddg(query: str, max_results: int = 10) -> List[dict]:
+def _get_tavily_client() -> TavilyClient:
+    """获取 Tavily 客户端（延迟初始化）"""
+    api_key = os.getenv("TAVILY_API_KEY", "")
+    if not api_key:
+        raise ValueError(
+            "TAVILY_API_KEY 未设置！请在 backend/.env 中添加：TAVILY_API_KEY=tvly-你的key\n"
+            "免费注册: https://app.tavily.com/sign-in"
+        )
+    return TavilyClient(api_key=api_key)
+
+
+def search_tavily(query: str, max_results: int = 5) -> List[dict]:
     """
-    使用DuckDuckGo搜索
+    使用 Tavily 搜索（返回 URL + 已提取的正文内容）
+
+    Tavily 的优势：搜索 + 内容提取一步完成，不需要额外的 Jina Reader。
     
     Args:
         query: 搜索查询
         max_results: 最大结果数
     
     Returns:
-        搜索结果列表 [{"title": "...", "href": "...", "body": "..."}]
+        搜索结果列表 [{"title": "...", "url": "...", "content": "...", "score": 0.95}]
     """
     try:
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=max_results))
+        client = _get_tavily_client()
+        response = client.search(
+            query=query,
+            max_results=max_results,
+            search_depth="advanced",  # 深度搜索，提取更多正文
+            include_answer=False,     # 不需要 Tavily 的 AI 摘要
+        )
+        results = response.get("results", [])
+        print(f"[Tavily] 搜索 '{query}' → {len(results)} 条结果")
+        for r in results[:3]:
+            print(f"  [{r.get('score', 0):.2f}] {r.get('title', '')} ({r.get('url', '')})")
         return results
     except Exception as e:
-        print(f"DuckDuckGo search failed: {e}")
+        print(f"[Tavily] 搜索失败 '{query}': {e}")
         return []
-
-
-async def read_with_jina(url: str, timeout: float = 30.0) -> Optional[str]:
-    """
-    使用Jina Reader读取网页内容
-    
-    Args:
-        url: 网页URL
-        timeout: 超时时间
-    
-    Returns:
-        网页内容（Markdown格式）
-    """
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"https://r.jina.ai/{url}",
-                timeout=timeout,
-                headers={"Accept": "text/markdown"}
-            )
-            if response.status_code == 200:
-                return response.text
-    except Exception as e:
-        print(f"Jina Reader failed for {url}: {e}")
-    return None
 
 
 async def plan_search_queries(query: str, intent: str) -> List[str]:
     """
-    使用LLM规划搜索查询
+    使用 LLM 规划搜索查询（中文优先，针对项目意图）
     
     Args:
         query: 调研主题
         intent: 项目意图
     
     Returns:
-        搜索查询列表
+        搜索查询列表（3-5个）
     """
     messages = [
         ChatMessage(
             role="system",
-            content="你是一个搜索策略专家。请根据调研主题和项目意图，生成3-5个有效的搜索查询词。"
+            content="""你是一个搜索策略专家。你的任务是生成有效的搜索查询词，帮助了解特定项目的目标用户群体。
+
+规则：
+1. 搜索词必须针对项目的目标用户、痛点、需求，而不是搜"消费者调研方法"这种方法论
+2. 搜索词要具体、有行业针对性
+3. 可以使用中文或英文搜索词（选择能获得更好结果的语言）
+4. 每个搜索词要从不同角度切入：用户画像、痛点、竞品、行业趋势、真实案例
+5. 生成5个搜索词，每行一个，不要编号"""
         ),
         ChatMessage(
             role="user",
-            content=f"""调研主题: {query}
-项目意图: {intent}
+            content=f"""项目意图:
+{intent}
 
-请生成搜索查询词，每行一个，不要编号："""
+请为这个项目生成5个针对性的搜索查询词，用于了解它的目标受众是谁、有什么痛点和需求。
+注意不要搜"如何做消费者调研"这种方法论，而要搜实际的用户群体信息。"""
         ),
     ]
     
     response = await ai_client.async_chat(messages, temperature=0.7)
-    queries = [q.strip() for q in response.content.strip().split("\n") if q.strip()]
-    return queries[:5]  # 最多5个
+    queries = [q.strip().lstrip("0123456789.-、) ") for q in response.content.strip().split("\n") if q.strip()]
+    # 过滤掉太短或方法论类的查询词
+    queries = [q for q in queries if len(q) >= 4]
+    
+    print(f"[DeepResearch] 生成搜索查询: {queries}")
+    return queries[:5]
 
 
 async def synthesize_report(
-    contents: List[str],
+    contents: List[dict],
     query: str,
     intent: str,
-    source_urls: List[str] = None,
 ) -> ResearchReport:
     """
     综合分析生成调研报告
     
     Args:
-        contents: 网页内容列表
+        contents: Tavily 搜索结果列表 [{title, url, content, score}]
         query: 调研主题
         intent: 项目意图
-        source_urls: 与 contents 对应的源URL列表
     
     Returns:
         ResearchReport
     """
-    # 将内容与编号来源配对，以便 LLM 可以添加引用
-    source_urls = source_urls or []
+    # 将搜索结果格式化为带编号的来源
     numbered_sections = []
-    for idx, content in enumerate(contents[:5]):
-        url_label = source_urls[idx] if idx < len(source_urls) else f"来源{idx+1}"
+    source_urls = []
+    for idx, item in enumerate(contents[:10]):
+        url = item.get("url", f"来源{idx+1}")
+        title = item.get("title", "")
+        content = item.get("content", "")
+        score = item.get("score", 0)
+        
+        source_urls.append(url)
         # 限制每个源的长度
         truncated = content[:3000] if len(content) > 3000 else content
-        numbered_sections.append(f"[来源{idx+1}] ({url_label})\n{truncated}")
+        numbered_sections.append(
+            f"[来源{idx+1}] ({url})\n标题: {title}\n相关度: {score:.2f}\n{truncated}"
+        )
     
     combined = "\n\n---\n\n".join(numbered_sections)
     if len(combined) > 15000:
         combined = combined[:15000] + "\n...(内容已截断)"
     
-    # 构建引用列表供 LLM 参考
     source_list = "\n".join(
-        f"[{idx+1}] {url}" for idx, url in enumerate(source_urls[:5])
-    ) if source_urls else "无来源URL"
+        f"[{idx+1}] {url}" for idx, url in enumerate(source_urls)
+    )
     
     messages = [
         ChatMessage(
@@ -167,7 +189,7 @@ async def synthesize_report(
 - consumer_profile: 消费者画像对象 {age_range, occupation, characteristics, behaviors}
 - pain_points: 核心痛点列表（3-5个，每个痛点描述中包含引用标注）
 - value_propositions: 价值主张列表（3-5个，每个主张描述中包含引用标注）
-- personas: 3个典型用户小传，每个包含 {name, background, story, pain_points}
+- personas: 3个典型用户小传，每个包含 {name, basic_info: {age, gender, city, occupation, income_level}, background, pain_points}
 - sources: 引用来源URL列表（直接使用提供的来源URL）"""
         ),
         ChatMessage(
@@ -181,10 +203,10 @@ async def synthesize_report(
 # 来源列表
 {source_list}
 
-# 搜索结果（已标注来源编号）
+# 搜索结果（已标注来源编号，含实际网页内容）
 {combined}
 
-请生成调研报告（记得在文中添加引用标注 [1] [2] 等）："""
+请基于以上真实搜索结果生成调研报告（记得在文中添加引用标注 [1] [2] 等）："""
         ),
     ]
     
@@ -203,7 +225,12 @@ async def deep_research(
     max_sources: int = 10,
 ) -> ResearchReport:
     """
-    执行深度调研
+    执行深度调研（Tavily Search API）
+    
+    流程:
+    1. LLM 生成搜索词 (plan_search_queries)
+    2. Tavily 搜索 (search_tavily) — 搜索 + 内容提取一步完成
+    3. LLM 综合分析生成报告 (synthesize_report)
     
     Args:
         query: 调研主题
@@ -215,50 +242,46 @@ async def deep_research(
     """
     # 1. 规划搜索查询
     search_queries = await plan_search_queries(query, intent)
+    if not search_queries:
+        # 降级：如果 LLM 未能生成查询词，使用意图中的关键信息
+        search_queries = [intent[:100]]
     
-    # 2. 执行搜索
+    # 2. 执行搜索（Tavily 返回 URL + 已提取的正文）
     all_results = []
     for q in search_queries:
-        results = search_ddg(q, max_results=5)
+        results = search_tavily(q, max_results=5)
         all_results.extend(results)
     
-    # 3. 去重URLs
+    # 3. 去重（按 URL）
     seen_urls = set()
-    unique_urls = []
+    unique_results = []
     for r in all_results:
-        url = r.get("href", "")
+        url = r.get("url", "")
         if url and url not in seen_urls:
             seen_urls.add(url)
-            unique_urls.append(url)
-            if len(unique_urls) >= max_sources:
+            unique_results.append(r)
+            if len(unique_results) >= max_sources:
                 break
     
-    # 4. 并行读取网页内容
-    contents = await asyncio.gather(*[
-        read_with_jina(url) for url in unique_urls
-    ], return_exceptions=True)
+    print(f"[DeepResearch] 总搜索: {len(all_results)} 条, 去重后: {len(unique_results)} 条")
     
-    # 过滤有效内容，保持URL与内容的对应关系
-    valid_contents = []
-    valid_urls = []
-    for url, content in zip(unique_urls, contents):
-        if isinstance(content, str) and content:
-            valid_contents.append(content)
-            valid_urls.append(url)
+    # 4. 综合分析
+    combined_content = "\n".join(r.get("content", "") for r in unique_results)
     
-    # 5. 综合分析（传入配对的URL以生成内联引用）
-    combined_content = "\n\n---\n\n".join(valid_contents[:5])
-    report = await synthesize_report(
-        valid_contents, query, intent, source_urls=valid_urls
-    )
-    # 确保 sources 包含所有成功读取的 URL
+    if not unique_results:
+        print("[DeepResearch] 警告：搜索未返回任何结果，降级到 quick_research")
+        return await quick_research(query, intent)
+    
+    report = await synthesize_report(unique_results, query, intent)
+    
+    # 确保 sources 包含所有 URL
     if not report.sources:
-        report.sources = valid_urls
+        report.sources = [r.get("url", "") for r in unique_results if r.get("url")]
     report.search_queries = search_queries
     report.content_length = len(combined_content)
     
     print(f"[DeepResearch] 搜索查询: {search_queries}")
-    print(f"[DeepResearch] 找到 {len(unique_urls)} 个URL，成功读取 {len(valid_contents)} 个")
+    print(f"[DeepResearch] 来源URLs: {[r.get('url','') for r in unique_results[:5]]}")
     print(f"[DeepResearch] 内容总长度: {len(combined_content)} 字符")
     
     return report
@@ -291,7 +314,7 @@ async def quick_research(
 - consumer_profile: 消费者画像对象 {age_range, occupation, characteristics, behaviors}
 - pain_points: 核心痛点列表（3-5个）
 - value_propositions: 价值主张列表（3-5个）
-- personas: 3个典型用户小传，每个包含 {name, background, story, pain_points}
+- personas: 3个典型用户小传，每个包含 {name, basic_info: {age, gender, city, occupation, income_level}, background, pain_points}
 - sources: 空列表（因为未使用网络搜索）"""
         ),
         ChatMessage(
@@ -313,4 +336,3 @@ async def quick_research(
     )
     
     return report
-

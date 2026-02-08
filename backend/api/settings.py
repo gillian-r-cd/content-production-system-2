@@ -409,18 +409,28 @@ def delete_channel(channel_id: str, db: Session = Depends(get_db)):
 class SimulatorCreate(BaseModel):
     name: str
     description: str = ""
+    simulator_type: str = "custom"
     interaction_type: str = "reading"
+    interaction_mode: str = "review"
     prompt_template: str = ""
+    secondary_prompt: str = ""
+    grader_template: str = ""
     evaluation_dimensions: list = []
+    feedback_mode: str = "structured"
     max_turns: int = 10
 
 
 class SimulatorUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    simulator_type: Optional[str] = None
     interaction_type: Optional[str] = None
+    interaction_mode: Optional[str] = None
     prompt_template: Optional[str] = None
+    secondary_prompt: Optional[str] = None
+    grader_template: Optional[str] = None
     evaluation_dimensions: Optional[list] = None
+    feedback_mode: Optional[str] = None
     max_turns: Optional[int] = None
 
 
@@ -428,10 +438,16 @@ class SimulatorResponse(BaseModel):
     id: str
     name: str
     description: str
+    simulator_type: str
     interaction_type: str
+    interaction_mode: str
     prompt_template: str
+    secondary_prompt: str
+    grader_template: str
     evaluation_dimensions: list
+    feedback_mode: str
     max_turns: int
+    is_preset: bool
     created_at: str
 
     model_config = {"from_attributes": True}
@@ -451,9 +467,14 @@ def create_simulator(simulator: SimulatorCreate, db: Session = Depends(get_db)):
         id=generate_uuid(),
         name=simulator.name,
         description=simulator.description,
+        simulator_type=simulator.simulator_type,
         interaction_type=simulator.interaction_type,
+        interaction_mode=simulator.interaction_mode,
         prompt_template=simulator.prompt_template,
+        secondary_prompt=simulator.secondary_prompt,
+        grader_template=simulator.grader_template,
         evaluation_dimensions=simulator.evaluation_dimensions,
+        feedback_mode=simulator.feedback_mode,
         max_turns=simulator.max_turns,
     )
     db.add(db_simulator)
@@ -670,10 +691,16 @@ def _to_simulator_response(s: Simulator) -> SimulatorResponse:
         id=s.id,
         name=s.name,
         description=s.description or "",
+        simulator_type=getattr(s, 'simulator_type', 'custom') or "custom",
         interaction_type=s.interaction_type or "reading",
+        interaction_mode=getattr(s, 'interaction_mode', 'review') or "review",
         prompt_template=s.prompt_template or "",
+        secondary_prompt=getattr(s, 'secondary_prompt', '') or "",
+        grader_template=getattr(s, 'grader_template', '') or "",
         evaluation_dimensions=s.evaluation_dimensions or [],
+        feedback_mode=getattr(s, 'feedback_mode', 'structured') or "structured",
         max_turns=s.max_turns or 10,
+        is_preset=getattr(s, 'is_preset', False),
         created_at=s.created_at.isoformat() if s.created_at else "",
     )
 
@@ -839,9 +866,14 @@ def export_simulators(
         export_data.append({
             "name": s.name,
             "description": s.description or "",
+            "simulator_type": getattr(s, 'simulator_type', 'custom') or "custom",
             "interaction_type": s.interaction_type or "reading",
+            "interaction_mode": getattr(s, 'interaction_mode', 'review') or "review",
             "prompt_template": s.prompt_template or "",
+            "secondary_prompt": getattr(s, 'secondary_prompt', '') or "",
+            "grader_template": getattr(s, 'grader_template', '') or "",
             "evaluation_dimensions": s.evaluation_dimensions or [],
+            "feedback_mode": getattr(s, 'feedback_mode', 'structured') or "structured",
             "max_turns": s.max_turns or 10,
         })
     
@@ -853,23 +885,52 @@ def import_simulators(
     request: ImportRequest,
     db: Session = Depends(get_db),
 ):
-    """导入模拟器"""
+    """导入模拟器（同名 → 更新，新名 → 创建）"""
     imported = 0
+    updated = 0
     for item in request.data:
-        db_simulator = Simulator(
-            id=generate_uuid(),
-            name=item.get("name", "导入模拟器"),
-            description=item.get("description", ""),
-            interaction_type=item.get("interaction_type", "reading"),
-            prompt_template=item.get("prompt_template", ""),
-            evaluation_dimensions=item.get("evaluation_dimensions", []),
-            max_turns=item.get("max_turns", 10),
-        )
-        db.add(db_simulator)
-        imported += 1
+        name = item.get("name", "")
+        if not name:
+            continue
+        
+        # 检查同名
+        existing = db.query(Simulator).filter(Simulator.name == name).first()
+        if existing:
+            existing.description = item.get("description", existing.description)
+            existing.simulator_type = item.get("simulator_type", getattr(existing, 'simulator_type', 'custom'))
+            existing.interaction_type = item.get("interaction_type", existing.interaction_type)
+            existing.interaction_mode = item.get("interaction_mode", getattr(existing, 'interaction_mode', 'review'))
+            existing.prompt_template = item.get("prompt_template", existing.prompt_template)
+            existing.secondary_prompt = item.get("secondary_prompt", getattr(existing, 'secondary_prompt', ''))
+            existing.grader_template = item.get("grader_template", getattr(existing, 'grader_template', ''))
+            existing.evaluation_dimensions = item.get("evaluation_dimensions", existing.evaluation_dimensions)
+            existing.feedback_mode = item.get("feedback_mode", getattr(existing, 'feedback_mode', 'structured'))
+            existing.max_turns = item.get("max_turns", existing.max_turns)
+            updated += 1
+        else:
+            db_simulator = Simulator(
+                id=generate_uuid(),
+                name=name,
+                description=item.get("description", ""),
+                simulator_type=item.get("simulator_type", "custom"),
+                interaction_type=item.get("interaction_type", "reading"),
+                interaction_mode=item.get("interaction_mode", "review"),
+                prompt_template=item.get("prompt_template", ""),
+                secondary_prompt=item.get("secondary_prompt", ""),
+                grader_template=item.get("grader_template", ""),
+                evaluation_dimensions=item.get("evaluation_dimensions", []),
+                feedback_mode=item.get("feedback_mode", "structured"),
+                max_turns=item.get("max_turns", 10),
+            )
+            db.add(db_simulator)
+            imported += 1
     
     db.commit()
-    return {"message": f"成功导入 {imported} 个模拟器", "imported": imported}
+    return {
+        "message": f"成功导入 {imported} 个、更新 {updated} 个模拟器",
+        "imported": imported,
+        "updated": updated,
+    }
 
 
 # --- 系统提示词导入导出 ---

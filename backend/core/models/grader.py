@@ -33,14 +33,19 @@ GRADER_TYPE_CHOICES = {
 }
 
 # 预置 Grader 模板
+# 核心原则：prompt_template 就是发送给 LLM 的完整提示词（system_prompt）
+# 引擎只负责替换占位符 {content} / {process}，不额外拼接任何内容
+# 支持的占位符：
+#   {content}  → 被评估的内容文本
+#   {process}  → 互动过程记录（仅 content_and_process 类型）
 PRESET_GRADERS = [
     {
         "name": "策略对齐评分器",
         "grader_type": "content_only",
-        "prompt_template": """请从战略策略层面评估以下内容：
+        "prompt_template": """你是一位战略策略评审专家。请对以下内容进行客观、严谨的评分。
 
-【评估内容】
-{{content}}
+【被评估内容】
+{content}
 
 【评估维度】
 1. 策略对齐度 (1-10): 内容方向是否与项目意图一致？
@@ -48,8 +53,8 @@ PRESET_GRADERS = [
 3. 差异化程度 (1-10): 与同类内容相比，差异化是否足够？
 4. 完整性 (1-10): 是否有战略性的遗漏或偏差？
 
-请输出 JSON 格式：
-{"scores": {"策略对齐度": N, "定位清晰度": N, "差异化程度": N, "完整性": N}, "overall": N, "feedback": "..."}""",
+请严格输出以下 JSON 格式，不要输出其他内容：
+{{"scores": {{"策略对齐度": 分数, "定位清晰度": 分数, "差异化程度": 分数, "完整性": 分数}}, "comments": {{"策略对齐度": "评语", "定位清晰度": "评语", "差异化程度": "评语", "完整性": "评语"}}, "feedback": "整体评价和改进建议（100-200字）"}}""",
         "dimensions": ["策略对齐度", "定位清晰度", "差异化程度", "完整性"],
         "scoring_criteria": {},
         "is_preset": True,
@@ -57,10 +62,10 @@ PRESET_GRADERS = [
     {
         "name": "内容质量评分器",
         "grader_type": "content_only",
-        "prompt_template": """请从内容质量层面评估以下内容：
+        "prompt_template": """你是一位内容质量评审专家。请对以下内容进行客观、严谨的评分。
 
-【评估内容】
-{{content}}
+【被评估内容】
+{content}
 
 【评估维度】
 1. 结构合理性 (1-10): 结构是否清晰、逻辑是否连贯？
@@ -68,8 +73,8 @@ PRESET_GRADERS = [
 3. 风格一致性 (1-10): 风格是否统一、符合创作者特质？
 4. 可读性 (1-10): 目标读者是否能轻松理解？
 
-请输出 JSON 格式：
-{"scores": {"结构合理性": N, "语言质量": N, "风格一致性": N, "可读性": N}, "overall": N, "feedback": "..."}""",
+请严格输出以下 JSON 格式，不要输出其他内容：
+{{"scores": {{"结构合理性": 分数, "语言质量": 分数, "风格一致性": 分数, "可读性": 分数}}, "comments": {{"结构合理性": "评语", "语言质量": "评语", "风格一致性": "评语", "可读性": "评语"}}, "feedback": "整体评价和改进建议（100-200字）"}}""",
         "dimensions": ["结构合理性", "语言质量", "风格一致性", "可读性"],
         "scoring_criteria": {},
         "is_preset": True,
@@ -77,13 +82,13 @@ PRESET_GRADERS = [
     {
         "name": "消费者体验评分器",
         "grader_type": "content_and_process",
-        "prompt_template": """请从消费者体验角度评估以下内容及互动过程：
+        "prompt_template": """你是一位消费者体验评审专家。请基于以下内容和互动过程进行客观、严谨的评分。
 
-【评估内容】
-{{content}}
+【被评估内容】
+{content}
 
-【互动过程】
-{{process}}
+【互动过程记录】
+{process}
 
 【评估维度】
 1. 需求匹配度 (1-10): 内容是否解决了消费者的核心痛点？
@@ -91,8 +96,8 @@ PRESET_GRADERS = [
 3. 价值感知 (1-10): 消费者是否感受到明确的价值？
 4. 行动意愿 (1-10): 消费者看完后是否有行动意愿（购买/分享/收藏）？
 
-请输出 JSON 格式：
-{"scores": {"需求匹配度": N, "理解难度": N, "价值感知": N, "行动意愿": N}, "overall": N, "feedback": "..."}""",
+请严格输出以下 JSON 格式，不要输出其他内容：
+{{"scores": {{"需求匹配度": 分数, "理解难度": 分数, "价值感知": 分数, "行动意愿": 分数}}, "comments": {{"需求匹配度": "评语", "理解难度": "评语", "价值感知": "评语", "行动意愿": "评语"}}, "feedback": "整体评价和改进建议（100-200字）"}}""",
         "dimensions": ["需求匹配度", "理解难度", "价值感知", "行动意愿"],
         "scoring_criteria": {},
         "is_preset": True,
@@ -100,13 +105,13 @@ PRESET_GRADERS = [
     {
         "name": "销售转化评分器",
         "grader_type": "content_and_process",
-        "prompt_template": """请从销售转化角度评估以下内容及销售互动过程：
+        "prompt_template": """你是一位销售转化评审专家。请基于以下内容和销售互动过程进行客观、严谨的评分。
 
-【评估内容】
-{{content}}
+【被评估内容】
+{content}
 
-【互动过程】
-{{process}}
+【互动过程记录】
+{process}
 
 【评估维度】
 1. 价值传达 (1-10): 内容的核心价值是否被有效传达？
@@ -114,8 +119,8 @@ PRESET_GRADERS = [
 3. 异议处理 (1-10): 消费者的疑虑是否被有效回应？
 4. 转化结果 (1-10): 最终是否达成转化（或接近转化）？
 
-请输出 JSON 格式：
-{"scores": {"价值传达": N, "需求匹配": N, "异议处理": N, "转化结果": N}, "overall": N, "feedback": "..."}""",
+请严格输出以下 JSON 格式，不要输出其他内容：
+{{"scores": {{"价值传达": 分数, "需求匹配": 分数, "异议处理": 分数, "转化结果": 分数}}, "comments": {{"价值传达": "评语", "需求匹配": "评语", "异议处理": "评语", "转化结果": "评语"}}, "feedback": "整体评价和改进建议（100-200字）"}}""",
         "dimensions": ["价值传达", "需求匹配", "异议处理", "转化结果"],
         "scoring_criteria": {},
         "is_preset": True,
@@ -127,14 +132,17 @@ class Grader(BaseModel):
     """
     评分器 - Eval 体系的独立评分实体
     
+    核心原则：prompt_template 就是发送给 LLM 的完整提示词
+    引擎只负责替换占位符，不额外拼接任何内容
+    用户在后台看到的提示词 = LLM 实际收到的提示词
+    
     grader_type 决定传给 LLM 的上下文范围：
-      - content_only: 只传内容
+      - content_only: 只传内容（{process} 占位符替换为空）
       - content_and_process: 传内容 + Simulator 互动过程日志
     
-    prompt_template 支持动态占位符：
-      - {{content}}: 被评估内容（自动填充）
-      - {{process}}: 互动过程日志（仅 content_and_process 时填充）
-      - {{field:字段名}}: 引用项目中指定字段的内容
+    prompt_template 支持的占位符：
+      - {content}: 被评估内容（自动填充）
+      - {process}: 互动过程日志（content_and_process 时填充，否则为空）
     """
     __tablename__ = "graders"
 

@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from core.models.content_block import ContentBlock
 
 
-# 项目阶段定义
+# 项目阶段定义（simulate 已合并到 evaluate）
 PROJECT_PHASES = [
     "intent",        # 意图分析
     "research",      # 消费者调研
@@ -33,8 +33,7 @@ PROJECT_PHASES = [
     "produce_inner", # 内涵生产
     "design_outer",  # 外延设计
     "produce_outer", # 外延生产
-    "simulate",      # 消费者模拟
-    "evaluate",      # 评估
+    "evaluate",      # 评估（含消费者模拟 + 评分）
 ]
 
 # 阶段状态

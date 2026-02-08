@@ -1,14 +1,21 @@
 // frontend/components/proposal-selector.tsx
-// 功能: 内涵设计方案选择组件
-// 主要功能: 展示3个方案、方案选择、字段编辑、确认进入下一阶段
-// 新增功能: 添加字段模板、字段编辑、约束配置
+// 功能: 内涵设计方案编辑器（全功能）
+// 支持: 编辑方案名称/描述、编辑/添加/删除/重排字段、从模板导入字段、
+//       添加/删除自定义方案、确认后导入到内涵生产
+// 数据: 读写 ProjectField 的 content（JSON proposals 格式）
 
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
-import { fieldAPI, agentAPI, settingsAPI } from "@/lib/api";
+import React, { useState, useMemo, useCallback, useEffect, useRef } from "react";
+import { fieldAPI, settingsAPI } from "@/lib/api";
+import {
+  Check, Send, ChevronDown, ChevronUp, FileText, ArrowRight,
+  Plus, Trash2, X, Save, PackagePlus,
+  Copy, ArrowUp, ArrowDown, Settings2, BookTemplate,
+} from "lucide-react";
 
-// 方案中的字段定义
+// ============== Types ==============
+
 interface ProposalField {
   id: string;
   name: string;
@@ -17,15 +24,10 @@ interface ProposalField {
   depends_on: string[];
   order: number;
   need_review: boolean;
-  constraints?: {
-    max_length?: number | null;
-    output_format?: string;
-    structure?: string | null;
-    example?: string | null;
-  };
+  constraints?: Record<string, any>;
+  pre_questions?: string[];
 }
 
-// 方案定义
 interface Proposal {
   id: string;
   name: string;
@@ -33,31 +35,356 @@ interface Proposal {
   fields: ProposalField[];
 }
 
-// 方案数据结构
 interface ProposalsData {
   proposals: Proposal[];
-  selected_proposal?: string | null;
+  confirmed?: boolean;
+  selected_proposal_id?: string;
   error?: string;
 }
 
-// 全局可引用字段（来自其他阶段）
-interface GlobalField {
+interface FieldTemplateItem {
   id: string;
   name: string;
-  phase: string;
-  phase_name: string;  // 阶段显示名称
-  status: string;
+  description: string;
+  category: string;
+  fields: Array<{
+    name: string;
+    type?: string;
+    field_type?: string;
   ai_prompt?: string;
+    pre_questions?: string[];
+    depends_on?: string[];
+    dependency_type?: string;
+  }>;
 }
 
 interface ProposalSelectorProps {
   projectId: string;
-  fieldId: string;  // 存储方案的字段ID（用于保存修改）
-  content: string;  // JSON格式的方案内容
-  onConfirm: () => void;  // 确认后的回调
-  onFieldsCreated?: () => void;  // 字段创建后的回调
-  onSave?: () => void;  // 保存后的回调
+  fieldId: string;
+  content: string;
+  onConfirm: () => void;
+  onFieldsCreated?: () => void;
+  onSave?: () => void;
 }
+
+// ============== Helpers ==============
+
+let _nextId = 1;
+function genId(prefix = "item") {
+  return `${prefix}_${Date.now()}_${_nextId++}`;
+}
+
+function cloneProposals(data: ProposalsData): ProposalsData {
+  return JSON.parse(JSON.stringify(data));
+}
+
+// ============== Sub-components ==============
+
+/** 单个字段的内联编辑器 */
+function FieldEditor({
+  field,
+  allFields,
+  onUpdate,
+  onDelete,
+  onMoveUp,
+  onMoveDown,
+  isFirst,
+  isLast,
+  readOnly,
+}: {
+  field: ProposalField;
+  allFields: ProposalField[];
+  onUpdate: (updated: ProposalField) => void;
+  onDelete: () => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  isFirst: boolean;
+  isLast: boolean;
+  readOnly: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="group bg-surface-2 rounded-lg border border-surface-3 hover:border-surface-4 transition-colors">
+      {/* 字段头部 - 概要行 */}
+      <div className="flex items-center gap-2 px-3 py-2">
+        {/* 拖拽把手 + 上下移动 */}
+        {!readOnly && (
+          <div className="flex flex-col gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+            <button onClick={onMoveUp} disabled={isFirst} className="text-zinc-600 hover:text-zinc-300 disabled:opacity-20" title="上移">
+              <ArrowUp className="w-3 h-3" />
+            </button>
+            <button onClick={onMoveDown} disabled={isLast} className="text-zinc-600 hover:text-zinc-300 disabled:opacity-20" title="下移">
+              <ArrowDown className="w-3 h-3" />
+            </button>
+          </div>
+        )}
+
+        {/* 字段名 */}
+        <div className="flex-1 min-w-0 flex items-center gap-2">
+          <FileText className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
+          {readOnly ? (
+            <span className="text-sm font-medium text-zinc-300 truncate">{field.name}</span>
+          ) : (
+            <input
+              value={field.name}
+              onChange={e => onUpdate({ ...field, name: e.target.value })}
+              className="text-sm font-medium text-zinc-300 bg-transparent border-none outline-none flex-1 min-w-0 
+                         focus:ring-1 focus:ring-brand-500/30 rounded px-1 -mx-1"
+              placeholder="字段名称"
+            />
+          )}
+          {field.need_review && (
+            <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/10 text-amber-400 rounded shrink-0">需确认</span>
+          )}
+          <span className="text-[10px] text-zinc-600 shrink-0">{field.field_type}</span>
+        </div>
+
+        {/* 操作按钮 */}
+        <div className="flex items-center gap-1 shrink-0">
+          <button onClick={() => setExpanded(!expanded)} className="p-1 text-zinc-500 hover:text-zinc-300 rounded" title="展开编辑">
+            {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <Settings2 className="w-3.5 h-3.5" />}
+          </button>
+          {!readOnly && (
+            <button onClick={onDelete} className="p-1 text-zinc-600 hover:text-red-400 rounded opacity-0 group-hover:opacity-100 transition-opacity" title="删除字段">
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* 展开的编辑面板 */}
+      {expanded && (
+        <div className="border-t border-surface-3 px-3 py-3 space-y-3">
+          {/* AI 提示词 */}
+          <div>
+            <label className="text-xs text-zinc-500 mb-1 block">AI 提示词</label>
+            <textarea
+              value={field.ai_prompt || ""}
+              onChange={e => onUpdate({ ...field, ai_prompt: e.target.value })}
+              readOnly={readOnly}
+              rows={3}
+              className="w-full text-sm text-zinc-300 bg-surface-1 border border-surface-3 rounded-lg p-2 resize-y
+                         focus:outline-none focus:ring-1 focus:ring-brand-500/30 read-only:opacity-60"
+              placeholder="描述这个字段的生成要求..."
+            />
+          </div>
+
+          {/* 字段类型 + 是否需要确认 */}
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-zinc-500">类型</label>
+              <select
+                value={field.field_type}
+                onChange={e => onUpdate({ ...field, field_type: e.target.value })}
+                disabled={readOnly}
+                className="text-xs bg-surface-1 border border-surface-3 rounded px-2 py-1 text-zinc-300
+                           focus:outline-none focus:ring-1 focus:ring-brand-500/30 disabled:opacity-60"
+              >
+                <option value="text">文本</option>
+                <option value="richtext">富文本</option>
+                <option value="list">列表</option>
+                <option value="structured">结构化</option>
+              </select>
+            </div>
+            <label className="flex items-center gap-1.5 text-xs text-zinc-500 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={field.need_review}
+                onChange={e => onUpdate({ ...field, need_review: e.target.checked })}
+                disabled={readOnly}
+                className="rounded border-zinc-600 bg-surface-1 text-brand-500 focus:ring-brand-500/30"
+              />
+              需人工确认
+            </label>
+          </div>
+
+          {/* 依赖字段 */}
+          <div>
+            <label className="text-xs text-zinc-500 mb-1 block">依赖字段（可多选）</label>
+            <div className="flex flex-wrap gap-1.5">
+              {allFields.filter(f => f.id !== field.id).map(other => {
+                // 依赖可能存的是 id 或 name，两种都兼容
+                const isSelected = (field.depends_on || []).some(
+                  d => d === other.id || d === other.name
+                );
+                return (
+                  <button
+                    key={other.id}
+                    onClick={() => {
+                      if (readOnly) return;
+                      if (isSelected) {
+                        // 移除（兼容 id 和 name 两种格式）
+                        const newDeps = field.depends_on.filter(
+                          d => d !== other.id && d !== other.name
+                        );
+                        onUpdate({ ...field, depends_on: newDeps });
+                      } else {
+                        // 添加（统一用 name，便于后续创建字段时引用）
+                        onUpdate({ ...field, depends_on: [...(field.depends_on || []), other.name] });
+                      }
+                    }}
+                    className={`text-xs px-2 py-1 rounded-full border transition-colors ${
+                      isSelected
+                        ? "border-brand-500/50 bg-brand-500/15 text-brand-300"
+                        : "border-surface-3 text-zinc-500 hover:border-zinc-500 hover:text-zinc-300"
+                    } ${readOnly ? "cursor-default" : "cursor-pointer"}`}
+                  >
+                    {other.name}
+                  </button>
+                );
+              })}
+              {allFields.filter(f => f.id !== field.id).length === 0 && (
+                <span className="text-xs text-zinc-600 italic">无其他字段可引用</span>
+              )}
+            </div>
+          </div>
+
+          {/* 当前依赖展示 */}
+          {field.depends_on && field.depends_on.length > 0 && (
+            <div className="flex items-center gap-1 text-[10px] text-zinc-600">
+              <ArrowRight className="w-3 h-3" />
+              <span>当前依赖: {field.depends_on.map(d => {
+                const resolved = allFields.find(f => f.id === d || f.name === d);
+                return resolved?.name || d;
+              }).join(", ")}</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 从模板导入字段的下拉面板 */
+function TemplateImporter({
+  onImportFields,
+  onClose,
+}: {
+  onImportFields: (fields: ProposalField[], templateName: string) => void;
+  onClose: () => void;
+}) {
+  const [templates, setTemplates] = useState<FieldTemplateItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
+  const [selectedFieldNames, setSelectedFieldNames] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const data = await settingsAPI.listFieldTemplates();
+        setTemplates(data);
+      } catch (e) {
+        console.error("加载模板失败:", e);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const selectedTemplate = templates.find(t => t.id === selectedTemplateId);
+
+  const handleImport = () => {
+    if (!selectedTemplate) return;
+    const fieldsToImport = selectedTemplate.fields
+      .filter(f => selectedFieldNames.has(f.name))
+      .map((f, i) => ({
+        id: genId("tmpl"),
+          name: f.name,
+        field_type: f.type || f.field_type || "richtext",
+        ai_prompt: f.ai_prompt || "",
+        depends_on: f.depends_on || [],
+        order: i + 1,
+        need_review: true,
+        pre_questions: f.pre_questions || [],
+      }));
+    onImportFields(fieldsToImport, selectedTemplate.name);
+    onClose();
+  };
+
+  if (loading) {
+    return <div className="p-4 text-sm text-zinc-500">加载模板中...</div>;
+  }
+
+  return (
+    <div className="bg-surface-1 border border-surface-3 rounded-xl p-4 space-y-3 shadow-xl">
+      <div className="flex items-center justify-between">
+        <h4 className="text-sm font-semibold text-zinc-200">从字段模板导入</h4>
+        <button onClick={onClose} className="text-zinc-500 hover:text-zinc-300"><X className="w-4 h-4" /></button>
+      </div>
+
+      {templates.length === 0 ? (
+        <p className="text-sm text-zinc-500">暂无可用模板</p>
+      ) : (
+        <>
+          {/* 模板选择 */}
+          <select
+            value={selectedTemplateId || ""}
+            onChange={e => {
+              setSelectedTemplateId(e.target.value || null);
+              setSelectedFieldNames(new Set());
+            }}
+            className="w-full text-sm bg-surface-2 border border-surface-3 rounded-lg px-3 py-2 text-zinc-300
+                       focus:outline-none focus:ring-1 focus:ring-brand-500/30"
+          >
+            <option value="">选择模板...</option>
+            {templates.map(t => (
+              <option key={t.id} value={t.id}>{t.name} ({t.fields.length} 个字段)</option>
+            ))}
+          </select>
+
+          {/* 字段勾选 */}
+          {selectedTemplate && (
+            <div className="space-y-1 max-h-48 overflow-y-auto">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs text-zinc-500">选择要导入的字段</span>
+                <button
+                  onClick={() => {
+                    if (selectedFieldNames.size === selectedTemplate.fields.length) {
+                      setSelectedFieldNames(new Set());
+                    } else {
+                      setSelectedFieldNames(new Set(selectedTemplate.fields.map(f => f.name)));
+                    }
+                  }}
+                  className="text-xs text-brand-400 hover:text-brand-300"
+                >
+                  {selectedFieldNames.size === selectedTemplate.fields.length ? "取消全选" : "全选"}
+                </button>
+              </div>
+              {selectedTemplate.fields.map(f => (
+                <label key={f.name} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-surface-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selectedFieldNames.has(f.name)}
+                    onChange={e => {
+                      const next = new Set(selectedFieldNames);
+                      if (e.target.checked) next.add(f.name); else next.delete(f.name);
+                      setSelectedFieldNames(next);
+                    }}
+                    className="rounded border-zinc-600 bg-surface-1 text-brand-500 focus:ring-brand-500/30"
+                  />
+                  <span className="text-sm text-zinc-300">{f.name}</span>
+                  {f.ai_prompt && <span className="text-[10px] text-zinc-600 truncate max-w-[200px]">{f.ai_prompt.slice(0, 40)}...</span>}
+                </label>
+              ))}
+            </div>
+          )}
+
+          <button
+            onClick={handleImport}
+            disabled={selectedFieldNames.size === 0}
+            className="w-full py-2 bg-brand-600 hover:bg-brand-700 rounded-lg text-sm font-medium 
+                       disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            导入 {selectedFieldNames.size} 个字段
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ============== Main Component ==============
 
 export function ProposalSelector({
   projectId,
@@ -67,1066 +394,633 @@ export function ProposalSelector({
   onFieldsCreated,
   onSave,
 }: ProposalSelectorProps) {
-  // 解析方案数据，并添加"自定义方案"（如果不存在）
-  const proposalsData = useMemo<ProposalsData>(() => {
+  // 解析初始数据，确保每个 proposal / field 都有唯一 id
+  const initialData = useMemo<ProposalsData>(() => {
     try {
-      const data = JSON.parse(content);
-      const proposals = data.proposals || [];
-      
-      // 检查是否已有自定义方案
-      const hasCustomProposal = proposals.some((p: Proposal) => p.id === "custom_proposal");
-      
-      if (!hasCustomProposal) {
-        // 添加自定义方案（空方案）
-        const customProposal: Proposal = {
-          id: "custom_proposal",
-          name: "自定义方案",
-          description: "从零开始构建您的内容结构，自由添加和编辑字段",
-          fields: [],
-        };
-        proposals.push(customProposal);
+      const raw = JSON.parse(content);
+      let proposals: Proposal[];
+      if (raw.proposals && Array.isArray(raw.proposals)) {
+        proposals = raw.proposals;
+      } else if (Array.isArray(raw)) {
+        proposals = raw;
+      } else {
+        return { proposals: [], error: "未找到方案数据" };
       }
-      
-      return {
-        ...data,
-        proposals,
-      };
+
+      // 补全缺失的 id，避免 React key 冲突
+      const ensured = proposals.map((p: any, pi: number) => ({
+        ...p,
+        id: p.id || genId(`proposal_${pi}`),
+        fields: Array.isArray(p.fields)
+          ? p.fields.map((f: any, fi: number) => ({
+              ...f,
+              id: f.id || genId(`field_${pi}_${fi}`),
+            }))
+          : [],
+      }));
+
+      return { ...raw, proposals: ensured };
     } catch {
-      // 解析失败时，至少提供自定义方案
-      const customProposal: Proposal = {
-        id: "custom_proposal",
-        name: "自定义方案",
-        description: "从零开始构建您的内容结构，自由添加和编辑字段",
-        fields: [],
-      };
-      return { proposals: [customProposal], error: undefined };
+      return { proposals: [], error: "JSON 解析失败" };
     }
   }, [content]);
 
-  const [selectedProposalId, setSelectedProposalId] = useState<string | null>(
-    proposalsData.selected_proposal || proposalsData.proposals?.[0]?.id || null
-  );
-  const [editedFields, setEditedFields] = useState<Record<string, ProposalField[]>>({});
-  const [isConfirming, setIsConfirming] = useState(false);
+  const [data, setData] = useState<ProposalsData>(initialData);
+  const [selectedProposalId, setSelectedProposalId] = useState<string | null>(null);
+  const [expandedProposalId, setExpandedProposalId] = useState<string | null>(null);
+  const [isConfirmed, setIsConfirmed] = useState(initialData.confirmed === true);
+  const [isCreatingFields, setIsCreatingFields] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
-  const [confirmedProposalId, setConfirmedProposalId] = useState<string | null>(null);  // 已确认的方案ID
-  const [editingDependencyFieldId, setEditingDependencyFieldId] = useState<string | null>(null);
-  
-  // 字段编辑相关状态
-  const [fieldTemplates, setFieldTemplates] = useState<any[]>([]);
-  const [showAddTemplateModal, setShowAddTemplateModal] = useState(false);
-  const [editingFieldId, setEditingFieldId] = useState<string | null>(null);
-  const [showConstraintsModal, setShowConstraintsModal] = useState<string | null>(null);
-  
-  // 全局可引用字段（来自意图分析和消费者调研阶段）
-  const [globalFields, setGlobalFields] = useState<GlobalField[]>([]);
-  
-  // 阶段名称映射（后端使用 intent, research 等）
-  const phaseNameMap: Record<string, string> = {
-    intent: "意图分析",
-    research: "消费者调研",
-    design_inner: "内涵设计",
-    produce_inner: "内涵生产",
-  };
-  
-  // 加载字段模板
-  useEffect(() => {
-    settingsAPI.listFieldTemplates().then(setFieldTemplates).catch(console.error);
-  }, []);
-  
-  // 加载全局可引用字段（意图分析和消费者调研）
-  useEffect(() => {
-    if (!projectId) return;
-    
-    const loadGlobalFields = async () => {
+  const [showTemplateImporter, setShowTemplateImporter] = useState<string | null>(null); // proposalId or null
+  const [showNewProposalTemplate, setShowNewProposalTemplate] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // 自动保存：任何修改后 1.5s 自动保存
+  const autoSave = useCallback(async (newData: ProposalsData) => {
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(async () => {
       try {
-        // 获取意图分析和消费者调研阶段的字段（后端阶段名称是 intent, research）
-        const allFields = await fieldAPI.listByProject(projectId);
-        const referableFields = allFields.filter(
-          (f) => f.phase === "intent" || f.phase === "research"
-        );
-        
-        // 转换为 GlobalField 格式
-        const global: GlobalField[] = referableFields.map((f) => ({
-          id: f.id,
-          name: f.name,
-          phase: f.phase,
-          phase_name: phaseNameMap[f.phase] || f.phase,
-          status: f.status,
-          ai_prompt: f.ai_prompt,
-        }));
-        
-        setGlobalFields(global);
-      } catch (err) {
-        console.error("加载全局字段失败:", err);
+        setIsSaving(true);
+        await fieldAPI.update(fieldId, {
+          content: JSON.stringify(newData, null, 2),
+        });
+        setDirty(false);
+        onSave?.();
+      } catch (e) {
+        console.error("自动保存失败:", e);
+      } finally {
+        setIsSaving(false);
       }
-    };
-    
-    loadGlobalFields();
-  }, [projectId]);
+    }, 1500);
+  }, [fieldId, onSave]);
 
-  // 跟踪是否有未保存的修改
-  useEffect(() => {
-    if (Object.keys(editedFields).length > 0) {
-      setHasUnsavedChanges(true);
-    }
-  }, [editedFields]);
+  // 更新数据的统一入口
+  const updateData = useCallback((updater: (prev: ProposalsData) => ProposalsData) => {
+    setData(prev => {
+      const next = updater(cloneProposals(prev));
+      setDirty(true);
+      autoSave(next);
+      return next;
+    });
+  }, [autoSave]);
 
-  // 保存方案修改到后端
-  const saveProposals = async () => {
-    if (!fieldId) return;
-    
-    setIsSaving(true);
+  // 手动保存
+  const handleManualSave = async () => {
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     try {
-      // 构建更新后的方案数据
-      const updatedProposals = proposalsData.proposals.map((proposal) => {
-        const editedFieldsForProposal = editedFields[proposal.id];
-        if (editedFieldsForProposal) {
-          return { ...proposal, fields: editedFieldsForProposal };
-        }
-        return proposal;
+      setIsSaving(true);
+      await fieldAPI.update(fieldId, {
+        content: JSON.stringify(data, null, 2),
       });
-      
-      const newContent = JSON.stringify({
-        proposals: updatedProposals,
-        selected_proposal: selectedProposalId,
-      }, null, 2);
-      
-      // 调用 API 更新字段内容
-      await fieldAPI.update(fieldId, { content: newContent });
-      
-      setHasUnsavedChanges(false);
+      setDirty(false);
       onSave?.();
-    } catch (err) {
-      console.error("保存方案失败:", err);
-      alert("保存失败: " + (err instanceof Error ? err.message : "未知错误"));
+    } catch (e) {
+      console.error("保存失败:", e);
+      alert("保存失败");
     } finally {
       setIsSaving(false);
     }
   };
 
-  // 当前选中的方案
-  const selectedProposal = useMemo(() => {
-    return proposalsData.proposals?.find((p) => p.id === selectedProposalId) || null;
-  }, [proposalsData.proposals, selectedProposalId]);
+  // ============== 方案操作 ==============
 
-  // 获取当前方案的字段（可能被编辑过）
-  const currentFields = useMemo(() => {
-    if (!selectedProposalId) return [];
-    return editedFields[selectedProposalId] || selectedProposal?.fields || [];
-  }, [selectedProposalId, editedFields, selectedProposal]);
-
-  // 切换字段的 need_review 状态
-  const toggleNeedReview = (fieldId: string) => {
-    if (!selectedProposalId) return;
-    
-    const fields = [...currentFields];
-    const fieldIndex = fields.findIndex((f) => f.id === fieldId);
-    if (fieldIndex !== -1) {
-      fields[fieldIndex] = {
-        ...fields[fieldIndex],
-        need_review: !fields[fieldIndex].need_review,
-      };
-      setEditedFields((prev) => ({
+  // 添加空方案
+  const addEmptyProposal = () => {
+    updateData(prev => ({
         ...prev,
-        [selectedProposalId]: fields,
-      }));
-    }
-  };
-
-  // 更新字段名称
-  const updateFieldName = (fieldId: string, newName: string) => {
-    if (!selectedProposalId) return;
-    
-    const fields = [...currentFields];
-    const fieldIndex = fields.findIndex((f) => f.id === fieldId);
-    if (fieldIndex !== -1) {
-      fields[fieldIndex] = { ...fields[fieldIndex], name: newName };
-      setEditedFields((prev) => ({ ...prev, [selectedProposalId]: fields }));
-    }
-  };
-
-  // 删除字段
-  const deleteField = (fieldId: string) => {
-    if (!selectedProposalId) return;
-    
-    const fields = currentFields.filter((f) => f.id !== fieldId);
-    // 同时删除对该字段的依赖引用
-    const updatedFields = fields.map((f) => ({
-      ...f,
-      depends_on: f.depends_on.filter((depId) => depId !== fieldId),
-    }));
-    setEditedFields((prev) => ({ ...prev, [selectedProposalId]: updatedFields }));
-  };
-
-  // 更新字段约束
-  const updateFieldConstraints = (fieldId: string, constraints: any) => {
-    if (!selectedProposalId) return;
-    
-    const fields = [...currentFields];
-    const fieldIndex = fields.findIndex((f) => f.id === fieldId);
-    if (fieldIndex !== -1) {
-      fields[fieldIndex] = { ...fields[fieldIndex], constraints };
-      setEditedFields((prev) => ({ ...prev, [selectedProposalId]: fields }));
-    }
-    setShowConstraintsModal(null);
-  };
-
-  // 从模板添加字段
-  const addFieldFromTemplate = (templateFields: any[]) => {
-    if (!selectedProposalId) return;
-    
-    // 为了处理模板内部的依赖关系，需要建立 templateFieldId -> newFieldId 的映射
-    const idMapping: Record<string, string> = {};
-    const baseTime = Date.now();
-    
-    // 第一遍：生成新ID并建立映射
-    templateFields.forEach((tf, idx) => {
-      const newId = `new_field_${baseTime}_${idx}`;
-      if (tf.id) {
-        idMapping[tf.id] = newId;
-      }
-    });
-    
-    const newFields: ProposalField[] = templateFields.map((tf, idx) => {
-      // 转换依赖关系：将模板内的依赖ID映射为新ID，保留全局依赖（意图分析、消费者调研的字段ID）
-      const originalDependsOn = tf.depends_on || [];
-      const mappedDependsOn = originalDependsOn.map((depId: string) => {
-        // 如果是模板内部依赖，映射到新ID
-        if (idMapping[depId]) {
-          return idMapping[depId];
-        }
-        // 否则保留原ID（全局字段依赖）
-        return depId;
-      });
-      
-      return {
-        id: `new_field_${baseTime}_${idx}`,
-        name: tf.name,
-        field_type: tf.type || "richtext",
-        ai_prompt: tf.ai_prompt || "",
-        depends_on: mappedDependsOn,  // 保留模板中的依赖关系
-        order: currentFields.length + idx + 1,
-        need_review: tf.need_review !== undefined ? tf.need_review : true,
-        constraints: tf.constraints || {
-          max_length: null,
-          output_format: "markdown",
-          structure: null,
-          example: null,
+      proposals: [
+        ...prev.proposals,
+        {
+          id: genId("proposal"),
+          name: `自定义方案 ${prev.proposals.length + 1}`,
+          description: "用户自定义的内容生产方案",
+          fields: [],
         },
-      };
-    });
-    
-    setEditedFields((prev) => ({
-      ...prev,
-      [selectedProposalId]: [...currentFields, ...newFields],
+      ],
     }));
-    setShowAddTemplateModal(false);
   };
 
-  // 直接添加空字段（不引用模板）
-  const addEmptyField = () => {
-    if (!selectedProposalId) return;
-    
-    const newField: ProposalField = {
-      id: `new_field_${Date.now()}`,
-      name: `新字段 ${currentFields.length + 1}`,
+  // 从模板创建方案
+  const addProposalFromTemplate = (templateFields: ProposalField[], templateName: string) => {
+    updateData(prev => ({
+      ...prev,
+      proposals: [
+        ...prev.proposals,
+        {
+          id: genId("proposal"),
+          name: templateName,
+          description: `基于「${templateName}」模板创建`,
+          fields: templateFields.map((f, i) => ({ ...f, order: i + 1 })),
+        },
+      ],
+    }));
+    setShowNewProposalTemplate(false);
+  };
+
+  // 删除方案
+  const deleteProposal = (proposalId: string) => {
+    if (!confirm("确定删除此方案？")) return;
+    updateData(prev => ({
+      ...prev,
+      proposals: prev.proposals.filter(p => p.id !== proposalId),
+    }));
+    if (selectedProposalId === proposalId) setSelectedProposalId(null);
+    if (expandedProposalId === proposalId) setExpandedProposalId(null);
+  };
+
+  // 复制方案
+  const duplicateProposal = (proposalId: string) => {
+    updateData(prev => {
+      const src = prev.proposals.find(p => p.id === proposalId);
+      if (!src) return prev;
+      const copy: Proposal = {
+        ...JSON.parse(JSON.stringify(src)),
+        id: genId("proposal"),
+        name: src.name + " (副本)",
+      };
+      copy.fields = copy.fields.map((f: ProposalField) => ({ ...f, id: genId("field") }));
+      return { ...prev, proposals: [...prev.proposals, copy] };
+    });
+  };
+
+  // 更新方案名称/描述
+  const updateProposalMeta = (proposalId: string, key: "name" | "description", value: string) => {
+    updateData(prev => ({
+      ...prev,
+      proposals: prev.proposals.map(p =>
+        p.id === proposalId ? { ...p, [key]: value } : p
+      ),
+    }));
+  };
+
+  // ============== 字段操作 ==============
+
+  // 更新某方案的某字段
+  const updateField = (proposalId: string, fieldId: string, updated: ProposalField) => {
+    updateData(prev => ({
+      ...prev,
+      proposals: prev.proposals.map(p =>
+        p.id === proposalId
+          ? { ...p, fields: p.fields.map(f => f.id === fieldId ? updated : f) }
+          : p
+      ),
+    }));
+  };
+
+  // 删除某方案的某字段
+  const deleteField = (proposalId: string, fieldId: string) => {
+    updateData(prev => ({
+      ...prev,
+      proposals: prev.proposals.map(p =>
+        p.id === proposalId
+          ? { ...p, fields: p.fields.filter(f => f.id !== fieldId).map((f, i) => ({ ...f, order: i + 1 })) }
+          : p
+      ),
+    }));
+  };
+
+  // 添加新空字段
+  const addEmptyField = (proposalId: string) => {
+    updateData(prev => ({
+      ...prev,
+      proposals: prev.proposals.map(p =>
+        p.id === proposalId
+          ? {
+              ...p,
+              fields: [
+                ...p.fields,
+                {
+                  id: genId("field"),
+                  name: "新字段",
       field_type: "richtext",
-      ai_prompt: "请在这里编写生成提示词...",
+                  ai_prompt: "",
       depends_on: [],
-      order: currentFields.length + 1,
+                  order: p.fields.length + 1,
       need_review: true,
-      constraints: {
-        max_length: null,
-        output_format: "markdown",
-        structure: null,
-        example: null,
       },
+              ],
+            }
+          : p
+      ),
+    }));
     };
     
-    setEditedFields((prev) => ({
+  // 从模板导入字段到指定方案
+  const importFieldsToProposal = (proposalId: string, importedFields: ProposalField[]) => {
+    updateData(prev => ({
       ...prev,
-      [selectedProposalId]: [...currentFields, newField],
+      proposals: prev.proposals.map(p =>
+        p.id === proposalId
+          ? {
+              ...p,
+              fields: [
+                ...p.fields,
+                ...importedFields.map((f, i) => ({
+                  ...f,
+                  id: genId("field"),
+                  order: p.fields.length + i + 1,
+                })),
+              ],
+            }
+          : p
+      ),
     }));
-    
-    // 自动进入编辑模式
-    setEditingFieldId(newField.id);
   };
 
-  // 更新字段提示词
-  const updateFieldPrompt = (fieldId: string, newPrompt: string) => {
-    if (!selectedProposalId) return;
-    
-    const fields = [...currentFields];
-    const fieldIndex = fields.findIndex((f) => f.id === fieldId);
-    if (fieldIndex !== -1) {
-      fields[fieldIndex] = { ...fields[fieldIndex], ai_prompt: newPrompt };
-      setEditedFields((prev) => ({ ...prev, [selectedProposalId]: fields }));
-    }
-  };
-
-  // 拖拽排序
-  const moveField = (fieldId: string, direction: "up" | "down") => {
-    if (!selectedProposalId) return;
-    
-    const fields = [...currentFields];
-    const fieldIndex = fields.findIndex((f) => f.id === fieldId);
-    if (fieldIndex === -1) return;
-    
-    const newIndex = direction === "up" ? fieldIndex - 1 : fieldIndex + 1;
-    if (newIndex < 0 || newIndex >= fields.length) return;
-    
-    // 交换位置
-    [fields[fieldIndex], fields[newIndex]] = [fields[newIndex], fields[fieldIndex]];
-    // 更新 order
-    fields.forEach((f, idx) => { f.order = idx + 1; });
-    
-    setEditedFields((prev) => ({ ...prev, [selectedProposalId]: fields }));
-  };
-
-  // 更新字段的依赖关系
-  const updateFieldDependencies = (fieldId: string, newDependsOn: string[]) => {
-    if (!selectedProposalId) return;
-    
-    const fields = [...currentFields];
-    const fieldIndex = fields.findIndex((f) => f.id === fieldId);
-    if (fieldIndex !== -1) {
-      fields[fieldIndex] = {
-        ...fields[fieldIndex],
-        depends_on: newDependsOn,
-      };
-      setEditedFields((prev) => ({
+  // 上移/下移字段
+  const moveField = (proposalId: string, fieldId: string, direction: "up" | "down") => {
+    updateData(prev => ({
         ...prev,
-        [selectedProposalId]: fields,
-      }));
-    }
-    setEditingDependencyFieldId(null);
+      proposals: prev.proposals.map(p => {
+        if (p.id !== proposalId) return p;
+        const sorted = [...p.fields].sort((a, b) => a.order - b.order);
+        const idx = sorted.findIndex(f => f.id === fieldId);
+        if (idx < 0) return p;
+        const swapIdx = direction === "up" ? idx - 1 : idx + 1;
+        if (swapIdx < 0 || swapIdx >= sorted.length) return p;
+        [sorted[idx], sorted[swapIdx]] = [sorted[swapIdx], sorted[idx]];
+        return { ...p, fields: sorted.map((f, i) => ({ ...f, order: i + 1 })) };
+      }),
+    }));
   };
 
-  // 当前正在编辑依赖的字段
-  const editingDependencyField = currentFields.find((f) => f.id === editingDependencyFieldId);
+  // ============== 确认并创建字段 ==============
 
-  // 确认方案，创建实际的字段
-  const handleConfirmProposal = async () => {
-    if (!selectedProposal || !projectId) return;
+  const handleConfirm = async () => {
+    const proposal = data.proposals.find(p => p.id === selectedProposalId);
+    if (!proposal) {
+      alert("请先选择一个方案");
+      return;
+    }
 
-    setIsConfirming(true);
+    setIsCreatingFields(true);
     try {
-      // 首先获取已存在的 produce_inner 阶段字段
-      const existingFields = await fieldAPI.listByProject(projectId, "produce_inner");
-      const existingFieldsByName: Record<string, any> = {};
-      for (const f of existingFields) {
-        existingFieldsByName[f.name] = f;
-      }
-      
-      // 构建临时ID到真实ID的映射
-      const tempIdToRealId: Record<string, string> = {};
-      
-      // 第一步：按顺序创建/更新字段（先不设置依赖）
-      for (const field of currentFields) {
-        const existingField = existingFieldsByName[field.name];
-        
-        if (existingField) {
-          // 同名字段已存在，更新配置但保留内容
-          await fieldAPI.update(existingField.id, {
-            ai_prompt: field.ai_prompt,
-            constraints: (field as any).constraints || undefined,
-            need_review: field.need_review,
-            // 注意：不更新 content 和 status，保留已有内容
-          });
-          tempIdToRealId[field.id] = existingField.id;
-        } else {
-          // 新字段，创建
-          const createdField = await fieldAPI.create({
-            project_id: projectId,
-            name: field.name,
-            phase: "produce_inner",
-            field_type: field.field_type || "richtext",
-            content: "",
-            status: "pending",
-            ai_prompt: field.ai_prompt,
-            dependencies: {
-              depends_on: [],
-              dependency_type: "all",
-            },
-            constraints: (field as any).constraints || undefined,
-            need_review: field.need_review,
-          });
-          tempIdToRealId[field.id] = createdField.id;
-        }
+      // 两轮创建：proposal 中 depends_on 可能存 field ID（LLM 生成）或 name（UI 编辑），需统一转为实际字段 ID
+      const sortedFields = [...proposal.fields].sort((a, b) => a.order - b.order);
+
+      // 第一轮：创建所有字段（不带依赖），建立 proposalId/name → realId 映射
+      const proposalToRealId: Record<string, string> = {};
+      const createdEntries: Array<{ fieldId: string; deps: string[] }> = [];
+
+      for (const pField of sortedFields) {
+        const created = await fieldAPI.create({
+          project_id: projectId,
+          name: pField.name,
+          phase: "produce_inner",
+          field_type: pField.field_type || "richtext",
+          ai_prompt: pField.ai_prompt || "",
+          status: "pending",
+          need_review: pField.need_review !== false,
+          dependencies: { depends_on: [], dependency_type: "all" },
+          constraints: pField.constraints || {},
+        });
+        // 映射 proposal 内的 field id 和 name → 实际创建的 field id
+        if (pField.id) proposalToRealId[pField.id] = created.id;
+        proposalToRealId[pField.name] = created.id;
+        createdEntries.push({ fieldId: created.id, deps: pField.depends_on || [] });
       }
 
-      // 第二步：更新依赖关系（使用真实ID）
-      // 注意：全局字段（意图分析、消费者调研）的ID已经是真实ID，不需要映射
-      const globalFieldIds = new Set(globalFields.map((f) => f.id));
-      
-      for (const field of currentFields) {
-        if (field.depends_on && field.depends_on.length > 0) {
-          const realId = tempIdToRealId[field.id];
-          const realDependsOn = field.depends_on
-            .map((depId) => {
-              // 如果是全局字段ID，直接使用（已经是真实ID）
-              if (globalFieldIds.has(depId)) {
-                return depId;
-              }
-              // 否则从映射中获取真实ID
-              return tempIdToRealId[depId];
-            })
+      // 第二轮：将 depends_on 中的 proposalId/name 转换为实际字段 ID 并更新
+      for (const entry of createdEntries) {
+        if (entry.deps.length > 0) {
+          const realDepsIds = entry.deps
+            .map(dep => proposalToRealId[dep])
             .filter(Boolean);
-          
-          if (realDependsOn.length > 0) {
-            await fieldAPI.update(realId, {
-              dependencies: {
-                depends_on: realDependsOn,
-                dependency_type: "all",
-              },
+          if (realDepsIds.length > 0) {
+            await fieldAPI.update(entry.fieldId, {
+              dependencies: { depends_on: realDepsIds, dependency_type: "all" },
             });
           }
         }
       }
 
+      // 保存确认状态
+      const confirmedData: ProposalsData = {
+        ...data,
+        selected_proposal_id: proposal.id,
+        confirmed: true,
+      };
+      await fieldAPI.update(fieldId, {
+        content: JSON.stringify(confirmedData, null, 2),
+        status: "completed",
+      });
+
+      setIsConfirmed(true);
+      setData(confirmedData);
       onFieldsCreated?.();
-      
-      // 记录已确认的方案
-      setConfirmedProposalId(selectedProposalId);
-      
-      // 推进到下一阶段
-      await agentAPI.advance(projectId);
       onConfirm();
     } catch (err) {
-      console.error("确认方案失败:", err);
-      alert("确认方案失败: " + (err instanceof Error ? err.message : "未知错误"));
+      console.error("创建字段失败:", err);
+      alert("创建字段失败: " + (err instanceof Error ? err.message : "未知错误"));
     } finally {
-      setIsConfirming(false);
+      setIsCreatingFields(false);
     }
   };
 
-  if (proposalsData.error) {
-    return (
-      <div className="p-6 text-center text-red-400">
-        <p>{proposalsData.error}</p>
-        <p className="text-sm mt-2 text-zinc-500">请在右侧对话框让Agent重新生成</p>
-      </div>
-    );
-  }
+  // ============== 重新选择方案 ==============
 
-  if (!proposalsData.proposals || proposalsData.proposals.length === 0) {
-    return (
-      <div className="p-6 text-center text-zinc-500">
-        <p>暂无方案数据</p>
-      </div>
-    );
-  }
+  const handleResetConfirm = async () => {
+    if (!confirm("重新选择方案将删除当前内涵生产阶段的所有字段，确定继续？")) return;
 
-  return (
-    <div className="h-full flex">
-      {/* 左侧：方案目录 */}
-      <div className="w-64 border-r border-surface-3 p-4 flex flex-col">
-        <h3 className="text-sm font-medium text-zinc-400 mb-4">选择方案</h3>
-        <div className="space-y-2 flex-1">
-          {proposalsData.proposals.map((proposal, index) => {
-            const isConfirmed = confirmedProposalId === proposal.id;
-            const isSelected = selectedProposalId === proposal.id;
+    setIsResetting(true);
+    try {
+      // 1. 删除已创建的 produce_inner 字段
+      const produceFields = await fieldAPI.listByProject(projectId, "produce_inner");
+      for (const f of produceFields) {
+        await fieldAPI.delete(f.id);
+      }
+
+      // 2. 重置确认状态并保存
+      const resetData: ProposalsData = {
+        ...data,
+        confirmed: false,
+        selected_proposal_id: undefined,
+      };
+      await fieldAPI.update(fieldId, {
+        content: JSON.stringify(resetData, null, 2),
+        status: "in_progress",
+      });
+
+      setIsConfirmed(false);
+      setSelectedProposalId(null);
+      setData(resetData);
+      onFieldsCreated?.(); // 通知父组件刷新字段列表
+    } catch (err) {
+      console.error("重置方案失败:", err);
+      alert("重置失败: " + (err instanceof Error ? err.message : "未知错误"));
+    } finally {
+      setIsResetting(false);
+    }
+  };
+
+  // ============== Render ==============
+
+  // 即使无方案，也继续渲染（允许用户手动添加自定义方案）
+
+  const readOnly = isConfirmed;
             
             return (
-              <button
-                key={proposal.id}
-                onClick={() => !confirmedProposalId && setSelectedProposalId(proposal.id)}
-                disabled={!!confirmedProposalId}
-                className={`w-full text-left p-3 rounded-lg transition-colors ${
-                  isConfirmed
-                    ? "bg-green-600/20 border border-green-500 text-green-400"
-                    : isSelected
-                    ? "bg-brand-600/20 border border-brand-500 text-brand-400"
-                    : confirmedProposalId
-                    ? "bg-surface-2 border border-surface-3 text-zinc-600 cursor-not-allowed"
-                    : "bg-surface-2 border border-surface-3 text-zinc-300 hover:bg-surface-3"
-                }`}
-              >
-                <div className="font-medium text-sm flex items-center gap-2">
-                  {isConfirmed && <span>✅</span>}
-                  {proposal.id === "custom_proposal" ? (
-                    <>
-                      <span>✏️</span>
-                      自定义
-                    </>
-                  ) : (
-                    <>方案 {index + 1}</>
-                  )}
-                  {isConfirmed && <span className="text-xs bg-green-600/30 px-1.5 py-0.5 rounded">已选中</span>}
+    <div className="space-y-5">
+      {/* 顶部栏 */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-zinc-200">内涵设计方案</h2>
+          <p className="text-sm text-zinc-500 mt-0.5">
+            {readOnly
+              ? `已确认方案「${data.proposals.find(p => p.id === data.selected_proposal_id)?.name || ""}」`
+              : `${data.proposals.length} 个方案 · 编辑后自动保存 · 选择一个确认后进入内涵生产`}
+          </p>
                 </div>
-                <div className="text-xs mt-1 opacity-80 line-clamp-2">
-                  {proposal.name}
-                </div>
-              </button>
-            );
-          })}
-        </div>
-        
-        {/* 保存和确认按钮 */}
-        <div className="mt-4 space-y-2">
-          {/* 保存按钮 */}
-          {!confirmedProposalId && hasUnsavedChanges && (
-            <button
-              onClick={saveProposals}
-              disabled={isSaving}
-              className="w-full py-2.5 bg-surface-3 hover:bg-surface-4 disabled:bg-zinc-700 text-zinc-300 rounded-lg font-medium transition-colors text-sm"
-            >
-              {isSaving ? "💾 保存中..." : "💾 保存修改"}
-            </button>
+        <div className="flex items-center gap-2">
+          {dirty && !readOnly && (
+            <span className="text-xs text-amber-400 animate-pulse">未保存</span>
           )}
-          
-          {/* 确认按钮 */}
-          {confirmedProposalId ? (
-            <div className="w-full py-3 bg-green-600/20 text-green-400 border border-green-500/30 rounded-lg font-medium text-center">
-              ✅ 已确认并进入生产
-            </div>
-          ) : (
-            <button
-              onClick={handleConfirmProposal}
-              disabled={!selectedProposalId || isConfirming || (hasUnsavedChanges && currentFields.length > 0)}
-              className="w-full py-3 bg-brand-600 hover:bg-brand-700 disabled:bg-zinc-700 disabled:text-zinc-500 rounded-lg font-medium transition-colors"
-              title={hasUnsavedChanges && currentFields.length > 0 ? "请先保存修改" : ""}
-            >
-              {isConfirming ? "确认中..." : hasUnsavedChanges && currentFields.length > 0 ? "⚠️ 请先保存修改" : "✅ 确认并进入生产"}
+          {isSaving && (
+            <span className="text-xs text-zinc-500">保存中...</span>
+          )}
+          {!readOnly && (
+            <button onClick={handleManualSave} className="p-1.5 text-zinc-400 hover:text-zinc-200 rounded-lg hover:bg-surface-2" title="立即保存">
+              <Save className="w-4 h-4" />
             </button>
           )}
         </div>
       </div>
 
-      {/* 右侧：方案详情 */}
-      <div className="flex-1 p-6 overflow-auto">
-        {selectedProposal ? (
-          <div>
-            <h2 className="text-xl font-bold text-zinc-100 mb-2">
-              {selectedProposal.name}
-            </h2>
-            <p className="text-zinc-400 mb-6">
-              {selectedProposal.description}
+      {/* 方案列表 */}
+      <div className="space-y-4">
+        {data.proposals.length === 0 && (
+          <div className="text-center py-8 text-zinc-500">
+            <p className="text-sm">暂无方案。</p>
+            <p className="text-xs mt-1 text-zinc-600">
+              在右侧对话框输入"开始"生成 AI 方案，或点击下方按钮手动添加。
             </p>
-
-            {/* 字段列表头部 */}
-            <div className="mb-4 flex items-center justify-between">
-              <div>
-                <h3 className="text-sm font-medium text-zinc-400">
-                  内容字段 ({currentFields.length}个)
-                </h3>
-                <p className="text-xs text-zinc-500 mt-1">
-                  拖动调整顺序 · 点击编辑配置
-                </p>
-              </div>
-              {!confirmedProposalId && (
-                <div className="flex gap-2">
-                  <button
-                    onClick={addEmptyField}
-                    className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-700 text-white rounded-lg transition-colors"
-                  >
-                    + 添加字段
-                  </button>
-                  <button
-                    onClick={() => setShowAddTemplateModal(true)}
-                    className="px-3 py-1.5 text-xs bg-surface-3 hover:bg-surface-4 text-zinc-400 hover:text-zinc-200 rounded-lg transition-colors"
-                  >
-                    📦 从模板添加
-                  </button>
                 </div>
               )}
-            </div>
+        {data.proposals.map((proposal, pIndex) => {
+          const isSelected = selectedProposalId === proposal.id;
+          const isExpanded = expandedProposalId === proposal.id;
+          const sortedFields = [...proposal.fields].sort((a, b) => a.order - b.order);
 
-            <div className="space-y-3">
-              {currentFields.map((field, index) => (
-                <div
-                  key={field.id}
-                  className="bg-surface-2 border border-surface-3 rounded-lg p-4 group"
+          return (
+            <div
+              key={proposal.id}
+              className={`
+                rounded-xl border transition-all overflow-hidden
+                ${isSelected ? "border-brand-500/50 bg-brand-500/5 ring-1 ring-brand-500/20" : "border-surface-3 bg-surface-2"}
+                ${readOnly ? "opacity-80" : ""}
+              `}
+            >
+              {/* 方案头部 */}
+              <div className="px-4 py-3 flex items-start gap-3">
+                {/* 选中圆圈 */}
+                            <button
+                  onClick={() => !readOnly && setSelectedProposalId(isSelected ? null : proposal.id)}
+                  className={`mt-0.5 w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors
+                    ${isSelected ? "border-brand-500 bg-brand-500" : "border-zinc-600 hover:border-zinc-400"}
+                    ${readOnly ? "cursor-default" : "cursor-pointer"}`}
                 >
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2">
-                        {/* 排序按钮 */}
-                        {!confirmedProposalId && (
-                          <div className="flex flex-col gap-0.5">
-                            <button
-                              onClick={() => moveField(field.id, "up")}
-                              disabled={index === 0}
-                              className="text-xs text-zinc-500 hover:text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed px-1"
-                              title="上移"
-                            >
-                              ▲
+                  {isSelected && <Check className="w-3 h-3 text-white" />}
                             </button>
-                            <button
-                              onClick={() => moveField(field.id, "down")}
-                              disabled={index === currentFields.length - 1}
-                              className="text-xs text-zinc-500 hover:text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed px-1"
-                              title="下移"
-                            >
-                              ▼
-                            </button>
-                          </div>
-                        )}
-                        <span className="text-xs bg-surface-3 px-2 py-0.5 rounded text-zinc-500">
-                          {index + 1}
+
+                {/* 方案信息 */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-600/20 text-purple-400 font-medium shrink-0">
+                      方案 {pIndex + 1}
                         </span>
-                        {editingFieldId === field.id ? (
+                    {readOnly ? (
+                      <h3 className="font-semibold text-zinc-200 truncate">{proposal.name}</h3>
+                    ) : (
                           <input
-                            type="text"
-                            value={field.name}
-                            onChange={(e) => updateFieldName(field.id, e.target.value)}
-                            onBlur={() => setEditingFieldId(null)}
-                            onKeyDown={(e) => e.key === "Enter" && setEditingFieldId(null)}
-                            className="flex-1 bg-surface-1 border border-surface-3 rounded px-2 py-0.5 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                            autoFocus
-                          />
-                        ) : (
-                          <span 
-                            onClick={() => !confirmedProposalId && setEditingFieldId(field.id)}
-                            className={`font-medium text-zinc-200 ${!confirmedProposalId ? 'cursor-pointer hover:text-brand-400' : ''}`}
-                          >
-                            {field.name}
-                          </span>
+                        value={proposal.name}
+                        onChange={e => updateProposalMeta(proposal.id, "name", e.target.value)}
+                        className="font-semibold text-zinc-200 bg-transparent border-none outline-none flex-1 min-w-0
+                                   focus:ring-1 focus:ring-brand-500/30 rounded px-1 -mx-1"
+                        placeholder="方案名称"
+                      />
                         )}
                       </div>
-                      
-                      {/* 依赖关系 + 约束 */}
-                      <div className="mt-2 flex items-center gap-3 flex-wrap text-xs">
-                        {/* 依赖关系 */}
-                        <button
-                          onClick={() => !confirmedProposalId && setEditingDependencyFieldId(field.id)}
-                          disabled={!!confirmedProposalId}
-                          className="text-zinc-500 hover:text-zinc-300 flex items-center gap-1 transition-colors disabled:cursor-not-allowed"
-                        >
-                          <span>📎</span>
-                          {field.depends_on && field.depends_on.length > 0 ? (
-                            <span className="flex gap-1 flex-wrap">
-                              {field.depends_on.slice(0, 2).map((depId) => {
-                                // 先从方案内字段查找，再从全局字段查找
-                                const depField = currentFields.find((f) => f.id === depId);
-                                const globalDepField = globalFields.find((f) => f.id === depId);
-                                const depName = depField?.name || globalDepField?.name;
-                                const isGlobal = !depField && !!globalDepField;
-                                return (
-                                  <span 
-                                    key={depId} 
-                                    className={`px-1.5 py-0.5 rounded ${
-                                      isGlobal 
-                                        ? "bg-brand-600/30 text-brand-300" 
-                                        : "bg-surface-3 text-zinc-400"
-                                    }`}
-                                  >
-                                    {depName?.substring(0, 8) || "?"}
-                                  </span>
-                                );
-                              })}
-                              {field.depends_on.length > 2 && <span>+{field.depends_on.length - 2}</span>}
-                            </span>
-                          ) : (
-                            <span className="text-zinc-600">无依赖</span>
-                          )}
-                        </button>
-                        
-                        {/* 约束配置 */}
-                        <button
-                          onClick={() => !confirmedProposalId && setShowConstraintsModal(field.id)}
-                          disabled={!!confirmedProposalId}
-                          className="text-zinc-500 hover:text-zinc-300 flex items-center gap-1 transition-colors disabled:cursor-not-allowed"
-                        >
-                          <span>⚙️</span>
-                          {field.constraints?.max_length ? (
-                            <span className="px-1.5 py-0.5 bg-surface-3 rounded">≤{field.constraints.max_length}字</span>
-                          ) : (
-                            <span className="text-zinc-600">默认约束</span>
-                          )}
-                        </button>
-                      </div>
-                      
-                      {/* AI提示词 - 可编辑 */}
-                      <div className="mt-3">
-                        <label className="text-xs text-zinc-500 mb-1 block">生成提示词：</label>
-                        {confirmedProposalId ? (
-                          <div className="text-xs text-zinc-400 bg-surface-1 rounded-lg p-2 whitespace-pre-wrap">
-                            {field.ai_prompt || "无提示词"}
-                          </div>
-                        ) : (
-                          <textarea
-                            value={field.ai_prompt}
-                            onChange={(e) => updateFieldPrompt(field.id, e.target.value)}
-                            placeholder="请输入AI生成该字段内容时的提示词..."
-                            rows={3}
-                            className="w-full text-xs bg-surface-1 border border-surface-3 hover:border-surface-4 rounded-lg px-3 py-2 text-zinc-300 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-brand-500 resize-none"
-                          />
-                        )}
-                      </div>
+                  {readOnly ? (
+                    <p className="text-sm text-zinc-400">{proposal.description}</p>
+                  ) : (
+                    <input
+                      value={proposal.description}
+                      onChange={e => updateProposalMeta(proposal.id, "description", e.target.value)}
+                      className="text-sm text-zinc-400 bg-transparent border-none outline-none w-full
+                                 focus:ring-1 focus:ring-brand-500/30 rounded px-1 -mx-1"
+                      placeholder="方案描述..."
+                    />
+                  )}
+                  <div className="flex items-center gap-2 mt-1.5 text-xs text-zinc-500">
+                    <FileText className="w-3 h-3" />
+                    <span>{sortedFields.length} 个字段</span>
+                    {!isExpanded && sortedFields.length > 0 && (
+                      <span className="text-zinc-600 truncate">· {sortedFields.map(f => f.name).join(" → ")}</span>
+                    )}
+                  </div>
                     </div>
 
-                    <div className="flex items-center gap-2">
-                      {/* Checkpoint 开关 */}
-                      <button
-                        onClick={() => !confirmedProposalId && toggleNeedReview(field.id)}
-                        disabled={!!confirmedProposalId}
-                        className={`px-3 py-1 text-xs rounded-full transition-colors ${
-                          field.need_review
-                            ? "bg-amber-500/20 text-amber-400 border border-amber-500/50"
-                            : "bg-green-500/20 text-green-400 border border-green-500/50"
-                        } ${confirmedProposalId ? 'opacity-50 cursor-not-allowed' : ''}`}
-                      >
-                        {field.need_review ? "🔍 需确认" : "⚡ 自动"}
+                {/* 方案操作按钮 */}
+                <div className="flex items-center gap-1 shrink-0">
+                  <button onClick={() => setExpandedProposalId(isExpanded ? null : proposal.id)}
+                    className="p-1.5 text-zinc-500 hover:text-zinc-300 rounded-lg hover:bg-surface-3"
+                    title={isExpanded ? "收起" : "展开编辑"}>
+                    {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                       </button>
-                      
-                      {/* 删除按钮 */}
-                      {!confirmedProposalId && (
-                        <button
-                          onClick={() => deleteField(field.id)}
-                          className="opacity-0 group-hover:opacity-100 p-1.5 text-red-400 hover:text-red-300 hover:bg-red-400/10 rounded transition-all"
-                          title="删除字段"
-                        >
-                          ✕
+                  {!readOnly && (
+                    <>
+                      <button onClick={() => duplicateProposal(proposal.id)}
+                        className="p-1.5 text-zinc-600 hover:text-zinc-300 rounded-lg hover:bg-surface-3"
+                        title="复制方案">
+                        <Copy className="w-3.5 h-3.5" />
                         </button>
+                      <button onClick={() => deleteProposal(proposal.id)}
+                        className="p-1.5 text-zinc-600 hover:text-red-400 rounded-lg hover:bg-surface-3"
+                        title="删除方案">
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </>
                       )}
                     </div>
-                  </div>
+      </div>
+
+              {/* 展开：字段列表 + 操作 */}
+              {isExpanded && (
+                <div className="border-t border-surface-3">
+                  {/* 字段列表 */}
+                  <div className="p-3 space-y-2">
+                    {sortedFields.length === 0 && (
+                      <p className="text-sm text-zinc-600 italic text-center py-4">暂无字段，请添加</p>
+                    )}
+                    {sortedFields.map((field, fi) => (
+                      <FieldEditor
+                        key={field.id}
+            field={field}
+                        allFields={sortedFields}
+                        onUpdate={updated => updateField(proposal.id, field.id, updated)}
+                        onDelete={() => deleteField(proposal.id, field.id)}
+                        onMoveUp={() => moveField(proposal.id, field.id, "up")}
+                        onMoveDown={() => moveField(proposal.id, field.id, "down")}
+                        isFirst={fi === 0}
+                        isLast={fi === sortedFields.length - 1}
+                        readOnly={readOnly}
+                      />
+                ))}
+              </div>
+
+                  {/* 添加字段操作栏 */}
+                  {!readOnly && (
+                    <div className="border-t border-surface-3 px-3 py-2.5 flex items-center gap-2">
+          <button
+                        onClick={() => addEmptyField(proposal.id)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-200 
+                                   bg-surface-1 hover:bg-surface-3 rounded-lg border border-surface-3 transition-colors"
+          >
+                        <Plus className="w-3.5 h-3.5" />
+                        添加字段
+          </button>
+          <button
+                        onClick={() => setShowTemplateImporter(showTemplateImporter === proposal.id ? null : proposal.id)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-200
+                                   bg-surface-1 hover:bg-surface-3 rounded-lg border border-surface-3 transition-colors"
+          >
+                        <BookTemplate className="w-3.5 h-3.5" />
+                        从模板导入
+          </button>
+        </div>
+                  )}
+
+                  {/* 模板导入面板 */}
+                  {showTemplateImporter === proposal.id && (
+                    <div className="px-3 pb-3">
+                      <TemplateImporter
+                        onImportFields={(fields, _tplName) => importFieldsToProposal(proposal.id, fields)}
+                        onClose={() => setShowTemplateImporter(null)}
+                      />
+      </div>
+                  )}
                 </div>
-              ))}
+              )}
+    </div>
+  );
+        })}
+        </div>
+
+      {/* 添加方案操作栏 */}
+      {!readOnly && (
+        <div className="flex items-center gap-2">
+              <button
+            onClick={addEmptyProposal}
+            className="flex items-center gap-1.5 px-4 py-2 text-sm text-zinc-400 hover:text-zinc-200
+                       bg-surface-2 hover:bg-surface-3 rounded-lg border border-dashed border-surface-4 transition-colors"
+          >
+            <Plus className="w-4 h-4" />
+            添加自定义方案
+              </button>
+          <button
+            onClick={() => setShowNewProposalTemplate(!showNewProposalTemplate)}
+            className="flex items-center gap-1.5 px-4 py-2 text-sm text-zinc-400 hover:text-zinc-200
+                       bg-surface-2 hover:bg-surface-3 rounded-lg border border-dashed border-surface-4 transition-colors"
+          >
+            <PackagePlus className="w-4 h-4" />
+            从模板创建方案
+          </button>
+        </div>
+      )}
+
+      {/* 从模板创建整个方案 */}
+      {showNewProposalTemplate && !readOnly && (
+        <div className="mt-2">
+          <TemplateImporter
+            onImportFields={(fields, templateName) => {
+              addProposalFromTemplate(fields, templateName || "模板方案");
+            }}
+            onClose={() => setShowNewProposalTemplate(false)}
+            />
+          </div>
+      )}
+
+      {/* 底部确认栏 */}
+      <div className="flex items-center justify-between pt-4 border-t border-surface-3">
+        {readOnly ? (
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 text-green-400">
+              <Check className="w-5 h-5" />
+              <span>已确认方案，字段已导入内涵生产阶段</span>
             </div>
+            <button
+              onClick={handleResetConfirm}
+              disabled={isResetting}
+              className="ml-auto px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-200
+                         bg-surface-2 hover:bg-surface-3 rounded-lg border border-surface-3 transition-colors
+                         disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isResetting ? "重置中..." : "重新选择方案"}
+            </button>
           </div>
         ) : (
-          <div className="flex items-center justify-center h-full text-zinc-500">
-            请选择一个方案
-          </div>
-        )}
-      </div>
-
-      {/* 依赖编辑弹窗 */}
-      {editingDependencyFieldId && editingDependencyField && (
-        <DependencyEditModal
-          field={editingDependencyField}
-          allFields={currentFields}
-          globalFields={globalFields}
-          onClose={() => setEditingDependencyFieldId(null)}
-          onSave={(newDependsOn) => updateFieldDependencies(editingDependencyFieldId, newDependsOn)}
-        />
-      )}
-
-      {/* 字段模板选择弹窗 */}
-      {showAddTemplateModal && (
-        <FieldTemplateModal
-          templates={fieldTemplates}
-          onClose={() => setShowAddTemplateModal(false)}
-          onSelect={addFieldFromTemplate}
-        />
-      )}
-
-      {/* 约束编辑弹窗 */}
-      {showConstraintsModal && (() => {
-        const field = currentFields.find((f) => f.id === showConstraintsModal);
-        if (!field) return null;
-        return (
-          <FieldConstraintsModal
-            field={field}
-            onClose={() => setShowConstraintsModal(null)}
-            onSave={(constraints) => updateFieldConstraints(showConstraintsModal, constraints)}
-          />
-        );
-      })()}
-    </div>
-  );
-}
-
-// 依赖编辑弹窗组件
-interface DependencyEditModalProps {
-  field: ProposalField;
-  allFields: ProposalField[];
-  globalFields?: GlobalField[];  // 全局可引用字段
-  onClose: () => void;
-  onSave: (dependsOn: string[]) => void;
-}
-
-function DependencyEditModal({ field, allFields, globalFields = [], onClose, onSave }: DependencyEditModalProps) {
-  const [selectedIds, setSelectedIds] = useState<string[]>(field.depends_on || []);
-
-  // 方案内可选的依赖字段（排除自己，且只能选择 order 小于当前字段的）
-  const availableProposalFields = allFields.filter(
-    (f) => f.id !== field.id && f.order < field.order
-  );
-
-  const toggleField = (id: string) => {
-    setSelectedIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-    );
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-surface-2 rounded-xl border border-surface-3 w-full max-w-lg max-h-[80vh] overflow-hidden">
-        <div className="px-4 py-3 border-b border-surface-3">
-          <h3 className="font-medium text-zinc-200">编辑依赖关系</h3>
-          <p className="text-xs text-zinc-500 mt-1">
-            选择生成「{field.name}」前需要先完成的字段
-          </p>
-        </div>
-
-        <div className="p-4 max-h-[50vh] overflow-y-auto space-y-4">
-          {/* 全局字段（意图分析、消费者调研） */}
-          {globalFields.length > 0 && (
-            <div>
-              <div className="text-xs font-medium text-zinc-400 mb-2 flex items-center gap-2">
-                <span>🌐</span>
-                <span>全局字段（可引用项目上游阶段）</span>
-              </div>
-              <div className="space-y-2">
-                {globalFields.map((f) => (
-                  <label
-                    key={f.id}
-                    className="flex items-center gap-3 p-3 rounded-lg hover:bg-surface-3 cursor-pointer transition-colors border border-surface-3"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selectedIds.includes(f.id)}
-                      onChange={() => toggleField(f.id)}
-                      className="rounded accent-brand-500"
-                    />
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs bg-brand-600/30 px-2 py-0.5 rounded text-brand-300">
-                          {f.phase_name}
-                        </span>
-                        <span className="text-sm text-zinc-200">{f.name}</span>
-                        {f.status === "completed" && (
-                          <span className="text-xs text-green-400">✓</span>
-                        )}
-                      </div>
-                    </div>
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* 方案内字段 */}
-          {availableProposalFields.length > 0 && (
-            <div>
-              <div className="text-xs font-medium text-zinc-400 mb-2 flex items-center gap-2">
-                <span>📄</span>
-                <span>方案内字段（顺序在前的字段）</span>
-              </div>
-              <div className="space-y-2">
-                {availableProposalFields.map((f) => (
-                  <label
-                    key={f.id}
-                    className="flex items-center gap-3 p-3 rounded-lg hover:bg-surface-3 cursor-pointer transition-colors"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selectedIds.includes(f.id)}
-                      onChange={() => toggleField(f.id)}
-                      className="rounded accent-brand-500"
-                    />
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs bg-surface-3 px-2 py-0.5 rounded text-zinc-500">
-                          {f.order}
-                        </span>
-                        <span className="text-sm text-zinc-200">{f.name}</span>
-                      </div>
-                      <div className="text-xs text-zinc-500 mt-1 line-clamp-1">
-                        {f.ai_prompt}
-                      </div>
-                    </div>
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {availableProposalFields.length === 0 && globalFields.length === 0 && (
-            <p className="text-zinc-500 text-center py-4">
-              没有可选的依赖字段
+          <>
+            <p className="text-sm text-zinc-500">
+              {selectedProposalId
+                ? `已选择「${data.proposals.find(p => p.id === selectedProposalId)?.name}」（${
+                    data.proposals.find(p => p.id === selectedProposalId)?.fields.length || 0
+                  } 个字段）`
+                : "点击方案左侧圆圈选中，然后点击确认"}
             </p>
-          )}
-        </div>
-
-        <div className="px-4 py-3 border-t border-surface-3 flex justify-end gap-2">
           <button
-            onClick={onClose}
-            className="px-4 py-2 text-sm bg-surface-3 hover:bg-surface-4 rounded-lg transition-colors"
-          >
-            取消
-          </button>
-          <button
-            onClick={() => onSave(selectedIds)}
-            className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-700 text-white rounded-lg transition-colors"
-          >
-            保存
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ============== 字段模板选择弹窗 ==============
-interface FieldTemplateModalProps {
-  templates: any[];
-  onClose: () => void;
-  onSelect: (fields: any[]) => void;
-}
-
-function FieldTemplateModal({ templates, onClose, onSelect }: FieldTemplateModalProps) {
-  return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-surface-2 rounded-xl border border-surface-3 w-full max-w-lg max-h-[80vh] overflow-hidden">
-        <div className="px-4 py-3 border-b border-surface-3">
-          <h3 className="font-medium text-zinc-200">添加字段模板</h3>
-          <p className="text-xs text-zinc-500 mt-1">
-            选择一个字段模板添加到当前方案
-          </p>
-        </div>
-
-        <div className="p-4 max-h-[50vh] overflow-y-auto space-y-2">
-          {templates.length > 0 ? (
-            templates.map((template) => (
-              <button
-                key={template.id}
-                onClick={() => onSelect(template.fields || [])}
-                className="w-full text-left p-4 rounded-lg bg-surface-1 border border-surface-3 hover:bg-surface-3 hover:border-brand-500/50 transition-all"
-              >
-                <div className="font-medium text-zinc-200">{template.name}</div>
-                <div className="text-xs text-zinc-500 mt-1">{template.description}</div>
-                <div className="text-xs text-zinc-600 mt-2">
-                  📦 {template.fields?.length || 0} 个字段
-                </div>
-              </button>
-            ))
-          ) : (
-            <p className="text-zinc-500 text-center py-8">
-              暂无字段模板，请在后台设置中添加
-            </p>
-          )}
-        </div>
-
-        <div className="px-4 py-3 border-t border-surface-3 flex justify-end">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 text-sm bg-surface-3 hover:bg-surface-4 rounded-lg transition-colors"
-          >
-            取消
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ============== 字段约束编辑弹窗 ==============
-interface FieldConstraintsModalProps {
-  field: ProposalField;
-  onClose: () => void;
-  onSave: (constraints: any) => void;
-}
-
-function FieldConstraintsModal({ field, onClose, onSave }: FieldConstraintsModalProps) {
-  const [maxLength, setMaxLength] = useState<string>(
-    field.constraints?.max_length?.toString() || ""
-  );
-  const [outputFormat, setOutputFormat] = useState(
-    field.constraints?.output_format || "markdown"
-  );
-  const [structure, setStructure] = useState(field.constraints?.structure || "");
-  const [example, setExample] = useState(field.constraints?.example || "");
-
-  const handleSave = () => {
-    onSave({
-      max_length: maxLength ? parseInt(maxLength, 10) : null,
-      output_format: outputFormat,
-      structure: structure || null,
-      example: example || null,
-    });
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-surface-2 rounded-xl border border-surface-3 w-full max-w-lg max-h-[80vh] overflow-hidden">
-        <div className="px-4 py-3 border-b border-surface-3">
-          <h3 className="font-medium text-zinc-200">字段约束配置</h3>
-          <p className="text-xs text-zinc-500 mt-1">
-            设置「{field.name}」的生成规则
-          </p>
-        </div>
-
-        <div className="p-4 space-y-4 max-h-[60vh] overflow-y-auto">
-          {/* 最大字数 */}
-          <div>
-            <label className="block text-sm text-zinc-400 mb-1.5">
-              📏 最大字数
-            </label>
-            <input
-              type="number"
-              value={maxLength}
-              onChange={(e) => setMaxLength(e.target.value)}
-              placeholder="不限制"
-              className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-brand-500"
-            />
-          </div>
-
-          {/* 输出格式 */}
-          <div>
-            <label className="block text-sm text-zinc-400 mb-1.5">
-              📋 输出格式
-            </label>
-            <select
-              value={outputFormat}
-              onChange={(e) => setOutputFormat(e.target.value)}
-              className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 focus:outline-none focus:ring-2 focus:ring-brand-500"
+              onClick={handleConfirm}
+              disabled={!selectedProposalId || isCreatingFields}
+              className="px-5 py-2 bg-brand-600 hover:bg-brand-700 rounded-lg text-sm font-medium
+                         flex items-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <option value="markdown">Markdown（富文本）</option>
-              <option value="plain_text">纯文本</option>
-              <option value="json">JSON 结构化</option>
-              <option value="list">列表（每行一项）</option>
-            </select>
-          </div>
-
-          {/* 结构模板 */}
-          <div>
-            <label className="block text-sm text-zinc-400 mb-1.5">
-              🏗️ 结构模板（可选）
-            </label>
-            <textarea
-              value={structure}
-              onChange={(e) => setStructure(e.target.value)}
-              placeholder="例如：标题 + 正文 + 总结"
-              rows={2}
-              className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-brand-500 resize-none"
-            />
-          </div>
-
-          {/* 示例输出 */}
-          <div>
-            <label className="block text-sm text-zinc-400 mb-1.5">
-              💡 示例输出（可选）
-            </label>
-            <textarea
-              value={example}
-              onChange={(e) => setExample(e.target.value)}
-              placeholder="提供一个期望输出的示例"
-              rows={3}
-              className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-brand-500 resize-none"
-            />
-          </div>
-        </div>
-
-        <div className="px-4 py-3 border-t border-surface-3 flex justify-end gap-2">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 text-sm bg-surface-3 hover:bg-surface-4 rounded-lg transition-colors"
-          >
-            取消
+              {isCreatingFields ? "创建中..." : (
+                <><Send className="w-4 h-4" />确认并进入内涵生产</>
+              )}
           </button>
-          <button
-            onClick={handleSave}
-            className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-700 text-white rounded-lg transition-colors"
-          >
-            保存
-          </button>
-        </div>
+          </>
+        )}
       </div>
     </div>
   );

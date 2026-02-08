@@ -821,9 +821,6 @@ async def generate_block_content(
         creator_profile=creator_profile_text,
     )
     
-    # 构建提示词
-    prompt_engine = PromptEngine()
-    
     constraints_text = _build_constraints_text(block.constraints)
     
     # 构建预提问答案文本
@@ -831,15 +828,32 @@ async def generate_block_content(
     if block.pre_answers:
         answers = [f"- {q}: {a}" for q, a in block.pre_answers.items() if a]
         if answers:
-            pre_answers_text = f"---\n# 用户补充信息（生成前提问的回答）\n" + "\n".join(answers)
+            pre_answers_text = "\n---\n# 用户补充信息（生成前提问的回答）\n" + "\n".join(answers)
     
-    system_prompt = f"""{gc.to_prompt()}
+    ai_prompt = block.ai_prompt or "请生成内容。"
+    
+    # 检查 ai_prompt 是否包含占位符（新格式：所见即所得）
+    has_placeholders = (
+        "{creator_profile}" in ai_prompt
+        or "{dependencies}" in ai_prompt
+        or "{constraints}" in ai_prompt
+    )
+    
+    if has_placeholders:
+        # 新格式：ai_prompt 就是完整模板，直接替换占位符
+        system_prompt = ai_prompt
+        system_prompt = system_prompt.replace("{creator_profile}", creator_profile_text or "（暂无创作者特质）")
+        system_prompt = system_prompt.replace("{dependencies}", dependency_content or "（无依赖内容）")
+        system_prompt = system_prompt.replace("{constraints}", constraints_text)
+        system_prompt += pre_answers_text
+    else:
+        # 旧格式兼容：引擎拼接各段
+        system_prompt = f"""{gc.to_prompt()}
 
 ---
 
 # 当前任务
-{block.ai_prompt or '请生成内容。'}
-
+{ai_prompt}
 {pre_answers_text}
 
 {f'---{chr(10)}# 参考内容{chr(10)}{dependency_content}' if dependency_content else ''}
@@ -1395,4 +1409,96 @@ def get_project_undo_history(
             }
             for h in histories
         ],
+    }
+
+
+# ============== AI 提示词生成 ==============
+
+
+class GeneratePromptRequest(BaseModel):
+    """AI 生成提示词请求"""
+    purpose: str = Field(..., description="用户描述的字段目的/需求")
+    field_name: str = Field(default="", description="字段名称（可选，用于给 AI 更多上下文）")
+    project_id: str = Field(default="", description="项目 ID（可选，用于获取项目上下文）")
+
+
+@router.post("/generate-prompt")
+async def generate_ai_prompt(
+    request: GeneratePromptRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    AI 生成提示词：根据用户描述的目的，生成高质量的字段提示词
+    
+    - 从后台系统提示词中读取「AI生成提示词」模板
+    - 调用 LLM 生成提示词
+    - 记录日志
+    """
+    from core.models import SystemPrompt, GenerationLog
+    from core.ai_client import ai_client, ChatMessage
+    
+    # 1. 从后台获取「AI生成提示词」的系统提示词
+    prompt_template = db.query(SystemPrompt).filter(
+        SystemPrompt.phase == "utility",
+        SystemPrompt.name == "AI生成提示词",
+    ).first()
+    
+    if prompt_template:
+        system_content = prompt_template.content
+    else:
+        # 降级：使用默认提示词
+        system_content = """你是一个专业的提示词工程师。用户会告诉你某个字段的目的和需求，你需要为该字段生成一段高质量的 AI 提示词。
+
+生成的提示词应该：
+1. 明确指出 AI 的角色定位
+2. 清晰描述要生成的内容是什么
+3. 给出具体的输出要求（格式、结构、风格等）
+4. 如果有依赖上下文，提醒 AI 参考这些信息
+5. 包含质量约束
+
+直接输出提示词内容，不需要任何解释或前缀。"""
+    
+    # 2. 构建用户消息
+    user_msg = f"请为以下字段生成 AI 提示词：\n\n"
+    if request.field_name:
+        user_msg += f"字段名称: {request.field_name}\n"
+    user_msg += f"字段目的: {request.purpose}"
+    
+    # 如果有项目上下文，加入
+    if request.project_id:
+        project = db.query(Project).filter(Project.id == request.project_id).first()
+        if project:
+            user_msg += f"\n项目名称: {project.name}"
+    
+    # 3. 调用 LLM
+    messages = [
+        ChatMessage(role="system", content=system_content),
+        ChatMessage(role="user", content=user_msg),
+    ]
+    
+    response = await ai_client.async_chat(messages, temperature=0.7)
+    generated_prompt = response.content.strip()
+    
+    # 4. 记录日志
+    gen_log = GenerationLog(
+        id=generate_uuid(),
+        project_id=request.project_id or "global",
+        phase="utility",
+        operation="generate_ai_prompt",
+        model="gpt-5.1",
+        prompt_input=f"[System]\n{system_content}\n\n[User]\n{user_msg}",
+        prompt_output=generated_prompt,
+        tokens_in=response.tokens_in if hasattr(response, 'tokens_in') else 0,
+        tokens_out=response.tokens_out if hasattr(response, 'tokens_out') else 0,
+        duration_ms=response.duration_ms if hasattr(response, 'duration_ms') else 0,
+        cost=response.cost if hasattr(response, 'cost') else 0.0,
+        status="success",
+    )
+    db.add(gen_log)
+    db.commit()
+    
+    return {
+        "prompt": generated_prompt,
+        "model": "gpt-5.1",
+        "tokens_used": (response.tokens_in or 0) + (response.tokens_out or 0),
     }

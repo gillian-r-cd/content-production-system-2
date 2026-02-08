@@ -8,6 +8,7 @@ import { useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { blockAPI, fieldAPI, runAutoTriggerChain } from "@/lib/api";
+import { sendNotification } from "@/lib/utils";
 import type { ContentBlock } from "@/lib/api";
 import { getEvalFieldEditor } from "./eval-field-editors";
 import { 
@@ -45,6 +46,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatingContent, setGeneratingContent] = useState("");
   const generatingBlockIdRef = useRef<string | null>(null); // 正在生成的block ID
+  const abortControllerRef = useRef<AbortController | null>(null); // 用于停止生成
   const [showPromptModal, setShowPromptModal] = useState(false);
   const [showConstraintsModal, setShowConstraintsModal] = useState(false);
   const [showDependencyModal, setShowDependencyModal] = useState(false);
@@ -53,6 +55,8 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
   const [editedPrompt, setEditedPrompt] = useState(block.ai_prompt || "");
   const [editedConstraints, setEditedConstraints] = useState(block.constraints || {});
   const [selectedDependencies, setSelectedDependencies] = useState<string[]>(block.depends_on || []);
+  const [aiPromptPurpose, setAiPromptPurpose] = useState("");
+  const [generatingPrompt, setGeneratingPrompt] = useState(false);
   
   // 复制状态
   const [copied, setCopied] = useState(false);
@@ -218,6 +222,25 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
     }
   };
 
+  // AI 生成提示词
+  const handleGeneratePrompt = async () => {
+    if (!aiPromptPurpose.trim()) return;
+    setGeneratingPrompt(true);
+    try {
+      const result = await blockAPI.generatePrompt({
+        purpose: aiPromptPurpose,
+        field_name: block.name,
+        project_id: block.project_id || "",
+      });
+      setEditedPrompt(result.prompt);
+      setAiPromptPurpose("");
+    } catch (e: any) {
+      alert("生成提示词失败: " + (e.message || "未知错误"));
+    } finally {
+      setGeneratingPrompt(false);
+    }
+  };
+
   // 保存 AI 提示词
   const handleSavePrompt = async () => {
     try {
@@ -305,6 +328,8 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
     
     const currentBlockId = block.id;
     generatingBlockIdRef.current = currentBlockId;
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
     setIsGenerating(true);
     setGeneratingContent("");
     setIsEditing(false); // 退出编辑模式以显示流式内容
@@ -319,7 +344,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
         onUpdate?.();
       } else {
         // 使用流式生成（预提问答案已保存到后端）
-        const response = await blockAPI.generateStream(block.id);
+        const response = await blockAPI.generateStream(block.id, abortController.signal);
         if (!response.ok) {
           const error = await response.json().catch(() => ({ detail: "生成失败" }));
           throw new Error(error.detail || `HTTP ${response.status}`);
@@ -355,6 +380,9 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
                   }
                   onUpdate?.();
                   
+                  // 浏览器通知
+                  sendNotification("内容生成完成", `「${block.name}」已生成完毕，点击查看`);
+                  
                   // 前端驱动自动触发链
                   if (projectId) {
                     runAutoTriggerChain(projectId, () => onUpdate?.()).catch(console.error);
@@ -371,9 +399,15 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
         }
       }
     } catch (err) {
-      console.error("生成失败:", err);
-      if (generatingBlockIdRef.current === currentBlockId) {
-        alert("生成失败: " + (err instanceof Error ? err.message : "未知错误"));
+      if (err instanceof DOMException && err.name === "AbortError") {
+        console.log("[BlockEditor] 用户停止了生成");
+        // 保留已生成的部分内容
+        onUpdate?.();
+      } else {
+        console.error("生成失败:", err);
+        if (generatingBlockIdRef.current === currentBlockId) {
+          alert("生成失败: " + (err instanceof Error ? err.message : "未知错误"));
+        }
       }
     } finally {
       // 只有当前block还是正在生成的block时才重置状态
@@ -381,7 +415,16 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
         setIsGenerating(false);
         setGeneratingContent("");
         generatingBlockIdRef.current = null;
+        abortControllerRef.current = null;
       }
+    }
+  };
+
+  // 停止生成
+  const handleStopGeneration = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
     }
   };
 
@@ -455,6 +498,17 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
           
           {/* 操作按钮 */}
           <div className="flex items-center gap-2">
+            {/* 生成中：显示停止按钮 */}
+            {isGenerating && (
+              <button
+                onClick={handleStopGeneration}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-red-600 hover:bg-red-700 text-white transition-colors"
+                title="停止生成"
+              >
+                <svg className="w-4 h-4" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="3" width="10" height="10" rx="1" /></svg>
+                停止生成
+              </button>
+            )}
             {/* 生成按钮 */}
             {block.status !== "completed" && !isGenerating && (
               <button
@@ -745,7 +799,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="p-5">
+            <div className="p-5 space-y-4">
               <textarea
                 value={editedPrompt}
                 onChange={(e) => setEditedPrompt(e.target.value)}
@@ -753,9 +807,42 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
                 className="w-full bg-surface-2 border border-surface-3 rounded-lg p-4 text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-brand-500 resize-none"
                 placeholder="输入 AI 生成此内容块时使用的提示词..."
               />
-              <p className="mt-2 text-xs text-zinc-500">
+              <p className="text-xs text-zinc-500">
                 提示词会与项目上下文（创作者特质、意图、用户画像）一起发送给 AI，用于生成内容。
               </p>
+
+              {/* 🤖 用 AI 生成提示词 */}
+              <div className="p-3 bg-surface-2/50 border border-surface-3 rounded-lg">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-xs text-zinc-400">🤖 用 AI 生成提示词</span>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={aiPromptPurpose}
+                    onChange={(e) => setAiPromptPurpose(e.target.value)}
+                    placeholder="简述字段目的，如：介绍产品核心卖点"
+                    className="flex-1 px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && aiPromptPurpose.trim() && !generatingPrompt) {
+                        handleGeneratePrompt();
+                      }
+                    }}
+                  />
+                  <button
+                    onClick={handleGeneratePrompt}
+                    disabled={!aiPromptPurpose.trim() || generatingPrompt}
+                    className="px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 whitespace-nowrap"
+                  >
+                    {generatingPrompt ? (
+                      <>
+                        <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                        生成中...
+                      </>
+                    ) : "AI 生成"}
+                  </button>
+                </div>
+              </div>
             </div>
             <div className="px-5 py-4 border-t border-surface-3 flex justify-end gap-3">
               <button

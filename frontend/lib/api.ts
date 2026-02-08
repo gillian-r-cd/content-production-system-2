@@ -651,10 +651,11 @@ export const blockAPI = {
     }),
 
   // 流式生成内容块内容（返回原始 Response 用于 SSE 读取）
-  generateStream: async function (blockId: string): Promise<Response> {
+  generateStream: async function (blockId: string, signal?: AbortSignal): Promise<Response> {
     const resp = await fetch(`${API_BASE}/api/blocks/${blockId}/generate/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal,
     });
     return resp;
   },
@@ -691,6 +692,16 @@ export const blockAPI = {
     fetchAPI<{ message: string }>(`/api/blocks/undo/${historyId}`, {
       method: "POST",
     }),
+
+  // AI 生成提示词
+  generatePrompt: (data: { purpose: string; field_name?: string; project_id?: string }) =>
+    fetchAPI<{ prompt: string; model: string; tokens_used: number }>(
+      "/api/blocks/generate-prompt",
+      {
+        method: "POST",
+        body: JSON.stringify(data),
+      }
+    ),
 };
 
 /**
@@ -1024,6 +1035,15 @@ export const graderAPI = {
   delete: (graderId: string) =>
     fetchAPI(`/api/graders/${graderId}`, { method: "DELETE" }),
   getTypes: () => fetchAPI("/api/graders/types"),
+  exportAll: (id?: string) => {
+    const query = id ? `?grader_id=${id}` : "";
+    return fetchAPI<any>(`/api/graders/export/all${query}`);
+  },
+  importAll: (data: any[]) =>
+    fetchAPI<any>("/api/graders/import/all", {
+      method: "POST",
+      body: JSON.stringify({ data }),
+    }),
 };
 
 

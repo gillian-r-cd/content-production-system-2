@@ -10,7 +10,8 @@
 import React, { useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { evalAPI, blockAPI, graderAPI, settingsAPI } from "@/lib/api";
+import { evalAPI, blockAPI, graderAPI, settingsAPI, fieldAPI } from "@/lib/api";
+import { sendNotification } from "@/lib/utils";
 import type { ContentBlock, EvalConfig, LLMCall, GraderData } from "@/lib/api";
 import {
   Users, Plus, Trash2, Play, Settings, ChevronDown, ChevronRight,
@@ -339,11 +340,12 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
 
   const _loadDeps = async () => {
     try {
-      const [personaResp, graderList, blockTree, simList] = await Promise.all([
+      const [personaResp, graderList, blockTree, simList, projectFields] = await Promise.all([
         evalAPI.getPersonas(projectId).catch(() => ({ personas: [] })) as Promise<any>,
         graderAPI.listForProject(projectId).catch(() => []),
         blockAPI.getProjectBlocks(projectId).catch(() => ({ blocks: [] })),
         settingsAPI.listSimulators().catch(() => []) as Promise<SimulatorData[]>,
+        fieldAPI.listByProject(projectId).catch(() => []) as Promise<any[]>,
       ]);
       setPersonas(personaResp.personas || []);
       setGraders(graderList);
@@ -360,6 +362,13 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
         }
       };
       _flatten(blockTree.blocks || []);
+      // 也加载传统流程的 ProjectField（避免重复）
+      const blockNames = new Set(fields.map(f => f.name));
+      for (const pf of (projectFields || [])) {
+        if (pf.content && pf.phase !== "evaluate" && !blockNames.has(pf.name)) {
+          fields.push({ id: pf.id, name: `${pf.name}` });
+        }
+      }
       setProjectBlocks(fields);
     } catch { /* ignore */ }
   };
@@ -518,6 +527,15 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
     setTrials(newT);
   };
 
+  const deselectAllBlocks = (idx: number) => {
+    const t = { ...trials[idx] };
+    t.target_block_ids = [];
+    t.target_block_names = [];
+    const newT = [...trials];
+    newT[idx] = t;
+    setTrials(newT);
+  };
+
   const handleSave = async () => {
     setSaving(true);
     try {
@@ -652,10 +670,15 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
                           📄 评估目标字段
                           <span className="text-xs font-normal text-zinc-500">（核心：要评价什么内容）</span>
                         </label>
-                        <button onClick={() => selectAllBlocks(idx)}
-                          className="text-xs px-2.5 py-1 bg-surface-3 hover:bg-surface-4 rounded text-zinc-400 hover:text-zinc-200 transition-colors">
-                          全选
-                        </button>
+                        {(() => {
+                          const allSelected = projectBlocks.length > 0 && (trial.target_block_ids || []).length === projectBlocks.length;
+                          return (
+                            <button onClick={() => allSelected ? deselectAllBlocks(idx) : selectAllBlocks(idx)}
+                              className="text-xs px-2.5 py-1 bg-surface-3 hover:bg-surface-4 rounded text-zinc-400 hover:text-zinc-200 transition-colors">
+                              {allSelected ? "取消全选" : "全选"}
+                            </button>
+                          );
+                        })()}
                       </div>
                       {projectBlocks.length > 0 ? (
                         <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
@@ -850,11 +873,10 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
                       )}
                     </div>
 
-                    {/* Persona 选择（对话/决策类模拟器需要 persona） */}
-                    {(trial.interaction_mode === "dialogue" || trial.interaction_mode === "decision" ||
-                      trial.simulator_type === "consumer" || trial.simulator_type === "seller") && (
+                    {/* Persona 选择（所有模拟器类型均可选择角色画像，影响评估视角） */}
+                    {trial.simulator_id && (
                       <div className={`${CARD_INNER} p-4`}>
-                        <label className="text-sm font-medium text-zinc-200 mb-2 block">👤 消费者画像</label>
+                        <label className="text-sm font-medium text-zinc-200 mb-2 block">👤 消费者画像 <span className="text-xs font-normal text-zinc-500">（可选，决定评估视角）</span></label>
                         {personas.length > 0 ? (
                           <div className="space-y-2">
                             {personas.map((p, pi) => (
@@ -990,6 +1012,11 @@ export function EvalReportPanel({ block, projectId, onUpdate }: EvalFieldProps) 
             try { setReportData(JSON.parse(freshBlock.content)); } catch {}
           }
           onUpdate?.(); // 刷新父组件数据
+          // 浏览器通知
+          sendNotification(
+            "评估执行完成",
+            freshBlock.status === "completed" ? "评估报告已生成，点击查看结果" : "评估执行出错，请检查"
+          );
         }
       } catch (err) {
         console.error("[EvalReport] 轮询失败:", err);

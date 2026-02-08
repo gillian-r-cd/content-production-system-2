@@ -168,22 +168,6 @@ def seed_default_data():
                 ),
                 SystemPrompt(
                     id=generate_uuid(),
-                    name="消费者模拟提示词",
-                    phase="simulate",
-                    content="""你需要扮演目标消费者，基于消费者画像和人物小传，对生产的内容进行真实体验。
-
-根据模拟器设定的交互类型：
-- 对话式：与内容/Chatbot进行多轮对话
-- 阅读式：阅读全部内容并给出反馈
-- 决策式：基于内容做出购买/行动决策
-- 探索式：自由探索内容并记录体验
-- 体验式：完整体验产品/服务流程
-
-请保持角色一致性，给出真实的反馈和评价。""",
-                    description="用于消费者模拟阶段，指导模拟器行为"
-                ),
-                SystemPrompt(
-                    id=generate_uuid(),
                     name="评估提示词",
                     phase="evaluate",
                     content="""你是一个内容质量评估专家。基于评估模板，你需要：
@@ -195,6 +179,22 @@ def seed_default_data():
 
 评估应该客观、全面，并提供可操作的改进方向。""",
                     description="用于评估阶段，指导内容质量评估"
+                ),
+                SystemPrompt(
+                    id=generate_uuid(),
+                    name="AI生成提示词",
+                    phase="utility",
+                    content="""你是一个专业的提示词工程师。用户会告诉你某个字段的目的和需求，你需要为该字段生成一段高质量的 AI 提示词。
+
+生成的提示词应该：
+1. 明确指出 AI 的角色定位
+2. 清晰描述要生成的内容是什么
+3. 给出具体的输出要求（格式、结构、风格等）
+4. 如果有依赖上下文（如创作者特质、项目意图等），提醒 AI 参考这些信息
+5. 包含质量约束（避免什么、注意什么）
+
+直接输出提示词内容，不需要任何解释或前缀。提示词应该是第二人称（"你是..."），可以直接作为 AI 的系统提示词使用。""",
+                    description="用于AI生成字段提示词，帮助用户快速创建高质量的提示词模板"
                 ),
             ]
             db.add_all(prompts)
@@ -208,7 +208,6 @@ def seed_default_data():
                 tools=[
                     "deep_research", 
                     "generate_field", 
-                    "simulate_consumer", 
                     "evaluate_content",
                     "architecture_writer",
                     "outline_generator",
@@ -223,13 +222,11 @@ def seed_default_data():
                     "produce_inner": True,
                     "design_outer": True,
                     "produce_outer": True,
-                    "simulate": True,
                     "evaluate": True,
                 },
                 tool_prompts={
                     "deep_research": "你是一个专业的用户研究专家。基于项目意图，进行网络调研，分析目标用户群体的特征、痛点和需求。",
                     "generate_field": "你是一个专业的内容创作者。基于上下文和依赖字段，生成高质量的内容。遵循创作者特质、保持风格一致性。",
-                    "simulate_consumer": "你将扮演一个典型的目标消费者，基于用户画像进行内容体验模拟。提供真实的反馈、困惑点和改进建议。",
                     "evaluate_content": "你是一个内容质量评估专家。根据评估维度对内容进行打分和分析，给出具体的改进建议。",
                     "architecture_writer": "你是项目架构师。根据用户的自然语言描述，识别需要进行的架构操作（添加阶段/字段、删除、移动），并执行相应的修改。",
                     "outline_generator": "你是一个内容策划专家。基于项目意图和消费者调研结果，生成结构化的内容大纲，包括主题、章节、关键点和预计字段。",

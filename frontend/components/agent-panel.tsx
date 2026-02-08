@@ -6,7 +6,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { cn, PHASE_NAMES } from "@/lib/utils";
+import { cn, PHASE_NAMES, sendNotification, requestNotificationPermission } from "@/lib/utils";
 import { agentAPI, parseReferences, API_BASE } from "@/lib/api";
 import type { Field, ChatMessageRecord, ContentBlock } from "@/lib/api";
 import ReactMarkdown from "react-markdown";
@@ -23,6 +23,7 @@ interface MentionItem {
 
 interface AgentPanelProps {
   projectId: string | null;
+  currentPhase?: string;  // 当前阶段（传统视图点击阶段时同步）
   fields?: Field[];
   allBlocks?: ContentBlock[];  // 灵活架构的内容块
   useFlexibleArchitecture?: boolean;
@@ -56,6 +57,7 @@ const TOOL_DESCS: Record<string, string> = {
 
 export function AgentPanel({
   projectId,
+  currentPhase,
   fields = [],
   allBlocks = [],
   useFlexibleArchitecture = false,
@@ -79,6 +81,7 @@ export function AgentPanel({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const mentionStartPos = useRef<number>(-1);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // 构建统一的可引用项列表（兼容传统字段和灵活架构内容块）
   const mentionItems: MentionItem[] = (() => {
@@ -108,12 +111,36 @@ export function AgentPanel({
             label: parentBlock?.name || "内容块",
             hasContent: true,
           });
+          
+          // 如果是 design_inner 类型的内容块，提取方案供单独引用
+          if (block.special_handler === "design_inner") {
+            try {
+              const parsed = JSON.parse(block.content);
+              const proposals = parsed?.proposals;
+              if (Array.isArray(proposals)) {
+                proposals.forEach((p: any, i: number) => {
+                  if (p && p.name) {
+                    const pName = `方案${i + 1}:${p.name}`;
+                    if (!seen.has(pName)) {
+                      seen.add(pName);
+                      items.push({
+                        id: `proposal_${p.id || i}`,
+                        name: pName,
+                        label: "内涵设计",
+                        hasContent: true,
+                      });
+                    }
+                  }
+                });
+              }
+            } catch { /* not JSON, skip */ }
+          }
         }
       }
       return items;
     } else {
       // 传统架构：使用 ProjectField，只要有内容就可引用
-      return fields
+      const items: MentionItem[] = fields
         .filter((f) => {
           if (!f.content || !f.content.trim()) return false;
           if (seen.has(f.id)) return false;
@@ -126,6 +153,33 @@ export function AgentPanel({
           label: PHASE_NAMES[f.phase] || f.phase,
           hasContent: true,
         }));
+
+      // 额外：从 design_inner 字段的 JSON 中提取各方案，使其可单独 @ 引用
+      const designField = fields.find(f => f.phase === "design_inner" && f.content);
+      if (designField) {
+        try {
+          const parsed = JSON.parse(designField.content);
+          const proposals = parsed?.proposals;
+          if (Array.isArray(proposals)) {
+            proposals.forEach((p: any, i: number) => {
+              if (p && p.name) {
+                const pName = `方案${i + 1}:${p.name}`;
+                if (!seen.has(pName)) {
+                  seen.add(pName);
+                  items.push({
+                    id: `proposal_${p.id || i}`,
+                    name: pName,
+                    label: "内涵设计",
+                    hasContent: true,
+                  });
+                }
+              }
+            });
+          }
+        } catch { /* not JSON, skip */ }
+      }
+
+      return items;
     }
   })();
 
@@ -246,6 +300,8 @@ export function AgentPanel({
 
   const handleSend = async () => {
     if (!input.trim() || !projectId || sending) return;
+    // 首次发送时请求通知权限（需在用户交互中触发）
+    requestNotificationPermission();
 
     const userMessage = input.trim();
     
@@ -281,8 +337,12 @@ export function AgentPanel({
     
     setMessages((prev) => [...prev, tempUserMsg, tempAiMsg]);
 
+    // 创建 AbortController 用于停止生成
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
     try {
-      // 使用流式 API
+      // 使用流式 API（传递 current_phase 确保后端使用正确的阶段）
       const response = await fetch(`${API_BASE}/api/agent/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -290,7 +350,9 @@ export function AgentPanel({
           project_id: projectId,
           message: userMessage,
           references,
+          current_phase: currentPhase || undefined,
         }),
+        signal: abortController.signal,
       });
 
       if (!response.ok) {
@@ -382,6 +444,8 @@ export function AgentPanel({
                         : m
                     )
                   );
+                  // 浏览器通知
+                  sendNotification("内容生成完成", `${routeName} 已生成完毕，点击查看`);
                 } else {
                   // 对话模式：保持完整内容
                   setMessages((prev) =>
@@ -389,6 +453,8 @@ export function AgentPanel({
                       m.id === tempAiMsg.id ? { ...m, id: data.message_id } : m
                     )
                   );
+                  // 浏览器通知
+                  sendNotification("Agent 回复完成", "Agent 已完成回复，点击查看");
                 }
               } else if (data.type === "error") {
                 console.error("Stream error:", data.error);
@@ -412,17 +478,40 @@ export function AgentPanel({
         onContentUpdate();
       }
     } catch (error) {
-      console.error("发送失败:", error);
-      // 更新临时 AI 消息显示错误
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === tempAiMsg.id
-            ? { ...m, content: `❌ 发送失败: ${error}` }
-            : m
-        )
-      );
+      // 如果是用户主动中断，不显示错误
+      if (error instanceof DOMException && error.name === "AbortError") {
+        console.log("[AgentPanel] 用户停止了生成");
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === tempAiMsg.id && !m.content
+              ? { ...m, content: "⏹️ 已停止生成" }
+              : m.id === tempAiMsg.id && m.content === "⏳ 正在生成内容..."
+              ? { ...m, content: "⏹️ 已停止生成" }
+              : m
+          )
+        );
+      } else {
+        console.error("发送失败:", error);
+        // 更新临时 AI 消息显示错误
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === tempAiMsg.id
+              ? { ...m, content: `❌ 发送失败: ${error}` }
+              : m
+          )
+        );
+      }
     } finally {
       setSending(false);
+      abortControllerRef.current = null;
+    }
+  };
+
+  // 停止生成
+  const handleStopGeneration = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
     }
   };
 
@@ -694,13 +783,24 @@ export function AgentPanel({
               disabled={!projectId || sending}
               className="flex-1 px-4 py-2 bg-surface-2 border border-surface-3 rounded-lg text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:opacity-50"
             />
-            <button
-              onClick={handleSend}
-              disabled={!projectId || !input.trim() || sending}
-              className="px-4 py-2 bg-brand-600 hover:bg-brand-700 disabled:bg-surface-3 disabled:cursor-not-allowed rounded-lg transition-colors"
-            >
-              发送
-            </button>
+            {sending ? (
+              <button
+                onClick={handleStopGeneration}
+                className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg transition-colors text-white flex items-center gap-1.5"
+                title="停止生成"
+              >
+                <svg className="w-4 h-4" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="3" width="10" height="10" rx="1" /></svg>
+                停止
+              </button>
+            ) : (
+              <button
+                onClick={handleSend}
+                disabled={!projectId || !input.trim()}
+                className="px-4 py-2 bg-brand-600 hover:bg-brand-700 disabled:bg-surface-3 disabled:cursor-not-allowed rounded-lg transition-colors"
+              >
+                发送
+              </button>
+            )}
           </div>
         </div>
 
@@ -753,9 +853,9 @@ function MessageBubble({
     const parts = content.split(/(@[\u4e00-\u9fffa-zA-Z0-9_]+)/g);
     return parts.map((part, i) => {
       if (part.startsWith("@")) {
-        return <span key={i} className="text-brand-300 font-medium">{part}</span>;
+        return <span key={`ref-${i}`} className="text-brand-300 font-medium">{part}</span>;
       }
-      return part;
+      return <span key={`txt-${i}`}>{part}</span>;
     });
   };
 

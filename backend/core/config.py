@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-5.1"
     openai_api_base: str = ""
 
+    # Tavily Search API (DeepResearch)
+    tavily_api_key: str = ""
+
     # Database
     database_url: str = "sqlite:///./data/content_production.db"
 

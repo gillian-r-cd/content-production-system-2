@@ -981,9 +981,9 @@ async def _handle_eval_report(block, project, db):
             detail="没有配置任何试验（请在「评估任务配置」中添加试验并保存）"
         )
 
-    # 2. 收集项目内容
-    content, field_names = _collect_content(project.id, None, db, exclude_eval=True)
-    if not content:
+    # 2. 收集项目全部内容（作为 fallback）+ 各试验按 target_block_ids 筛选
+    all_content, all_field_names = _collect_content(project.id, None, db, exclude_eval=True)
+    if not all_content:
         raise HTTPException(status_code=400, detail="项目中没有可评估的内容")
     
     creator_profile = _get_creator_profile(project, db)
@@ -1040,6 +1040,7 @@ async def _handle_eval_report(block, project, db):
                 sim_config["secondary_prompt"] = sim_obj.secondary_prompt or ""
                 sim_config["simulator_name"] = sim_obj.name
                 sim_config["grader_template"] = sim_obj.grader_template or ""
+                sim_config["interaction_type"] = sim_obj.interaction_type or ""  # 关键：传递交互类型
                 sim_config.setdefault("max_turns", sim_obj.max_turns or 5)
                 tc["simulator_config"] = sim_config
     
@@ -1055,19 +1056,36 @@ async def _handle_eval_report(block, project, db):
         db.add(eval_run)
         db.commit()
 
-        # 5. 并行执行所有 Trial
+        # 5. 并行执行所有 Trial（按 target_block_ids 筛选内容）
         async_tasks = []
         for tc in all_trials_config:
+            # ===== 关键修复：按试验的 target_block_ids 筛选内容 =====
+            trial_target_ids = tc.get("target_block_ids", [])
+            if trial_target_ids:
+                trial_content, trial_field_names = _collect_content(
+                    project.id, trial_target_ids, db, exclude_eval=True
+                )
+                if not trial_content:
+                    trial_content = all_content
+                    trial_field_names = all_field_names
+            else:
+                trial_content = all_content
+                trial_field_names = all_field_names
+            
+            # 存入 tc 供后续 grader 阶段使用（避免变量丢失）
+            tc["_trial_content"] = trial_content
+            tc["_trial_field_names"] = trial_field_names
+            
             async_tasks.append(run_task_trial(
                 simulator_type=tc.get("simulator_type", "coach"),
                 interaction_mode=tc.get("interaction_mode", "review"),
-                content=content,
+                content=trial_content,
                 creator_profile=creator_profile,
                 intent=intent,
                 persona=tc.get("persona_config"),
                 simulator_config=tc.get("simulator_config", {"max_turns": 5}),
                 grader_config=tc.get("grader_config", {"type": "content"}),
-                content_field_names=field_names,
+                content_field_names=trial_field_names,
             ))
 
         results = await asyncio.gather(*async_tasks, return_exceptions=True)
@@ -1126,7 +1144,7 @@ async def _handle_eval_report(block, project, db):
                         grader_type=rg["grader_type"],
                         prompt_template=rg["prompt_template"],
                         dimensions=rg["dimensions"],
-                        content=content,
+                        content=tc.get("_trial_content", all_content),
                         trial_result_data=tr.result,
                         process_transcript=process_transcript if rg["grader_type"] == "content_and_process" else "",
                     ))
@@ -1461,7 +1479,21 @@ def _get_project_personas_from_research(project_id: str, db) -> list:
     if personas:
         return personas
     
-    # 4. 从 SimulationRecord 备选
+    # 4. 从传统流程的 ProjectField（phase="research"）中提取
+    from core.models import ProjectField
+    research_fields = db.query(ProjectField).filter(
+        ProjectField.project_id == project_id,
+        ProjectField.phase == "research",
+    ).all()
+    for rf in research_fields:
+        if not rf.content:
+            continue
+        extracted = _extract_personas_from_text(rf.content)
+        personas.extend(extracted)
+    if personas:
+        return personas
+    
+    # 5. 从 SimulationRecord 备选
     from core.models import SimulationRecord
     sim_records = db.query(SimulationRecord).filter(
         SimulationRecord.project_id == project_id,

@@ -127,10 +127,11 @@ def create_field(
         phase=field.phase,
         name=field.name,
         field_type=field.field_type,
+        content=field.content if field.content else "",
         ai_prompt=field.ai_prompt,
         pre_questions=field.pre_questions,
         dependencies=field.dependencies,
-        status="pending",
+        status=field.status,
         # 添加约束和确认配置
         constraints=field.constraints if field.constraints else {
             "max_length": None,
@@ -283,6 +284,7 @@ async def generate_field_content(
         phase=field.phase,
         golden_context=gc,
         dependent_fields=dep_fields,
+        db=db,
     )
     
     # 生成
@@ -341,6 +343,7 @@ async def generate_field_stream_api(
         phase=field.phase,
         golden_context=gc,
         dependent_fields=dep_fields,
+        db=db,
     )
     
     # 构建系统提示词用于日志记录
@@ -535,6 +538,7 @@ async def batch_generate_fields(
                 phase=field.phase,
                 golden_context=field_gc,
                 dependent_fields=dep_fields,
+                db=db,
             )
             
             # 更新状态

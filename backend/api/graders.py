@@ -165,3 +165,91 @@ def delete_grader(grader_id: str, db: Session = Depends(get_db)):
     return {"ok": True, "deleted": grader_id}
 
 
+# ============== 导入/导出 ==============
+
+class GraderImportRequest(PydanticBase):
+    data: list
+
+
+@router.get("/export/all")
+def export_graders(
+    grader_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    导出评分器（含预置和自定义）
+    
+    Args:
+        grader_id: 单个评分器ID（不传则导出全部）
+    """
+    if grader_id:
+        g = db.query(Grader).filter(Grader.id == grader_id).first()
+        if not g:
+            raise HTTPException(status_code=404, detail="Grader not found")
+        graders = [g]
+    else:
+        graders = db.query(Grader).all()
+    
+    export_data = []
+    for g in graders:
+        export_data.append({
+            "name": g.name,
+            "grader_type": g.grader_type or "content_only",
+            "prompt_template": g.prompt_template or "",
+            "dimensions": g.dimensions or [],
+            "scoring_criteria": g.scoring_criteria or {},
+            "is_preset": g.is_preset,
+        })
+    
+    return {"type": "graders", "data": export_data, "count": len(export_data)}
+
+
+@router.post("/import/all")
+def import_graders(
+    request: GraderImportRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    导入评分器
+    同名预置评分器 → 更新提示词；同名自定义 → 更新；新名 → 创建
+    """
+    imported = 0
+    updated = 0
+    
+    for item in request.data:
+        name = item.get("name", "")
+        if not name:
+            continue
+        
+        # 检查同名
+        existing = db.query(Grader).filter(Grader.name == name).first()
+        if existing:
+            # 更新
+            existing.grader_type = item.get("grader_type", existing.grader_type)
+            existing.prompt_template = item.get("prompt_template", existing.prompt_template)
+            existing.dimensions = item.get("dimensions", existing.dimensions)
+            existing.scoring_criteria = item.get("scoring_criteria", existing.scoring_criteria)
+            existing.updated_at = datetime.utcnow()
+            updated += 1
+        else:
+            # 新建
+            g = Grader(
+                id=generate_uuid(),
+                name=name,
+                grader_type=item.get("grader_type", "content_only"),
+                prompt_template=item.get("prompt_template", ""),
+                dimensions=item.get("dimensions", []),
+                scoring_criteria=item.get("scoring_criteria", {}),
+                is_preset=item.get("is_preset", False),
+            )
+            db.add(g)
+            imported += 1
+    
+    db.commit()
+    return {
+        "message": f"成功导入 {imported} 个、更新 {updated} 个评分器",
+        "imported": imported,
+        "updated": updated,
+    }
+
+

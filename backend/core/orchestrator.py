@@ -27,6 +27,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, System
 from core.ai_client import ai_client, ChatMessage
 from core.prompt_engine import prompt_engine, GoldenContext, PromptContext
 from core.models import PROJECT_PHASES
+from core.models.project_field import ProjectField
 from core.tools.architecture_reader import (
     get_project_architecture, 
     format_architecture_for_llm,
@@ -172,7 +173,7 @@ ROUTE_OPTIONS = Literal[
     "generate",       # 生成内容
     "modify",         # 修改内容
     "research",       # 调研
-    "simulate",       # 模拟
+    "generic_research",  # 通用深度调研
     "evaluate",       # 评估
     "query",          # 查询
     "chat",           # 自由对话
@@ -200,21 +201,10 @@ async def route_intent(state: ContentProductionState) -> ContentProductionState:
     current_phase_status = phase_status.get(current_phase, "pending")
     
     # ===== 规则 1: 有 @ 引用时，优先分析引用意图 =====
+    # 通用原则: 用户引用了具体内容并给出指令 → 修改; 只想了解 → 查询
     if references and referenced_contents:
-        # 检查是否是修改意图
-        modify_keywords = ["修改", "改成", "改为", "调整", "变成", "替换", "更新", "重写"]
-        if any(kw in user_input for kw in modify_keywords):
-            target_field = references[0]  # 取第一个引用作为目标
-            return {
-                **state, 
-                "route_target": "modify",
-                "parsed_intent_type": "modify",
-                "parsed_target_field": target_field,
-                "parsed_operation": user_input,
-            }
-        
-        # 检查是否是查询意图
-        query_keywords = ["是什么", "什么意思", "解释", "总结", "看看", "分析"]
+        # 检查是否是查询意图（用户想看/了解引用的内容）
+        query_keywords = ["是什么", "什么意思", "解释", "总结", "看看", "分析", "怎么样"]
         if any(kw in user_input for kw in query_keywords):
             target_field = references[0]
             return {
@@ -225,7 +215,17 @@ async def route_intent(state: ContentProductionState) -> ContentProductionState:
                 "parsed_operation": user_input,
             }
         
-        # 默认有 @ 引用但意图不明确 → 使用 LLM 判断
+        # 默认: @ 引用 + 任何非查询指令 = 修改意图
+        # 这覆盖了: 修改/改成/设计/重写/调整/生成/补充... 不再枚举关键词
+        target_field = references[0]
+        print(f"[route_intent] 规则1: @引用 + 指令 → modify, target={target_field}")
+        return {
+            **state, 
+            "route_target": "modify",
+            "parsed_intent_type": "modify",
+            "parsed_target_field": target_field,
+            "parsed_operation": user_input,
+        }
     
     # ===== 规则 2 & 3: 已移除硬编码触发词 =====
     # 现在完全依靠 LLM 理解用户意图（规则5）
@@ -359,8 +359,14 @@ async def route_intent(state: ContentProductionState) -> ContentProductionState:
 - modify: 修改已有字段内容（配合@引用）
 - query: 查询信息（有哪些阶段、当前进度等）
 - generate: 生成字段内容
-- research/simulate/evaluate: 执行对应阶段
+- research: 执行消费者调研阶段（仅当用户明确要做消费者调研/用户调研时）
+- generic_research: 用户要求对某个主题做深度调研/资料搜集（非消费者调研，比如"帮我调研一下X市场"、"帮我查一下Y的资料"、"对Z做个调研"）
+- evaluate: 执行评估阶段
 - **chat**: 当用户在闲聊、询问 agent 能力、问通用问题时选择
+
+**关键区分 research vs generic_research**:
+- "开始消费者调研" / "做用户调研" → research（消费者调研阶段）
+- "帮我调研一下X" / "搜索一下Y的资料" / "帮我查一下Z" → generic_research（通用深度调研，结果以标准字段呈现）
 
 ## chat 意图示例（重要！这些必须路由到 chat）
 - "你能做什么？" → chat
@@ -456,7 +462,7 @@ async def route_intent(state: ContentProductionState) -> ContentProductionState:
         "generate": "generate",
         "modify": "modify",
         "research": "research",
-        "simulate": "simulate",
+        "generic_research": "generic_research",
         "evaluate": "evaluate",
         "query": "query",
         "phase_action": "phase_action",
@@ -746,16 +752,20 @@ async def research_node(state: ContentProductionState) -> ContentProductionState
     project_id = state.get("project_id", "")
     use_deep = state.get("use_deep_research", True)
     
-    query = "消费者调研"
-    
     # 从字段获取意图分析结果（通过字段依赖，而非 golden_context）
     deps = get_intent_and_research(project_id)
-    intent = normalize_intent(deps.get("intent", ""))
+    intent = deps.get("intent", "")
     
     if not intent:
         # fallback：使用用户输入（这不应该发生，意图分析应该先完成）
         intent = state.get("user_input", "")
         print(f"[research_node] 警告：未找到项目意图，使用用户输入: {intent[:50]}...")
+    
+    print(f"[research_node] 获取到意图分析结果 ({len(intent)} 字符): {intent[:200]}...")
+    
+    # 从意图中提取有意义的搜索查询，而非硬编码 "消费者调研"
+    # 意图格式: "**做什么**: ...\n**给谁看**: ...\n**核心价值**: ..."
+    query = f"目标用户调研: {intent[:500]}" if intent else "消费者调研"
     
     import json
     import uuid
@@ -819,9 +829,8 @@ async def research_node(state: ContentProductionState) -> ContentProductionState
 
 === 4. DeepResearch 流程 ===
 步骤1: 规划搜索查询 (LLM生成3-5个搜索词)
-步骤2: DuckDuckGo 搜索 (每个查询5条结果)
-步骤3: Jina Reader 读取网页内容
-步骤4: 综合分析生成报告
+步骤2: Tavily Search API 搜索+内容提取 (每个查询5条结果)
+步骤3: 综合分析生成报告 (含引用标注)
 
 === 5. 综合分析提示词 ===
 [System]
@@ -903,12 +912,30 @@ async def design_inner_node(state: ContentProductionState) -> ContentProductionS
     intent_str = normalize_intent(deps.get("intent", ""))
     personas_str = normalize_consumer_personas(deps.get("research", ""))
     
+    # 获取用户的设计偏好（如果有）
+    design_preference = ""
+    try:
+        from core.database import get_session_maker
+        SessionLocal = get_session_maker()
+        with SessionLocal() as _db:
+            pref_field = _db.query(ProjectField).filter(
+                ProjectField.project_id == project_id,
+                ProjectField.phase == "design_inner",
+                ProjectField.name == "设计偏好",
+            ).first()
+            if pref_field and pref_field.content:
+                design_preference = pref_field.content.strip()
+    except Exception as e:
+        print(f"[design_inner] 读取设计偏好失败: {e}")
+    
     # 构建依赖内容（作为参考内容注入，而非全局上下文）
     field_context = ""
     if intent_str:
         field_context += f"## 项目意图\n{intent_str}\n\n"
     if personas_str:
         field_context += f"## 目标用户画像\n{personas_str}\n\n"
+    if design_preference:
+        field_context += f"## 用户的设计偏好\n{design_preference}\n\n"
     
     context = PromptContext(
         golden_context=GoldenContext(
@@ -922,7 +949,11 @@ async def design_inner_node(state: ContentProductionState) -> ContentProductionS
     
     # 注意：Golden Context（项目意图、消费者画像）已经在 system_prompt 中
     # user_prompt 只需要发出任务指令
-    user_prompt = """请基于上述项目意图和消费者画像，设计3个内容生产方案。
+    pref_instruction = ""
+    if design_preference:
+        pref_instruction = f"\n\n用户特别要求：{design_preference}\n请确保3个方案都充分考虑用户的设计偏好。"
+    
+    user_prompt = f"""请基于上述项目意图和消费者画像，设计3个内容生产方案。{pref_instruction}
 
 请输出严格的JSON格式（不要添加```json标记）。"""
     
@@ -1198,61 +1229,6 @@ async def produce_outer_node(state: ContentProductionState) -> ContentProduction
     }
 
 
-async def simulate_node(state: ContentProductionState) -> ContentProductionState:
-    """消费者模拟节点"""
-    creator_profile = state.get("creator_profile", "")
-    project_id = state.get("project_id", "")
-    user_input = "请模拟用户体验并给出反馈。"
-    
-    # 从字段获取依赖内容
-    deps = get_intent_and_research(project_id)
-    intent_str = normalize_intent(deps.get("intent", ""))
-    personas_str = normalize_consumer_personas(deps.get("research", ""))
-    
-    field_context = ""
-    if intent_str:
-        field_context += f"## 项目意图\n{intent_str}\n\n"
-    if personas_str:
-        field_context += f"## 目标用户画像\n{personas_str}\n\n"
-    
-    context = PromptContext(
-        golden_context=GoldenContext(
-            creator_profile=creator_profile,
-        ),
-        phase_context=prompt_engine.PHASE_PROMPTS["simulate"],
-        field_context=field_context.strip(),
-    )
-    
-    system_prompt = context.to_system_prompt()
-    
-    messages = [
-        ChatMessage(role="system", content=system_prompt),
-        ChatMessage(role="user", content=user_input),
-    ]
-    
-    response = await ai_client.async_chat(messages, temperature=0.8)
-    
-    confirm_text = "✅ 已生成【消费者模拟】，请在左侧工作台查看。输入「继续」进入评估阶段。"
-    full_prompt = f"[System]\n{system_prompt}\n\n[User]\n{user_input}"
-    
-    return {
-        **state,
-        "agent_output": response.content,
-        "display_output": confirm_text,
-        "full_prompt": full_prompt,
-        "messages": [AIMessage(content=confirm_text)],
-        # 注意：不自动设置 completed，需要用户确认
-        "phase_status": {**state.get("phase_status", {}), "simulate": "in_progress"},
-        "current_phase": "simulate",
-        "is_producing": True,
-        "waiting_for_human": True,
-        "tokens_in": response.tokens_in,
-        "tokens_out": response.tokens_out,
-        "duration_ms": response.duration_ms,
-        "cost": response.cost,
-    }
-
-
 async def evaluate_node(state: ContentProductionState) -> ContentProductionState:
     """评估节点"""
     creator_profile = state.get("creator_profile", "")
@@ -1381,6 +1357,18 @@ async def modify_node(state: ContentProductionState) -> ContentProductionState:
     deps = get_intent_and_research(project_id)
     intent_str = normalize_intent(deps.get("intent", ""))
     
+    # 检测原始内容是否是 JSON（例如方案结构）
+    is_json_content = False
+    try:
+        json_module.loads(original_content)
+        is_json_content = True
+    except (json_module.JSONDecodeError, TypeError):
+        pass
+    
+    format_hint = ""
+    if is_json_content:
+        format_hint = "\n5. 原始内容是 JSON 结构，请输出修改后的完整 JSON（不要用 markdown 代码块包裹）"
+    
     # 构建修改提示词
     system_prompt = f"""你是一个专业的内容编辑。请根据用户的修改指令，对原始内容进行修改。
 
@@ -1397,7 +1385,7 @@ async def modify_node(state: ContentProductionState) -> ContentProductionState:
 1. 严格按照用户的修改指令进行修改
 2. 保持内容的专业性和一致性
 3. 只输出修改后的完整内容，不要添加任何解释
-4. 保持原有的格式风格"""
+4. 保持原有的格式风格{format_hint}"""
 
     messages = [
         ChatMessage(role="system", content=system_prompt),
@@ -1675,7 +1663,6 @@ async def generate_field_node(state: ContentProductionState) -> ContentProductio
         "produce_inner": "内涵生产内容",
         "design_outer": "外延设计方案",
         "produce_outer": "外延生产内容",
-        "simulate": "消费者模拟结果",
         "evaluate": "项目评估报告",
     }
     field_name = field_names.get(current_phase, "内容")
@@ -2226,7 +2213,7 @@ def route_by_intent(state: ContentProductionState) -> str:
                 "produce_inner": "produce_inner", "内涵生产": "produce_inner",
                 "design_outer": "design_outer", "外延设计": "design_outer",
                 "produce_outer": "produce_outer", "外延生产": "produce_outer",
-                "simulate": "simulate", "消费者模拟": "simulate", "模拟": "simulate",
+                "simulate": "evaluate", "消费者模拟": "evaluate", "模拟": "evaluate",
                 "evaluate": "evaluate", "评估": "evaluate",
             }
             target_phase = phase_name_map.get(target_field.lower().strip(), "")
@@ -2254,8 +2241,6 @@ def route_by_intent(state: ContentProductionState) -> str:
     elif target == "query":
         # 路由到新的 query_node（处理 @ 引用字段查询）
         return "query"
-    elif target == "simulate":
-        return "phase_simulate"
     elif target == "evaluate":
         return "phase_evaluate"
     elif target == "tool" or target in ("tool_architecture", "tool_outline", "tool_persona", "tool_skill"):
@@ -2379,7 +2364,6 @@ def create_content_production_graph():
     graph.add_node("phase_produce_inner", produce_inner_node)
     graph.add_node("phase_design_outer", design_outer_node)
     graph.add_node("phase_produce_outer", produce_outer_node)
-    graph.add_node("phase_simulate", simulate_node)
     graph.add_node("phase_evaluate", evaluate_node)
     
     # 工具节点（设计文档中的 Tools）
@@ -2409,7 +2393,6 @@ def create_content_production_graph():
             "phase_produce_inner": "phase_produce_inner",
             "phase_design_outer": "phase_design_outer",
             "phase_produce_outer": "phase_produce_outer",
-            "phase_simulate": "phase_simulate",
             "phase_evaluate": "phase_evaluate",
             # @ 引用节点（新增）
             "modify": "modify",
@@ -2478,7 +2461,6 @@ def create_content_production_graph():
             "phase_produce_inner": "phase_produce_inner",
             "phase_design_outer": "phase_design_outer",
             "phase_produce_outer": "phase_produce_outer",
-            "phase_simulate": "phase_simulate",
             "phase_evaluate": "phase_evaluate",
             # @ 引用节点
             "modify": "modify",

@@ -170,7 +170,7 @@ export default function SettingsPage() {
   };
 
   const tabs: { id: Tab; label: string; icon: string }[] = [
-    { id: "prompts", label: "系统提示词", icon: "📝" },
+    { id: "prompts", label: "传统流程提示词", icon: "📝" },
     { id: "profiles", label: "创作者特质", icon: "👤" },
     { id: "templates", label: "字段模板", icon: "📋" },
     { id: "channels", label: "渠道管理", icon: "📢" },
@@ -370,7 +370,7 @@ function KeyValueEditor({ value, onChange, keyLabel, valueLabel, keyPlaceholder,
   );
 }
 
-// ============== 系统提示词管理 ==============
+// ============== 传统流程提示词管理 ==============
 function SystemPromptsSection({ prompts, onRefresh }: { prompts: any[]; onRefresh: () => void }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<any>({});
@@ -429,13 +429,13 @@ function SystemPromptsSection({ prompts, onRefresh }: { prompts: any[]; onRefres
     <div>
       <div className="flex justify-between items-center mb-6">
         <div>
-          <h2 className="text-xl font-semibold text-zinc-100">系统提示词</h2>
+          <h2 className="text-xl font-semibold text-zinc-100">传统流程提示词</h2>
           <p className="text-sm text-zinc-500 mt-1">
-            每个阶段的系统提示词会自动注入到该阶段的所有 AI 生成任务中
+            传统流程中各阶段的提示词。此提示词将完整发送给 LLM，所见即所得。
           </p>
         </div>
         <ImportExportButtons
-          typeName="系统提示词"
+          typeName="传统流程提示词"
           onExportAll={handleExportAll}
           onImport={handleImport}
         />
@@ -465,13 +465,24 @@ function SystemPromptsSection({ prompts, onRefresh }: { prompts: any[]; onRefres
                     ))}
                   </select>
                 </FormField>
-                <FormField label="提示词内容" hint="这段内容会作为系统提示词注入到该阶段的每次 AI 调用">
+                <FormField label="提示词内容（完整版）" hint="此提示词将完整发送给 LLM，所见即所得。占位符：{creator_profile} = 创作者特质，{dependencies} = 依赖字段内容，{channel} = 目标渠道">
                   <textarea
                     value={editForm.content || ""}
                     onChange={(e) => setEditForm({ ...editForm, content: e.target.value })}
-                    rows={10}
-                    className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 font-mono text-sm"
+                    rows={14}
+                    className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 font-mono text-sm resize-y"
                   />
+                  <div className="flex items-center gap-2 mt-2">
+                    <span className={`text-xs px-1.5 py-0.5 rounded font-mono ${(editForm.content || "").includes("{creator_profile}") ? "bg-green-500/15 text-green-400 border border-green-500/30" : "bg-zinc-700/50 text-zinc-500 border border-zinc-600/30"}`}>
+                      {(editForm.content || "").includes("{creator_profile}") ? "✓" : "○"} {"{creator_profile}"}
+                    </span>
+                    <span className={`text-xs px-1.5 py-0.5 rounded font-mono ${(editForm.content || "").includes("{dependencies}") ? "bg-green-500/15 text-green-400 border border-green-500/30" : "bg-zinc-700/50 text-zinc-500 border border-zinc-600/30"}`}>
+                      {(editForm.content || "").includes("{dependencies}") ? "✓" : "○"} {"{dependencies}"}
+                    </span>
+                    <span className={`text-xs px-1.5 py-0.5 rounded font-mono ${(editForm.content || "").includes("{channel}") ? "bg-green-500/15 text-green-400 border border-green-500/30" : "bg-zinc-700/50 text-zinc-500 border border-zinc-600/30"}`}>
+                      {(editForm.content || "").includes("{channel}") ? "✓" : "○"} {"{channel}"}
+                    </span>
+                  </div>
                 </FormField>
                 <div className="flex gap-2">
                   <button onClick={handleSave} className="px-4 py-2 bg-brand-600 hover:bg-brand-700 rounded-lg">保存</button>
@@ -494,7 +505,16 @@ function SystemPromptsSection({ prompts, onRefresh }: { prompts: any[]; onRefres
                     </button>
                   </div>
                 </div>
-                <p className="text-sm text-zinc-500 mt-3 whitespace-pre-wrap line-clamp-3">{prompt.content}</p>
+                <div className="flex items-center gap-2 mt-2">
+                  <span className={`text-xs px-1.5 py-0.5 rounded font-mono ${prompt.content?.includes("{creator_profile}") ? "bg-green-500/15 text-green-400 border border-green-500/30" : "bg-zinc-700/50 text-zinc-500 border border-zinc-600/30"}`}>
+                    {prompt.content?.includes("{creator_profile}") ? "✓" : "✗"} {"{creator_profile}"}
+                  </span>
+                  <span className={`text-xs px-1.5 py-0.5 rounded font-mono ${prompt.content?.includes("{dependencies}") ? "bg-green-500/15 text-green-400 border border-green-500/30" : "bg-zinc-700/50 text-zinc-500 border border-zinc-600/30"}`}>
+                    {prompt.content?.includes("{dependencies}") ? "✓" : "○"} {"{dependencies}"}
+                  </span>
+                  <span className="text-xs text-zinc-600">← 所见即所得</span>
+                </div>
+                <p className="text-sm text-zinc-500 mt-2 whitespace-pre-wrap line-clamp-3">{prompt.content}</p>
               </div>
             )}
           </div>
@@ -1182,7 +1202,6 @@ function SimulatorsSection({ simulators, onRefresh }: { simulators: any[]; onRef
     { value: "reading", label: "阅读式", desc: "阅读全文后给反馈，适合文章、课程", icon: "📖" },
     { value: "decision", label: "决策式", desc: "模拟购买决策，适合销售页、落地页", icon: "🤔" },
     { value: "exploration", label: "探索式", desc: "带目的地探索，适合帮助文档", icon: "🔍" },
-    { value: "experience", label: "体验式", desc: "完成特定任务，适合产品功能", icon: "✋" },
   ];
 
   const handleExportAll = async () => {
@@ -1211,7 +1230,7 @@ function SimulatorsSection({ simulators, onRefresh }: { simulators: any[]; onRef
 
   const handleCreate = () => {
     setIsCreating(true);
-    setEditForm({ name: "", description: "", interaction_type: "reading", prompt_template: "", evaluation_dimensions: [], max_turns: 10 });
+    setEditForm({ name: "", description: "", interaction_type: "reading", prompt_template: "", secondary_prompt: "", grader_template: "", evaluation_dimensions: [], max_turns: 10 });
   };
 
   const handleEdit = (simulator: any) => {
@@ -1318,8 +1337,8 @@ function SimulatorsSection({ simulators, onRefresh }: { simulators: any[]; onRef
         </FormField>
 
         <FormField
-          label={editForm.interaction_type === "decision" ? "销售方系统提示词" : "主系统提示词（审阅者/消费者）"}
-          hint="支持占位符：{persona} = 消费者画像, {content} = 被评内容"
+          label={editForm.interaction_type === "decision" ? "销售方提示词（完整版）" : "主提示词（完整版）"}
+          hint="此提示词将完整发送给 LLM。占位符：{persona} = 消费者画像, {content} = 被评内容"
         >
           <textarea
             value={editForm.prompt_template || ""}
@@ -1338,7 +1357,7 @@ function SimulatorsSection({ simulators, onRefresh }: { simulators: any[]; onRef
         {(editForm.interaction_type === "dialogue" || editForm.interaction_type === "decision" || editForm.interaction_type === "exploration") && (
           <FormField
             label={editForm.interaction_type === "decision" ? "消费者回应提示词" : "内容代表/第二方提示词"}
-            hint="对话模式中另一方的系统提示词，支持 {content} 和 {persona}"
+            hint="对话模式中另一方的完整提示词，支持 {content} 和 {persona}"
           >
             <textarea
               value={editForm.secondary_prompt || ""}
@@ -1413,8 +1432,38 @@ function SimulatorsSection({ simulators, onRefresh }: { simulators: any[]; onRef
                         ))}
                       </div>
                     )}
+                    {/* 提示词预览 */}
+                    <div className="mt-3 space-y-2">
+                      {simulator.prompt_template && (
+                        <div>
+                          <span className="text-xs text-zinc-500 font-medium">主提示词：</span>
+                          <pre className="text-xs text-zinc-500 bg-surface-1 border border-surface-3 rounded-lg p-2 mt-1 max-h-20 overflow-auto whitespace-pre-wrap font-mono">
+                            {simulator.prompt_template.slice(0, 200)}{simulator.prompt_template.length > 200 ? "..." : ""}
+                          </pre>
+                        </div>
+                      )}
+                      {simulator.secondary_prompt && (
+                        <div>
+                          <span className="text-xs text-zinc-500 font-medium">第二方提示词：</span>
+                          <pre className="text-xs text-zinc-500 bg-surface-1 border border-surface-3 rounded-lg p-2 mt-1 max-h-20 overflow-auto whitespace-pre-wrap font-mono">
+                            {simulator.secondary_prompt.slice(0, 200)}{simulator.secondary_prompt.length > 200 ? "..." : ""}
+                          </pre>
+                        </div>
+                      )}
+                      {simulator.grader_template && (
+                        <div>
+                          <span className="text-xs text-zinc-500 font-medium">评分提示词：</span>
+                          <pre className="text-xs text-zinc-500 bg-surface-1 border border-surface-3 rounded-lg p-2 mt-1 max-h-20 overflow-auto whitespace-pre-wrap font-mono">
+                            {simulator.grader_template.slice(0, 200)}{simulator.grader_template.length > 200 ? "..." : ""}
+                          </pre>
+                        </div>
+                      )}
+                      {!simulator.prompt_template && !simulator.secondary_prompt && !simulator.grader_template && (
+                        <span className="text-xs text-zinc-600 italic">未配置提示词</span>
+                      )}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 ml-4 flex-shrink-0">
                     <SingleExportButton onExport={() => handleExportSingle(simulator.id)} title="导出此模拟器" />
                     <button onClick={() => handleEdit(simulator)} className="px-3 py-1 text-sm bg-surface-3 hover:bg-surface-4 rounded-lg">编辑</button>
                     <button onClick={() => handleDelete(simulator.id)} className="px-3 py-1 text-sm bg-red-600/20 text-red-400 hover:bg-red-600/30 rounded-lg">删除</button>
@@ -1441,21 +1490,46 @@ function GradersSection({ graders, onRefresh }: { graders: GraderData[]; onRefre
   const [isCreating, setIsCreating] = useState(false);
   const [editForm, setEditForm] = useState<Partial<GraderData>>({});
 
+  // ---- 导入导出 ----
+  const handleExportAll = async () => {
+    try {
+      const result = await graderAPI.exportAll();
+      downloadJSON(result, `graders_${new Date().toISOString().split("T")[0]}.json`);
+    } catch (err) {
+      alert("导出失败");
+    }
+  };
+
+  const handleExportSingle = async (id: string) => {
+    try {
+      const result = await graderAPI.exportAll(id);
+      const grader = graders.find(g => g.id === id);
+      downloadJSON(result, `grader_${grader?.name || id}.json`);
+    } catch (err) {
+      alert("导出失败");
+    }
+  };
+
+  const handleImport = async (data: any[]) => {
+    await graderAPI.importAll(data);
+    onRefresh();
+  };
+
   const startCreate = () => {
     setEditForm({
       name: "",
       grader_type: "content_only",
-      prompt_template: `请评估以下内容：
+      prompt_template: `你是一位内容评审专家。请对以下内容进行客观、严谨的评分。
 
-【评估内容】
-{{content}}
+【被评估内容】
+{content}
 
 【评估维度】
 1. 维度一 (1-10): 描述
 2. 维度二 (1-10): 描述
 
-请输出 JSON 格式：
-{"scores": {"维度一": N, "维度二": N}, "overall": N, "feedback": "..."}`,
+请严格输出以下 JSON 格式，不要输出其他内容：
+{{"scores": {{"维度一": 分数, "维度二": 分数}}, "comments": {{"维度一": "评语", "维度二": "评语"}}, "feedback": "整体评价和改进建议（100-200字）"}}`,
       dimensions: [],
       scoring_criteria: {},
     });
@@ -1540,7 +1614,7 @@ function GradersSection({ graders, onRefresh }: { graders: GraderData[]; onRefre
         </select>
       </FormField>
 
-      <FormField label="评分提示词模板" hint="支持占位符：{{content}} = 被评内容，{{process}} = 互动过程，{{field:字段名}} = 引用字段">
+      <FormField label="评分提示词（完整版）" hint="此提示词将完整发送给 LLM。占位符：{content} = 被评内容，{process} = 互动过程。模板即所见即所得。">
         <textarea
           value={editForm.prompt_template || ""}
           onChange={(e) => setEditForm({ ...editForm, prompt_template: e.target.value })}
@@ -1592,12 +1666,19 @@ function GradersSection({ graders, onRefresh }: { graders: GraderData[]; onRefre
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-semibold text-zinc-100">评分器管理</h2>
-          <p className="text-sm text-zinc-500 mt-1">管理 Eval 评估使用的评分器，支持自定义提示词和评分维度</p>
+          <p className="text-sm text-zinc-500 mt-1">管理 Eval 评估使用的评分器。提示词所见即所得：你在这里配的内容就是 LLM 收到的完整提示词。</p>
         </div>
-        <button onClick={startCreate}
-          className="px-4 py-2 bg-brand-600 text-white rounded-lg text-sm hover:bg-brand-700 transition-colors flex items-center gap-2">
-          + 新建评分器
-        </button>
+        <div className="flex items-center gap-3">
+          <ImportExportButtons
+            typeName="评分器"
+            onExportAll={handleExportAll}
+            onImport={handleImport}
+          />
+          <button onClick={startCreate}
+            className="px-4 py-2 bg-brand-600 text-white rounded-lg text-sm hover:bg-brand-700 transition-colors flex items-center gap-2">
+            + 新建评分器
+          </button>
+        </div>
       </div>
 
       {isCreating && renderForm()}
@@ -1630,12 +1711,26 @@ function GradersSection({ graders, onRefresh }: { graders: GraderData[]; onRefre
                       </div>
                     )}
                     {g.prompt_template && (
-                      <pre className="mt-3 text-xs text-zinc-500 bg-surface-1 border border-surface-3 rounded-lg p-3 max-h-24 overflow-auto whitespace-pre-wrap font-mono">
-                        {g.prompt_template.slice(0, 200)}{g.prompt_template.length > 200 ? "..." : ""}
-                      </pre>
+                      <>
+                        <div className="flex items-center gap-2 mt-2">
+                          <span className={`text-xs px-1.5 py-0.5 rounded font-mono ${g.prompt_template.includes("{content}") ? "bg-green-500/15 text-green-400 border border-green-500/30" : "bg-red-500/15 text-red-400 border border-red-500/30"}`}>
+                            {g.prompt_template.includes("{content}") ? "✓" : "✗"} {"{content}"}
+                          </span>
+                          {g.grader_type === "content_and_process" && (
+                            <span className={`text-xs px-1.5 py-0.5 rounded font-mono ${g.prompt_template.includes("{process}") ? "bg-green-500/15 text-green-400 border border-green-500/30" : "bg-red-500/15 text-red-400 border border-red-500/30"}`}>
+                              {g.prompt_template.includes("{process}") ? "✓" : "✗"} {"{process}"}
+                            </span>
+                          )}
+                          <span className="text-xs text-zinc-600">← 所见即所得：此提示词完整发送给 LLM</span>
+                        </div>
+                        <pre className="mt-2 text-xs text-zinc-500 bg-surface-1 border border-surface-3 rounded-lg p-3 max-h-24 overflow-auto whitespace-pre-wrap font-mono">
+                          {g.prompt_template.slice(0, 200)}{g.prompt_template.length > 200 ? "..." : ""}
+                        </pre>
+                      </>
                     )}
                   </div>
                   <div className="flex items-center gap-2 ml-4 flex-shrink-0">
+                    <SingleExportButton onExport={() => handleExportSingle(g.id)} title="导出此评分器" />
                     <button onClick={() => startEdit(g)}
                       className="px-3 py-1.5 text-sm bg-surface-3 hover:bg-surface-4 rounded-lg text-zinc-400 hover:text-zinc-200 transition-colors">
                       编辑

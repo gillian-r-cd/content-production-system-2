@@ -2,11 +2,10 @@
 """
 添加特殊字段模板：基础调研模板
 
-包含意图分析、消费者调研、消费者模拟三个字段
-这三个字段存在依赖关系：
+包含意图分析、消费者调研两个字段
+这两个字段存在依赖关系：
 - 意图分析: 无依赖
 - 消费者调研: 依赖意图分析
-- 消费者模拟: 依赖消费者调研
 
 这是推荐的组合模板，确保用户引用时不会搞错依赖关系。
 """
@@ -34,14 +33,14 @@ def add_special_templates():
             print("✅ 基础调研模板已存在，更新字段配置...")
             # 更新字段配置
             existing.fields = get_research_template_fields()
-            existing.description = "意图分析 + 消费者调研 + 消费者模拟的完整流程，三个字段已配置好依赖关系"
+            existing.description = "意图分析 + 消费者调研的完整流程，两个字段已配置好依赖关系"
             db.commit()
             print("✅ 已更新基础调研模板")
         else:
             print("准备添加: 基础调研模板")
             template = FieldTemplate(
                 name="基础调研模板",
-                description="意图分析 + 消费者调研 + 消费者模拟的完整流程，三个字段已配置好依赖关系",
+                description="意图分析 + 消费者调研的完整流程，两个字段已配置好依赖关系",
                 category="基础流程",
                 fields=get_research_template_fields()
             )
@@ -151,43 +150,6 @@ def get_research_template_fields():
             "special_handler": "consumer_research"
         },
         
-        # 3. 消费者模拟 - 依赖消费者调研
-        {
-            "name": "消费者模拟",
-            "type": "structured",
-            "ai_prompt": """基于已选择的消费者角色（Persona）和生产的内容，模拟消费者与内容的交互过程。
-
-模拟目标：
-1. 评估内容是否能吸引目标用户
-2. 识别内容中可能的问题或不足
-3. 收集改进建议
-
-对于每个选中的Persona，模拟：
-1. 首次接触反应：用户第一眼看到内容的反应
-2. 内容消费过程：阅读/观看过程中的想法
-3. 行动意愿：看完后是否愿意采取行动
-4. 具体反馈：正面评价和改进建议
-
-输出格式为JSON数组，每个元素包含：
-- persona_id: 角色ID
-- persona_name: 角色名称
-- overall_score: 整体评分（1-10）
-- first_impression: 首次印象
-- consumption_journey: 消费旅程
-- action_intent: 行动意愿
-- positive_feedback: 正面反馈列表
-- improvement_suggestions: 改进建议列表""",
-            "pre_questions": [],
-            "depends_on": ["消费者调研"],  # 依赖消费者调研
-            "dependency_type": "all",
-            "need_review": True,
-            "constraints": {
-                "require_selected_personas": True,
-                "require_content": True,
-                "output_format": "json"
-            },
-            "special_handler": "consumer_simulation"
-        }
     ]
 
 

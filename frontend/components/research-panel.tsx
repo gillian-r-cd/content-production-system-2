@@ -4,8 +4,9 @@
 
 "use client";
 
-import { useState, useMemo, useCallback } from "react";
-import { fieldAPI, blockAPI } from "@/lib/api";
+import { useState, useMemo, useCallback, useRef, useEffect } from "react";
+import { fieldAPI, blockAPI, API_BASE } from "@/lib/api";
+import { sendNotification } from "@/lib/utils";
 
 // 人物小传类型 - 匹配实际 AI 输出格式
 interface Persona {
@@ -102,6 +103,15 @@ export function ResearchPanel({
   const [data, setData] = useState<ResearchData | null>(initialData);
   const [isSaving, setIsSaving] = useState(false);
   const [editingPersonaId, setEditingPersonaId] = useState<string | null>(null);
+  const [isRegenerating, setIsRegenerating] = useState(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  // 当 content prop 变化时（如重新生成后刷新），同步更新 data
+  useEffect(() => {
+    if (initialData) {
+      setData(initialData);
+    }
+  }, [initialData]);
 
   // 切换人物选中状态
   const togglePersonaSelected = useCallback((personaId: string) => {
@@ -165,8 +175,79 @@ export function ResearchPanel({
     onAdvance?.();
   };
 
+  // 重新生成消费者调研
+  const handleRegenerate = async () => {
+    if (isRegenerating) return;
+    if (!confirm("确定要重新生成消费者调研报告吗？当前报告内容将被覆盖。")) return;
+    
+    setIsRegenerating(true);
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+    
+    try {
+      // 通过 Agent 流式 API 触发消费者调研重新生成
+      const response = await fetch(`${API_BASE}/api/agent/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: projectId,
+          message: "重新生成消费者调研",
+          current_phase: "research",
+        }),
+        signal: abortController.signal,
+      });
+      
+      if (!response.ok) throw new Error(`请求失败: ${response.status}`);
+      
+      // 读取 SSE 流直到完成（我们不需要显示中间内容，只需等待完成后刷新）
+      const reader = response.body?.getReader();
+      if (reader) {
+        const decoder = new TextDecoder();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          // 可选：解析 SSE 检查是否有 error
+          const text = decoder.decode(value, { stream: true });
+          if (text.includes('"type": "error"') || text.includes('"error"')) {
+            const lines = text.split("\n");
+            for (const line of lines) {
+              if (line.startsWith("data: ")) {
+                try {
+                  const data = JSON.parse(line.slice(6));
+                  if (data.error) throw new Error(data.error);
+                } catch {}
+              }
+            }
+          }
+        }
+      }
+      
+      // 完成后刷新数据
+      onUpdate?.();
+      sendNotification("消费者调研完成", "消费者调研报告已重新生成，点击查看");
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        console.log("[ResearchPanel] 用户停止了重新生成");
+      } else {
+        console.error("重新生成失败:", err);
+        alert("重新生成失败: " + (err instanceof Error ? err.message : "未知错误"));
+      }
+    } finally {
+      setIsRegenerating(false);
+      abortControllerRef.current = null;
+    }
+  };
+
+  // 停止重新生成
+  const handleStopRegenerate = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+  };
+
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full flex flex-col relative">
       {/* 可滚动内容区 */}
       <div className="flex-1 overflow-auto p-6 max-w-4xl mx-auto w-full space-y-8">
 
@@ -535,22 +616,47 @@ export function ResearchPanel({
       <div className="h-24"></div>
       </div>
       
+      {/* 重新生成中的遮罩提示 */}
+      {isRegenerating && (
+        <div className="absolute inset-0 bg-zinc-900/60 z-20 flex items-center justify-center">
+          <div className="bg-surface-2 border border-surface-3 rounded-xl p-6 text-center shadow-2xl max-w-sm">
+            <div className="animate-spin w-8 h-8 border-2 border-brand-500 border-t-transparent rounded-full mx-auto mb-4" />
+            <p className="text-zinc-200 font-medium mb-2">正在重新生成消费者调研...</p>
+            <p className="text-zinc-500 text-sm mb-4">基于项目意图重新进行深度调研，请稍候</p>
+            <button
+              onClick={handleStopRegenerate}
+              className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm rounded-lg transition-colors"
+            >
+              停止生成
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* 底部固定按钮栏 */}
       <div className="shrink-0 px-6 py-4 border-t border-surface-3 bg-surface-1 flex items-center justify-between">
         <div className="text-sm text-zinc-500">
           已选中 <span className="text-brand-400 font-medium">{selectedCount}</span> 个用户画像用于后续模拟
         </div>
         <div className="flex gap-3">
+          {/* 重新生成按钮 */}
+          <button
+            onClick={handleRegenerate}
+            disabled={isRegenerating || isSaving}
+            className="px-5 py-2.5 bg-amber-600/20 hover:bg-amber-600/30 disabled:bg-zinc-700 text-amber-400 border border-amber-500/30 rounded-lg text-sm font-medium transition-all"
+          >
+            {isRegenerating ? "⏳ 重新生成中..." : "🔄 重新生成消费者调研"}
+          </button>
           <button
             onClick={handleSave}
-            disabled={isSaving}
+            disabled={isSaving || isRegenerating}
             className="px-5 py-2.5 bg-surface-3 hover:bg-surface-4 disabled:bg-zinc-700 text-zinc-300 rounded-lg text-sm font-medium transition-all"
           >
             {isSaving ? "⏳ 保存中..." : "💾 保存修改"}
           </button>
           <button
             onClick={handleSaveAndAdvance}
-            disabled={isSaving}
+            disabled={isSaving || isRegenerating}
             className="px-6 py-2.5 bg-brand-600 hover:bg-brand-700 disabled:bg-zinc-700 text-white rounded-lg text-sm font-medium transition-all shadow-lg hover:shadow-brand-600/25"
           >
             ✅ 确认，进入内涵设计

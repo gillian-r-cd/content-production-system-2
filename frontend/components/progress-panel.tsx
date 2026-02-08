@@ -31,14 +31,13 @@ function flattenBlocks(blocks: ContentBlock[]): ContentBlock[] {
 const PHASE_SPECIAL_HANDLERS: Record<string, string> = {
   intent: "intent",
   research: "research",
-  simulate: "simulate",
   evaluate: "evaluate",
 };
 
 // 固定阶段定义
 const FIXED_TOP_PHASES = ["intent", "research"];
 const DRAGGABLE_PHASES = ["design_inner", "produce_inner", "design_outer", "produce_outer"];
-const FIXED_BOTTOM_PHASES = ["simulate", "evaluate"];
+const FIXED_BOTTOM_PHASES = ["evaluate"];
 
 type ViewMode = "classic" | "tree";
 
@@ -78,14 +77,19 @@ export function ProgressPanel({
   const [isMigrating, setIsMigrating] = useState(false);
   
   // 灵活架构项目强制使用树形视图，锁死传统视图
+  // 传统架构项目默认使用传统视图
   const isFlexibleArch = project?.use_flexible_architecture === true;
   
   useEffect(() => {
     if (isFlexibleArch && viewMode !== "tree") {
       setViewMode("tree");
       localStorage.setItem("viewMode", "tree");
+    } else if (!isFlexibleArch && viewMode === "tree") {
+      // 传统架构项目：自动切回传统视图
+      setViewMode("classic");
+      localStorage.setItem("viewMode", "classic");
     }
-  }, [isFlexibleArch, viewMode]);
+  }, [isFlexibleArch, project?.id]);
   
   const allPhases = project?.phase_order || [];
   const phaseStatus = project?.phase_status || {};
@@ -274,7 +278,6 @@ export function ProgressPanel({
       const phaseMap: Record<string, string> = {
         intent: "intent",
         research: "research",
-        simulate: "simulate",
         evaluate: "evaluate",
       };
       const phase = phaseMap[block.special_handler];
@@ -711,8 +714,7 @@ function AutonomySettingsModal({ project, onClose, onSave }: AutonomySettingsMod
     { id: "produce_inner", name: "内涵生产", desc: "Agent自动生产各字段内容" },
     { id: "design_outer", name: "外延设计", desc: "Agent自动设计传播方案" },
     { id: "produce_outer", name: "外延生产", desc: "Agent自动生产渠道内容" },
-    { id: "simulate", name: "消费者模拟", desc: "Agent自动模拟用户体验" },
-    { id: "evaluate", name: "评估", desc: "Agent自动评估内容质量" },
+    { id: "evaluate", name: "评估", desc: "配置评估任务，执行多维度评估" },
   ];
 
   const handleToggle = (phase: string) => {

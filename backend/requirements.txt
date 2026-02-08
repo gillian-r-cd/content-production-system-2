@@ -18,8 +18,8 @@ langgraph==0.0.26
 # AI/LLM
 openai==1.12.0
 
-# DeepResearch (免费方案)
-duckduckgo-search==4.4.3
+# DeepResearch (Tavily Search API)
+tavily-python==0.7.21
 httpx==0.26.0
 
 # Utilities

@@ -11,6 +11,7 @@ import { ContentPanel } from "@/components/content-panel";
 import { AgentPanel } from "@/components/agent-panel";
 import { CreateProjectModal } from "@/components/create-project-modal";
 import { projectAPI, fieldAPI, agentAPI } from "@/lib/api";
+import { requestNotificationPermission } from "@/lib/utils";
 import type { Project, Field, ContentBlock } from "@/lib/api";
 import { Copy, Trash2, ChevronDown, CheckSquare, Square, X } from "lucide-react";
 
@@ -44,9 +45,10 @@ export default function WorkspacePage() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // 加载项目列表
+  // 加载项目列表 + 请求通知权限
   useEffect(() => {
     loadProjects();
+    requestNotificationPermission();
   }, []);
 
   // 加载当前项目的字段 & 记住选中项目
@@ -90,6 +92,8 @@ export default function WorkspacePage() {
         ...currentProject,
         current_phase: phase,
       });
+      // 清除 selectedBlock，让 ContentPanel 显示阶段的完整内容视图
+      setSelectedBlock(null);
     }
   };
 
@@ -550,6 +554,7 @@ export default function WorkspacePage() {
             <AgentPanel
               key={refreshKey}  // 触发刷新
               projectId={currentProject?.id || null}
+              currentPhase={currentProject?.current_phase}
               fields={fields}
               allBlocks={allBlocks}
               useFlexibleArchitecture={currentProject?.use_flexible_architecture || false}

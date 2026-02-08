@@ -5,17 +5,18 @@
 
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { PHASE_NAMES, PROJECT_PHASES } from "@/lib/utils";
+import { PHASE_NAMES, PROJECT_PHASES, sendNotification, requestNotificationPermission } from "@/lib/utils";
 import { fieldAPI, agentAPI, blockAPI } from "@/lib/api";
 import type { Field, ContentBlock } from "@/lib/api";
 import { ContentBlockEditor } from "./content-block-editor";
 import { ContentBlockCard } from "./content-block-card";
-import { SimulationPanel } from "./simulation-panel";
 import { ChannelSelector } from "./channel-selector";
 import { ResearchPanel } from "./research-panel";
+import { EvalPhasePanel } from "./eval-phase-panel";
+import { ProposalSelector } from "./proposal-selector";
 import { FileText, Folder, Settings, ChevronRight } from "lucide-react";
 
 interface ContentPanelProps {
@@ -46,13 +47,12 @@ export function ContentPanel({
   onBlockSelect,
 }: ContentPanelProps) {
   const [isAdvancing, setIsAdvancing] = useState(false);
-  const [autoGeneratingFieldId, setAutoGeneratingFieldId] = useState<string | null>(null);
   const [showFieldTemplateModal, setShowFieldTemplateModal] = useState(false);
   const [fieldTemplates, setFieldTemplates] = useState<any[]>([]);
+  const autoGenRef = useRef(false); // ref 守卫，防止 stale closure 导致重复启动
   
   const phaseFields = fields.filter((f) => f.phase === currentPhase);
-  const allCompletedFields = fields.filter((f) => f.status === "completed");
-  const completedFieldIds = new Set(allCompletedFields.map(f => f.id));
+  const completedFieldIds = useMemo(() => new Set(fields.filter(f => f.status === "completed").map(f => f.id)), [fields]);
 
   // 加载字段模板
   useEffect(() => {
@@ -154,59 +154,60 @@ export function ContentPanel({
   };
 
   // 自动触发生成：检查是否有字段可以自动生成
-  const checkAndAutoGenerate = async () => {
-    if (autoGeneratingFieldId) return; // 已有自动生成在进行中
-    
-    // 找到可以自动生成的字段：pending、need_review=false、依赖已满足
-    const autoGeneratableField = phaseFields.find(field => {
-      if (field.status !== "pending") return false;
-      if (field.need_review !== false) return false; // 需要人工确认的跳过
-      
-      const dependsOn = field.dependencies?.depends_on || [];
-      if (dependsOn.length === 0) return true; // 无依赖
-      
-      // 检查所有依赖是否完成
-      const allDepsCompleted = dependsOn.every(depId => completedFieldIds.has(depId));
-      return allDepsCompleted;
-    });
-    
-    if (autoGeneratableField) {
-      console.log(`[AutoGen] 自动触发生成: ${autoGeneratableField.name}`);
-      setAutoGeneratingFieldId(autoGeneratableField.id);
-      
-      try {
-        // 调用流式生成 API
-        const response = await fetch(`http://localhost:8000/api/fields/${autoGeneratableField.id}/generate/stream`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ pre_answers: autoGeneratableField.pre_answers || {} }),
-        });
-        
-        // 等待生成完成
-        const reader = response.body?.getReader();
-        if (reader) {
-          while (true) {
-            const { done } = await reader.read();
-            if (done) break;
-          }
-        }
-        
-        // 刷新字段列表
-        onFieldsChange?.();
-      } catch (err) {
-        console.error("[AutoGen] 自动生成失败:", err);
-      } finally {
-        setAutoGeneratingFieldId(null);
-      }
-    }
-  };
+  // 使用 ref 守卫防止 stale closure 导致并发启动
+  const checkAndAutoGenerate = useCallback(async () => {
+    if (autoGenRef.current) return; // 已有自动生成在进行中
 
-  // 当字段列表变化时，检查是否有字段可以自动生成
-  useEffect(() => {
-    if (currentPhase === "produce_inner" && phaseFields.length > 0) {
-      checkAndAutoGenerate();
+    // 找到可以自动生成的字段：pending、need_review=false、依赖已满足
+    const candidate = phaseFields.find(field => {
+      if (field.status !== "pending") return false;
+      if (field.need_review !== false) return false;
+      const dependsOn = field.dependencies?.depends_on || [];
+      if (dependsOn.length === 0) return true;
+      return dependsOn.every(depId => completedFieldIds.has(depId));
+    });
+
+    if (!candidate) return;
+
+    console.log(`[AutoGen] 自动触发生成: ${candidate.name}`);
+    autoGenRef.current = true;
+
+    try {
+      // 调用流式生成 API（后端会设 status="generating"）
+      const response = await fetch(`http://localhost:8000/api/fields/${candidate.id}/generate/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pre_answers: candidate.pre_answers || {} }),
+      });
+
+      // 立刻刷新一次，让 FieldCard 看到 status="generating"
+      onFieldsChange?.();
+
+      // 读完整个 stream
+      const reader = response.body?.getReader();
+      if (reader) {
+        while (true) {
+          const { done } = await reader.read();
+          if (done) break;
+        }
+      }
+
+      // 生成完成，刷新字段列表
+      onFieldsChange?.();
+      sendNotification("自动生成完成", `「${candidate.name}」已自动生成完毕`);
+    } catch (err) {
+      console.error("[AutoGen] 自动生成失败:", err);
+    } finally {
+      autoGenRef.current = false;
     }
-  }, [fields, currentPhase]); // 依赖 fields 变化
+  }, [phaseFields, completedFieldIds, onFieldsChange]);
+
+  // 当字段列表变化时，延迟检查是否有字段可以自动生成（防止黑屏 / 无限循环）
+  useEffect(() => {
+    if (currentPhase !== "produce_inner" || phaseFields.length === 0) return;
+    const timer = setTimeout(() => checkAndAutoGenerate(), 500);
+    return () => clearTimeout(timer);
+  }, [fields, currentPhase, checkAndAutoGenerate]);
   
   // 判断当前阶段是否可以进入下一阶段
   const phaseHasContent = phaseFields.length > 0 && phaseFields.some(f => f.status === "completed");
@@ -455,9 +456,42 @@ export function ContentPanel({
         }
       }
       
-      // 内涵设计阶段 - 不再使用特殊处理，与其他阶段一致
-      // 方案导入功能通过字段的 ProposalSelector 组件提供
-      // 用户点击"内涵设计方案"字段时可以查看和导入方案
+      // 内涵设计阶段 - 使用 ProposalSelector
+      if (selectedPhase === "design_inner") {
+        const designInnerField = phaseFields.find(f => f.name === "内涵设计方案");
+        if (designInnerField) {
+          try {
+            const proposalsData = JSON.parse(designInnerField.content || "{}");
+            if (proposalsData.proposals && Array.isArray(proposalsData.proposals) && proposalsData.proposals.length > 0) {
+              return (
+                <div className="h-full flex flex-col">
+                  <div className="p-4 border-b border-surface-3">
+                    <h1 className="text-xl font-bold text-zinc-100">内涵设计</h1>
+                    <p className="text-zinc-500 text-sm mt-1">
+                      选择一个方案，确认后将进入内涵生产阶段
+                    </p>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-4">
+                    <ProposalSelector
+                      projectId={projectId}
+                      fieldId={designInnerField.id}
+                      content={designInnerField.content}
+                      onConfirm={() => {
+                        onFieldsChange?.();
+                        onPhaseAdvance?.();
+                      }}
+                      onFieldsCreated={onFieldsChange}
+                      onSave={onFieldsChange}
+                    />
+                  </div>
+                </div>
+              );
+            }
+          } catch {
+            // JSON 解析失败，使用默认 FieldCard
+          }
+        }
+      }
       
       // 外延设计阶段 - 使用 ChannelSelector
       if (selectedPhase === "design_outer") {
@@ -518,18 +552,60 @@ export function ContentPanel({
                   />
                 ))}
               </div>
+
+              {/* 确认进入下一阶段按钮 */}
+              {phaseHasContent && nextPhase && (() => {
+                const isPhaseCompleted = phaseStatus[currentPhase] === "completed";
+                return (
+                  <div className="mt-8 pt-6 border-t border-surface-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-zinc-400 text-sm">
+                          {isPhaseCompleted ? "✅ 当前阶段已确认" : "当前阶段内容已完成"}
+                        </p>
+                        <p className="text-zinc-500 text-xs mt-1">
+                          下一阶段：{PHASE_NAMES[nextPhase] || nextPhase}
+                        </p>
+                      </div>
+                      {isPhaseCompleted ? (
+                        <div className="px-6 py-3 rounded-xl font-medium bg-green-600/20 text-green-400 border border-green-500/30">
+                          ✅ 已确认
+                        </div>
+                      ) : (
+                        <button
+                          onClick={handleAdvancePhase}
+                          disabled={isAdvancing}
+                          className={`px-6 py-3 rounded-xl font-medium transition-all ${
+                            isAdvancing
+                              ? "bg-zinc-700 text-zinc-400 cursor-wait"
+                              : "bg-brand-600 hover:bg-brand-700 text-white shadow-lg hover:shadow-brand-600/25"
+                          }`}
+                        >
+                          {isAdvancing ? (
+                            <span className="flex items-center gap-2">
+                              <span className="animate-spin">⏳</span> 处理中...
+                            </span>
+                          ) : (
+                            <span>✅ 确认，进入下一阶段</span>
+                          )}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           </div>
         );
       }
       
-      // 消费者模拟阶段
-      if (selectedPhase === "simulate") {
+      // 评估阶段 - 使用 EvalTaskConfig + EvalReportPanel
+      if (selectedPhase === "evaluate") {
         return (
-          <SimulationPanel
+          <EvalPhasePanel
             projectId={projectId}
             fields={fields}
-            onSimulationCreated={onFieldsChange}
+            onFieldsChange={onFieldsChange}
           />
         );
       }
@@ -558,6 +634,48 @@ export function ContentPanel({
                   />
                 ))}
               </div>
+
+              {/* 确认进入下一阶段按钮 */}
+              {phaseHasContent && nextPhase && (() => {
+                const isPhaseCompleted = phaseStatus[currentPhase] === "completed";
+                return (
+                  <div className="mt-8 pt-6 border-t border-surface-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-zinc-400 text-sm">
+                          {isPhaseCompleted ? "✅ 当前阶段已确认" : "当前阶段内容已完成"}
+                        </p>
+                        <p className="text-zinc-500 text-xs mt-1">
+                          下一阶段：{PHASE_NAMES[nextPhase] || nextPhase}
+                        </p>
+                      </div>
+                      {isPhaseCompleted ? (
+                        <div className="px-6 py-3 rounded-xl font-medium bg-green-600/20 text-green-400 border border-green-500/30">
+                          ✅ 已确认
+                        </div>
+                      ) : (
+                        <button
+                          onClick={handleAdvancePhase}
+                          disabled={isAdvancing}
+                          className={`px-6 py-3 rounded-xl font-medium transition-all ${
+                            isAdvancing
+                              ? "bg-zinc-700 text-zinc-400 cursor-wait"
+                              : "bg-brand-600 hover:bg-brand-700 text-white shadow-lg hover:shadow-brand-600/25"
+                          }`}
+                        >
+                          {isAdvancing ? (
+                            <span className="flex items-center gap-2">
+                              <span className="animate-spin">⏳</span> 处理中...
+                            </span>
+                          ) : (
+                            <span>✅ 确认，进入下一阶段</span>
+                          )}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           </div>
         );
@@ -600,17 +718,6 @@ export function ContentPanel({
   if (selectedBlock && selectedBlock.block_type === "field") {
     // ===== 检查 special_handler：显示对应的特殊界面 =====
     const handler = selectedBlock.special_handler as string | null | undefined;
-    
-    // 消费者模拟字段 - 使用 SimulationPanel
-    if (handler === "consumer_simulation" || handler === "simulate") {
-      return (
-        <SimulationPanel
-          projectId={projectId}
-          fields={fields}
-          onSimulationCreated={onFieldsChange}
-        />
-      );
-    }
     
     // 消费者调研字段 - 检查是否有结构化内容
     if (handler === "consumer_research" || handler === "research") {
@@ -688,6 +795,74 @@ export function ContentPanel({
         }
       }
       
+      // ===== 特殊处理：内涵设计方案（JSON proposals）=====
+      if (matchingField.phase === "design_inner" && matchingField.name === "内涵设计方案") {
+        try {
+          const proposalsData = JSON.parse(matchingField.content || "{}");
+          if (proposalsData.proposals && Array.isArray(proposalsData.proposals) && proposalsData.proposals.length > 0) {
+            return (
+              <div className="h-full flex flex-col">
+                <div className="p-4 border-b border-surface-3">
+                  <h1 className="text-xl font-bold text-zinc-100">内涵设计</h1>
+                  <p className="text-zinc-500 text-sm mt-1">
+                    选择一个方案，确认后将进入内涵生产阶段
+                  </p>
+                </div>
+                <div className="flex-1 overflow-y-auto p-4">
+                  <ProposalSelector
+                    projectId={projectId}
+                    fieldId={matchingField.id}
+                    content={matchingField.content}
+                    onConfirm={() => {
+                      onFieldsChange?.();
+                      onPhaseAdvance?.();
+                    }}
+                    onFieldsCreated={onFieldsChange}
+                    onSave={onFieldsChange}
+                  />
+                </div>
+              </div>
+            );
+          }
+        } catch {
+          // JSON 解析失败
+        }
+      }
+      
+      // ===== 特殊处理：外延设计方案（JSON channels）=====
+      if (matchingField.phase === "design_outer" && matchingField.name === "外延设计方案") {
+        try {
+          const channelsData = JSON.parse(matchingField.content || "{}");
+          if (channelsData.channels && Array.isArray(channelsData.channels)) {
+            return (
+              <div className="h-full flex flex-col">
+                <div className="p-4 border-b border-surface-3">
+                  <h1 className="text-xl font-bold text-zinc-100">外延设计</h1>
+                  <p className="text-zinc-500 text-sm mt-1">
+                    选择要使用的传播渠道，确认后进入外延生产
+                  </p>
+                </div>
+                <div className="flex-1 overflow-y-auto p-4">
+                  <ChannelSelector
+                    projectId={projectId}
+                    fieldId={matchingField.id}
+                    content={matchingField.content}
+                    onConfirm={() => {
+                      onFieldsChange?.();
+                      onPhaseAdvance?.();
+                    }}
+                    onFieldsCreated={onFieldsChange}
+                    onSave={onFieldsChange}
+                  />
+                </div>
+              </div>
+            );
+          }
+        } catch {
+          // JSON 解析失败
+        }
+      }
+      
       // 默认：使用 FieldCard 显示完整功能
       return (
         <div className="h-full flex flex-col p-6">
@@ -743,13 +918,13 @@ export function ContentPanel({
     );
   }
 
-  // 消费者模拟阶段使用专用面板
-  if (currentPhase === "simulate") {
+  // 评估阶段使用专用面板
+  if (currentPhase === "evaluate") {
     return (
-      <SimulationPanel
+      <EvalPhasePanel
         projectId={projectId}
         fields={fields}
-        onSimulationCreated={onFieldsChange}
+        onFieldsChange={onFieldsChange}
       />
     );
   }
@@ -767,8 +942,79 @@ export function ContentPanel({
     );
   }
 
-  // 内涵设计阶段不再使用特殊的 ProposalSelector
-  // 改为与其他阶段一致的字段列表视图
+  // 内涵设计阶段：使用 ProposalSelector
+  if (currentPhase === "design_inner") {
+    const designInnerField = phaseFields.find(f => f.name === "内涵设计方案");
+    if (designInnerField) {
+      try {
+        const proposalsData = JSON.parse(designInnerField.content || "{}");
+        if (proposalsData.proposals && Array.isArray(proposalsData.proposals) && proposalsData.proposals.length > 0) {
+          return (
+            <div className="h-full flex flex-col">
+              <div className="p-4 border-b border-surface-3">
+                <h1 className="text-xl font-bold text-zinc-100">内涵设计</h1>
+                <p className="text-zinc-500 text-sm mt-1">
+                  选择一个方案，确认后将进入内涵生产阶段
+                </p>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4">
+                <ProposalSelector
+                  projectId={projectId}
+                  fieldId={designInnerField.id}
+                  content={designInnerField.content}
+                  onConfirm={() => {
+                    onFieldsChange?.();
+                    onPhaseAdvance?.();
+                  }}
+                  onFieldsCreated={onFieldsChange}
+                  onSave={onFieldsChange}
+                />
+              </div>
+            </div>
+          );
+        }
+      } catch {
+        // JSON 解析失败，使用默认 FieldCard
+      }
+    }
+  }
+
+  // 外延设计阶段：使用 ChannelSelector
+  if (currentPhase === "design_outer") {
+    const designOuterField = phaseFields.find(f => f.name === "外延设计方案");
+    if (designOuterField) {
+      try {
+        const channelsData = JSON.parse(designOuterField.content || "{}");
+        if (channelsData.channels && Array.isArray(channelsData.channels)) {
+          return (
+            <div className="h-full flex flex-col">
+              <div className="p-4 border-b border-surface-3">
+                <h1 className="text-xl font-bold text-zinc-100">外延设计</h1>
+                <p className="text-zinc-500 text-sm mt-1">
+                  选择要使用的传播渠道，确认后进入外延生产
+                </p>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4">
+                <ChannelSelector
+                  projectId={projectId}
+                  fieldId={designOuterField.id}
+                  content={designOuterField.content}
+                  onConfirm={() => {
+                    onFieldsChange?.();
+                    onPhaseAdvance?.();
+                  }}
+                  onFieldsCreated={onFieldsChange}
+                  onSave={onFieldsChange}
+                />
+              </div>
+            </div>
+          );
+        }
+      } catch {
+        // JSON 解析失败
+      }
+    }
+  }
 
   // 构建字段ID到字段名称的映射（用于显示依赖）
   const fieldNameMap = Object.fromEntries(fields.map(f => [f.id, f.name]));
@@ -1001,6 +1247,7 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
   const [showConstraintsModal, setShowConstraintsModal] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatingContent, setGeneratingContent] = useState("");
+  const abortControllerRef = useRef<AbortController | null>(null);
   // 预提问相关状态
   const [preAnswers, setPreAnswers] = useState<Record<string, string>>(
     field.pre_answers || {}
@@ -1057,6 +1304,9 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
   };
 
   const handleGenerate = async () => {
+    // 首次点击生成时请求通知权限（需在用户交互中）
+    requestNotificationPermission();
+    
     if (!canGenerate) {
       alert(`请先完成依赖字段: ${unmetDependencies.map(f => f.name).join(", ")}`);
       return;
@@ -1071,6 +1321,8 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
     setIsGenerating(true);
     setGeneratingContent("");
     setShowPreQuestions(false);
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
 
     try {
       // 使用流式生成，传递预回答
@@ -1078,6 +1330,7 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pre_answers: preAnswers }),
+        signal: abortController.signal,
       });
 
       const reader = response.body?.getReader();
@@ -1100,6 +1353,7 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
                 }
                 if (data.done) {
                   onFieldsChange?.();
+                  sendNotification("内容生成完成", `「${field.name}」已生成完毕，点击查看`);
                 }
               } catch {}
             }
@@ -1107,10 +1361,24 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
         }
       }
     } catch (err) {
-      console.error("生成失败:", err);
-      alert("生成失败: " + (err instanceof Error ? err.message : "未知错误"));
+      if (err instanceof DOMException && err.name === "AbortError") {
+        console.log("[FieldCard] 用户停止了生成");
+        onFieldsChange?.();
+      } else {
+        console.error("生成失败:", err);
+        alert("生成失败: " + (err instanceof Error ? err.message : "未知错误"));
+      }
     } finally {
       setIsGenerating(false);
+      abortControllerRef.current = null;
+    }
+  };
+
+  // 停止生成
+  const handleStopGeneration = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
     }
   };
 
@@ -1226,6 +1494,18 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
           </div>
           
           <div className="flex gap-2">
+            {/* 生成中：显示停止按钮 */}
+            {isGenerating && (
+              <button
+                onClick={handleStopGeneration}
+                className="flex items-center gap-1.5 px-3 py-1 text-sm bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
+                title="停止生成"
+              >
+                <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="3" width="10" height="10" rx="1" /></svg>
+                停止生成
+              </button>
+            )}
+            
             {/* 未完成 + 不在生成中：显示生成按钮 */}
             {field.status !== "completed" && !isGenerating && (
               <button
@@ -1317,6 +1597,30 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
             )}
           </button>
           
+          {/* 自动生成开关 */}
+          <label className="flex items-center gap-1.5 cursor-pointer select-none" title={field.need_review ? "当前需手动点击生成" : "依赖完成后自动生成"}>
+            <span className="text-zinc-500">⚡</span>
+            <span className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${field.need_review === false ? "bg-brand-600" : "bg-zinc-600"}`}>
+              <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${field.need_review === false ? "translate-x-3.5" : "translate-x-0.5"}`} />
+            </span>
+            <span className={`text-xs ${field.need_review === false ? "text-brand-400" : "text-zinc-500"}`}>
+              {field.need_review === false ? "自动" : "手动"}
+            </span>
+            <input
+              type="checkbox"
+              checked={field.need_review === false}
+              onChange={async (e) => {
+                try {
+                  await fieldAPI.update(field.id, { need_review: !e.target.checked });
+                  onFieldsChange?.();
+                } catch (err) {
+                  alert("更新失败: " + (err instanceof Error ? err.message : "未知错误"));
+                }
+              }}
+              className="sr-only"
+            />
+          </label>
+
           {/* 生成配置概览（可点击编辑） */}
           <button
             onClick={() => setShowConstraintsModal(true)}
@@ -1450,6 +1754,11 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
               {generatingContent || "⏳ 准备中..."}
             </div>
           </div>
+        ) : field.status === "generating" ? (
+          <div className="bg-surface-1 border border-surface-3 rounded-lg p-3">
+            <div className="text-xs text-brand-400 mb-2 animate-pulse">⏳ 自动生成中...</div>
+            <div className="text-sm text-zinc-500">内容正在后台生成，完成后将自动显示</div>
+          </div>
         ) : isEditing ? (
           <textarea
             value={content}
@@ -1525,8 +1834,7 @@ function DependencyModal({ field, allFields, onClose, onSave }: DependencyModalP
     produce_inner: "内涵生产",
     design_outer: "外显设计",
     produce_outer: "外显生产",
-    simulate: "模拟评估",
-    evaluate: "总结优化",
+    evaluate: "评估",
   };
 
   // 可选的依赖字段（排除自己）
@@ -1662,6 +1970,26 @@ function ConstraintsModal({ field, onClose, onSave }: ConstraintsModalProps) {
   );
   const [structure, setStructure] = useState(field.constraints?.structure || "");
   const [example, setExample] = useState(field.constraints?.example || "");
+  const [aiPromptPurpose, setAiPromptPurpose] = useState("");
+  const [generatingPrompt, setGeneratingPrompt] = useState(false);
+
+  const handleGeneratePrompt = async () => {
+    if (!aiPromptPurpose.trim()) return;
+    setGeneratingPrompt(true);
+    try {
+      const result = await blockAPI.generatePrompt({
+        purpose: aiPromptPurpose,
+        field_name: field.name,
+        project_id: field.project_id || "",
+      });
+      setAiPrompt(result.prompt);
+      setAiPromptPurpose("");  // 清空输入
+    } catch (e: any) {
+      alert("生成提示词失败: " + (e.message || "未知错误"));
+    } finally {
+      setGeneratingPrompt(false);
+    }
+  };
 
   const handleSave = () => {
     onSave({
@@ -1699,6 +2027,39 @@ function ConstraintsModal({ field, onClose, onSave }: ConstraintsModalProps) {
             <p className="text-xs text-zinc-500 mt-1.5">
               告诉 AI 这个字段应该生成什么内容。越具体越好！
             </p>
+
+            {/* 🤖 用 AI 生成提示词 */}
+            <div className="mt-3 p-2.5 bg-surface-1/50 border border-surface-3 rounded-lg">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-xs text-zinc-400">🤖 用 AI 生成提示词</span>
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={aiPromptPurpose}
+                  onChange={(e) => setAiPromptPurpose(e.target.value)}
+                  placeholder="简述字段目的，如：介绍产品核心卖点"
+                  className="flex-1 px-2.5 py-1.5 bg-surface-1 border border-surface-3 rounded text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && aiPromptPurpose.trim() && !generatingPrompt) {
+                      handleGeneratePrompt();
+                    }
+                  }}
+                />
+                <button
+                  onClick={handleGeneratePrompt}
+                  disabled={!aiPromptPurpose.trim() || generatingPrompt}
+                  className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1 whitespace-nowrap"
+                >
+                  {generatingPrompt ? (
+                    <>
+                      <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                      生成中...
+                    </>
+                  ) : "AI 生成"}
+                </button>
+              </div>
+            </div>
           </div>
 
           {/* 最大字数 */}
@@ -1805,8 +2166,7 @@ function getPhaseDescription(phase: string): string {
     produce_inner: "生产核心内容",
     design_outer: "设计外延传播方案",
     produce_outer: "为各渠道生产营销内容",
-    simulate: "模拟用户体验，收集反馈",
-    evaluate: "全面评估内容质量",
+    evaluate: "配置评估任务，多维度评估内容",
   };
   return descriptions[phase] || "";
 }
