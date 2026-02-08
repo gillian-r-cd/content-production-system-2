@@ -42,7 +42,7 @@ interface SimulatorData {
   description: string;
   simulator_type: string;
   interaction_type: string;           // 旧版: reading/dialogue/decision/exploration
-  interaction_mode: string;           // 新版: review/dialogue/scenario
+  interaction_mode: string;           // 新版: review/dialogue/scenario/exploration
   prompt_template: string;
   secondary_prompt: string;           // 对话模式第二方提示词
   grader_template: string;

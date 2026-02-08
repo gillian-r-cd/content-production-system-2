@@ -692,7 +692,7 @@ def _to_simulator_response(s: Simulator) -> SimulatorResponse:
     itype = s.interaction_type or "reading"
     raw_mode = getattr(s, 'interaction_mode', None) or ""
     # 如果 interaction_mode 未被显式设置（仍是默认 review），从 interaction_type 推导
-    _TYPE_TO_MODE = {"reading": "review", "dialogue": "dialogue", "decision": "scenario", "exploration": "dialogue"}
+    _TYPE_TO_MODE = {"reading": "review", "dialogue": "dialogue", "decision": "scenario", "exploration": "exploration"}
     if not raw_mode or raw_mode == "review":
         derived_mode = _TYPE_TO_MODE.get(itype, "review")
     else:

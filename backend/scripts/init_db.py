@@ -287,7 +287,7 @@ def seed_default_data():
         # 3. 预置模拟器
         if db.query(Simulator).count() == 0:
             # interaction_type（旧版）→ interaction_mode（新版）映射
-            _TYPE_TO_MODE = {"reading": "review", "dialogue": "dialogue", "decision": "scenario", "exploration": "dialogue"}
+            _TYPE_TO_MODE = {"reading": "review", "dialogue": "dialogue", "decision": "scenario", "exploration": "exploration"}
             simulators = []
             for type_id, type_info in INTERACTION_TYPES.items():
                 simulator = Simulator(

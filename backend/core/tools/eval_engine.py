@@ -192,17 +192,21 @@ async def run_task_trial(
     # ===== 兼容旧版 interaction_type → 新版 interaction_mode 映射 =====
     # reading → review（阅读式 = 一次性审查）
     # decision → scenario（决策式 = 场景对话）
-    # exploration → dialogue（探索式 = 多轮对话）
+    # exploration → exploration（探索式 = 自主探索路径）
     MODE_COMPAT = {
         "reading": "review",
         "decision": "scenario",
-        "exploration": "dialogue",
+        "exploration": "exploration",
     }
     effective_mode = MODE_COMPAT.get(interaction_mode, interaction_mode)
     
     if effective_mode == "review":
         result = await _run_review(
             simulator_type, content, creator_profile, intent, persona, config, grader_cfg
+        )
+    elif effective_mode == "exploration":
+        result = await _run_exploration(
+            simulator_type, content, creator_profile, intent, persona, config, grader_cfg, content_field_names
         )
     elif effective_mode in ("dialogue", "scenario"):
         result = await _run_dialogue(
@@ -324,6 +328,237 @@ async def _run_review(
     except Exception as e:
         return TrialResult(
             role=simulator_type, interaction_mode="review",
+            llm_calls=[c.to_dict() for c in llm_calls],
+            success=False, error=str(e),
+        )
+
+
+async def _run_exploration(
+    simulator_type: str,
+    content: str,
+    creator_profile: str,
+    intent: str,
+    persona: dict,
+    config: dict,
+    grader_cfg: dict,
+    content_field_names: list = None,
+) -> TrialResult:
+    """
+    探索模式：模拟消费者自主制定探索流程，在内容中寻找答案。
+    
+    流程：
+    1. 消费者规划探索路径（根据自身痛点决定先看什么）
+    2. 逐步执行探索，记录每一步的发现和感受
+    3. 最终给出结构化评价
+    """
+    llm_calls = []
+    
+    persona = persona or {"name": "典型用户", "background": "对该领域感兴趣的读者"}
+    user_name = persona.get("name", "消费者")
+    persona_text = json.dumps(persona, ensure_ascii=False, indent=2)
+    
+    content_name = "内容"
+    if content_field_names:
+        content_name = f"《{content_field_names[0]}》" if len(content_field_names) == 1 else f"《{content_field_names[0]}》等{len(content_field_names)}篇"
+    
+    # 根据 persona 的痛点推导探索任务
+    pain_points = persona.get("pain_points", [])
+    task_hint = ""
+    if pain_points:
+        task_hint = f"你最想解决的问题：{'; '.join(pain_points[:3])}"
+    else:
+        task_hint = f"你想了解 {content_name} 是否对你有用"
+    
+    custom_prompt = config.get("system_prompt", "")
+    
+    # ===== 第一步：消费者制定探索计划 =====
+    if custom_prompt:
+        plan_system = custom_prompt.replace("{persona}", persona_text).replace("{content}", "（见下方）")
+        if persona_text not in plan_system:
+            plan_system += f"\n\n【你扮演的角色】\n{persona_text}"
+    else:
+        plan_system = f"""你正在扮演一位真实用户。
+
+【你的角色】
+{persona_text}
+
+【背景】
+你面前有一份内容（{content_name}），你需要根据自己的背景和需求来探索它。
+{task_hint}
+
+【行为要求】
+1. 像真实用户一样思考：你会先看哪个部分？为什么？
+2. 每一步探索都要记录你的真实感受
+3. 如果发现内容有缺失或不清楚的地方，要指出来
+4. 最终判断这个内容是否对你有帮助"""
+
+    if creator_profile:
+        plan_system += f"\n\n【创作者特质】\n{creator_profile}"
+    if intent:
+        plan_system += f"\n\n【项目意图】\n{intent}"
+    
+    type_info = SIMULATOR_TYPES.get(simulator_type, {})
+    dimensions = grader_cfg.get("dimensions", []) or type_info.get("default_dimensions", ["找到答案效率", "信息完整性", "满意度"])
+    dim_str = ", ".join([f'"{d}": 分数(1-10)' for d in dimensions])
+    dim_comment_str = ", ".join([f'"{d}": "具体评语（至少2句话）"' for d in dimensions])
+    
+    plan_user = f"""以下是你要探索的内容：
+
+=== 内容开始 ===
+{content}
+=== 内容结束 ===
+
+请以你的角色身份，模拟你的完整探索过程。
+
+**输出JSON格式**（严格遵循，不要输出其他内容）：
+{{
+    "exploration_plan": "你打算怎么浏览这个内容（1-2句话）",
+    "exploration_steps": [
+        {{
+            "step": 1,
+            "action": "先看了什么部分",
+            "reason": "为什么先看这个",
+            "finding": "发现了什么",
+            "feeling": "感受如何（有用/困惑/惊喜/失望等）"
+        }},
+        {{
+            "step": 2,
+            "action": "接着看了什么",
+            "reason": "为什么",
+            "finding": "发现了什么",
+            "feeling": "感受"
+        }}
+    ],
+    "attention_points": ["特别吸引注意力的内容1", "内容2"],
+    "found_answer": true,
+    "answer_quality": "找到的答案质量如何（详细/部分/不够用）",
+    "difficulties": ["遇到的困难1", "困难2"],
+    "missing_info": ["希望内容中包含但没有的信息1", "信息2"],
+    "scores": {{{dim_str}}},
+    "comments": {{{dim_comment_str}}},
+    "would_recommend": true,
+    "summary": "作为{user_name}，总体评价这个内容对我的帮助程度（100-200字）"
+}}"""
+
+    try:
+        response_text, call = await _call_llm(
+            plan_system, plan_user,
+            step=f"explorer_{simulator_type}_exploration",
+            temperature=0.7,
+        )
+        llm_calls.append(call)
+        
+        result_data = _parse_json_response(response_text)
+        
+        # 构建 exploration nodes（可视化探索过程）
+        exploration_nodes = []
+        
+        # 探索计划
+        plan = result_data.get("exploration_plan", "")
+        if plan:
+            exploration_nodes.append({
+                "role": "consumer", "content": f"📋 探索计划：{plan}", "turn": 0,
+            })
+        
+        # 每一步探索
+        for step_data in result_data.get("exploration_steps", []):
+            step_num = step_data.get("step", "?")
+            action = step_data.get("action", "")
+            reason = step_data.get("reason", "")
+            finding = step_data.get("finding", "")
+            feeling = step_data.get("feeling", "")
+            
+            step_content = f"🔍 步骤 {step_num}：{action}"
+            if reason:
+                step_content += f"\n💭 原因：{reason}"
+            if finding:
+                step_content += f"\n📝 发现：{finding}"
+            if feeling:
+                step_content += f"\n😊 感受：{feeling}"
+            
+            exploration_nodes.append({
+                "role": "consumer", "content": step_content, "turn": step_num,
+            })
+        
+        # 注意力焦点
+        attention = result_data.get("attention_points", [])
+        if attention:
+            exploration_nodes.append({
+                "role": "system", "content": "⭐ 特别关注的内容：\n" + "\n".join(f"• {a}" for a in attention),
+            })
+        
+        # 困难与缺失
+        difficulties = result_data.get("difficulties", [])
+        missing = result_data.get("missing_info", [])
+        if difficulties or missing:
+            gap_text = ""
+            if difficulties:
+                gap_text += "❌ 遇到的困难：\n" + "\n".join(f"• {d}" for d in difficulties)
+            if missing:
+                gap_text += "\n⚠️ 缺失的信息：\n" + "\n".join(f"• {m}" for m in missing)
+            exploration_nodes.append({
+                "role": "system", "content": gap_text.strip(),
+            })
+        
+        # 最终评价
+        found = result_data.get("found_answer", False)
+        quality = result_data.get("answer_quality", "")
+        summary = result_data.get("summary", "")
+        exploration_nodes.append({
+            "role": "consumer",
+            "content": f"{'✅' if found else '❌'} 是否找到答案：{'是' if found else '否'}"
+                       + (f"\n📊 答案质量：{quality}" if quality else "")
+                       + (f"\n\n{summary}" if summary else ""),
+        })
+        
+        scores = result_data.get("scores", {})
+        avg_score = sum(v for v in scores.values() if isinstance(v, (int, float))) / len(scores) if scores else 0
+        
+        # 运行 Grader
+        grader_outputs = []
+        grader_result, grader_call = await _run_content_grader(
+            content, result_data, dimensions, grader_cfg
+        )
+        if grader_call:
+            llm_calls.append(grader_call)
+            grader_outputs.append(grader_result)
+        
+        total_tokens_in = sum(c.tokens_in for c in llm_calls)
+        total_tokens_out = sum(c.tokens_out for c in llm_calls)
+        total_cost = sum(c.cost for c in llm_calls)
+        
+        return TrialResult(
+            role=simulator_type,
+            interaction_mode="exploration",
+            nodes=exploration_nodes,
+            result={
+                "scores": scores,
+                "comments": result_data.get("comments", {}),
+                "exploration_plan": plan,
+                "exploration_steps": result_data.get("exploration_steps", []),
+                "attention_points": attention,
+                "found_answer": found,
+                "answer_quality": quality,
+                "difficulties": difficulties,
+                "missing_info": missing,
+                "strengths": attention,
+                "weaknesses": difficulties + missing,
+                "suggestions": missing,
+                "outcome": "found_answer" if found else "not_found",
+                "would_recommend": result_data.get("would_recommend", False),
+                "summary": summary,
+            },
+            grader_outputs=grader_outputs,
+            llm_calls=[c.to_dict() for c in llm_calls],
+            overall_score=round(avg_score, 2),
+            success=True,
+            tokens_in=total_tokens_in,
+            tokens_out=total_tokens_out,
+            cost=total_cost,
+        )
+    except Exception as e:
+        return TrialResult(
+            role=simulator_type, interaction_mode="exploration",
             llm_calls=[c.to_dict() for c in llm_calls],
             success=False, error=str(e),
         )
