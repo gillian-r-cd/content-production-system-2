@@ -439,7 +439,7 @@ export const settingsAPI = {
   importSystemPrompts: (data: any[]) =>
     fetchAPI<any>("/api/settings/system-prompts/import", {
       method: "POST",
-      body: JSON.stringify(data),
+      body: JSON.stringify({ data }),
     }),
 
   // Creator Profiles Import/Export
@@ -450,7 +450,7 @@ export const settingsAPI = {
   importCreatorProfiles: (data: any[]) =>
     fetchAPI<any>("/api/settings/creator-profiles/import", {
       method: "POST",
-      body: JSON.stringify(data),
+      body: JSON.stringify({ data }),
     }),
 
   // Field Templates Import/Export
@@ -461,7 +461,7 @@ export const settingsAPI = {
   importFieldTemplates: (data: any[]) =>
     fetchAPI<any>("/api/settings/field-templates/import", {
       method: "POST",
-      body: JSON.stringify(data),
+      body: JSON.stringify({ data }),
     }),
 
   // Simulators Import/Export
