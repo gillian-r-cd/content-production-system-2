@@ -1219,26 +1219,56 @@ async def run_eval(
 # ============== 工具函数 ==============
 
 def _parse_json_response(text: str) -> dict:
-    """安全解析 AI 返回的 JSON"""
+    """安全解析 AI 返回的 JSON（容错：处理 LLM 输出多余的括号、前后缀文本等）"""
+    text = text.strip()
+    
+    # 1. 直接解析
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
     
+    # 2. raw_decode：处理 JSON 后面有多余字符（如多余的 } 或解释文本）
+    try:
+        decoder = json.JSONDecoder()
+        obj, _ = decoder.raw_decode(text)
+        if isinstance(obj, dict):
+            return obj
+    except (json.JSONDecodeError, ValueError):
+        pass
+    
+    # 3. 提取 Markdown 代码块中的 JSON
     import re
     json_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', text, re.DOTALL)
     if json_match:
+        inner = json_match.group(1).strip()
         try:
-            return json.loads(json_match.group(1))
+            return json.loads(inner)
         except json.JSONDecodeError:
             pass
+        # 代码块内也可能有多余字符
+        try:
+            obj, _ = json.JSONDecoder().raw_decode(inner)
+            if isinstance(obj, dict):
+                return obj
+        except (json.JSONDecodeError, ValueError):
+            pass
     
+    # 4. 提取第一个 { 到最后一个 } 之间的内容
     start = text.find('{')
     end = text.rfind('}')
     if start >= 0 and end > start:
+        snippet = text[start:end+1]
         try:
-            return json.loads(text[start:end+1])
+            return json.loads(snippet)
         except json.JSONDecodeError:
+            pass
+        # snippet 内部可能也有多余尾部
+        try:
+            obj, _ = json.JSONDecoder().raw_decode(snippet)
+            if isinstance(obj, dict):
+                return obj
+        except (json.JSONDecodeError, ValueError):
             pass
     
     return {"raw_output": text, "parse_error": True}
