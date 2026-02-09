@@ -79,7 +79,7 @@ export function AgentPanel({
   const [availableTools, setAvailableTools] = useState<{ id: string; name: string; desc: string }[]>([]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const mentionStartPos = useRef<number>(-1);
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -240,24 +240,38 @@ export function AgentPanel({
   const insertMention = useCallback((item: MentionItem) => {
     const beforeMention = input.slice(0, mentionStartPos.current);
     const afterMention = input.slice(cursorPosition);
-    const newInput = `${beforeMention}@${item.name}${afterMention}`;
+    const mentionText = `@${item.name} `;  // 末尾加空格，方便继续输入
+    const newInput = `${beforeMention}${mentionText}${afterMention}`;
+    const newCursorPos = beforeMention.length + mentionText.length;
     setInput(newInput);
     setShowMentions(false);
     setMentionFilter("");
     mentionStartPos.current = -1;
-    setTimeout(() => inputRef.current?.focus(), 0);
+    // 聚焦并把光标移到插入文字之后
+    setTimeout(() => {
+      const el = inputRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(newCursorPos, newCursorPos);
+      }
+    }, 0);
   }, [input, cursorPosition]);
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value;
     const selectionStart = e.target.selectionStart || 0;
     setInput(value);
     setCursorPosition(selectionStart);
 
+    // 自动调整 textarea 高度
+    const el = e.target;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 160) + "px";  // 最大约6行
+
     const lastAtPos = value.lastIndexOf("@", selectionStart - 1);
     if (lastAtPos !== -1) {
       const textAfterAt = value.slice(lastAtPos + 1, selectionStart);
-      if (!textAfterAt.includes(" ")) {
+      if (!textAfterAt.includes(" ") && !textAfterAt.includes("\n")) {
         mentionStartPos.current = lastAtPos;
         setMentionFilter(textAfterAt);
         setShowMentions(true);
@@ -312,6 +326,10 @@ export function AgentPanel({
     setInput("");
     setSending(true);
     setShowMentions(false);
+    // 重置 textarea 高度
+    if (inputRef.current) {
+      inputRef.current.style.height = "auto";
+    }
 
     // 立即显示用户消息（乐观更新）
     const tempUserMsg: ChatMessageRecord = {
@@ -772,16 +790,17 @@ export function AgentPanel({
             </div>
           )}
 
-          <div className="flex gap-2">
-            <input
+          <div className="flex gap-2 items-end">
+            <textarea
               ref={inputRef}
-              type="text"
               value={input}
               onChange={handleInputChange}
               onKeyDown={handleKeyDown}
               placeholder={projectId ? `输入消息... 使用 @ 引用字段${mentionItems.length > 0 ? ` (${mentionItems.length}个可用)` : ""}` : "请先选择项目"}
               disabled={!projectId || sending}
-              className="flex-1 px-4 py-2 bg-surface-2 border border-surface-3 rounded-lg text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:opacity-50"
+              rows={1}
+              className="flex-1 px-4 py-2 bg-surface-2 border border-surface-3 rounded-lg text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:opacity-50 resize-none overflow-hidden"
+              style={{ minHeight: "40px", maxHeight: "160px" }}
             />
             {sending ? (
               <button

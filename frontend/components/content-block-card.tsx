@@ -11,6 +11,7 @@ import remarkGfm from "remark-gfm";
 import { blockAPI, fieldAPI, runAutoTriggerChain } from "@/lib/api";
 import { sendNotification } from "@/lib/utils";
 import type { ContentBlock } from "@/lib/api";
+import { VersionHistoryButton } from "./version-history";
 import { 
   Sparkles, 
   Save, 
@@ -719,6 +720,15 @@ export function ContentBlockCard({
                 停止
               </button>
             )}
+
+            {/* 版本历史按钮 */}
+            {block.content && !isGenerating && (
+              <VersionHistoryButton
+                entityId={block.id}
+                entityName={block.name}
+                onRollback={() => onUpdate?.()}
+              />
+            )}
             
             {/* 删除按钮 */}
             <button
@@ -814,7 +824,7 @@ export function ContentBlockCard({
               <div className="min-h-[80px]">
                 <div className="prose prose-invert prose-sm max-w-none">
                   {generatingContent ? (
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{generatingContent}</ReactMarkdown>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ table: ({ children, ...props }) => (<div className="table-wrapper"><table {...props}>{children}</table></div>) }}>{generatingContent}</ReactMarkdown>
                   ) : (
                     <p className="text-zinc-500 animate-pulse">正在生成内容...</p>
                   )}
@@ -879,7 +889,7 @@ export function ContentBlockCard({
                       </button>
                     </div>
                     <div className="prose prose-invert prose-sm max-w-none">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{block.content}</ReactMarkdown>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ table: ({ children, ...props }) => (<div className="table-wrapper"><table {...props}>{children}</table></div>) }}>{block.content}</ReactMarkdown>
                     </div>
                   </div>
                 ) : (

@@ -11,6 +11,7 @@ import { blockAPI, fieldAPI, runAutoTriggerChain } from "@/lib/api";
 import { sendNotification } from "@/lib/utils";
 import type { ContentBlock } from "@/lib/api";
 import { getEvalFieldEditor } from "./eval-field-editors";
+import { VersionHistoryButton } from "./version-history";
 import { 
   FileText, 
   Folder, 
@@ -564,6 +565,15 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
             
             {isGenerating && (
               <span className="text-sm text-brand-400 animate-pulse">生成中...</span>
+            )}
+
+            {/* 版本历史按钮 */}
+            {block.content && !isGenerating && (
+              <VersionHistoryButton
+                entityId={block.id}
+                entityName={block.name}
+                onRollback={() => onUpdate?.()}
+              />
             )}
             
             {/* 删除按钮 */}

@@ -54,7 +54,7 @@ def create_app() -> FastAPI:
 
     # 注册路由
     from api import projects, fields, agent, settings as settings_api, simulation, evaluation
-    from api import blocks, phase_templates
+    from api import blocks, phase_templates, versions
     from api import eval as eval_api
     from api import graders as graders_api
     
@@ -74,6 +74,9 @@ def create_app() -> FastAPI:
     
     # Grader 评分器管理
     app.include_router(graders_api.router)
+    
+    # 版本历史
+    app.include_router(versions.router)
 
     return app
 

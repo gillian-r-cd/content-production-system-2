@@ -41,11 +41,21 @@ body {
 }
 
 /* Markdown 表格样式（暗色主题） */
+/* 表格外层容器：支持横向滚动 */
+.prose .table-wrapper {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin: 1em 0;
+  border: 1px solid #27272a;
+  border-radius: 0.5rem;
+}
+
 .prose table {
   border-collapse: collapse;
   width: 100%;
-  margin: 1em 0;
+  min-width: 100%;
   font-size: 0.875rem;
+  margin: 0; /* wrapper handles margin */
 }
 
 .prose thead {
@@ -58,12 +68,22 @@ body {
   font-weight: 600;
   color: #e4e4e7;
   background: #27272a;
+  white-space: nowrap;
 }
 
 .prose td {
   padding: 0.5rem 0.75rem;
   border-top: 1px solid #27272a;
   color: #d4d4d8;
+  vertical-align: top;
+  min-width: 120px;
+}
+
+/* 单元格内 <br> 换行的间距 */
+.prose td br {
+  display: block;
+  content: "";
+  margin-top: 0.25rem;
 }
 
 .prose tbody tr:hover {
@@ -86,6 +106,52 @@ body {
 
 .prose pre code {
   color: #d4d4d8;
+}
+
+/* ── 三栏布局：拖拽手柄 ── */
+.resize-handle {
+  position: absolute;
+  top: 0;
+  left: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 20;
+  transition: background 0.15s;
+}
+.resize-handle:hover,
+.resize-handle:active {
+  background: #4f46e5;
+}
+
+/* ── 三栏布局：折叠 / 展开按钮 ── */
+.collapse-btn {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #27272a;
+  border: 1px solid #3f3f46;
+  color: #a1a1aa;
+  cursor: pointer;
+  z-index: 30;
+  transition: background 0.15s, color 0.15s;
+}
+.collapse-btn:hover {
+  background: #3f3f46;
+  color: #e4e4e7;
+}
+.collapse-btn-left {
+  right: -20px;
+  border-radius: 0 6px 6px 0;
+}
+.collapse-btn-right {
+  left: -20px;
+  border-radius: 6px 0 0 6px;
 }
 
 /* Markdown 引用块 */

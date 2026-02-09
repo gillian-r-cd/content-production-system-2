@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from core.database import get_db
-from core.models import Project, ProjectField, ChatMessage, GenerationLog, generate_uuid
+from core.models import Project, ProjectField, ChatMessage, GenerationLog, ContentVersion, generate_uuid
 from core.models.content_block import ContentBlock
 from core.orchestrator import content_agent
 
@@ -34,6 +34,31 @@ router = APIRouter()
 
 
 # ============== Helpers ==============
+
+import logging
+_logger = logging.getLogger("agent")
+
+
+def _save_version_before_overwrite(db: Session, entity_id: str, old_content: str, source: str, source_detail: str = None):
+    """Agent 覆写字段/内容块前，先保存旧内容为版本"""
+    if not old_content or not old_content.strip():
+        return
+    max_ver = db.query(ContentVersion.version_number).filter(
+        ContentVersion.block_id == entity_id
+    ).order_by(ContentVersion.version_number.desc()).first()
+    next_ver = (max_ver[0] + 1) if max_ver else 1
+    ver = ContentVersion(
+        id=generate_uuid(),
+        block_id=entity_id,
+        version_number=next_ver,
+        content=old_content,
+        source=source,
+        source_detail=source_detail,
+    )
+    db.add(ver)
+    db.flush()
+    _logger.info(f"[版本] agent覆写前保存 v{next_ver} ({source})")
+
 
 def _resolve_references(
     db: Session,
@@ -132,6 +157,8 @@ def _save_result_to_field(
                     data = json.loads(design_field.content)
                     proposals = data.get("proposals", [])
                     if 0 <= idx < len(proposals):
+                        # 保存旧版本
+                        _save_version_before_overwrite(db, design_field.id, design_field.content, "agent_modify", f"modify_proposal_{idx+1}")
                         # 尝试将 agent_output 解析为 JSON 更新方案
                         try:
                             # 清理 markdown 代码块包裹
@@ -161,6 +188,7 @@ def _save_result_to_field(
                 ProjectField.name == modify_target,
             ).first()
             if target:
+                _save_version_before_overwrite(db, target.id, target.content, "agent_modify", modify_target)
                 target.content = agent_output
                 target.status = "completed"
                 field_updated = {"id": target.id, "name": target.name, "phase": target.phase, "action": "modified"}
@@ -171,6 +199,7 @@ def _save_result_to_field(
                     ContentBlock.deleted_at == None,
                 ).first()
                 if target_block:
+                    _save_version_before_overwrite(db, target_block.id, target_block.content, "agent_modify", modify_target)
                     target_block.content = agent_output
                     target_block.status = "completed"
                     field_updated = {"id": target_block.id, "name": target_block.name, "phase": "", "action": "modified"}
@@ -194,6 +223,7 @@ def _save_result_to_field(
                     ProjectField.name == field_name,
                 ).first()
                 if existing:
+                    _save_version_before_overwrite(db, existing.id, existing.content, "agent_produce", f"intent_{field_name}")
                     existing.content = content
                     existing.status = "completed"
                     fields_created.append({"id": existing.id, "name": field_name})
@@ -234,6 +264,7 @@ def _save_result_to_field(
             ProjectField.name == field_name,
         ).first()
         if existing:
+            _save_version_before_overwrite(db, existing.id, existing.content, "agent_produce", result_phase)
             existing.content = agent_output
             existing.status = "completed"
             field_updated = {"id": existing.id, "name": existing.name, "phase": result_phase}
@@ -271,6 +302,7 @@ def _update_content_block(db: Session, project_id: str, phase: str, content: str
             ContentBlock.deleted_at == None,
         ).first()
         if block:
+            _save_version_before_overwrite(db, block.id, block.content, "agent_produce", f"block_{phase}")
             block.content = content
             block.status = "completed"
 

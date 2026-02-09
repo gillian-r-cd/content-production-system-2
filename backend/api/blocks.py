@@ -21,6 +21,7 @@ from datetime import datetime
 logger = logging.getLogger("blocks")
 from core.models import (
     ContentBlock,
+    ContentVersion,
     BlockHistory,
     Project,
     PhaseTemplate,
@@ -29,6 +30,40 @@ from core.models import (
     BLOCK_STATUS,
 )
 from core.prompt_engine import PromptEngine, GoldenContext
+
+
+def _save_content_version(block: ContentBlock, source: str, db: Session, source_detail: str = None):
+    """
+    保存内容块当前内容为一个历史版本
+    仅在 block 已有非空内容时保存（空内容不值得保存版本）
+    
+    Args:
+        block: 内容块
+        source: 版本来源（manual/ai_generate/ai_regenerate/agent）
+        db: 数据库会话
+        source_detail: 来源补充说明
+    """
+    if not block.content or not block.content.strip():
+        return  # 空内容不保存版本
+    
+    # 查询当前最大版本号
+    max_version = db.query(ContentVersion.version_number).filter(
+        ContentVersion.block_id == block.id
+    ).order_by(ContentVersion.version_number.desc()).first()
+    
+    next_version = (max_version[0] + 1) if max_version else 1
+    
+    version = ContentVersion(
+        id=generate_uuid(),
+        block_id=block.id,
+        version_number=next_version,
+        content=block.content,
+        source=source,
+        source_detail=source_detail,
+    )
+    db.add(version)
+    db.flush()  # 立即写入以获得 ID，但不 commit（让调用者控制事务）
+    logger.info(f"[版本] 保存 {block.name} v{next_version} ({source})")
 
 router = APIRouter(prefix="/api/blocks", tags=["content-blocks"])
 
@@ -50,6 +85,8 @@ def _build_constraints_text(constraints: Optional[Dict]) -> str:
         lines.append("  - 必须使用标准 Markdown 语法")
         lines.append("  - 标题使用 # ## ### 格式")
         lines.append("  - 表格必须包含表头分隔行（如 | --- | --- |）")
+        lines.append("  - **表格每行列数必须与表头一致**，不得多出或缺少列")
+        lines.append("  - 若一个单元格需要包含多条内容，请用 <br> 换行，不要增加 | 列分隔符")
         lines.append("  - 列表使用 - 或 1. 格式")
         lines.append("  - 重点内容使用 **粗体** 或 *斜体*")
     elif output_format:
@@ -451,6 +488,10 @@ def update_block(
         data.content is not None
         and data.content != (block.content or "")
     )
+    
+    # ===== 内容变更前保存旧版本 =====
+    if content_changed:
+        _save_content_version(block, "manual", db, source_detail="用户手动编辑")
     
     # 更新字段
     from sqlalchemy.orm.attributes import flag_modified
@@ -867,6 +908,9 @@ async def generate_block_content(
     from core.ai_client import AIClient, ChatMessage
     ai_client = AIClient()
     
+    # ===== 生成前保存旧版本 =====
+    _save_content_version(block, "ai_regenerate", db, source_detail="重新生成前的版本")
+    
     block.status = "in_progress"
     db.commit()
     
@@ -996,6 +1040,9 @@ async def generate_block_content_stream(
     
     from core.ai_client import AIClient, ChatMessage
     ai_client = AIClient()
+    
+    # ===== 流式生成前保存旧版本 =====
+    _save_content_version(block, "ai_regenerate", db, source_detail="重新生成前的版本")
     
     block.status = "in_progress"
     db.commit()

@@ -516,6 +516,8 @@ class PromptEngine:
             constraints_lines.append("  - 必须使用标准 Markdown 语法")
             constraints_lines.append("  - 标题使用 # ## ### 格式")
             constraints_lines.append("  - 表格必须包含表头分隔行（如 | --- | --- |）")
+            constraints_lines.append("  - **表格每行列数必须与表头一致**，不得多出或缺少列")
+            constraints_lines.append("  - 若一个单元格需要包含多条内容，请用 <br> 换行，不要增加 | 列分隔符")
             constraints_lines.append("  - 列表使用 - 或 1. 格式")
             constraints_lines.append("  - 重点内容使用 **粗体** 或 *斜体*")
         elif output_format:

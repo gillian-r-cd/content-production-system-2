@@ -23,6 +23,7 @@ from core.models.chat_history import ChatMessage
 from core.models.content_block import ContentBlock, BLOCK_TYPES, SPECIAL_HANDLERS, BLOCK_STATUS
 from core.models.block_history import BlockHistory, HISTORY_ACTIONS
 from core.models.phase_template import PhaseTemplate, DEFAULT_PHASE_TEMPLATE
+from core.models.content_version import ContentVersion, VERSION_SOURCES
 from core.models.eval_run import EvalRun, EVAL_ROLES, EVAL_RUN_STATUS
 from core.models.eval_task import EvalTask, SIMULATOR_TYPES, INTERACTION_MODES, GRADER_TYPES, EVAL_TASK_STATUS
 from core.models.eval_trial import EvalTrial, EVAL_TRIAL_STATUS
@@ -96,4 +97,8 @@ __all__ = [
     # 阶段模板
     "PhaseTemplate",
     "DEFAULT_PHASE_TEMPLATE",
+    
+    # 内容版本历史（重新生成/Agent修改保留旧版本）
+    "ContentVersion",
+    "VERSION_SOURCES",
 ]

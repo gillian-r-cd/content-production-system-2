@@ -1385,7 +1385,14 @@ async def modify_node(state: ContentProductionState) -> ContentProductionState:
 1. 严格按照用户的修改指令进行修改
 2. 保持内容的专业性和一致性
 3. 只输出修改后的完整内容，不要添加任何解释
-4. 保持原有的格式风格{format_hint}"""
+4. 保持原有的格式风格{format_hint}
+
+Markdown 格式硬性要求（如输出包含表格，必须严格遵守）：
+- 表格每一行的列数（| 的数量）必须与表头完全一致，绝对不能多也不能少
+- 如果一个单元格内需要放置多条内容，请在单元格内部使用 <br> 换行或数字编号（1. 2. 3.），不要用 | 增加列
+- 表格必须有表头分隔行（如 | --- | --- | --- |）
+- 表格每行必须以 | 开头、以 | 结尾
+- 示例：在一个单元格中放多条场景的正确写法：| 场景1描述 <br> 场景2描述 <br> 场景3描述 |"""
 
     messages = [
         ChatMessage(role="system", content=system_prompt),

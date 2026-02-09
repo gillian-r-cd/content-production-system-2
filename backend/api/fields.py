@@ -15,10 +15,39 @@ from sqlalchemy.orm import Session
 import json
 
 from core.database import get_db
-from core.models import ProjectField, Project, FieldTemplate, generate_uuid, GenerationLog
+from core.models import ProjectField, Project, FieldTemplate, generate_uuid, GenerationLog, ContentVersion
 from core.tools import generate_field, generate_field_stream, resolve_field_order
 from core.prompt_engine import prompt_engine, PromptContext, GoldenContext
 from datetime import datetime
+import logging
+
+logger = logging.getLogger("fields")
+
+
+def _save_field_version(field: ProjectField, source: str, db, source_detail: str = None):
+    """
+    保存 ProjectField 当前内容为一个历史版本
+    """
+    if not field.content or not field.content.strip():
+        return
+    
+    max_version = db.query(ContentVersion.version_number).filter(
+        ContentVersion.block_id == field.id
+    ).order_by(ContentVersion.version_number.desc()).first()
+    
+    next_version = (max_version[0] + 1) if max_version else 1
+    
+    version = ContentVersion(
+        id=generate_uuid(),
+        block_id=field.id,
+        version_number=next_version,
+        content=field.content,
+        source=source,
+        source_detail=source_detail,
+    )
+    db.add(version)
+    db.flush()
+    logger.info(f"[版本] 保存 {field.name} v{next_version} ({source})")
 
 
 router = APIRouter()
@@ -175,6 +204,10 @@ def update_field(
     # 检查是否更新了内容（会影响依赖字段）
     content_changed = update.content is not None and update.content != field.content
     
+    # ===== 内容变更前保存旧版本 =====
+    if content_changed:
+        _save_field_version(field, "manual", db, source_detail="用户手动编辑")
+    
     update_data = update.model_dump(exclude_unset=True)
     for key, value in update_data.items():
         setattr(field, key, value)
@@ -254,6 +287,9 @@ async def generate_field_content(
                 detail="Dependencies not satisfied"
             )
     
+    # ===== 生成前保存旧版本 =====
+    _save_field_version(field, "ai_regenerate", db, source_detail="重新生成前的版本")
+    
     # 更新预回答
     field.pre_answers = request.pre_answers
     field.status = "generating"
@@ -316,6 +352,9 @@ async def generate_field_stream_api(
     project = db.query(Project).filter(Project.id == field.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    
+    # ===== 流式生成前保存旧版本 =====
+    _save_field_version(field, "ai_regenerate", db, source_detail="重新生成前的版本")
     
     # 更新预回答和状态
     field.pre_answers = request.pre_answers

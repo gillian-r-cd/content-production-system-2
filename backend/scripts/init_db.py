@@ -424,74 +424,53 @@ def seed_default_data():
             db.add_all(templates)
             print(f"  - 创建了 {len(templates)} 个字段模板")
         
-        # 5.5 预置综合评估模板（新 Eval 体系）
+        # 5.5 预置综合评估模板（Eval V2：画像 → 任务配置 → 评估报告）
         eval_template_exists = db.query(FieldTemplate).filter(
             FieldTemplate.name == "综合评估模板"
         ).first()
         if not eval_template_exists:
             eval_template = FieldTemplate(
                 name="综合评估模板",
-                description="5角色评估体系：教练（策略）+ 编辑（手艺）+ 专家（专业）+ 消费者（体验）+ 销售（转化）+ 综合诊断",
+                description=(
+                    "Eval V2 综合评估模板：目标画像 → 任务配置 → 评估报告（执行+评分+诊断一体化）。"
+                    "支持自定义 simulator × persona × grader 组合，并行执行无限 trial。"
+                ),
                 category="评估",
                 fields=[
                     {
-                        "name": "教练评审",
+                        "name": "目标消费者画像",
                         "type": "richtext",
-                        "ai_prompt": "从策略视角评估内容：方向是否正确？意图是否对齐？定位是否清晰？",
+                        "ai_prompt": "从消费者调研中加载并管理目标消费者画像，也可手动创建新画像。",
                         "pre_questions": [],
                         "depends_on": [],
                         "dependency_type": "all",
-                        "special_handler": "eval_coach",
+                        "special_handler": "eval_persona_setup",
+                        "constraints": {},
                     },
                     {
-                        "name": "编辑评审",
+                        "name": "评估任务配置",
                         "type": "richtext",
-                        "ai_prompt": "从编辑视角评估内容：结构是否合理？语言质量？风格一致性？",
+                        "ai_prompt": "配置评估任务：选择模拟器类型、交互模式、消费者画像、评分维度。支持批量创建和全回归模板。",
                         "pre_questions": [],
-                        "depends_on": [],
+                        "depends_on": ["目标消费者画像"],
                         "dependency_type": "all",
-                        "special_handler": "eval_editor",
+                        "special_handler": "eval_task_config",
+                        "constraints": {},
                     },
                     {
-                        "name": "领域专家评审",
+                        "name": "评估报告",
                         "type": "richtext",
-                        "ai_prompt": "从专业视角评估内容：事实准确性？专业深度？数据支撑？",
+                        "ai_prompt": "统一评估报告：执行所有试验 → 各 Grader 评分 → 综合诊断。含完整 LLM 调用日志、分维度评分、交互记录。",
                         "pre_questions": [],
-                        "depends_on": [],
+                        "depends_on": ["评估任务配置"],
                         "dependency_type": "all",
-                        "special_handler": "eval_expert",
-                    },
-                    {
-                        "name": "消费者体验",
-                        "type": "richtext",
-                        "ai_prompt": "以目标消费者身份体验内容：是否有用？能解决问题吗？会推荐吗？",
-                        "pre_questions": [],
-                        "depends_on": [],
-                        "dependency_type": "all",
-                        "special_handler": "eval_consumer",
-                    },
-                    {
-                        "name": "内容销售测试",
-                        "type": "richtext",
-                        "ai_prompt": "模拟销售场景：销售顾问向目标消费者推介内容，测试转化能力。",
-                        "pre_questions": [],
-                        "depends_on": [],
-                        "dependency_type": "all",
-                        "special_handler": "eval_seller",
-                    },
-                    {
-                        "name": "综合诊断",
-                        "type": "richtext",
-                        "ai_prompt": "跨角色诊断分析：综合所有评估结果，找出系统性问题和改进优先级。",
-                        "pre_questions": [],
-                        "depends_on": ["教练评审", "编辑评审", "领域专家评审", "消费者体验", "内容销售测试"],
-                        "dependency_type": "all",
-                        "special_handler": "eval_diagnoser",
+                        "special_handler": "eval_report",
+                        "constraints": {},
                     },
                 ]
             )
             db.add(eval_template)
-            print("  - 创建了综合评估模板")
+            print("  - 创建了综合评估模板（V2）")
         
         db.commit()
         print("预置数据插入完成！")

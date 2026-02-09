@@ -1047,6 +1047,43 @@ export const graderAPI = {
 };
 
 
+// ============== Version History API ==============
+
+export interface VersionItem {
+  id: string;
+  version_number: number;
+  content: string;
+  source: string;
+  source_detail: string | null;
+  created_at: string;
+}
+
+export interface VersionListResponse {
+  entity_id: string;
+  entity_name: string;
+  entity_type: string;
+  current_content: string;
+  versions: VersionItem[];
+}
+
+export interface RollbackResponse {
+  success: boolean;
+  entity_id: string;
+  restored_version: number;
+  message: string;
+}
+
+export const versionAPI = {
+  list: (entityId: string) =>
+    fetchAPI<VersionListResponse>(`/api/versions/${entityId}`),
+
+  rollback: (entityId: string, versionId: string) =>
+    fetchAPI<RollbackResponse>(`/api/versions/${entityId}/rollback/${versionId}`, {
+      method: "POST",
+    }),
+};
+
+
 // ============== Utilities ==============
 
 /**

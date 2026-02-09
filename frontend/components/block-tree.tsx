@@ -341,28 +341,48 @@ function BlockNode({
   };
 
   return (
-    <div className="select-none">
+    <div className="select-none relative">
+      {/* 拖拽位置指示器 - before */}
+      {isDragTarget && dragTarget?.position === "before" && (
+        <div
+          className="absolute left-0 right-0 h-[3px] bg-brand-500 rounded-full z-20 pointer-events-none"
+          style={{ marginLeft: `${level * 16 + 8}px`, top: 0 }}
+        >
+          <div className="absolute -left-1 -top-[3px] w-[9px] h-[9px] rounded-full bg-brand-500" />
+        </div>
+      )}
+
       {/* 节点本身 */}
       <div
         className={`
           flex items-center gap-1 px-2 py-1.5 rounded-lg cursor-pointer
           transition-all duration-150 group
           ${isSelected ? "bg-brand-500/20 border border-brand-500/50" : "hover:bg-surface-2"}
-          ${isDragTarget && dragTarget?.position === "inside" ? "ring-2 ring-brand-500" : ""}
+          ${isDragTarget && dragTarget?.position === "inside" ? "ring-2 ring-brand-500 bg-brand-500/10" : ""}
           ${isLoading ? "opacity-50 pointer-events-none" : ""}
         `}
         style={{ paddingLeft: `${level * 16 + 8}px` }}
         onClick={handleSelect}
         draggable={editable && !isRenaming}
-        onDragStart={() => onDragStart?.(block)}
+        onDragStart={(e) => {
+          e.dataTransfer.effectAllowed = "move";
+          onDragStart?.(block);
+        }}
         onDragOver={(e) => {
           e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
           const rect = e.currentTarget.getBoundingClientRect();
           const y = e.clientY - rect.top;
-          const position = y < rect.height / 3 ? "before" : y > (rect.height * 2) / 3 ? "after" : "inside";
+          const ratio = y / rect.height;
+          // 上30%=before, 下30%=after, 中间40%=inside（更宽的热区，更容易瞄准）
+          const position = ratio < 0.3 ? "before" : ratio > 0.7 ? "after" : "inside";
           onDragOver?.(block, position);
         }}
         onDragEnd={onDragEnd}
+        onDrop={(e) => {
+          e.preventDefault();
+          onDragEnd?.();
+        }}
       >
         {/* 拖拽手柄 */}
         {editable && (
@@ -536,18 +556,14 @@ function BlockNode({
         </div>
       )}
 
-      {/* 拖拽位置指示器 */}
-      {isDragTarget && dragTarget?.position === "before" && (
-        <div
-          className="absolute left-0 right-0 h-0.5 bg-brand-500"
-          style={{ marginLeft: `${level * 16 + 8}px`, marginTop: "-2px" }}
-        />
-      )}
+      {/* 拖拽位置指示器 - after */}
       {isDragTarget && dragTarget?.position === "after" && (
         <div
-          className="absolute left-0 right-0 h-0.5 bg-brand-500"
-          style={{ marginLeft: `${level * 16 + 8}px` }}
-        />
+          className="absolute left-0 right-0 h-[3px] bg-brand-500 rounded-full z-20 pointer-events-none"
+          style={{ marginLeft: `${level * 16 + 8}px`, bottom: 0 }}
+        >
+          <div className="absolute -left-1 -top-[3px] w-[9px] h-[9px] rounded-full bg-brand-500" />
+        </div>
       )}
       
       {/* 模板选择弹窗 */}

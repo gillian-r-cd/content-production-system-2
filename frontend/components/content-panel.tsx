@@ -11,6 +11,7 @@ import remarkGfm from "remark-gfm";
 import { PHASE_NAMES, PROJECT_PHASES, sendNotification, requestNotificationPermission } from "@/lib/utils";
 import { fieldAPI, agentAPI, blockAPI } from "@/lib/api";
 import type { Field, ContentBlock } from "@/lib/api";
+import { VersionHistoryButton } from "./version-history";
 import { ContentBlockEditor } from "./content-block-editor";
 import { ContentBlockCard } from "./content-block-card";
 import { ChannelSelector } from "./channel-selector";
@@ -1532,6 +1533,15 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
                 🔄 重新生成
               </button>
             )}
+
+            {/* 版本历史按钮（有内容时显示） */}
+            {field.content && !isGenerating && (
+              <VersionHistoryButton
+                entityId={field.id}
+                entityName={field.name}
+                onRollback={() => onFieldsChange?.()}
+              />
+            )}
             
             {isEditing ? (
               <>
@@ -1779,7 +1789,16 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
             )}
             <div className="prose prose-invert max-w-none prose-headings:text-zinc-100 prose-p:text-zinc-300 prose-li:text-zinc-300 prose-strong:text-zinc-200">
               {field.content ? (
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{field.content}</ReactMarkdown>
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    table: ({ children, ...props }) => (
+                      <div className="table-wrapper">
+                        <table {...props}>{children}</table>
+                      </div>
+                    ),
+                  }}
+                >{field.content}</ReactMarkdown>
               ) : hasPreQuestions && !showPreQuestions ? (
                 <p className="text-zinc-500 italic">
                   此字段有预设问题需要回答，点击"生成"按钮开始
