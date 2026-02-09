@@ -984,9 +984,31 @@ export function EvalReportPanel({ block, projectId, onUpdate }: EvalFieldProps) 
     }
   }, [block.content]);
 
-  // ===== 关键：从 block.status 恢复执行状态 =====
-  // 解决用户导航离开再回来时，执行中状态丢失的问题
-  // 后端在执行开始时就将 block.status 设为 "in_progress" 并持久化到 DB
+  // ===== 挂载时从 API 获取最新 block 状态 =====
+  // 解决：用户导航到其他块再回来时，props 中的 block 可能是缓存的旧数据
+  // 需要主动查询 DB 确认是否仍在执行
+  useEffect(() => {
+    if (!block.id) return;
+    let cancelled = false;
+    
+    blockAPI.get(block.id).then(freshBlock => {
+      if (cancelled) return;
+      // 如果 DB 中是 in_progress 但本地不是，立即恢复执行状态
+      if (freshBlock.status === "in_progress" && !executing) {
+        setExecuting(true);
+      }
+      // 如果数据不同步，触发父组件刷新
+      if (freshBlock.status !== block.status || freshBlock.content !== block.content) {
+        console.log(`[EvalReport] 数据不同步: local_status=${block.status}, server_status=${freshBlock.status}`);
+        onUpdate?.();
+      }
+    }).catch(() => {}); // 静默忽略
+    
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [block.id]);
+
+  // ===== 从 block.status 同步执行状态 =====
   useEffect(() => {
     if (block.status === "in_progress") {
       setExecuting(true);

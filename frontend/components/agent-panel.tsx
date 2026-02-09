@@ -99,8 +99,8 @@ export function AgentPanel({
       }
       
       for (const block of allBlocks) {
-        // 只选有内容的 field 类型
-        if (block.block_type === "field" && block.content && block.content.trim()) {
+        // 选所有 field 类型（不要求必须有内容）
+        if (block.block_type === "field") {
           if (seen.has(block.id)) continue;
           seen.add(block.id);
           
@@ -109,7 +109,7 @@ export function AgentPanel({
             id: block.id,
             name: block.name,
             label: parentBlock?.name || "内容块",
-            hasContent: true,
+            hasContent: !!(block.content && block.content.trim()),
           });
           
           // 如果是 design_inner 类型的内容块，提取方案供单独引用
@@ -139,10 +139,9 @@ export function AgentPanel({
       }
       return items;
     } else {
-      // 传统架构：使用 ProjectField，只要有内容就可引用
+      // 传统架构：使用 ProjectField，所有字段都可引用
       const items: MentionItem[] = fields
         .filter((f) => {
-          if (!f.content || !f.content.trim()) return false;
           if (seen.has(f.id)) return false;
           seen.add(f.id);
           return true;
@@ -151,7 +150,7 @@ export function AgentPanel({
           id: f.id,
           name: f.name,
           label: PHASE_NAMES[f.phase] || f.phase,
-          hasContent: true,
+          hasContent: !!(f.content && f.content.trim()),
         }));
 
       // 额外：从 design_inner 字段的 JSON 中提取各方案，使其可单独 @ 引用
@@ -408,14 +407,28 @@ export function AgentPanel({
                 currentRoute = data.target;
                 console.log("[AgentPanel] Route:", currentRoute);
                 
-                // 如果是产出模式，显示"生成中..."
-                if (PRODUCE_ROUTES.includes(currentRoute)) {
-                  setMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === tempAiMsg.id ? { ...m, content: "⏳ 正在生成内容..." } : m
-                    )
-                  );
-                }
+                // 显示当前正在执行的操作
+                const routeStatusNames: Record<string, string> = {
+                  "intent": "🔍 正在分析意图...",
+                  "research": "📊 正在进行消费者调研...",
+                  "design_inner": "✏️ 正在设计内涵方案...",
+                  "produce_inner": "📝 正在生产内涵内容...",
+                  "design_outer": "🎨 正在设计外延方案...",
+                  "produce_outer": "🖼️ 正在生产外延内容...",
+                  "simulate": "🎭 正在运行消费者模拟...",
+                  "evaluate": "📋 正在执行评估...",
+                  "generate_field": "⚙️ 正在生成字段内容...",
+                  "modify": "✏️ 正在修改内容...",
+                  "generic_research": "🔍 正在进行深度调研...",
+                  "advance_phase": "⏭️ 正在推进阶段...",
+                  "chat": "💬 正在思考...",
+                };
+                const statusText = routeStatusNames[currentRoute] || `⏳ 正在处理 [${currentRoute}]...`;
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === tempAiMsg.id ? { ...m, content: statusText } : m
+                  )
+                );
               } else if (data.type === "token") {
                 // 逐 token 更新
                 fullContent += data.content;
@@ -439,31 +452,31 @@ export function AgentPanel({
                     )
                   );
                 }
+              } else if (data.type === "user_saved") {
+                // 后端返回用户消息的真实 ID，更新临时 ID
+                if (data.message_id) {
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === tempUserMsg.id ? { ...m, id: data.message_id } : m
+                    )
+                  );
+                }
               } else if (data.type === "done") {
-                // 流式完成（后端阶段名称使用 intent, research 等）
-                const routeNames: Record<string, string> = {
-                  "intent": "意图分析",
-                  "research": "消费者调研",
-                  "design_inner": "内涵设计",
-                  "produce_inner": "内涵生产",
-                  "design_outer": "外延设计",
-                  "produce_outer": "外延生产",
-                  "simulate": "消费者模拟",
-                  "evaluate": "评估报告",
-                };
+                // 流式完成
+                const actualRoute = data.route || currentRoute;
+                const isProducing = data.is_producing || PRODUCE_ROUTES.includes(actualRoute);
                 
-                // 产出模式：显示简短确认消息
-                if (PRODUCE_ROUTES.includes(currentRoute)) {
-                  const routeName = routeNames[currentRoute] || currentRoute;
+                if (isProducing) {
+                  // 产出模式：使用后端发来的 display_content（在 fullContent 中），已包含正确的字段/阶段名
+                  const displayContent = fullContent || "✅ 内容已生成，请在左侧工作台查看和编辑。";
                   setMessages((prev) =>
                     prev.map((m) =>
                       m.id === tempAiMsg.id
-                        ? { ...m, id: data.message_id, content: `✅ 已生成【${routeName}】，请在左侧工作台查看和编辑。` }
+                        ? { ...m, id: data.message_id, content: displayContent }
                         : m
                     )
                   );
-                  // 浏览器通知
-                  sendNotification("内容生成完成", `${routeName} 已生成完毕，点击查看`);
+                  sendNotification("内容生成完成", "内容已生成完毕，点击查看");
                 } else {
                   // 对话模式：保持完整内容
                   setMessages((prev) =>
@@ -471,7 +484,6 @@ export function AgentPanel({
                       m.id === tempAiMsg.id ? { ...m, id: data.message_id } : m
                     )
                   );
-                  // 浏览器通知
                   sendNotification("Agent 回复完成", "Agent 已完成回复，点击查看");
                 }
               } else if (data.type === "error") {
@@ -563,16 +575,18 @@ export function AgentPanel({
     setEditContent("");
     
     try {
-      // 1. 先更新编辑的消息
-      await agentAPI.editMessage(editingMessageId, editedContent);
+      // 1. 先更新编辑的消息（可能失败，如果 ID 是临时的则跳过）
+      try {
+        await agentAPI.editMessage(editingMessageId, editedContent);
+      } catch (editErr) {
+        console.warn("[handleSaveEdit] 编辑消息失败（可能是临时ID），继续重新发送:", editErr);
+      }
       
-      // 2. 删除该消息之后的所有消息（从UI中移除）
+      // 2. 删除该消息之后的所有消息（从UI中移除），并更新编辑消息
       const editedMsgIndex = messages.findIndex(m => m.id === editingMessageId);
       if (editedMsgIndex !== -1) {
-        // 保留编辑的消息及之前的，移除之后的
         setMessages(prev => {
           const updated = prev.slice(0, editedMsgIndex);
-          // 更新编辑的消息内容
           const editedMsg = { ...prev[editedMsgIndex], content: editedContent, is_edited: true };
           return [...updated, editedMsg];
         });
@@ -590,7 +604,7 @@ export function AgentPanel({
       };
       setMessages(prev => [...prev, tempAiMsg]);
       
-      // 4. 使用流式 API 重新发送
+      // 4. 使用流式 API 重新发送（包含 current_phase）
       const response = await fetch(`${API_BASE}/api/agent/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -598,6 +612,7 @@ export function AgentPanel({
           project_id: projectId,
           message: editedContent,
           references,
+          current_phase: currentPhase || undefined,
         }),
       });
 
@@ -609,6 +624,10 @@ export function AgentPanel({
       const decoder = new TextDecoder();
       let buffer = "";
       let fullContent = "";
+      let currentRoute = "";
+
+      const PRODUCE_ROUTES = ["intent", "research", "design_inner", "produce_inner", 
+                               "design_outer", "produce_outer", "simulate", "evaluate"];
 
       while (true) {
         const { done, value } = await reader.read();
@@ -622,20 +641,54 @@ export function AgentPanel({
           if (line.startsWith("data: ")) {
             try {
               const data = JSON.parse(line.slice(6));
-              if (data.type === "token") {
-                fullContent += data.content;
+              if (data.type === "user_saved") {
+                // 更新编辑消息的 ID 为后端真实 ID
+                if (data.message_id) {
+                  setMessages(prev =>
+                    prev.map(m => m.id === editingMessageId ? { ...m, id: data.message_id } : m)
+                  );
+                }
+              } else if (data.type === "route") {
+                currentRoute = data.target;
+                const routeStatusNames: Record<string, string> = {
+                  "intent": "🔍 正在分析意图...",
+                  "research": "📊 正在进行消费者调研...",
+                  "generate_field": "⚙️ 正在生成字段内容...",
+                  "modify": "✏️ 正在修改内容...",
+                  "chat": "💬 正在思考...",
+                };
+                const statusText = routeStatusNames[currentRoute] || `⏳ 正在处理...`;
                 setMessages(prev =>
-                  prev.map(m => m.id === tempAiMsg.id ? { ...m, content: fullContent } : m)
+                  prev.map(m => m.id === tempAiMsg.id ? { ...m, content: statusText } : m)
                 );
+              } else if (data.type === "token") {
+                fullContent += data.content;
+                if (!PRODUCE_ROUTES.includes(currentRoute)) {
+                  setMessages(prev =>
+                    prev.map(m => m.id === tempAiMsg.id ? { ...m, content: fullContent } : m)
+                  );
+                }
               } else if (data.type === "content") {
                 fullContent = data.content;
-                setMessages(prev =>
-                  prev.map(m => m.id === tempAiMsg.id ? { ...m, content: fullContent } : m)
-                );
+                if (!PRODUCE_ROUTES.includes(currentRoute)) {
+                  setMessages(prev =>
+                    prev.map(m => m.id === tempAiMsg.id ? { ...m, content: fullContent } : m)
+                  );
+                }
               } else if (data.type === "done") {
-                setMessages(prev =>
-                  prev.map(m => m.id === tempAiMsg.id ? { ...m, id: data.message_id } : m)
-                );
+                const actualRoute = data.route || currentRoute;
+                const isProducing = data.is_producing || PRODUCE_ROUTES.includes(actualRoute);
+                
+                if (isProducing) {
+                  const displayContent = fullContent || "✅ 内容已生成，请在左侧工作台查看和编辑。";
+                  setMessages(prev =>
+                    prev.map(m => m.id === tempAiMsg.id ? { ...m, id: data.message_id, content: displayContent } : m)
+                  );
+                } else {
+                  setMessages(prev =>
+                    prev.map(m => m.id === tempAiMsg.id ? { ...m, id: data.message_id } : m)
+                  );
+                }
               }
             } catch (e) {}
           }
@@ -647,7 +700,7 @@ export function AgentPanel({
         onContentUpdate();
       }
     } catch (err) {
-      console.error("编辑失败:", err);
+      console.error("编辑重发失败:", err);
       // 重新加载历史以恢复
       await loadHistory();
     } finally {

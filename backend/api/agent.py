@@ -891,6 +891,9 @@ async def stream_chat(
     db.add(user_msg)
     db.commit()
     
+    # 保存 user_msg.id，在 SSE 事件中返回给前端（用于编辑重发等场景）
+    saved_user_msg_id = user_msg.id
+    
     # --- 加载当前阶段对话历史 ---
     history_msgs = db.query(ChatMessage).filter(
         ChatMessage.project_id == request.project_id
@@ -916,6 +919,9 @@ async def stream_chat(
     # --- SSE 事件生成器 ---
     async def event_generator():
         try:
+            # 先返回用户消息的真实 ID（前端用于编辑重发）
+            yield f"data: {json.dumps({'type': 'user_saved', 'message_id': saved_user_msg_id}, ensure_ascii=False)}\n\n"
+            
             # 获取创作者特质
             creator_profile_str = ""
             if project.creator_profile:
