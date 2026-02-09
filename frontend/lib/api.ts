@@ -472,7 +472,7 @@ export const settingsAPI = {
   importSimulators: (data: any[]) =>
     fetchAPI<any>("/api/settings/simulators/import", {
       method: "POST",
-      body: JSON.stringify(data),
+      body: JSON.stringify({ data }),
     }),
 
   // Graders
