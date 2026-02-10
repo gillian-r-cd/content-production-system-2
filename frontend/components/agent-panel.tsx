@@ -270,7 +270,17 @@ export function AgentPanel({
     const lastAtPos = value.lastIndexOf("@", selectionStart - 1);
     if (lastAtPos !== -1) {
       const textAfterAt = value.slice(lastAtPos + 1, selectionStart);
-      if (!textAfterAt.includes(" ") && !textAfterAt.includes("\n")) {
+      // 支持含空格的字段名：如果输入含空格，检查是否有已知字段名以此开头
+      // 例如输入 "@Eval t" 时，"Eval test" 以 "Eval t" 开头 → 保持下拉显示
+      const hasNewline = textAfterAt.includes("\n");
+      const hasSpace = textAfterAt.includes(" ");
+      const keepOpen = !hasNewline && (
+        !hasSpace ||
+        mentionItems.some((item) =>
+          item.name.toLowerCase().startsWith(textAfterAt.toLowerCase())
+        )
+      );
+      if (keepOpen) {
         mentionStartPos.current = lastAtPos;
         setMentionFilter(textAfterAt);
         setShowMentions(true);
@@ -318,8 +328,9 @@ export function AgentPanel({
 
     const userMessage = input.trim();
     
-    // 提取 @ 引用的字段名
-    const references = parseReferences(userMessage);
+    // 提取 @ 引用的字段名（传入已知字段名以支持含空格的名称）
+    const knownNames = mentionItems.map((item) => item.name);
+    const references = parseReferences(userMessage, knownNames);
     console.log("[AgentPanel] 发送消息，引用字段:", references);
     
     setInput("");
@@ -569,8 +580,9 @@ export function AgentPanel({
     setSending(true);
     setEditingMessageId(null);
     
-    // 提取 @ 引用
-    const references = parseReferences(editContent);
+    // 提取 @ 引用（传入已知字段名以支持含空格的名称）
+    const knownNames = mentionItems.map((item) => item.name);
+    const references = parseReferences(editContent, knownNames);
     const editedContent = editContent;
     setEditContent("");
     

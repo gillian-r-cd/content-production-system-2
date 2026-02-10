@@ -180,6 +180,64 @@ ROUTE_OPTIONS = Literal[
 ]
 
 
+def _detect_modify_target(user_input: str, references: list) -> str:
+    """
+    当有多个 @ 引用时，智能识别哪个是修改目标字段。
+    
+    策略：找到修改类关键词后最近的 @引用 → 那个就是目标。
+    若无法判断，退回最后一个引用（自然语言通常把目标放在最后）。
+    
+    示例:
+      "参考 @逐字稿1 修改 @逐字稿2" → 逐字稿2（"修改"后面的引用）
+      "修改 @逐字稿2 参考 @逐字稿1" → 逐字稿2（"修改"后面的引用）
+      "帮我改一下 @逐字稿1"         → 逐字稿1（单引用直接返回）
+    """
+    if len(references) <= 1:
+        return references[0] if references else ""
+    
+    import re as _re
+    
+    # 修改类关键词（按长度降序，避免"改"误匹配"修改"的尾部）
+    modify_keywords = ["帮我修改", "帮我改写", "帮我重写", "帮我调整", "帮我更新",
+                        "修改", "改写", "重写", "调整", "更新", "改一下", "改成", "改"]
+    
+    # 构建 引用→位置 映射
+    ref_positions = {}
+    for ref in references:
+        pos = user_input.find(f"@{ref}")
+        if pos >= 0:
+            ref_positions[ref] = pos
+    
+    # 找修改关键词后面最近的引用
+    best_target = None
+    best_distance = float('inf')
+    
+    for keyword in modify_keywords:
+        # 搜索所有出现位置
+        start = 0
+        while True:
+            kw_pos = user_input.find(keyword, start)
+            if kw_pos < 0:
+                break
+            kw_end = kw_pos + len(keyword)
+            
+            # 找该关键词后面最近的引用
+            for ref, ref_pos in ref_positions.items():
+                if ref_pos >= kw_pos:  # 引用在关键词之后（或重叠位置）
+                    distance = ref_pos - kw_end
+                    if 0 <= distance < best_distance:
+                        best_distance = distance
+                        best_target = ref
+            
+            start = kw_pos + 1  # 继续搜索下一个位置
+    
+    if best_target:
+        return best_target
+    
+    # 兜底：返回最后一个引用（自然语言通常把动作对象放在最后）
+    return references[-1]
+
+
 async def route_intent(state: ContentProductionState) -> ContentProductionState:
     """
     意图路由器（重构版）
@@ -216,8 +274,9 @@ async def route_intent(state: ContentProductionState) -> ContentProductionState:
             }
         
         # 默认: @ 引用 + 任何非查询指令 = 修改意图
-        # 这覆盖了: 修改/改成/设计/重写/调整/生成/补充... 不再枚举关键词
-        target_field = references[0]
+        # 关键修复：多个 @ 引用时，智能识别哪个是修改目标
+        # 例如 "参考 @逐字稿1 修改 @逐字稿2" → 目标是逐字稿2
+        target_field = _detect_modify_target(user_input, references)
         print(f"[route_intent] 规则1: @引用 + 指令 → modify, target={target_field}")
         return {
             **state, 
@@ -1380,6 +1439,16 @@ async def modify_node(state: ContentProductionState) -> ContentProductionState:
     if is_json_content:
         format_hint = "\n5. 原始内容是 JSON 结构，请输出修改后的完整 JSON（不要用 markdown 代码块包裹）"
     
+    # 构建参考内容（其他 @ 引用的字段，不包括目标字段本身）
+    reference_section = ""
+    other_refs = {name: content for name, content in referenced_contents.items()
+                  if name != target_field and content}
+    if other_refs:
+        ref_parts = []
+        for name, content in other_refs.items():
+            ref_parts.append(f"### 参考字段「{name}」:\n{content}")
+        reference_section = "\n\n参考内容（用户指定的参考材料）:\n" + "\n\n".join(ref_parts)
+    
     # 构建修改提示词
     system_prompt = f"""你是一个专业的内容编辑。请根据用户的修改指令，对原始内容进行修改。
 
@@ -1388,9 +1457,7 @@ async def modify_node(state: ContentProductionState) -> ContentProductionState:
 {intent_str}
 
 原始内容（字段名：{target_field}）:
-{original_content}
-
-用户修改指令: {operation}
+{original_content}{reference_section}
 
 规则：
 1. 严格按照用户的修改指令进行修改
@@ -1405,16 +1472,19 @@ Markdown 格式硬性要求（如输出包含表格，必须严格遵守）：
 - 表格每行必须以 | 开头、以 | 结尾
 - 示例：在一个单元格中放多条场景的正确写法：| 场景1描述 <br> 场景2描述 <br> 场景3描述 |"""
 
+    # 关键修复：使用用户真实输入作为 user message，而非硬编码模板
+    # 之前 "请修改「逐字稿1」的内容" 会传错目标（取了 references[0]），
+    # 现在直接传用户原始指令如 "参考 @逐字稿1 修改 @逐字稿2"
     messages = [
         ChatMessage(role="system", content=system_prompt),
-        ChatMessage(role="user", content=f"请修改「{target_field}」的内容"),
+        ChatMessage(role="user", content=user_input),
     ]
     
     response = await ai_client.async_chat(messages, temperature=0.5)
     modified_content = response.content
     
     # 构建完整 prompt 用于日志记录
-    full_prompt = f"[System]\n{system_prompt}\n\n[User]\n请修改「{target_field}」的内容"
+    full_prompt = f"[System]\n{system_prompt}\n\n[User]\n{user_input}"
     
     # 返回修改后的内容（is_producing=True 会触发保存）
     return {

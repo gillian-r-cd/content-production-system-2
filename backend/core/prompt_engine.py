@@ -436,10 +436,11 @@ class PromptEngine:
         fields_by_name: Dict[str, ProjectField],
     ) -> Tuple[str, List[ProjectField]]:
         """
-        解析@引用语法
+        解析@引用语法，支持含空格的字段名
         
-        格式: @字段名 或 @阶段.字段名
-        例如: @意图分析 或 @内涵.课程目标
+        策略：优先按已知字段名贪婪匹配（最长优先），
+        兼容 @xxx.yyy 阶段.字段名格式，
+        最后回退到简单正则。
         
         Args:
             text: 包含@引用的文本
@@ -448,39 +449,79 @@ class PromptEngine:
         Returns:
             (替换后的文本, 引用的字段列表)
         """
-        # 匹配 @xxx 或 @xxx.yyy
-        # 使用非贪婪匹配，遇到常见中文虚词/标点时停止
-        # 支持中文、英文、数字、下划线和点号
-        word_chars = r'a-zA-Z0-9_\u4e00-\u9fff'
-        stop_chars = r'的了吗呢吧啊是在有和与或及到从把被让给对比跟向往于着过'
-        punct_chars = r'，。！？、：；""''（）'
-        pattern = rf'@([{word_chars}]+(?:\.[{word_chars}]+)?)(?=[{stop_chars}]|[{punct_chars}\s]|$)'
-        
         referenced_fields = []
+        
+        # 按字段名长度降序排列，确保最长名称优先匹配
+        # 这样 "Eval test" 会优先于 "Eval" 被匹配
+        sorted_names = sorted(fields_by_name.keys(), key=len, reverse=True)
+        
+        # 边界字符（名称后必须跟这些字符或字符串结尾）
+        boundary_chars = set(' \t\n，。！？、：；""''（）@')
+        stop_words = set('的了吗呢吧啊是在有和与或及到从把被让给对比跟向往于着过')
+        
+        result = text
+        used_ranges = []  # 已匹配的区间，防止重复
+        
+        # 第一遍：按已知字段名贪婪匹配
+        for name in sorted_names:
+            search_start = 0
+            while True:
+                pos = result.find(f"@{name}", search_start)
+                if pos < 0:
+                    break
+                
+                end_pos = pos + 1 + len(name)
+                
+                # 检查是否与已有匹配区间重叠
+                overlaps = any(s <= pos < e for s, e in used_ranges)
+                if overlaps:
+                    search_start = pos + 1
+                    continue
+                
+                # 检查边界
+                if end_pos < len(result):
+                    char_after = result[end_pos]
+                    if char_after not in boundary_chars and char_after not in stop_words:
+                        search_start = pos + 1
+                        continue
+                
+                field = fields_by_name[name]
+                referenced_fields.append(field)
+                replacement = f"\n\n---\n引用 [{field.name}]:\n{field.content}\n---\n\n"
+                result = result[:pos] + replacement + result[end_pos:]
+                used_ranges.append((pos, pos + len(replacement)))
+                search_start = pos + len(replacement)
+        
+        # 第二遍：处理 @阶段.字段名 格式 和 未匹配的 @引用（回退正则）
+        word_chars = r'a-zA-Z0-9_\u4e00-\u9fff'
+        stop_chars_re = r'的了吗呢吧啊是在有和与或及到从把被让给对比跟向往于着过'
+        punct_chars_re = r'，。！？、：；""''（）'
+        pattern = rf'@([{word_chars}]+(?:\.[{word_chars}]+)?)(?=[{stop_chars_re}]|[{punct_chars_re}\s]|$)'
         
         def replace_ref(match):
             ref = match.group(1)
             
-            # 尝试直接匹配字段名
+            # 直接匹配（可能在第一遍已处理）
             if ref in fields_by_name:
                 field = fields_by_name[ref]
-                referenced_fields.append(field)
+                if field not in referenced_fields:
+                    referenced_fields.append(field)
                 return f"\n\n---\n引用 [{field.name}]:\n{field.content}\n---\n\n"
             
-            # 尝试匹配 阶段.字段名 格式
+            # 阶段.字段名 格式
             if '.' in ref:
                 _, field_name = ref.split('.', 1)
                 if field_name in fields_by_name:
                     field = fields_by_name[field_name]
-                    referenced_fields.append(field)
+                    if field not in referenced_fields:
+                        referenced_fields.append(field)
                     return f"\n\n---\n引用 [{field.name}]:\n{field.content}\n---\n\n"
             
-            # 未找到，保持原样
             return match.group(0)
         
-        replaced_text = re.sub(pattern, replace_ref, text)
+        result = re.sub(pattern, replace_ref, result)
         
-        return replaced_text, referenced_fields
+        return result, referenced_fields
     
     def get_field_generation_prompt(
         self,

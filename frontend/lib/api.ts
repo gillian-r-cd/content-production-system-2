@@ -1099,15 +1099,65 @@ export const versionAPI = {
 // ============== Utilities ==============
 
 /**
- * 解析消息中的 @引用
- * 例如: "请参考 @标题 和 @正文 生成内容" => ["标题", "正文"]
+ * 解析消息中的 @引用，支持含空格的字段名
+ *
+ * 策略：优先按已知字段名贪婪匹配（最长优先），兼容未知名称的基础正则
+ *
+ * 例如:
+ *   knownFieldNames = ["Eval test", "逐字稿1", "逐字稿2"]
+ *   parseReferences("参考 @Eval test 修改 @逐字稿2", knownFieldNames)
+ *   => ["Eval test", "逐字稿2"]  （保持在原文中出现的顺序）
  */
-export function parseReferences(message: string): string[] {
-  const pattern = /@([^\s@]+)/g;
-  const matches: string[] = [];
-  let match;
-  while ((match = pattern.exec(message)) !== null) {
-    matches.push(match[1]);
+export function parseReferences(message: string, knownFieldNames?: string[]): string[] {
+  if (!knownFieldNames || knownFieldNames.length === 0) {
+    // 无已知字段名时回退到简单正则（不支持空格）
+    const pattern = /@([^\s@]+)/g;
+    const matches: string[] = [];
+    let match;
+    while ((match = pattern.exec(message)) !== null) {
+      matches.push(match[1]);
+    }
+    return matches;
   }
-  return matches;
+
+  // 按长度降序排列，确保最长名称优先匹配（如 "Eval test" 优先于 "Eval"）
+  const sorted = [...knownFieldNames].sort((a, b) => b.length - a.length);
+  const found: { name: string; index: number }[] = [];
+  const usedRanges: [number, number][] = [];
+
+  for (let i = 0; i < message.length; i++) {
+    if (message[i] !== "@") continue;
+    // 跳过已被更长匹配覆盖的位置
+    if (usedRanges.some(([s, e]) => i >= s && i < e)) continue;
+
+    const afterAt = message.slice(i + 1);
+
+    // 尝试匹配已知字段名（最长优先）
+    let matched = false;
+    for (const name of sorted) {
+      if (afterAt.startsWith(name)) {
+        // 检查边界：名称后应是空白、标点、另一个@、或字符串结尾
+        const charAfter = afterAt[name.length];
+        if (!charAfter || /[\s，。！？、：；""''（）@\n]/.test(charAfter)) {
+          found.push({ name, index: i });
+          usedRanges.push([i, i + 1 + name.length]);
+          matched = true;
+          break;
+        }
+      }
+    }
+
+    // 未匹配已知名称时回退到简单正则（至空白/@停止）
+    if (!matched) {
+      const fallback = afterAt.match(/^([^\s@]+)/);
+      if (fallback) {
+        found.push({ name: fallback[1], index: i });
+        usedRanges.push([i, i + 1 + fallback[1].length]);
+      }
+    }
+  }
+
+  // 按在原文中的出现顺序返回
+  found.sort((a, b) => a.index - b.index);
+  return found.map((m) => m.name);
 }
