@@ -763,9 +763,18 @@ async def research_node(state: ContentProductionState) -> ContentProductionState
     
     print(f"[research_node] 获取到意图分析结果 ({len(intent)} 字符): {intent[:200]}...")
     
-    # 从意图中提取有意义的搜索查询，而非硬编码 "消费者调研"
-    # 意图格式: "**做什么**: ...\n**给谁看**: ...\n**核心价值**: ..."
-    query = f"目标用户调研: {intent[:500]}" if intent else "消费者调研"
+    # 从意图中提取简洁的调研主题（不嵌入完整 intent，避免在 synthesize_report 中重复）
+    # intent 格式: "**做什么**: ...\n**给谁看**: ...\n**核心价值**: ..."
+    import re as _re
+    _do_match = _re.search(r"\*\*做什么\*\*[:：]\s*(.+?)(?:\n|$)", intent)
+    if _do_match:
+        # 从 "做什么" 提取核心主题（截取前80字，保持简洁）
+        topic = _do_match.group(1).strip()[:80]
+        query = f"目标用户调研: {topic}"
+    elif intent:
+        query = f"目标用户调研: {intent[:80]}"
+    else:
+        query = "消费者调研"
     
     import json
     import uuid
