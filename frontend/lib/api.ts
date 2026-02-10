@@ -191,6 +191,18 @@ export const projectAPI = {
 
   duplicate: (id: string) =>
     fetchAPI<Project>(`/api/projects/${id}/duplicate`, { method: "POST" }),
+
+  exportProject: (id: string, includeLogs: boolean = false) =>
+    fetchAPI<Record<string, any>>(`/api/projects/${id}/export?include_logs=${includeLogs}`),
+
+  importProject: (data: Record<string, any>, matchCreatorProfile: boolean = true) =>
+    fetchAPI<{ message: string; project: Project; stats: Record<string, number> }>(
+      "/api/projects/import",
+      {
+        method: "POST",
+        body: JSON.stringify({ data, match_creator_profile: matchCreatorProfile }),
+      }
+    ),
 };
 
 // ============== Field API ==============

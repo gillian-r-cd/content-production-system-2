@@ -13,7 +13,7 @@ import { CreateProjectModal } from "@/components/create-project-modal";
 import { projectAPI, fieldAPI, agentAPI } from "@/lib/api";
 import { requestNotificationPermission } from "@/lib/utils";
 import type { Project, Field, ContentBlock } from "@/lib/api";
-import { Copy, Trash2, ChevronDown, CheckSquare, Square, X } from "lucide-react";
+import { Copy, Trash2, ChevronDown, CheckSquare, Square, X, Download, Upload } from "lucide-react";
 
 export default function WorkspacePage() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -28,6 +28,7 @@ export default function WorkspacePage() {
   const [allBlocks, setAllBlocks] = useState<ContentBlock[]>([]); // 所有内容块（用于依赖选择）
   const [showProjectMenu, setShowProjectMenu] = useState(false); // 项目下拉菜单
   const projectMenuRef = useRef<HTMLDivElement>(null);
+  const importFileRef = useRef<HTMLInputElement>(null);
   
   // 批量选择相关状态
   const [isBatchMode, setIsBatchMode] = useState(false);
@@ -307,6 +308,61 @@ export default function WorkspacePage() {
     }
   };
 
+  // ============== 项目导出 ==============
+  const handleExportProject = async (projectId: string, projectName: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      const data = await projectAPI.exportProject(projectId, false);
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${projectName}_export_${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setShowProjectMenu(false);
+    } catch (err) {
+      console.error("导出项目失败:", err);
+      setError("导出项目失败");
+    }
+  };
+
+  // ============== 项目导入 ==============
+  const handleImportProject = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+
+      if (!data.project) {
+        setError("无效的项目导出文件：缺少 project 字段");
+        return;
+      }
+
+      const result = await projectAPI.importProject(data, true);
+      // 刷新项目列表并选中新导入的项目
+      const updatedProjects = await projectAPI.list();
+      setProjects(updatedProjects);
+      if (result.project) {
+        setCurrentProject(result.project);
+      }
+      setShowProjectMenu(false);
+      alert(`✅ ${result.message}\n\n导入统计:\n• 内容块: ${result.stats.content_blocks}\n• 字段: ${result.stats.project_fields}\n• 对话记录: ${result.stats.chat_messages}\n• 版本历史: ${result.stats.content_versions}\n• 模拟记录: ${result.stats.simulation_records}\n• 评估运行: ${result.stats.eval_runs}\n• 生成日志: ${result.stats.generation_logs}`);
+    } catch (err) {
+      console.error("导入项目失败:", err);
+      setError(err instanceof Error ? `导入失败: ${err.message}` : "导入项目失败");
+    } finally {
+      // 重置文件输入
+      if (importFileRef.current) {
+        importFileRef.current.value = "";
+      }
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-screen bg-surface-0">
@@ -430,6 +486,13 @@ export default function WorkspacePage() {
                         {!isBatchMode && (
                           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                             <button
+                              onClick={(e) => handleExportProject(p.id, p.name, e)}
+                              className="p-1.5 hover:bg-surface-3 rounded text-zinc-400 hover:text-green-400"
+                              title="导出项目"
+                            >
+                              <Download className="w-4 h-4" />
+                            </button>
+                            <button
                               onClick={(e) => handleDuplicateProject(p.id, e)}
                               className="p-1.5 hover:bg-surface-3 rounded text-zinc-400 hover:text-brand-400"
                               title="复制项目"
@@ -459,6 +522,21 @@ export default function WorkspacePage() {
           >
             + 新建项目
           </button>
+          <button
+            onClick={() => importFileRef.current?.click()}
+            className="px-3 py-1.5 text-sm bg-surface-2 hover:bg-surface-3 border border-surface-3 rounded-lg transition-colors flex items-center gap-1.5 text-zinc-300"
+            title="从JSON文件导入项目"
+          >
+            <Upload className="w-3.5 h-3.5" />
+            导入项目
+          </button>
+          <input
+            ref={importFileRef}
+            type="file"
+            accept=".json"
+            className="hidden"
+            onChange={handleImportProject}
+          />
         </div>
 
         <div className="flex items-center gap-4">
