@@ -249,7 +249,7 @@ export function ResearchPanel({
   return (
     <div className="h-full flex flex-col relative">
       {/* 可滚动内容区 */}
-      <div className="flex-1 overflow-auto p-6 max-w-4xl mx-auto w-full space-y-8">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden p-6 max-w-4xl mx-auto w-full space-y-8">
 
       {/* 总体概述 */}
       <section className="bg-surface-2 border border-surface-3 rounded-xl p-5">
@@ -267,7 +267,7 @@ export function ResearchPanel({
         <div className="space-y-5">
           {/* 年龄范围 */}
           {data.consumer_profile.age_range && (
-            <div className="space-y-1.5">
+            <div className="space-y-1.5 min-w-0">
               <label className="text-xs font-medium text-zinc-400">年龄范围</label>
               <input
                 type="text"
@@ -281,7 +281,7 @@ export function ResearchPanel({
                     },
                   })
                 }
-                className="w-full bg-surface-1 border border-surface-3 hover:border-surface-4 rounded-lg px-3 py-2.5 text-sm text-zinc-300 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all"
+                className="w-full min-w-0 bg-surface-1 border border-surface-3 hover:border-surface-4 rounded-lg px-3 py-2.5 text-sm text-zinc-300 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all"
               />
             </div>
           )}
@@ -314,7 +314,7 @@ export function ResearchPanel({
                   ? data.consumer_profile.occupation 
                   : [data.consumer_profile.occupation]
                 ).map((occ, idx) => (
-                  <div key={idx} className="flex items-center gap-2 group">
+                  <div key={idx} className="flex items-center gap-2 group min-w-0">
                     <input
                       type="text"
                       value={occ || ""}
@@ -331,7 +331,7 @@ export function ResearchPanel({
                           },
                         });
                       }}
-                      className="flex-1 bg-surface-1 border border-surface-3 hover:border-surface-4 rounded-lg px-3 py-2 text-sm text-zinc-300 focus:outline-none focus:ring-2 focus:ring-brand-500 transition-all"
+                      className="flex-1 min-w-0 bg-surface-1 border border-surface-3 hover:border-surface-4 rounded-lg px-3 py-2 text-sm text-zinc-300 focus:outline-none focus:ring-2 focus:ring-brand-500 transition-all"
                     />
                     <button
                       onClick={() => {
@@ -376,8 +376,8 @@ export function ResearchPanel({
               </div>
               <div className="space-y-2">
                 {data.consumer_profile.characteristics.map((char, idx) => (
-                  <div key={idx} className="flex items-center gap-2 group">
-                    <span className="text-brand-400 text-sm">•</span>
+                  <div key={idx} className="flex items-center gap-2 group min-w-0">
+                    <span className="text-brand-400 text-sm shrink-0">•</span>
                     <input
                       type="text"
                       value={char}
@@ -392,7 +392,7 @@ export function ResearchPanel({
                           },
                         });
                       }}
-                      className="flex-1 bg-surface-1 border border-surface-3 hover:border-surface-4 rounded-lg px-3 py-2 text-sm text-zinc-300 focus:outline-none focus:ring-2 focus:ring-brand-500 transition-all"
+                      className="flex-1 min-w-0 bg-surface-1 border border-surface-3 hover:border-surface-4 rounded-lg px-3 py-2 text-sm text-zinc-300 focus:outline-none focus:ring-2 focus:ring-brand-500 transition-all"
                     />
                     <button
                       onClick={() => {
@@ -435,8 +435,8 @@ export function ResearchPanel({
               </div>
               <div className="space-y-2 max-h-48 overflow-y-auto">
                 {data.consumer_profile.behaviors.map((behavior, idx) => (
-                  <div key={idx} className="flex items-start gap-2 group">
-                    <span className="text-green-400 text-sm mt-2.5">→</span>
+                  <div key={idx} className="flex items-start gap-2 group min-w-0">
+                    <span className="text-green-400 text-sm mt-2.5 shrink-0">→</span>
                     <textarea
                       value={behavior}
                       onChange={(e) => {
@@ -451,7 +451,7 @@ export function ResearchPanel({
                         });
                       }}
                       rows={2}
-                      className="flex-1 bg-surface-1 border border-surface-3 hover:border-surface-4 rounded-lg px-3 py-2 text-sm text-zinc-300 focus:outline-none focus:ring-2 focus:ring-brand-500 transition-all resize-none"
+                      className="flex-1 min-w-0 bg-surface-1 border border-surface-3 hover:border-surface-4 rounded-lg px-3 py-2 text-sm text-zinc-300 focus:outline-none focus:ring-2 focus:ring-brand-500 transition-all resize-none"
                     />
                     <button
                       onClick={() => {
@@ -489,25 +489,25 @@ export function ResearchPanel({
         </div>
         <ul className="space-y-3">
           {data.pain_points.map((point, index) => (
-            <li key={index} className="group flex items-start gap-3">
-              <span className="text-amber-400 mt-2.5 text-lg">•</span>
-              <input
-                type="text"
+            <li key={index} className="group flex items-start gap-3 min-w-0">
+              <span className="text-amber-400 mt-2.5 text-lg shrink-0">•</span>
+              <textarea
                 value={point}
                 placeholder="输入痛点描述..."
+                rows={2}
                 onChange={(e) => {
                   const newPoints = [...data.pain_points];
                   newPoints[index] = e.target.value;
                   setData({ ...data, pain_points: newPoints });
                 }}
-                className="flex-1 bg-surface-1 border border-surface-3 hover:border-surface-4 rounded-lg px-4 py-2.5 text-sm text-zinc-300 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all"
+                className="flex-1 min-w-0 bg-surface-1 border border-surface-3 hover:border-surface-4 rounded-lg px-4 py-2.5 text-sm text-zinc-300 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all resize-none"
               />
               <button
                 onClick={() => {
                   const newPoints = data.pain_points.filter((_, i) => i !== index);
                   setData({ ...data, pain_points: newPoints });
                 }}
-                className="opacity-0 group-hover:opacity-100 p-2 text-red-400 hover:text-red-300 hover:bg-red-400/10 rounded-lg transition-all"
+                className="opacity-0 group-hover:opacity-100 p-2 text-red-400 hover:text-red-300 hover:bg-red-400/10 rounded-lg transition-all shrink-0"
                 title="删除此痛点"
               >
                 ✕
@@ -530,25 +530,25 @@ export function ResearchPanel({
         </div>
         <ul className="space-y-3">
           {data.value_propositions.map((prop, index) => (
-            <li key={index} className="group flex items-start gap-3">
-              <span className="text-green-400 mt-2.5 text-lg">✓</span>
-              <input
-                type="text"
+            <li key={index} className="group flex items-start gap-3 min-w-0">
+              <span className="text-green-400 mt-2.5 text-lg shrink-0">✓</span>
+              <textarea
                 value={prop}
                 placeholder="输入价值主张..."
+                rows={2}
                 onChange={(e) => {
                   const newProps = [...data.value_propositions];
                   newProps[index] = e.target.value;
                   setData({ ...data, value_propositions: newProps });
                 }}
-                className="flex-1 bg-surface-1 border border-surface-3 hover:border-surface-4 rounded-lg px-4 py-2.5 text-sm text-zinc-300 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all"
+                className="flex-1 min-w-0 bg-surface-1 border border-surface-3 hover:border-surface-4 rounded-lg px-4 py-2.5 text-sm text-zinc-300 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all resize-none"
               />
               <button
                 onClick={() => {
                   const newProps = data.value_propositions.filter((_, i) => i !== index);
                   setData({ ...data, value_propositions: newProps });
                 }}
-                className="opacity-0 group-hover:opacity-100 p-2 text-red-400 hover:text-red-300 hover:bg-red-400/10 rounded-lg transition-all"
+                className="opacity-0 group-hover:opacity-100 p-2 text-red-400 hover:text-red-300 hover:bg-red-400/10 rounded-lg transition-all shrink-0"
                 title="删除此主张"
               >
                 ✕
@@ -585,32 +585,38 @@ export function ResearchPanel({
       </section>
 
       {/* 信息来源（DeepResearch引用） */}
-      {data.sources && data.sources.length > 0 && (
-        <section className="bg-surface-2 border border-surface-3 rounded-xl p-5">
-          <h2 className="text-lg font-semibold text-zinc-200 mb-4">
-            📚 信息来源 ({data.sources.length})
-          </h2>
-          <ul className="space-y-2">
-            {data.sources.map((source, index) => (
-              <li key={index} className="flex items-start gap-2 group">
-                <span className="text-zinc-500 text-sm shrink-0">[{index + 1}]</span>
-                <a
-                  href={source}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-sm text-blue-400 hover:text-blue-300 hover:underline break-all transition-colors"
-                  title={source}
-                >
-                  {source.length > 80 ? source.substring(0, 80) + "..." : source}
-                </a>
-              </li>
-            ))}
-          </ul>
-          <p className="text-xs text-zinc-600 mt-4">
-            以上信息来源由 DeepResearch 自动搜索并提取
+      <section className="bg-surface-2 border border-surface-3 rounded-xl p-5">
+        <h2 className="text-lg font-semibold text-zinc-200 mb-4">
+          📚 信息来源 {data.sources && data.sources.length > 0 ? `(${data.sources.length})` : ""}
+        </h2>
+        {data.sources && data.sources.length > 0 ? (
+          <>
+            <ul className="space-y-2">
+              {data.sources.map((source, index) => (
+                <li key={index} className="flex items-start gap-2 group min-w-0">
+                  <span className="text-zinc-500 text-sm shrink-0">[{index + 1}]</span>
+                  <a
+                    href={source}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm text-blue-400 hover:text-blue-300 hover:underline break-all transition-colors min-w-0"
+                    title={source}
+                  >
+                    {source}
+                  </a>
+                </li>
+              ))}
+            </ul>
+            <p className="text-xs text-zinc-600 mt-4">
+              以上信息来源由 DeepResearch 自动搜索并提取
+            </p>
+          </>
+        ) : (
+          <p className="text-sm text-zinc-500 italic">
+            暂无参考来源。如需基于真实网络数据的调研，请在后台设置中配置 Tavily API Key，然后点击"重新生成消费者调研"。
           </p>
-        </section>
-      )}
+        )}
+      </section>
       
       {/* 底部留白，避免被固定按钮遮挡 */}
       <div className="h-24"></div>

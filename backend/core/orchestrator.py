@@ -801,6 +801,8 @@ async def research_node(state: ContentProductionState) -> ContentProductionState
             "value_propositions": report.value_propositions,
             "personas": personas_data,
             "sources": report.sources if hasattr(report, 'sources') else [],
+            "search_queries": report.search_queries if hasattr(report, 'search_queries') else [],
+            "is_deep_research": use_deep,
         }
         
         # JSON格式存储（给中间栏字段用）

@@ -40,24 +40,29 @@ _logger = logging.getLogger("agent")
 
 
 def _save_version_before_overwrite(db: Session, entity_id: str, old_content: str, source: str, source_detail: str = None):
-    """Agent 覆写字段/内容块前，先保存旧内容为版本"""
+    """Agent 覆写字段/内容块前，先保存旧内容为版本（容错：表不存在时跳过）"""
     if not old_content or not old_content.strip():
         return
-    max_ver = db.query(ContentVersion.version_number).filter(
-        ContentVersion.block_id == entity_id
-    ).order_by(ContentVersion.version_number.desc()).first()
-    next_ver = (max_ver[0] + 1) if max_ver else 1
-    ver = ContentVersion(
-        id=generate_uuid(),
-        block_id=entity_id,
-        version_number=next_ver,
-        content=old_content,
-        source=source,
-        source_detail=source_detail,
-    )
-    db.add(ver)
-    db.flush()
-    _logger.info(f"[版本] agent覆写前保存 v{next_ver} ({source})")
+    try:
+        max_ver = db.query(ContentVersion.version_number).filter(
+            ContentVersion.block_id == entity_id
+        ).order_by(ContentVersion.version_number.desc()).first()
+        next_ver = (max_ver[0] + 1) if max_ver else 1
+        ver = ContentVersion(
+            id=generate_uuid(),
+            block_id=entity_id,
+            version_number=next_ver,
+            content=old_content,
+            source=source,
+            source_detail=source_detail,
+        )
+        db.add(ver)
+        db.flush()
+        _logger.info(f"[版本] agent覆写前保存 v{next_ver} ({source})")
+    except Exception as e:
+        # content_versions 表可能未创建，跳过版本保存不影响主流程
+        _logger.warning(f"[版本] 保存失败(可忽略): {e}")
+        db.rollback()
 
 
 def _resolve_references(

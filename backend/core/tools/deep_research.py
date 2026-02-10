@@ -51,8 +51,14 @@ class ResearchReport(BaseModel):
 
 
 def _get_tavily_client() -> TavilyClient:
-    """获取 Tavily 客户端（延迟初始化）"""
-    api_key = os.getenv("TAVILY_API_KEY", "")
+    """获取 Tavily 客户端（延迟初始化）
+    
+    优先级: pydantic-settings > os.environ > load_dotenv fallback
+    注意: pydantic-settings 不会将 .env 值注入 os.environ，
+    所以不能只依赖 os.getenv("TAVILY_API_KEY")。
+    """
+    from core.config import settings as app_settings
+    api_key = app_settings.tavily_api_key or os.getenv("TAVILY_API_KEY", "")
     if not api_key:
         raise ValueError(
             "TAVILY_API_KEY 未设置！请在 backend/.env 中添加：TAVILY_API_KEY=tvly-你的key\n"
@@ -88,7 +94,9 @@ def search_tavily(query: str, max_results: int = 5) -> List[dict]:
             print(f"  [{r.get('score', 0):.2f}] {r.get('title', '')} ({r.get('url', '')})")
         return results
     except Exception as e:
+        import traceback
         print(f"[Tavily] 搜索失败 '{query}': {e}")
+        traceback.print_exc()
         return []
 
 
@@ -267,16 +275,19 @@ async def deep_research(
     
     # 4. 综合分析
     combined_content = "\n".join(r.get("content", "") for r in unique_results)
-    
+
+    print(f"[DeepResearch] unique_results数量: {len(unique_results)}, URLs: {[r.get('url','')[:50] for r in unique_results[:3]]}")
+
     if not unique_results:
         print("[DeepResearch] 警告：搜索未返回任何结果，降级到 quick_research")
         return await quick_research(query, intent)
     
     report = await synthesize_report(unique_results, query, intent)
-    
-    # 确保 sources 包含所有 URL
-    if not report.sources:
-        report.sources = [r.get("url", "") for r in unique_results if r.get("url")]
+
+    # 始终使用 Tavily 返回的真实 URL（不依赖 LLM 输出的 sources）
+    # LLM 有时会返回占位文本（如 "[1] 当前报告阶段无外部可用URL..."）而非实际 URL
+    actual_urls = [r.get("url", "") for r in unique_results if r.get("url")]
+    report.sources = actual_urls
     report.search_queries = search_queries
     report.content_length = len(combined_content)
     
