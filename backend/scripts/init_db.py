@@ -296,6 +296,7 @@ def seed_default_data():
                     interaction_type=type_id,
                     interaction_mode=_TYPE_TO_MODE.get(type_id, "review"),
                     prompt_template=Simulator.get_default_template(type_id),
+                    secondary_prompt=Simulator.get_default_secondary_template(type_id),
                     evaluation_dimensions=type_info["evaluation_dimensions"],
                 )
                 simulators.append(simulator)

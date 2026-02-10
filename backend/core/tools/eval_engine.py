@@ -373,7 +373,7 @@ async def _run_exploration(
     
     # ===== 第一步：消费者制定探索计划 =====
     if custom_prompt:
-        plan_system = custom_prompt.replace("{persona}", persona_text).replace("{content}", "（见下方）")
+        plan_system = custom_prompt.replace("{persona}", persona_text).replace("{content}", "（见下方）").replace("{task}", task_hint)
         if persona_text not in plan_system:
             plan_system += f"\n\n【你扮演的角色】\n{persona_text}"
     else:
@@ -601,7 +601,7 @@ async def _run_dialogue(
     custom_sim_prompt = config.get("system_prompt", "")
     sim_name = config.get("simulator_name", simulator_type)
     
-    # 通用对话模式：消费者提问，内容代表回答
+    # ===== 消费者/第一方提示词 =====
     if custom_sim_prompt:
         # 用后台配置的提示词，替换占位符
         consumer_system = custom_sim_prompt.replace("{persona}", persona_text).replace("{content}", content)
@@ -623,11 +623,15 @@ async def _run_dialogue(
 4. 如果对方的回答不够好，继续追问
 5. 如果觉得已经了解足够了，说"好的，我了解了"结束对话"""
 
-    # 内容代表/第二方的提示词：优先用后台配置的 secondary_prompt
+    # ===== 内容代表/第二方提示词 =====
     custom_secondary = config.get("secondary_prompt", "")
     if custom_secondary:
-        # 用后台配置的提示词，替换 {content} 占位符
+        # 用后台配置的提示词，替换占位符
         content_system = custom_secondary.replace("{content}", content).replace("{persona}", persona_text)
+        # ===== 防御性检查：如果模板中没有 {content} 占位符，内容未被注入 =====
+        # 这是最关键的修复：确保内容代表一定能看到项目内容
+        if "{content}" not in custom_secondary and content and content.strip():
+            content_system += f"\n\n=== 你必须严格基于以下内容回答 ===\n{content}\n=== 内容结束 ==="
     else:
         content_system = f"""你是{content_name}的内容代表，严格基于以下内容回答问题。
 
@@ -786,6 +790,9 @@ async def _run_seller_dialogue(
     custom_primary = config.get("system_prompt", "")
     if custom_primary:
         seller_system = custom_primary.replace("{content}", content).replace("{persona}", persona_text)
+        # 防御性检查：销售方必须知道内容
+        if "{content}" not in custom_primary and content and content.strip():
+            seller_system += f"\n\n=== 你掌握的内容（必须基于此销售）===\n{content}\n=== 内容结束 ==="
     else:
         seller_system = f"""你是这个内容的销售顾问。你深入了解内容的每个细节。
 
