@@ -1,6 +1,7 @@
 // frontend/components/content-block-editor.tsx
 // 功能: ContentBlock 完整编辑器，用于树形视图中选中的内容块
 // 提供与 FieldCard 相同的功能：编辑内容、AI 提示词、约束、依赖、生成等
+// 优化: 轮询改为先检查数据变化再触发全局刷新，避免每3秒级联重渲染
 
 "use client";
 
@@ -137,14 +138,33 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
   }, [block.id]);
   
   // ===== 关键修复 2：如果 block 状态是 in_progress 但当前组件没在流式生成，则轮询刷新 =====
+  // 优化：先检查后端数据是否实际变化，只在变化时才触发父组件刷新
+  // 避免每3秒无条件调用 onUpdate() 导致整棵树级联重渲染
+  const pollStatusRef = useRef(block.status);
+  const pollContentLenRef = useRef((block.content || "").length);
   useEffect(() => {
-    if (block.status === "in_progress" && !isGenerating) {
-      const pollInterval = setInterval(() => {
-        onUpdate?.(); // 触发父组件刷新数据
-      }, 3000);
-      return () => clearInterval(pollInterval);
-    }
-  }, [block.status, isGenerating]);
+    pollStatusRef.current = block.status;
+    pollContentLenRef.current = (block.content || "").length;
+  }, [block.status, block.content]);
+  
+  useEffect(() => {
+    if (block.status !== "in_progress" || isGenerating) return;
+    if (block.id.startsWith("virtual_")) return;
+    
+    const pollInterval = setInterval(async () => {
+      try {
+        const fresh = await blockAPI.get(block.id);
+        // 只在状态或内容实际变化时才触发全局刷新
+        if (fresh.status !== pollStatusRef.current || 
+            (fresh.content || "").length !== pollContentLenRef.current) {
+          onUpdate?.();
+        }
+      } catch {
+        // 静默忽略轮询错误
+      }
+    }, 3000);
+    return () => clearInterval(pollInterval);
+  }, [block.id, block.status, isGenerating]);
   
   // 保存预提问答案状态
   const [isSavingPreAnswers, setIsSavingPreAnswers] = useState(false);

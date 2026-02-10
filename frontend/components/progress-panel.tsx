@@ -2,10 +2,12 @@
 // 功能: 左栏项目进度面板，支持传统视图和树形视图切换
 // 主要组件: ProgressPanel
 // 新增: 树形视图集成 BlockTree 组件
+// 优化: 拆分 useEffect 避免 fields 变化触发灵活架构重复加载；
+//       首次加载才显示 spinner；onBlocksChange 仅在数据实际变化时触发
 
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { cn, PHASE_NAMES, PHASE_STATUS } from "@/lib/utils";
 import type { Project, ContentBlock, Field } from "@/lib/api";
 import { blockAPI, runAutoTriggerChain } from "@/lib/api";
@@ -75,6 +77,8 @@ export function ProgressPanel({
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [isLoadingBlocks, setIsLoadingBlocks] = useState(false);
   const [isMigrating, setIsMigrating] = useState(false);
+  const initialBlocksLoadDone = useRef(false);  // 标记初次加载是否完成
+  const prevBlocksSignature = useRef("");  // 用于比较 blocks 是否实际变化
   
   // 灵活架构项目强制使用树形视图，锁死传统视图
   // 传统架构项目默认使用传统视图
@@ -89,49 +93,72 @@ export function ProgressPanel({
       setViewMode("classic");
       localStorage.setItem("viewMode", "classic");
     }
+    // 切换项目时重置初次加载标记，确保新项目首次显示 spinner
+    initialBlocksLoadDone.current = false;
+    prevBlocksSignature.current = "";
   }, [isFlexibleArch, project?.id]);
   
   const allPhases = project?.phase_order || [];
   const phaseStatus = project?.phase_status || {};
   const currentPhase = project?.current_phase || "intent";
   
-  // 加载内容块（树形视图用）
-  // 对于传统架构，等待 fields 加载完成后再构建虚拟块
-  // 对于灵活架构，从后端加载 ContentBlock
+  // ===== 加载内容块（树形视图用）=====
+  // 关键修复：拆分为两个 useEffect，避免 fields 变化触发灵活架构重新加载
+  // 之前一个 useEffect 同时依赖 fields 和 blocksRefreshKey，
+  // 导致一次操作触发两次树重建（fields 变一次、blocksRefreshKey 变一次）
+  
+  // Effect 1: 灵活架构 —— 只响应 blocksRefreshKey 和 project 变化
   useEffect(() => {
-    if (viewMode === "tree" && project?.id) {
-      if (project.use_flexible_architecture) {
-        // 灵活架构：从后端加载
-        loadContentBlocks();
-      } else if (fields.length > 0) {
-        // 传统架构：等 fields 加载完成后构建虚拟块
-        const virtualBlocks = buildVirtualBlocksFromFields(project, fields);
-        setContentBlocks(virtualBlocks);
-        onBlocksChange?.(flattenBlocks(virtualBlocks));
-      }
+    if (viewMode === "tree" && project?.id && project.use_flexible_architecture) {
+      loadContentBlocks();
     }
-  }, [viewMode, project?.id, project?.use_flexible_architecture, fields, blocksRefreshKey]);
+  }, [viewMode, project?.id, project?.use_flexible_architecture, blocksRefreshKey]);
+  
+  // Effect 2: 传统架构 —— 只响应 fields 变化
+  useEffect(() => {
+    if (viewMode === "tree" && project?.id && !project?.use_flexible_architecture && fields.length > 0) {
+      const virtualBlocks = buildVirtualBlocksFromFields(project, fields);
+      setContentBlocks(virtualBlocks);
+      notifyBlocksChangeIfNeeded(virtualBlocks);
+    }
+  }, [viewMode, project?.id, project?.use_flexible_architecture, fields]);
+  
+  // 辅助函数：计算 blocks 签名，用于比较是否实际变化
+  const computeBlocksSignature = useCallback((blocks: ContentBlock[]): string => {
+    return flattenBlocks(blocks)
+      .map(b => `${b.id}|${b.status}|${(b.content || "").length}|${b.name}`)
+      .join(",");
+  }, []);
+  
+  // 辅助函数：仅在数据实际变化时调用 onBlocksChange
+  const notifyBlocksChangeIfNeeded = useCallback((blocks: ContentBlock[]) => {
+    const flat = flattenBlocks(blocks);
+    const sig = computeBlocksSignature(blocks);
+    if (sig !== prevBlocksSignature.current) {
+      prevBlocksSignature.current = sig;
+      onBlocksChange?.(flat);
+    }
+  }, [computeBlocksSignature, onBlocksChange]);
   
   const loadContentBlocks = async () => {
     if (!project?.id) return;
     
-    setIsLoadingBlocks(true);
+    // ===== 关键修复：只在首次加载时显示 spinner =====
+    // 后续刷新时静默更新数据，避免 spinner 闪烁导致树跳动
+    if (!initialBlocksLoadDone.current) {
+      setIsLoadingBlocks(true);
+    }
     try {
       // ===== 关键逻辑：根据项目架构决定数据来源 =====
-      // 如果项目使用灵活架构（use_flexible_architecture=true），从 ContentBlock 表加载
-      // 否则，始终从 ProjectField 构建虚拟块（确保数据同步）
-      
       if (project.use_flexible_architecture) {
         // 真正的灵活架构项目：从 ContentBlock 表加载
         const data = await blockAPI.getProjectBlocks(project.id);
         if (data.blocks && data.blocks.length > 0) {
           setContentBlocks(data.blocks);
-          // 传递扁平化的块列表，用于依赖选择
-          onBlocksChange?.(flattenBlocks(data.blocks));
+          notifyBlocksChangeIfNeeded(data.blocks);
         } else {
-          // 灵活架构但没有数据，显示空状态
           setContentBlocks([]);
-          onBlocksChange?.([]);
+          notifyBlocksChangeIfNeeded([]);
         }
         
         // 前端驱动自动触发链：找到可触发的块 → 逐个生成 → 递归
@@ -140,25 +167,24 @@ export function ProgressPanel({
           blockAPI.getProjectBlocks(project.id).then((freshData) => {
             if (freshData.blocks) {
               setContentBlocks(freshData.blocks);
-              onBlocksChange?.(flattenBlocks(freshData.blocks));
+              notifyBlocksChangeIfNeeded(freshData.blocks);
             }
           }).catch(console.error);
         }).catch(console.error);
       } else {
-        // 传统架构项目：始终从 ProjectField 构建虚拟块
-        // 这确保了树形视图和传统视图显示相同的数据
+        // 传统架构项目：从 ProjectField 构建虚拟块
         const virtualBlocks = buildVirtualBlocksFromFields(project, fields);
         setContentBlocks(virtualBlocks);
-        onBlocksChange?.(flattenBlocks(virtualBlocks));
+        notifyBlocksChangeIfNeeded(virtualBlocks);
       }
     } catch (err) {
       console.error("加载内容块失败:", err);
-      // 失败时从 fields 构建虚拟块
       const virtualBlocks = buildVirtualBlocksFromFields(project, fields);
       setContentBlocks(virtualBlocks);
-      onBlocksChange?.(flattenBlocks(virtualBlocks));
+      notifyBlocksChangeIfNeeded(virtualBlocks);
     } finally {
       setIsLoadingBlocks(false);
+      initialBlocksLoadDone.current = true;
     }
   };
   
