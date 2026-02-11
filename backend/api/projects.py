@@ -1133,7 +1133,7 @@ def _build_search_snippets(content: str, matches: list, query: str, context_char
     return snippets
 
 
-def _replace_content(content: str, pattern, replacement: str, indices: list | None) -> tuple[str, int]:
+def _replace_content(content: str, pattern, replacement: str, indices: Optional[list] = None) -> tuple:
     """
     替换内容。如果 indices 为 None，替换所有匹配；否则只替换指定索引的匹配。
     返回 (新内容, 替换次数)

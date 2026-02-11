@@ -6,6 +6,102 @@
 
 ---
 
+## ⚠️ LangGraph 架构适配说明（2026-02-11 追加）
+
+> **本文档写于 Agent 架构迁移之前**。经过讨论，我们决定正确使用 LangGraph（详见 `docs/langgraph_migration.md`）。
+> 以下变更影响本文档中的所有代码示例：
+
+
+### 术语映射（前端显示 ↔ 后端代码）
+
+> 为了对创作者友好，前端和用户面向的文本使用以下术语。后端代码中的变量名保持不变。
+
+| 前端显示（用户看到的） | 后端代码/变量名 | 说明 |
+|----------------------|---------------|------|
+| **内容块** | `field_name`, `ProjectField`, `ContentBlock` | 项目中的一个内容单元（如"场景库"、"人物设定"） |
+| **组** | `phase`, `current_phase` | 组织内容块的分组（如 intent、inner、outer） |
+
+> **注意**：工具参数名（如 `field_name`、`target_phase`）保持英文不变，但工具的 docstring 描述和 LLM 系统提示中使用"内容块"和"组"。
+
+### 全局替换规则
+
+| 旧代码 | 新代码 | 原因 |
+|--------|--------|------|
+| `from core.ai_client import ai_client, ChatMessage` | `from core.llm import llm, llm_mini` + `from langchain_core.messages import SystemMessage, HumanMessage, AIMessage` | `ai_client` 已删除 |
+| `ChatMessage(role="system", content=...)` | `SystemMessage(content=...)` | LangChain 消息类型 |
+| `ChatMessage(role="user", content=...)` | `HumanMessage(content=...)` | LangChain 消息类型 |
+| `ChatMessage(role="assistant", content=...)` | `AIMessage(content=...)` | LangChain 消息类型 |
+| `await ai_client.async_chat(messages, temperature=T)` | `await llm.ainvoke(messages)` (温度在 `get_chat_model()` 设) | 统一 LLM 调用 |
+| `await ai_client.async_chat(messages, model="gpt-4o-mini")` | `await llm_mini.ainvoke(messages)` | 小模型用 `llm_mini` |
+| `async for token in ai_client.stream_chat(messages):` | `async for chunk in llm.astream(messages):` + `chunk.content` | 流式调用 |
+| `ContentProductionState` 新增字段 | 不再适用 — `AgentState` 只有 4 字段（messages, project_id, current_phase, creator_profile） | 状态精简 |
+| `route_intent` 修改 | 不再适用 — `route_intent` 已删除，LLM 通过 Tool Calling 自动路由 | LLM 驱动路由 |
+| `initial_state` 27 字段构建 | 4 字段 AgentState 构建 | 状态精简 |
+
+### 节点函数 → @tool 映射
+
+| 本文档中的节点 | LangGraph 架构中的实现 | 说明 |
+|---------------|----------------------|------|
+| `modify_node` (重写) | `modify_field` @tool in `agent_tools.py` | edits 逻辑保留，入口从节点改为工具 |
+| `prompt_plan_node` (新增) | `update_prompt` @tool in `agent_tools.py` | 分析修改需求，返回修改计划 |
+| `prompt_execute_node` (新增) | `execute_prompt_update` @tool in `agent_tools.py` | 按计划执行修改，返回修订预览 |
+| `cocreation_node` (新增) | **不走 Agent Graph** — 直接用 `llm.astream()` | 共创是纯聊天，无需 Tool Calling |
+| `build_field_index_block` (新增) | 已内置于 `build_system_prompt()` | 内容块索引自动注入 |
+
+### SSE 事件变化
+
+| 本文档中的事件 | LangGraph 架构中 | 说明 |
+|---------------|-----------------|------|
+| `route` | `tool_start` | 路由概念改为工具调用 |
+| `content` (一次性) | `token` (流式) | 所有路由统一 token 级流式 |
+| `modify_preview` | 仍然保留 — 从 `tool_end` 事件的 output 中提取 | 工具返回结构化数据 |
+| `modify_confirm_needed` | 仍然保留 — 工具返回 `need_confirm=True` 时发送 | 工具内部判断 |
+| `pending_prompt_update` | ~~已废弃~~ — Agent Loop 中自动触发 `update_prompt` @tool，不再需要前端手动发第二请求 | 流程由 Agent 多轮对话自然完成 |
+
+### 共创模式的特殊处理
+
+共创模式是**纯角色扮演对话**，不需要 Tool Calling。因此它**不走 Agent Graph**：
+
+```python
+# agent.py stream endpoint
+if request.mode == "cocreation":
+    # 直接用 llm.astream()，不走 graph
+    persona_prompt = build_cocreation_prompt(request.persona_config, referenced_contents)
+    messages = [SystemMessage(content=persona_prompt)] + cocreation_history + [HumanMessage(content=request.message)]
+    async for chunk in llm.astream(messages):
+        if chunk.content:
+            yield sse_event({"type": "token", "content": chunk.content})
+    # ... 保存 + done
+else:
+    # 助手模式：走 Agent Graph
+    async for event in agent_graph.astream_events(input_state, config=config, version="v2"):
+        # ... 正常事件处理
+```
+
+### required_fields 功能在新架构中的替代
+
+原设计：`route_intent` 输出 `required_fields` → 预加载内容块全文 → 注入到 state。
+
+新架构替代方案：
+- 内容块索引已自动注入 `build_system_prompt()`（摘要级别）
+- 当 Agent 需要某个内容块的**完整内容**时，调用 `read_field` @tool 获取
+- LLM 主动判断是否需要读取全文，而非预测性预加载
+- 这更符合 Agent 模式：**按需获取信息**，而非提前全部加载
+
+### 上下文工程适配（详见 `langgraph_migration.md` 第八节）
+
+| 变化 | 旧方案 | 新方案 |
+|------|--------|--------|
+| 对话历史加载 | 从 ChatMessage DB 加载最近 20 条 + 组过滤 | Checkpointer 自动累积，只传新消息 |
+| ToolMessage 存储 | ❌ 不存储（Agent 无法记住工具调用） | ✅ Checkpointer 自动保存（完整对话链） |
+| Token 预算 | 硬截断 20 条 | `trim_messages` 智能裁剪（~100K tokens） |
+| 组隔离 | 按 phase 过滤，切换丢历史 | 不隔离，所有组共享线程 |
+| 助手模式 thread | — | `{project_id}:assistant` |
+| ChatMessage DB | LLM 上下文来源 + 前端展示 | **仅前端展示**，LLM 上下文由 Checkpointer 提供 |
+| 共创模式历史 | 直接从 DB 加载 | 不变（共创不走 Graph，仍从 DB 加载） |
+
+---
+
 ## 共识总览
 
 ### 话题一：提示词更新
@@ -15,13 +111,13 @@
 - 版本管理复用 `ContentVersion`，`source="prompt_update"`
 
 ### 话题二：平台记忆
-- 每个字段/内容块新增 `digest` 字段（一句话摘要，≤50字）
-- 摘要在字段内容更新时**异步生成**（write-time async，用小模型）
-- **全量字段摘要索引**（~600 tokens）无条件注入到每次 LLM 调用的 system prompt
+- 每个内容块新增 `digest` 列（一句话摘要，≤50字）
+- 摘要在内容块更新时**异步生成**（write-time async，用小模型）
+- **全量内容块摘要索引**（~600 tokens）无条件注入到每次 LLM 调用的 system prompt
 - system prompt 中明确说明索引用途，防止基于摘要过拟合
-- `required_fields`：意图路由基于索引判断需要全文的字段（去重 @ 引用，上限 5 个）
+- `required_fields`：意图路由基于索引判断需要全文的内容块（去重 @ 引用，上限 5 个）
 
-### 话题三：字段精细编辑
+### 话题三：内容块精细编辑
 - LLM 输出**编辑操作指令**（edits），不输出修改后全文
 - 每个 edit 用 `anchor`（原文精确引用）定位
 - Agent 自主判断是否需要用户确认（`need_confirm`）
@@ -36,7 +132,7 @@
 - Persona 配置区在共创 Tab 顶部，支持下拉选择、直接编写、保存复用
 - 对话历史**分离显示**（两个 Tab 各自只显示本模式消息），数据存同一张表
 - 上下文**单向自动桥接**：助手能看到最近共创对话（只读注入），共创角色看不到助手对话
-- 共创模式下跳过 `route_intent`，直接走 `cocreation_node`
+- 共创模式不走 Agent Graph，直接用 `llm.astream()`（详见 §5.6）
 
 ---
 
@@ -52,7 +148,7 @@
 ├──────────────────────────────────────────┤
 │  ☑ 同步修改提示词                         │  ← 新增的 toggle
 │  ┌────────────────────────────────┐ [发送] │
-│  │ 输入消息... 使用 @ 引用字段     │        │
+│  │ 输入消息... 使用 @ 引用内容块    │        │
 │  └────────────────────────────────┘        │
 │  [继续] [开始调研] [评估] [🔧 调用工具]    │
 └──────────────────────────────────────────┘
@@ -102,120 +198,93 @@ class ChatRequest(BaseModel):
 
 ### 1.3 后端：流程设计
 
-当 `update_prompt=True` 时，Agent 的执行流程变为两阶段：
+> ⚠️ **LangGraph 适配**：以下流程在新架构中由 **Agent Loop 自然完成**，不再需要前端自动发第二请求。
+> 当 `update_prompt=True` 时，**API 层**（`stream_chat` 端点）在用户消息末尾追加系统提示，引导 Agent 在内容修改后自动调用 `update_prompt` @tool：
+> ```python
+> if request.update_prompt:
+>     augmented_message += "\n\n[系统提示：用户已开启"同步修改提示词"。内容修改完成后，请自动调用 update_prompt 工具分析提示词是否需要同步修改。]"
+> ```
+> 这与 `@` 引用的处理方式一致（API 层增强消息，而非修改 AgentState）。
+> 用户确认修改计划后，Agent 再调用 `execute_prompt_update` @tool。整个流程是 Agent 多轮对话的一部分。
+> 下方的 `pending_prompt_update` done 事件和前端自动触发代码 **已废弃**，仅供理解原始设计思路。
+
+当 `update_prompt=True` 时，Agent 的执行流程：
 
 ```
 用户发送 "@场景库 把5个模块改成7个模块" (update_prompt=ON)
     │
     ▼
-Phase A: 正常的内容修改（走 modify_node / edits 流程）
-    │ → 输出 edits，前端展示 Track Changes
-    │ → 用户接受/拒绝 → 内容修改完成
+Step 1: Agent 调用 modify_field @tool → 内容修改完成
     │
     ▼
-Phase B: 提示词修改（仅当 Phase A 完成后触发）
+Step 2: Agent 自动调用 update_prompt @tool → 返回修改计划
+    │   展示给用户："原句→改为" 的 WYSIWYG 对照
     │
-    ├── Step 1: WYSIWYG 修改计划
-    │   Agent 读取该字段的 ai_prompt，分析用户指令对提示词的影响
-    │   输出格式：
-    │     修改计划：
-    │     - 原句：「基于协访后复盘展开，设计5个模块的训练场景」
-    │       改为：「基于协访后复盘展开，设计7个模块的训练场景」
-    │     [如果有冲突] 注意：现有规则「场景不超过20个」可能需要同步调整
-    │
-    ├── 用户确认 → 进入 Step 2
-    │
-    ├── Step 2: 修订预览
-    │   展示带 ~~删除线~~ 和 **高亮** 的完整提示词修订版
-    │   用户确认 → 进入 Step 3
-    │
-    └── Step 3: 写入
-        保存新版 ai_prompt → ContentVersion(source="prompt_update")
+    ▼
+Step 3: 用户确认 → Agent 调用 execute_prompt_update @tool
+    │   → 执行修改 + 保存版本 → 返回修订预览
 ```
 
-**Phase B 的实现方式**：
+~~**旧方案（已废弃）— Phase B 的实现方式**：~~
 
-后端在 Phase A 完成后，如果 `update_prompt=True`，在 SSE done 事件中追加标记：
+~~后端在 Phase A 完成后，如果 `update_prompt=True`，在 SSE done 事件中追加标记：~~
 
 ```python
-# SSE done 事件
-yield sse_event({
-    "type": "done",
-    "message_id": msg_id,
-    "is_producing": True,
-    "pending_prompt_update": True,  # 新增：告诉前端还有提示词修改流程
-    "target_field": target_field,    # 涉及的字段名
-})
+# ⚠️ 已废弃：新架构中 Agent 自动调用 update_prompt @tool，不需要此标记
+# yield sse_event({
+#     "type": "done",
+#     "pending_prompt_update": True,
+#     "target_field": target_field,
+# })
 ```
 
-前端收到 `pending_prompt_update=True` 后，自动发送第二条请求（Phase B），带上 `mode: "prompt_plan"`：
+~~前端收到 `pending_prompt_update=True` 后，自动发送第二条请求（Phase B）：~~
 
 ```typescript
-// 自动触发提示词修改计划
-if (data.pending_prompt_update) {
-  // 展示 "正在分析提示词修改..." 的过渡消息
-  // 然后发送:
-  await fetch(`${API_BASE}/api/agent/stream`, {
-    method: "POST",
-    body: JSON.stringify({
-      project_id: projectId,
-      message: `[提示词修改计划] 基于刚才的修改指令"${userMessage}"，分析对字段「${data.target_field}」提示词的影响`,
-      references: [data.target_field],
-      mode: "prompt_plan",  // 专用模式，绕过 route_intent
-    }),
-  });
-}
+// ⚠️ 已废弃：新架构中 Agent Loop 自动处理，无需前端手动触发
+// if (data.pending_prompt_update) { ... }
 ```
 
-### 1.4 后端：prompt_plan 模式处理
+### ~~1.4 后端：prompt_plan 模式处理~~ → 已废弃
 
-文件：`backend/api/agent.py` 的 stream endpoint
+> ⚠️ **LangGraph 适配**：`mode="prompt_plan"` / `mode="prompt_execute"` 的手动分发已废弃。
+> 新架构中，Agent 通过 Tool Calling 自动路由到 `update_prompt` / `execute_prompt_update` @tool。
+> 详见 Step 4.3（执行手册）和 `langgraph_migration.md` §3.5。
 
-当 `mode="prompt_plan"` 时，直接走提示词修改流程，不经过 `route_intent`：
+### 1.5 ~~prompt_plan_node~~ → `update_prompt` @tool
 
-```python
-if request.mode == "prompt_plan":
-    # 直接调用提示词修改计划节点
-    result = await prompt_plan_node(routed_state)
-elif request.mode == "prompt_execute":
-    # 用户确认后，执行提示词修改
-    result = await prompt_execute_node(routed_state)
-else:
-    # 正常的意图路由
-    ...
-```
-
-### 1.5 prompt_plan_node
-
-文件：`backend/core/orchestrator.py`（新增）
+文件：`backend/core/agent_tools.py`（新增 @tool）
 
 ```python
-async def prompt_plan_node(state: ContentProductionState) -> ContentProductionState:
+# ⚠️ LangGraph 适配：此节点改为 @tool 函数 in agent_tools.py
+# 不再使用 ContentProductionState，通过 RunnableConfig 获取 project_id
+
+from langchain_core.tools import tool
+from langchain_core.runnables import RunnableConfig
+from core.llm import llm
+from langchain_core.messages import SystemMessage, HumanMessage
+
+@tool
+async def update_prompt(field_name: str, instruction: str, config: RunnableConfig) -> str:
+    """修改指定内容块的生成提示词（ai_prompt）。当用户要求修改某个内容块的"提示词"或"生成规则"时使用。
+
+    Args:
+        field_name: 要修改提示词的内容块名称
+        instruction: 用户的修改指令
     """
-    提示词修改计划节点
-    读取目标字段的 ai_prompt，输出 WYSIWYG 修改计划
-    """
-    target_field = state.get("parsed_target_field", "")
-    project_id = state.get("project_id", "")
-    user_input = state.get("user_input", "")
-    
-    # 获取目标字段的当前 ai_prompt
-    current_prompt = get_field_ai_prompt(project_id, target_field)
+    project_id = config["configurable"]["project_id"]
+    current_prompt = get_field_ai_prompt(project_id, field_name)
     
     if not current_prompt:
-        return {
-            **state,
-            "agent_output": f"字段「{target_field}」暂无提示词，无需修改。",
-            "is_producing": False,
-        }
+        return f"内容块「{field_name}」暂无提示词，无需修改。"
     
-    system_prompt = f"""你要为一个字段的生成提示词做修改计划。
+    system_prompt = f"""你要为一个内容块的生成提示词做修改计划。
 
-## 当前提示词（字段：{target_field}）
+## 当前提示词（内容块：{field_name}）
 {current_prompt}
 
 ## 用户的修改要求
-{user_input}
+{instruction}
 
 ## 输出要求
 以"所见即所得"的方式，对于每处改动，直接给出：
@@ -227,40 +296,40 @@ async def prompt_plan_node(state: ContentProductionState) -> ContentProductionSt
 不要输出其他内容。"""
 
     messages = [
-        ChatMessage(role="system", content=system_prompt),
-        ChatMessage(role="user", content="请输出修改计划"),
+        SystemMessage(content=system_prompt),
+        HumanMessage(content="请输出修改计划"),
     ]
     
-    response = await ai_client.async_chat(messages, temperature=0.3)
+    response = await llm.ainvoke(messages)  # ← llm.ainvoke 替代 ai_client.async_chat
     
-    return {
-        **state,
-        "agent_output": response.content,
-        "is_producing": False,  # 计划不保存到字段
-        "pending_prompt_plan": {
-            "target_field": target_field,
-            "current_prompt": current_prompt,
-            "plan": response.content,
-        },
-    }
+    # 工具返回修改计划，Agent 会把这个结果展示给用户
+    # 后续的确认和执行通过 Agent 的多轮对话自然完成
+    return f"📝 提示词修改计划（内容块：{field_name}）\n\n{response.content}"
 ```
 
-### 1.6 prompt_execute_node
+### 1.6 ~~prompt_execute_node~~ → `execute_prompt_update` @tool
 
-用户确认计划后，前端发送 `mode="prompt_execute"`，后端执行：
+> 用户确认计划后，Agent 自动调用 `execute_prompt_update`（不再需要前端发送 `mode="prompt_execute"`）
 
 ```python
-async def prompt_execute_node(state: ContentProductionState) -> ContentProductionState:
+# ⚠️ LangGraph 适配：prompt_execute_node 改为 execute_prompt_update @tool
+# 确认流程通过 Agent 多轮对话自然完成：
+#   1. Agent 调用 update_prompt → 返回修改计划
+#   2. 用户确认 → Agent 再次调用 execute_prompt_update → 执行修改
+# 这样不需要前端手动触发第二阶段
+
+@tool
+async def execute_prompt_update(field_name: str, plan: str, config: RunnableConfig) -> str:
+    """执行已确认的提示词修改计划。当用户确认了提示词修改计划后调用。
+
+    Args:
+        field_name: 要修改的内容块名称
+        plan: 已确认的修改计划内容
     """
-    提示词修改执行节点
-    按确认的计划修改 ai_prompt，输出修订预览
-    """
-    pending = state.get("pending_prompt_plan", {})
-    target_field = pending.get("target_field", "")
-    current_prompt = pending.get("current_prompt", "")
-    plan = pending.get("plan", "")
+    project_id = config["configurable"]["project_id"]
+    current_prompt = get_field_ai_prompt(project_id, field_name)
     
-    system_prompt = f"""你要按照已确认的修改计划，修改一个字段的生成提示词。
+    system_prompt = f"""你要按照已确认的修改计划，修改一个内容块的生成提示词。
 
 ## 当前提示词
 {current_prompt}
@@ -272,24 +341,23 @@ async def prompt_execute_node(state: ContentProductionState) -> ContentProductio
 输出修改后的完整提示词。只输出提示词本身，不要有任何额外说明。"""
 
     messages = [
-        ChatMessage(role="system", content=system_prompt),
-        ChatMessage(role="user", content="请输出修改后的提示词"),
+        SystemMessage(content=system_prompt),
+        HumanMessage(content="请输出修改后的提示词"),
     ]
     
-    response = await ai_client.async_chat(messages, temperature=0.2)
+    from core.llm import get_chat_model
+    llm_precise = get_chat_model(temperature=0.2)  # 低温度保证精确
+    response = await llm_precise.ainvoke(messages)
     new_prompt = response.content
     
     # 生成修订预览（用 diff 标记）
+    from core.edit_engine import generate_revision_markdown
     revision_preview = generate_revision_markdown(current_prompt, new_prompt)
     
-    # 保存到字段的 ai_prompt + 版本记录
-    save_prompt_update(project_id, target_field, new_prompt, current_prompt)
+    # 保存到内容块的 ai_prompt + 版本记录
+    save_prompt_update(project_id, field_name, new_prompt, current_prompt)
     
-    return {
-        **state,
-        "agent_output": f"✅ 提示词已更新。修订预览：\n\n{revision_preview}",
-        "is_producing": False,
-    }
+    return f"✅ 提示词已更新。修订预览：\n\n{revision_preview}"
 ```
 
 ### 1.7 辅助函数
@@ -298,7 +366,7 @@ async def prompt_execute_node(state: ContentProductionState) -> ContentProductio
 
 ```python
 def get_field_ai_prompt(project_id: str, field_name: str) -> str | None:
-    """获取字段的 ai_prompt"""
+    """获取内容块的 ai_prompt"""
     db = next(get_db())
     # 先查 ContentBlock
     block = db.query(ContentBlock).filter(
@@ -335,7 +403,7 @@ def save_prompt_update(project_id: str, field_name: str, new_prompt: str, old_pr
 
 ---
 
-## 二、平台记忆（字段摘要索引）
+## 二、平台记忆（内容块摘要索引）
 
 ### 2.1 数据库 Schema 变更
 
@@ -387,14 +455,14 @@ if __name__ == "__main__":
 
 ```python
 """
-字段摘要服务
-在字段内容更新后异步生成一句话摘要
+内容块摘要服务
+在内容块更新后异步生成一句话摘要
 """
 import asyncio
-from core.ai_client import ai_client
+from core.llm import llm_mini  # ← 统一使用 LangChain ChatModel
 from core.models import ProjectField, ContentBlock
 from core.database import get_db
-from langchain_core.messages import ChatMessage
+from langchain_core.messages import HumanMessage
 
 async def generate_digest(content: str) -> str:
     """用小模型生成一句话摘要（≤50字）"""
@@ -402,29 +470,24 @@ async def generate_digest(content: str) -> str:
         return ""
     
     messages = [
-        ChatMessage(
-            role="user",
+        HumanMessage(
             content=f"用一句话概括以下内容的核心主题和要点（不超过50字，只输出摘要本身）：\n\n{content[:3000]}"
         ),
     ]
     
-    response = await ai_client.async_chat(
-        messages,
-        temperature=0,
-        model="gpt-4o-mini",  # 用便宜快速的模型
-    )
+    response = await llm_mini.ainvoke(messages)  # ← llm_mini 替代 ai_client
     return response.content.strip()[:200]
 
 
 def trigger_digest_update(entity_id: str, entity_type: str, content: str):
     """
     非阻塞地触发摘要更新。
-    在字段内容保存后调用。
+    在内容块保存后调用。
     
     Args:
         entity_id: ProjectField 或 ContentBlock 的 ID
         entity_type: "field" 或 "block"
-        content: 字段内容
+        content: 内容块内容
     """
     async def _do_update():
         try:
@@ -463,31 +526,30 @@ def trigger_digest_update(entity_id: str, entity_type: str, content: str):
 
 | 触发点 | 文件 | 说明 |
 |--------|------|------|
-| `_save_result_to_field()` | `backend/api/agent.py` | Agent 产出/修改字段后 |
-| `PUT /api/fields/{id}` | `backend/api/fields.py` | 用户手动编辑字段后 |
-| `PUT /api/blocks/{id}` | `backend/api/blocks.py` | 用户手动编辑内容块后 |
-| 字段生成完成 | `backend/api/fields.py` | AI 生成字段内容后 |
+| `modify_field` @tool 内部 | `backend/core/agent_tools.py` | ⚠️ LangGraph 适配：原 `_save_result_to_field()` 逻辑移入工具函数 |
+| `generate_field_content` @tool 内部 | `backend/core/agent_tools.py` | ⚠️ LangGraph 适配：同上 |
+| `PUT /api/fields/{id}` | `backend/api/fields.py` | 用户手动编辑内容块后（不变） |
+| `PUT /api/blocks/{id}` | `backend/api/blocks.py` | 用户手动编辑内容块后（不变） |
+| 内容块生成完成 | `backend/api/fields.py` | AI 生成内容块后（不变） |
 
-示例（在 `_save_result_to_field` 中）：
+示例（在 `modify_field` @tool 中）：
 
 ```python
 from core.digest_service import trigger_digest_update
 
-# 在保存内容之后
-if field_updated and agent_output:
-    entity_id = field_updated.get("id", "")
-    entity_type = "block" if field_updated.get("phase") == "" else "field"
-    trigger_digest_update(entity_id, entity_type, agent_output)
+# @tool 函数内部，保存修改后的内容之后
+db.commit()
+trigger_digest_update(field.id, "field", new_content)
 ```
 
-### 2.4 构建全量字段索引
+### 2.4 构建全量内容块索引
 
 文件：`backend/core/digest_service.py`（追加）
 
 ```python
 def build_field_index(project_id: str) -> str:
     """
-    构建项目的全量字段摘要索引。
+    构建项目的全量内容块摘要索引。
     返回格式化的字符串，注入到 system prompt。
     """
     db = next(get_db())
@@ -522,7 +584,9 @@ def build_field_index(project_id: str) -> str:
 
 ### 2.5 注入到 System Prompt
 
-在**所有 LLM 调用节点**（modify_node, query_node, chat_node, phase nodes, tool_node）的 system prompt 中追加：
+> ⚠️ **LangGraph 适配**：在新架构中，内容块索引注入已统一在 `build_system_prompt(state)` 中完成（见 `langgraph_migration.md` 3.4 节）。不再需要逐个节点注入。以下仅供理解注入内容和格式。
+
+~~在**所有 LLM 调用节点**（modify_node, query_node, chat_node, phase nodes, tool_node）的 system prompt 中追加：~~
 
 ```python
 field_index = build_field_index(project_id)
@@ -532,10 +596,10 @@ field_index_block = ""
 if field_index:
     field_index_block = f"""
 
-## 项目字段索引
-以下是本项目所有字段及其摘要。
-用途：帮你定位与用户指令相关的字段。
-注意：摘要只是索引，不是完整内容。如果你需要某个字段的完整内容来回答问题或执行操作，请通过 required_fields 获取，不要基于摘要猜测或编造内容。
+## 项目内容块索引
+以下是本项目所有内容块及其摘要。
+用途：帮你定位与用户指令相关的内容块。
+注意：摘要只是索引，不是完整内容。如果你需要某个内容块的完整内容来回答问题或执行操作，请调用 read_field 工具获取，不要基于摘要猜测或编造内容。
 
 {field_index}
 """
@@ -543,22 +607,25 @@ if field_index:
 
 **关键语句**："不要基于摘要猜测或编造内容"——这是防止过拟合的核心约束。
 
-### 2.6 route_intent 输出 required_fields
+### 2.6 ~~route_intent 输出 required_fields~~ → Agent 主动使用 `read_field` 工具
 
-在意图路由的 LLM prompt 中，追加 required_fields 输出要求：
+> ⚠️ **LangGraph 适配**：`route_intent` 已删除。新架构中，当 Agent 需要某个内容块的完整内容时，会主动调用 `read_field` @tool。无需预测性预加载。
+> 以下原方案保留供参考，但**不执行**。
+
+~~在意图路由的 LLM prompt 中，追加 required_fields 输出要求：~~
 
 ```python
 # 在 route_intent 的 system prompt 最后追加：
 f"""
 ## 上下文需求判断
-根据用户指令，判断执行此操作需要哪些字段的**完整内容**。
-参考上面的项目字段索引，列出所有可能相关的字段名（上限 5 个）。
+根据用户指令，判断执行此操作需要哪些内容块的**完整内容**。
+参考上面的项目内容块索引，列出所有可能相关的内容块名（上限 5 个）。
 宁可多列，不要遗漏。不确定是否需要就列上。
-{f"排除已通过 @ 引用的字段：{references}" if references else ""}
+{f"排除已通过 @ 引用的内容块：{references}" if references else ""}
 
 在 JSON 输出中追加：
-"required_fields": ["字段名1", "字段名2"]
-如果不需要额外字段，输出空数组。
+"required_fields": ["内容块名1", "内容块名2"]
+如果不需要额外内容块，输出空数组。
 """
 ```
 
@@ -584,7 +651,7 @@ routed_state["extra_referenced_contents"] = extra_context
 
 ---
 
-## 三、字段精细编辑
+## 三、内容块精细编辑
 
 ### 3.1 核心数据结构：Edit 操作
 
@@ -605,9 +672,11 @@ ModifyResult = {
 }
 ```
 
-### 3.2 modify_node 提示词重写
+### 3.2 ~~modify_node~~ → `modify_field` @tool 提示词
 
-文件：`backend/core/orchestrator.py`（替换现有 modify_node 中的 system_prompt）
+> ⚠️ **LangGraph 适配**：此 system_prompt 应用于 `agent_tools.py` 中的 `modify_field` @tool 函数内部。
+
+文件：`backend/core/agent_tools.py`（`modify_field` @tool 内部使用的 system prompt）
 
 ```python
 system_prompt = f"""你是一个精确的内容编辑器。你的任务是将用户的修改指令转化为具体的编辑操作。
@@ -615,7 +684,7 @@ system_prompt = f"""你是一个精确的内容编辑器。你的任务是将用
 ## 当前项目
 {creator_profile}
 
-## 目标字段：{target_field}
+## 目标内容块：{target_field}
 {original_content}
 
 {f"## 参考内容" + chr(10) + chr(10).join(f"### {k}{chr(10)}{v}" for k, v in extra_context.items()) if extra_context else ""}
@@ -807,24 +876,34 @@ def generate_revision_markdown(old: str, new: str) -> str:
     return "".join(result)
 ```
 
-### 3.4 后端：modify_node 改造
+### 3.4 后端：`modify_field` @tool 改造
 
-文件：`backend/core/orchestrator.py`
+> ⚠️ **LangGraph 适配**：原 `modify_node` 改为 `modify_field` @tool。返回值从 `ContentProductionState` 变为字符串。
+> `modify_result` / `pending_edits` 不再放在 State 中，而是作为工具返回值的一部分。
+> 前端通过 `tool_end` 事件获取结构化数据。
 
-modify_node 的返回值变更：
+文件：`backend/core/agent_tools.py`
 
 ```python
-async def modify_node(state: ContentProductionState) -> ContentProductionState:
-    # ... 构建 system_prompt（使用 3.2 的新提示词）
-    # ... 调用 LLM
+@tool
+async def modify_field(field_name: str, instruction: str, reference_fields: list[str] = [], config: RunnableConfig = None) -> str:
+    """修改指定内容块的内容。当用户要求修改、调整、重写某个内容块时使用。"""
+    project_id = config["configurable"]["project_id"]
+    
+    # 读取内容块内容
+    original_content = get_field_content_text(project_id, field_name)
+    
+    # 构建 system_prompt（使用 3.2 的提示词）
+    # 调用 LLM
+    response = await llm.ainvoke(messages)
     
     # 解析 JSON 输出
     import json
     try:
         modify_result = json.loads(response.content)
     except json.JSONDecodeError:
-        # 降级：把整个输出当成纯文本（兼容老行为）
-        return {**state, "agent_output": response.content, "is_producing": True, "modify_target_field": target_field}
+        # 降级：返回纯文本结果
+        return f"修改结果：\n{response.content}"
     
     edits = modify_result.get("edits", [])
     need_confirm = modify_result.get("need_confirm", False)
@@ -832,89 +911,94 @@ async def modify_node(state: ContentProductionState) -> ContentProductionState:
     ambiguity = modify_result.get("ambiguity")
     
     if need_confirm:
-        # 需要确认：不保存，把计划返回给用户
-        plan_text = f"📝 **修改计划**（字段：{target_field}）\n\n"
-        plan_text += f"{summary}\n\n"
-        if ambiguity:
-            plan_text += f"⚠️ 需要确认：{ambiguity}\n\n"
-        plan_text += "**具体修改：**\n"
-        for i, edit in enumerate(edits):
-            if edit["type"] == "replace":
-                plan_text += f"{i+1}. 替换：「{edit['anchor'][:80]}」→「{edit['new_text'][:80]}」\n"
-            elif edit["type"] == "insert_after" or edit["type"] == "insert_before":
-                plan_text += f"{i+1}. 新增：在「{edit['anchor'][:60]}」{'之后' if edit['type'] == 'insert_after' else '之前'}插入内容\n"
-            elif edit["type"] == "delete":
-                plan_text += f"{i+1}. 删除：「{edit['anchor'][:80]}」\n"
-        plan_text += "\n请确认，或告诉我需要调整。"
-        
-        return {
-            **state,
-            "agent_output": plan_text,
-            "is_producing": False,  # 不保存到字段
-            "pending_edits": {
-                "target_field": target_field,
-                "original_content": original_content,
-                "edits": edits,
+        # 需要确认：不保存，返回 JSON（前端通过 on_tool_end 事件提取 edits 展示 Track Changes UI）
+        # Agent（LLM）也能读取此 JSON 并用自然语言告知用户
+        return json.dumps({
+            "status": "need_confirm",
+            "target_field": field_name,
                 "summary": summary,
-            },
-        }
+            "ambiguity": ambiguity,
+            "edits": edits,
+            "message": f"📝 修改计划（内容块：{field_name}）：{summary}。请确认或告诉我需要调整。",
+        }, ensure_ascii=False)
     else:
         # 直接执行
+        from core.edit_engine import apply_edits
         new_content, changes = apply_edits(original_content, edits)
         
-        # 检查是否有失败的 edit
         failed = [c for c in changes if c["status"] == "failed"]
         if failed:
             error_msg = "\n".join([f"- {c['anchor'][:50]}... ({c['reason']})" for c in failed])
-            # 有失败的 edit，回退到确认模式
-            return {
-                **state,
-                "agent_output": f"部分修改无法定位：\n{error_msg}\n\n请确认或调整指令。",
-                "is_producing": False,
-            }
+            return json.dumps({
+                "status": "partial_fail",
+                "target_field": field_name,
+                "failed": [{"anchor": c["anchor"][:80], "reason": c["reason"]} for c in failed],
+                "message": f"部分修改无法定位，请确认或调整指令。",
+            }, ensure_ascii=False)
         
-        return {
-            **state,
-            "agent_output": "",  # 实际内容通过 changes 传递
-            "is_producing": True,
-            "modify_target_field": target_field,
-            "modify_result": {
+        # 保存修改后的内容到 DB
+        db = next(get_db())
+        try:
+            save_field_content(db, project_id, field_name, new_content)
+            trigger_digest_update(field_id, "field", new_content)
+            db.commit()
+        finally:
+            db.close()
+        
+        return json.dumps({
+            "status": "applied",
+            "target_field": field_name,
+            "summary": summary,
+            "changes_count": len(changes),
                 "original_content": original_content,
                 "new_content": new_content,
                 "changes": changes,
-                "summary": summary,
-            },
-        }
+            "message": f"✅ 已修改内容块「{field_name}」。{summary}，共 {len(changes)} 处修改。",
+        }, ensure_ascii=False)
 ```
 
 ### 3.5 后端：SSE 事件传递 changes
 
-文件：`backend/api/agent.py` 的 stream endpoint
+> ⚠️ **LangGraph 适配**：在新架构中，`modify_preview` 和 `modify_confirm_needed` 事件通过 `tool_end` 事件传递。
+> 工具函数的返回值（字符串）会出现在 `on_tool_end` 事件的 `data.output` 中。
+> API 层可以解析 `modify_field` 工具的输出，从中提取结构化数据并发送专用 SSE 事件。
 
-在 `done` 事件中传递 Track Changes 数据：
+文件：`backend/api/agent.py` 的 event_generator 中
 
 ```python
-modify_result = result.get("modify_result")
-if modify_result:
-    # 有 Track Changes 数据
-    yield sse_event({
-        "type": "modify_preview",
-        "target_field": result.get("modify_target_field"),
-        "original_content": modify_result["original_content"],
-        "new_content": modify_result["new_content"],
-        "changes": modify_result["changes"],
-        "summary": modify_result["summary"],
-    })
-
-pending_edits = result.get("pending_edits")
-if pending_edits:
-    # Agent 需要确认
-    yield sse_event({
-        "type": "modify_confirm_needed",
-        "target_field": pending_edits["target_field"],
-        "edits": pending_edits["edits"],
-        "summary": pending_edits["summary"],
-    })
+# 在 on_tool_end 事件处理中（modify_field 返回 JSON 字符串，需要解析）
+# 详细实现见 Step 3.3（执行手册）
+elif kind == "on_tool_end":
+    tool_name = event["name"]
+    tool_output = event["data"].get("output", "")
+    
+    # modify_field 工具的特殊处理：解析 JSON，提取 Track Changes 数据
+    if tool_name == "modify_field":
+        import json
+        try:
+            result = json.loads(tool_output)
+            status = result.get("status")
+            if status == "need_confirm":
+                yield sse_event({
+                    "type": "modify_confirm_needed",
+                    "target_field": result["target_field"],
+                    "edits": result["edits"],
+                    "summary": result["summary"],
+                    "ambiguity": result.get("ambiguity"),
+                })
+            elif status == "applied":
+                yield sse_event({
+                    "type": "modify_preview",
+                    "target_field": result["target_field"],
+                    "original_content": result.get("original_content", ""),
+                    "new_content": result.get("new_content", ""),
+                    "changes": result.get("changes", []),
+                    "summary": result["summary"],
+                })
+        except json.JSONDecodeError:
+            pass  # 降级走通用逻辑
+    else:
+        yield sse_event({"type": "tool_end", "tool": tool_name, "output": tool_output[:500]})
 ```
 
 ### 3.6 后端：部分接受 API
@@ -1136,8 +1220,8 @@ VERSION_SOURCES = {
 ```python
 _save_version_before_overwrite(
     db, 
-    field_id,           # 字段ID
-    old_ai_prompt,      # 旧提示词内容（不是字段内容）
+    field_id,           # 内容块ID
+    old_ai_prompt,      # 旧提示词内容（不是内容块内容）
     "prompt_update",    # source
     f"prompt:{field_name}",  # source_detail，用 "prompt:" 前缀区分
 )
@@ -1251,7 +1335,7 @@ COCREATION_PRESETS = [
 
 ### 5.4 数据库变更
 
-**Project 模型新增字段**：
+**Project 模型新增列**：
 
 ```python
 # Project 新增
@@ -1264,10 +1348,10 @@ cocreation_personas: Mapped[list] = mapped_column(
 **ChatMessage metadata 扩展**：
 
 ```python
-# ChatMessage.message_metadata 增加字段
+# ChatMessage.message_metadata 增加键值
 {
     "phase": "",
-    "tool_used": None,
+    "tools_used": [],           # ⚠️ 变更：原 "tool_used"(str) → "tools_used"(list)，因一次请求可调用多个工具
     "skill_used": None,
     "references": [],
     "mode": "assistant",        # 新增: "assistant" | "cocreation"
@@ -1322,50 +1406,72 @@ class ChatRequest(BaseModel):
 
 ### 5.6 后端：路由分流
 
+> ⚠️ **LangGraph 适配**：路由不再使用 `route_intent`，而是在 stream endpoint 中按 `mode` 分流。
+> - `mode == "cocreation"` → 直接用 `llm.astream()`（纯聊天）
+> - 其他 → 走 Agent Graph（`graph.astream_events()`）
+
 文件：`backend/api/agent.py` 的 stream endpoint
 
 ```python
-async def stream_chat(request: ChatRequest):
-    # ...
+async def stream_chat(request: ChatRequest, db: Session = Depends(get_db)):
+    # ... 验证 + 保存用户消息 ...
     
     if request.mode == "cocreation":
-        # 共创模式：跳过 route_intent，直接走 cocreation_node
-        result = await cocreation_node({
-            "project_id": request.project_id,
-            "user_input": request.message,
-            "references": request.references,
-            "referenced_contents": referenced_contents,
-            "persona_config": request.persona_config,
-            "messages": cocreation_history,  # 只加载共创消息
-        })
-        # SSE 输出（复用现有流式机制）
-        # ...
+        # 共创模式：不走 Agent Graph，直接流式角色扮演
+        return StreamingResponse(
+            handle_cocreation_stream(request, db, project, referenced_contents),
+            media_type="text/event-stream",
+        )
     
-    elif request.mode == "prompt_plan":
-        # 提示词修改流程（话题一）
-        # ...
-    
+    # 助手模式：走 Agent Graph（所有路由由 LLM Tool Calling 自动决策）
+    # ⚠️ 上下文工程：使用 Checkpointer 管理历史（详见 langgraph_migration.md 8.4 节）
+    thread_id = f"{request.project_id}:assistant"
+    config = {"configurable": {"thread_id": thread_id, "project_id": request.project_id}}
+
+    # Bootstrap 检查：首次请求（或服务器重启后）从 DB 加载种子历史
+    try:
+        existing = await agent_graph.aget_state(config)
+        has_checkpoint = existing and existing.values and existing.values.get("messages")
+    except Exception:
+        has_checkpoint = False
+
+    if not has_checkpoint:
+        db_history = _load_seed_history(db, request.project_id)
+        input_messages = db_history + [HumanMessage(content=augmented_message)]
     else:
-        # 助手模式：正常 route_intent
-        # ...
+        input_messages = [HumanMessage(content=augmented_message)]
+
+    input_state = {
+        "messages": input_messages,
+        "project_id": request.project_id,
+        "current_phase": current_phase,
+        "creator_profile": project.creator_profile.to_prompt_context() if project.creator_profile else "",
+    }
+    
+    async def event_generator():
+        # ... graph.astream_events(input_state, config=config, version="v2") 循环 ...
+    
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 ```
 
-### 5.7 后端：cocreation_node
+### 5.7 后端：共创模式处理
 
-文件：`backend/core/orchestrator.py`（新增）
+> ⚠️ **LangGraph 适配**：共创模式是纯角色扮演对话，**不走 Agent Graph**。
+> 直接使用 `llm.astream()` 实现 token 级流式输出，不需要 Tool Calling。
+
+文件：`backend/api/agent.py`（在 stream endpoint 中处理）
 
 ```python
-async def cocreation_node(state: dict) -> dict:
+# 共创模式处理函数
+async def handle_cocreation_stream(request, db, project, referenced_contents):
     """
-    共创对话节点
-    AI 扮演指定角色与用户实时对话
+    共创模式：直接用 llm.astream()，不走 Agent Graph。
+    纯角色扮演对话，不需要工具调用。
     """
-    persona_config = state.get("persona_config", {})
-    referenced_contents = state.get("referenced_contents", {})
-    history = state.get("messages", [])
-    user_input = state.get("user_input", "")
+    from core.llm import get_chat_model
+    from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
     
-    # 构建角色 system prompt
+    persona_config = request.persona_config or {}
     persona_prompt = persona_config.get("prompt", "")
     persona_name = persona_config.get("name", "角色")
     
@@ -1377,18 +1483,19 @@ async def cocreation_node(state: dict) -> dict:
                 persona_prompt = preset["system_prompt_template"]
                 break
     
+    # 先发送 user_saved 事件（前端依赖此事件更新消息列表）
+    yield sse_event({"type": "user_saved", "message_id": saved_user_msg_id})
+    
     # 构建引用内容上下文
     content_context = ""
     if referenced_contents:
-        content_parts = []
-        for name, content in referenced_contents.items():
-            content_parts.append(f"### {name}\n{content}")
+        content_parts = [f"### {name}\n{content}" for name, content in referenced_contents.items()]
         content_context = f"""
 
 【创作者分享给你的内容】
 {chr(10).join(content_parts)}
 
-你需要基于以上内容进行对话。如果用户 @ 了新的内容，也会在这里出现。"""
+你需要基于以上内容进行对话。"""
     
     system_prompt = f"""你正在扮演一个角色，与内容创作者进行一对一的共创对话。
 
@@ -1407,27 +1514,43 @@ async def cocreation_node(state: dict) -> dict:
 5. 回答要自然、口语化，像真人在聊天
 6. 如果创作者问你角色设定之外的事（比如帮我写代码），礼貌拒绝并把话题拉回内容"""
     
-    messages = [ChatMessage(role="system", content=system_prompt)]
+    # 构建消息列表
+    cocreation_llm = get_chat_model(temperature=0.8)
+    messages = [SystemMessage(content=system_prompt)]
     
-    # 添加共创历史消息
-    for msg in history[-20:]:  # 最近 20 条
-        messages.append(ChatMessage(
-            role="user" if msg.get("role") == "user" else "assistant",
-            content=msg.get("content", ""),
-        ))
+    # 加载共创历史消息（仅当前模式）
+    cocreation_history = load_messages(db, request.project_id, mode="cocreation", limit=20)
+    for msg in cocreation_history:
+        if msg.role == "user":
+            messages.append(HumanMessage(content=msg.content))
+        else:
+            messages.append(AIMessage(content=msg.content))
     
-    # 当前用户输入
-    messages.append(ChatMessage(role="user", content=user_input))
+    messages.append(HumanMessage(content=request.message))
     
-    response = await ai_client.async_chat(messages, temperature=0.8)
+    # 流式输出
+    full_content = ""
+    async for chunk in cocreation_llm.astream(messages):
+        if chunk.content:
+            full_content += chunk.content
+            yield sse_event({"type": "token", "content": chunk.content})
     
-    return {
-        "agent_output": response.content,
-        "is_producing": False,  # 共创不产出字段内容
-        "tokens_in": response.tokens_in,
-        "tokens_out": response.tokens_out,
-        "duration_ms": response.duration_ms,
-    }
+    # 保存响应
+    agent_msg = ChatMessage(
+        id=generate_uuid(),
+        project_id=request.project_id,
+        role="assistant",
+        content=full_content,
+        message_metadata={
+            "mode": "cocreation",
+            "persona_name": persona_name,
+            "persona_id": persona_config.get("id"),
+        },
+    )
+    db.add(agent_msg)
+    db.commit()
+    
+    yield sse_event({"type": "done", "message_id": agent_msg.id, "is_producing": False})
 ```
 
 ### 5.8 对话历史：分离显示 + 上下文自动桥接
@@ -1448,11 +1571,20 @@ const displayMessages = messages.filter(
 
 #### 后端：消息加载 + 上下文桥接
 
-消息加载（按 mode 过滤）：
+> **上下文工程说明**：
+> - **助手模式**：对话历史由 Checkpointer 自动管理（包含 ToolMessage），不需要手动加载。
+> - **共创模式**：不走 Agent Graph，因此仍需从 ChatMessage DB 手动加载历史。
+> - 以下 `load_messages` 函数仅供 **共创模式** 和 **上下文桥接** 使用。
+
+消息加载（按 mode 过滤，供共创模式和桥接使用）：
 
 ```python
-def load_messages(project_id: str, mode: str, limit: int = 50):
-    """加载指定 mode 的消息"""
+def load_messages(db: Session, project_id: str, mode: str, limit: int = 50):
+    """
+    从 ChatMessage DB 加载指定 mode 的消息。
+    用途：共创模式历史加载 + 助手模式的共创桥接。
+    注意：助手模式的 LLM 上下文由 Checkpointer 管理，不使用此函数。
+    """
     return db.query(ChatMessage).filter(
         ChatMessage.project_id == project_id,
         # JSON 字段查询：sqlite 的 json_extract
@@ -1471,6 +1603,13 @@ def build_assistant_context_with_bridge(project_id: str) -> str:
     - 反方向不注入（共创角色不需要知道助手做了什么）
     - 只注入最近 1 次共创会话（最近 5 轮 = 10 条消息）
     """
+    db = next(get_db())
+    try:
+        return _build_bridge_impl(db, project_id)
+    finally:
+        db.close()
+
+def _build_bridge_impl(db, project_id: str) -> str:
     recent_cocreation = db.query(ChatMessage).filter(
         ChatMessage.project_id == project_id,
         func.json_extract(ChatMessage.message_metadata, "$.mode") == "cocreation",
@@ -1491,10 +1630,13 @@ def build_assistant_context_with_bridge(project_id: str) -> str:
     bridge += "如果用户提到"刚才的对话""角色说的"等，请参考上面的共创记录。\n"
     bridge += "如果用户没有提及，不需要主动引用这些内容。\n"
     
-    return bridge
+    return bridge  # _build_bridge_impl 结束
 ```
 
-**注入位置**：在助手模式所有节点（chat_node, modify_node, query_node 等）的 system prompt 末尾追加。
+**注入位置**：
+> ⚠️ **LangGraph 适配**：在新架构中，注入到 `build_system_prompt(state)` 中（统一入口），不再逐个节点注入。
+>
+> **上下文工程说明**：桥接数据从 ChatMessage DB 读取（`load_messages(db, project_id, mode="cocreation")`），不从 Checkpointer 读取。因为桥接只需要摘要级别的内容，ChatMessage DB 中保存的 user/assistant 消息已足够。
 
 #### 上下文桥接流程图
 
@@ -1515,7 +1657,7 @@ def build_assistant_context_with_bridge(project_id: str) -> str:
   │ 助手 mode context   │ ◄────────┘  ✅ 自动桥接（只读注入最近共创对话）
   │ = 助手历史           │
   │ + 共创桥接摘要       │
-  │ + 字段索引           │
+  │ + 内容块索引          │
   └─────────────────────┘
 
             ▲
@@ -1525,7 +1667,7 @@ def build_assistant_context_with_bridge(project_id: str) -> str:
   │ 共创 mode context   │
   │ = 共创历史（仅当前角色）│
   │ + 角色设定           │
-  │ + @ 引用的字段内容    │
+  │ + @ 引用的内容块      │
   └─────────────────────┘
 ```
 
@@ -1708,43 +1850,48 @@ def _get_project_personas(project_id: str, db: Session) -> list:
 
 ## 六、实施顺序
 
+> ⚠️ **前置条件**：本文档的所有 Phase 均依赖 `langgraph_migration.md` 的迁移完成。
+> 迁移完成后，`ai_client` 已删除、`orchestrator.py` 已重写、`agent_tools.py` 已创建。
+
+### Phase 0: Agent 架构迁移（见 langgraph_migration.md）
+0. 执行 `langgraph_migration.md` 的全部 Phase 1-5
+
 ### Phase 1: 基建（无 UI 变化）
 1. 迁移脚本：ProjectField / ContentBlock 加 `digest` 列
 2. 迁移脚本：Project 加 `cocreation_personas` 列
 3. `backend/core/edit_engine.py`：`apply_edits()` + `generate_revision_markdown()`
-4. `backend/core/digest_service.py`：摘要生成 + 字段索引构建
+4. `backend/core/digest_service.py`：摘要生成 + 内容块索引构建（**使用 `llm_mini`，非 `ai_client`**）
 5. `npm install rehype-raw`
 
 ### Phase 2: 话题二 — 平台记忆
-6. 所有内容保存触发点加 `trigger_digest_update()`
-7. 所有 LLM 节点的 system prompt 注入 `field_index_block`
-8. route_intent 输出 `required_fields`，节点执行前获取全文
+6. 所有内容保存触发点加 `trigger_digest_update()`（**触发点在 @tool 函数内部 + API 端点**）
+7. ~~所有 LLM 节点注入~~ → 内容块索引已在 `build_system_prompt()` 中统一注入（迁移时已完成）
+8. ~~route_intent 输出 required_fields~~ → 改为 Agent 主动调用 `read_field` @tool 按需获取
 
 ### Phase 3: 话题三 — 精细编辑
-9. modify_node 重写（新提示词 + edits JSON 输出 + need_confirm 判断）
-10. SSE 新增 `modify_preview` / `modify_confirm_needed` 事件
-11. `POST /api/fields/{id}/accept-changes` endpoint
-12. 前端 `RevisionView` 组件
-13. ReactMarkdown 启用 rehypeRaw + del/ins 样式
-14. 字段面板集成 RevisionView（收到 modify_preview 事件时切换到修订模式）
+9. `modify_field` @tool 内部实现 edits JSON 输出 + need_confirm 判断（**在 `agent_tools.py` 中**）
+10. SSE 通过 `tool_end` 事件传递修改结果，前端解析
+11. `POST /api/fields/{id}/accept-changes` endpoint（不变）
+12. 前端 `RevisionView` 组件（不变）
+13. ReactMarkdown 启用 rehypeRaw + del/ins 样式（不变）
+14. 内容块面板集成 RevisionView（不变）
 
 ### Phase 4: 话题一 — 提示词更新
-15. ChatRequest 新增 `update_prompt` + `mode` 字段
-16. 前端 toggle "同步修改提示词"
-17. `prompt_plan_node` + `prompt_execute_node`
-18. SSE `pending_prompt_update` 事件 → 前端自动触发 Phase B
-19. 提示词修订预览（复用 `generate_revision_markdown`）
+15. ChatRequest 新增 `mode`（`update_prompt` 可选，因为 Agent 可自动判断）
+16. `update_prompt` + `execute_prompt_update` @tool 实现（**在 `agent_tools.py` 中**）
+17. 前端 toggle "同步修改提示词"（可选，因为 Agent 自动判断时不需要）
+18. 提示词修订预览（复用 `generate_revision_markdown`）
 
 ### Phase 5: 话题四 — 共创模式
-20. `COCREATION_PRESETS` 全局角色常量定义
-21. `cocreation_node` 实现（orchestrator.py）
-22. 后端路由分流（mode="cocreation" 时跳过 route_intent）
-23. 上下文桥接函数 `build_assistant_context_with_bridge()`
-24. Persona CRUD API（list / save / delete）
-25. 前端 Agent 面板 tab 切换 + persona 配置区
-26. 前端 PersonaSelector 组件（三层来源）
-27. 消息加载按 mode 过滤 + 共创消息视觉区分
-28. 前端发送消息传递 mode + persona_config
+19. `COCREATION_PRESETS` 全局角色常量定义
+20. `handle_cocreation_stream()` 实现（**在 `agent.py` 中，直接用 `llm.astream()`**）
+21. 后端路由分流（mode="cocreation" 时走 `handle_cocreation_stream`）
+22. 上下文桥接函数 `build_assistant_context_with_bridge()` → 注入到 `build_system_prompt()`
+23. Persona CRUD API（list / save / delete）
+24. 前端 Agent 面板 tab 切换 + persona 配置区
+25. 前端 PersonaSelector 组件（三层来源）
+26. 消息加载按 mode 过滤 + 共创消息视觉区分
+27. 前端发送消息传递 mode + persona_config
 
 ---
 
@@ -1755,7 +1902,7 @@ def _get_project_personas(project_id: str, db: Session) -> list:
 | LLM 输出的 edits JSON 格式不对 | `json.JSONDecoder().raw_decode()` + fallback 到纯文本（兼容现有行为） |
 | anchor 在原文中找不到 | edit 标记为 failed，告知用户；如果所有 edits 都失败，回退到确认模式 |
 | anchor 不唯一 | edit 标记为 failed，提示 LLM 需要更长的引用 |
-| 摘要生成延迟（字段刚更新后立刻请求） | 索引中显示"有内容，摘要生成中"，不影响功能 |
+| 摘要生成延迟（内容块刚更新后立刻请求） | 索引中显示"有内容，摘要生成中"，不影响功能 |
 | rehypeRaw 导致用户内容中的 HTML 被意外渲染 | 只在修订模式下启用 rehypeRaw；正常渲染模式不启用 |
 | 大段内容的 diff 过于碎片化 | 如果 changes 超过 15 个，提示用户"修改较多，建议逐段确认" |
 | 共创角色跳出角色 | system prompt 强约束 + temperature=0.8 保持创造性但守住角色边界 |
@@ -1941,19 +2088,20 @@ def generate_revision_markdown(old: str, new: str) -> str:
 ### Step 1.2 — 新建 `backend/core/digest_service.py`
 
 **类型**: 新建文件
-**依赖**: `core.ai_client`, `core.database`, `core.models`
+**依赖**: `core.llm`, `core.database`, `core.models`
 
 ```python
 # backend/core/digest_service.py
 """
-字段摘要服务
-在字段内容更新后异步生成一句话摘要
-构建全量字段索引注入 system prompt
+内容块摘要服务
+在内容块更新后异步生成一句话摘要
+构建全量内容块索引注入 system prompt
 """
 import asyncio
 import logging
 
-from core.ai_client import ai_client, ChatMessage
+from core.llm import llm_mini  # ← 使用 LangChain ChatModel（小模型）
+from langchain_core.messages import HumanMessage
 from core.models.project_field import ProjectField
 from core.models.content_block import ContentBlock
 from core.database import get_db
@@ -1965,19 +2113,18 @@ async def generate_digest(content: str) -> str:
     """
     用小模型生成一句话摘要
 
-    输入: content - 字段内容（取前 3000 字）
+    输入: content - 内容块内容（取前 3000 字）
     输出: 摘要字符串（<=200 字符），内容过短返回 ""
     """
     if not content or len(content.strip()) < 10:
         return ""
     messages = [
-        ChatMessage(
-            role="user",
+        HumanMessage(
             content=f"用一句话概括以下内容的核心主题和要点（不超过50字，只输出摘要本身）：\n\n{content[:3000]}"
         ),
     ]
     try:
-        response = await ai_client.async_chat(messages, temperature=0, model="gpt-4o-mini")
+        response = await llm_mini.ainvoke(messages)  # ← ainvoke 替代 async_chat
         return response.content.strip()[:200]
     except Exception as e:
         logger.warning(f"[Digest] 生成摘要失败: {e}")
@@ -1986,12 +2133,12 @@ async def generate_digest(content: str) -> str:
 
 def trigger_digest_update(entity_id: str, entity_type: str, content: str):
     """
-    非阻塞地触发摘要更新。在字段内容保存后调用。
+    非阻塞地触发摘要更新。在内容块保存后调用。
 
     输入:
         entity_id   - ProjectField.id 或 ContentBlock.id
         entity_type - "field" | "block"
-        content     - 字段内容
+        content     - 内容块内容
     输出: 无（后台执行）
     """
     async def _do_update():
@@ -2026,10 +2173,10 @@ def trigger_digest_update(entity_id: str, entity_type: str, content: str):
 
 def build_field_index(project_id: str) -> str:
     """
-    构建项目的全量字段摘要索引。
+    构建项目的全量内容块摘要索引。
 
     输入: project_id
-    输出: 格式化字符串（每行一个字段: "- 字段名 [状态]: 摘要"），空项目返回 ""
+    输出: 格式化字符串（每行一个内容块: "- 名称 [状态]: 摘要"），空项目返回 ""
     """
     db = next(get_db())
     try:
@@ -2141,28 +2288,21 @@ if __name__ == "__main__":
 
 ## Phase 2: 平台记忆
 
-### Step 2.1 — 摘要触发: `_save_result_to_field()`
+### ~~Step 2.1 — 摘要触发: `_save_result_to_field()`~~ → 废弃
 
-**文件**: `backend/api/agent.py`
-
-**2.1a** — 文件顶部 import 区追加:
-
-```python
-from core.digest_service import trigger_digest_update
-```
-
-**2.1b** — `_save_result_to_field` 函数末尾（约第293行），将 `return field_updated` 替换为:
-
-```python
-    # 触发摘要更新
-    if field_updated and agent_output:
-        fid = field_updated.get("id", "")
-        if fid:
-            etype = "field" if field_updated.get("phase") else "block"
-            trigger_digest_update(fid, etype, agent_output)
-
-    return field_updated
-```
+> ⚠️ **LangGraph 适配**：`_save_result_to_field()` 已在 LangGraph 迁移中删除。
+> 摘要触发逻辑已移入 @tool 函数内部（`modify_field`、`generate_field_content` 等）。
+> 每个 @tool 在保存内容块到 DB 后，直接调用 `trigger_digest_update()`。
+>
+> **示例**（`modify_field` @tool 中）：
+> ```python
+> from core.digest_service import trigger_digest_update
+> # ... apply_edits 后保存内容 ...
+> db.commit()
+> trigger_digest_update(field.id, "field", new_content)
+> ```
+>
+> **此 Step 废弃。** 摘要触发的完整实现见 Section 2.3 的触发点表格和 Section 3.4 的 `modify_field` @tool 代码。
 
 ---
 
@@ -2204,133 +2344,79 @@ from core.digest_service import trigger_digest_update
 
 ---
 
-### Step 2.4 — orchestrator.py: 字段索引构建辅助函数
+### Step 2.4 — orchestrator.py: 内容块索引注入到 build_system_prompt
 
-**文件**: `backend/core/orchestrator.py`
+> ⚠️ **LangGraph 适配**：新架构中没有多个独立的 LLM 节点函数。所有上下文注入都在 `build_system_prompt()` 中统一完成。
 
-**2.4a** — 顶部追加:
+**文件**: `backend/core/orchestrator.py`（已在 langgraph_migration 中重写）
+
+在 `build_system_prompt()` 函数中追加内容块索引块：
 
 ```python
 from core.digest_service import build_field_index
-```
 
-**2.4b** — `normalize_consumer_personas` 之后、`ContentProductionState` 之前插入:
+def build_system_prompt(state: AgentState) -> str:
+    """构建 system prompt，包含项目上下文、内容块索引、工具说明等"""
+    project_id = state.get("project_id", "")
+    
+    # ... 基础 system prompt 构建 ...
+    
+    # 注入内容块索引（平台记忆的核心）
+    field_index_block = ""
+    if project_id:
+        fi = build_field_index(project_id)
+        if fi:
+            field_index_block = f"""
 
-```python
-def build_field_index_block(project_id: str) -> str:
-    """
-    构建字段索引注入块。
-    输入: project_id
-    输出: 可直接拼接到 system prompt 的字符串。无字段时返回 ""。
-    """
-    fi = build_field_index(project_id)
-    if not fi:
-        return ""
-    return f"""
-
-## 项目字段索引
-以下是本项目所有字段及其摘要。
-用途：帮你定位与用户指令相关的字段。
-注意：摘要只是索引，不是完整内容。不要基于摘要猜测或编造内容。
+## 项目内容块索引
+以下是本项目所有内容块及其摘要。
+用途：帮你定位与用户指令相关的内容块。
+注意：摘要只是索引，不是完整内容。需要完整内容时请调用 read_field 工具。
 
 {fi}
 """
+    
+    # ... 其他上下文（共创桥接等） ...
+    
+    return base_prompt + field_index_block + other_context
 ```
+
+> **注意**：不再需要逐个修改 11 个节点函数 — 它们已不存在。`build_system_prompt` 是唯一的注入点。
 
 ---
 
-### Step 2.5 — 所有 LLM 节点注入字段索引
+### ~~Step 2.5 — 所有 LLM 节点注入内容块索引~~ → 已被 Step 2.4 覆盖
 
-在以下节点函数中，system_prompt 构建完毕后（调用 ai_client 之前），追加:
-
-```python
-    # 注入字段索引
-    field_index_block = build_field_index_block(project_id)
-    system_prompt += field_index_block
-```
-
-需要修改的节点:
-
-| # | 函数名 | 文件 |
-|---|--------|------|
-| 1 | modify_node | orchestrator.py（Step 3.1 已包含） |
-| 2 | query_node | orchestrator.py |
-| 3 | chat_node | orchestrator.py |
-| 4 | intent_analysis_node | orchestrator.py |
-| 5 | design_inner_node | orchestrator.py |
-| 6 | produce_inner_node | orchestrator.py |
-| 7 | design_outer_node | orchestrator.py |
-| 8 | produce_outer_node | orchestrator.py |
-| 9 | evaluate_node | orchestrator.py |
-| 10 | tool_node | orchestrator.py |
-| 11 | generate_field_node | orchestrator.py |
-
-同时修改 agent.py 的 `_build_chat_system_prompt`:
-
-**2.5a** — 函数签名新增 `project_id: str = ""` 参数
-
-**2.5b** — return 前追加:
-
-```python
-    field_index_section = ""
-    if project_id:
-        from core.digest_service import build_field_index
-        fi = build_field_index(project_id)
-        if fi:
-            field_index_section = f"\n\n## 项目字段索引\n{fi}\n\n注意：以上是摘要索引，不要基于摘要猜测或编造内容。"
-```
-
-**2.5c** — 调用处传入 `project_id=request.project_id`
+> ⚠️ **LangGraph 适配**：新架构中只有一个 `agent_node` → `llm.bind_tools()`，system prompt 统一由 `build_system_prompt()` 构建。无需逐个修改节点。此 Step 废弃。
 
 ---
 
-### Step 2.6 — route_intent 输出 required_fields
+### ~~Step 2.6 — route_intent 输出 required_fields~~ → Agent 调用 `read_field` 工具
 
-**文件**: `backend/core/orchestrator.py`
-
-**2.6a** — `ContentProductionState` 新增字段:
-
-```python
-    extra_referenced_contents: Dict[str, str]
-```
-
-**2.6b** — LLM 意图分类 JSON 输出格式追加:
-
-```
-"required_fields": ["字段名1", "字段名2"]
-```
-
-**2.6c** — route_intent 返回值构建前（约第497行）追加:
-
-```python
-    required_fields_raw = current_intent.get("required_fields", [])
-    already_referenced = set(references)
-    required_fields = [f for f in required_fields_raw if f not in already_referenced][:5]
-    extra_referenced_contents = {}
-    if required_fields:
-        for fn in required_fields:
-            fd = get_field_content(state.get("project_id", ""), fn)
-            if fd and fd.get("content"):
-                extra_referenced_contents[fn] = fd["content"]
-```
-
-**2.6d** — 返回 dict 追加 `"extra_referenced_contents": extra_referenced_contents`
+> ⚠️ **LangGraph 适配**：`route_intent` 已删除，`ContentProductionState` 已替换为 4 字段的 `AgentState`。
+> 新架构中，Agent 通过内容块索引（Step 2.4 注入的 `build_system_prompt`）了解哪些内容块存在，
+> 当需要完整内容时，主动调用 `read_field` @tool 按需获取。**此 Step 废弃。**
+>
+> 相关工具定义见 `langgraph_migration.md` 的 `read_field` / `update_field` 工具。
 
 ---
 
 ## Phase 3: 精细编辑
 
-### Step 3.1 — modify_node 重写
+### Step 3.1 — modify_field @tool 实现
 
-**文件**: `backend/core/orchestrator.py`
-**类型**: 替换整个 `modify_node` 函数体（约第1300-1433行）
+> ⚠️ **LangGraph 适配**：原 `modify_node` 函数已删除。新实现为 `modify_field` @tool，定义在 `backend/core/agent_tools.py`。
+
+**文件**: `backend/core/agent_tools.py`（在 langgraph_migration 中已创建）
+**类型**: 在已有的 @tool 列表中添加 `modify_field` 工具
 
 核心变化点:
 1. JSON 内容（方案等）仍走旧逻辑（全量替换）
 2. Markdown/文本走新的 edits JSON 逻辑
-3. 新增 `need_confirm` 分支 -> 返回 `pending_edits`
-4. 直接执行分支 -> 调用 `apply_edits()` -> 返回 `modify_result`
-5. JSON 解析失败 -> 降级为全量替换（向后兼容）
+3. 新增 `need_confirm` 分支 → 返回含 `need_confirm: true` 的 JSON 字符串
+4. 直接执行分支 → 调用 `apply_edits()` → 返回含修改结果的 JSON 字符串
+5. JSON 解析失败 → 降级为全量替换（向后兼容）
+6. **返回值是字符串**（@tool 要求），前端通过 `on_tool_end` 事件接收
 
 新 system prompt（Markdown/文本分支）:
 
@@ -2340,7 +2426,7 @@ def build_field_index_block(project_id: str) -> str:
 ## 当前项目
 {creator_profile}
 
-## 目标字段：{target_field}
+## 目标内容块：{target_field}
 {original_content}
 
 {ref_section}
@@ -2390,43 +2476,59 @@ def build_field_index_block(project_id: str) -> str:
 
 ---
 
-### Step 3.2 — ContentProductionState 新增字段
+### ~~Step 3.2 — ContentProductionState 新增字段~~ → AgentState 无需新增
 
-**文件**: `backend/core/orchestrator.py`
-
-在 `pending_intents` 之后追加:
-
-```python
-    modify_result: Optional[dict]
-    pending_edits: Optional[dict]
-    pending_prompt_plan: Optional[dict]
-```
-
-同时在 agent.py 的 `initial_state` 构建处补充默认值:
-
-```python
-    "modify_result": None,
-    "pending_edits": None,
-    "pending_prompt_plan": None,
-    "extra_referenced_contents": {},
-```
+> ⚠️ **LangGraph 适配**：`ContentProductionState` 已替换为 4 字段的 `AgentState`（messages, project_id, current_phase, creator_profile）。
+> `modify_result`、`pending_edits` 等数据**不再存储在 state 中**，而是：
+> - `modify_result` → `modify_field` @tool 的返回值，通过 `tool_end` 事件传递给前端
+> - `pending_edits` → 需要确认时，@tool 返回 `need_confirm: true` 的 JSON，前端展示确认 UI，用户通过独立的 `POST /api/fields/{id}/accept-changes` 端点确认
+> - `pending_prompt_plan` → `update_prompt` @tool 的返回值，通过 `tool_end` 事件传递
+> - `extra_referenced_contents` → Agent 主动调用 `read_field` 获取，无需存储
+>
+> **此 Step 废弃。**
 
 ---
 
-### Step 3.3 — SSE 事件传递 modify_result / pending_edits
+### Step 3.3 — SSE 事件传递修改预览（通过 astream_events）
 
-**文件**: `backend/api/agent.py`
+> ⚠️ **LangGraph 适配**：不再手动构造 SSE yield。修改结果通过 `astream_events` 的 `on_tool_end` 事件自动传递。
 
-在 `display_content = _build_chat_display(...)` 之后、`yield ... type: content` 之前插入:
+**文件**: `backend/api/agent.py` — `event_generator()` 函数
+
+在 `on_tool_end` 事件处理中，判断工具名为 `modify_field` 时，从返回值中提取修改预览：
 
 ```python
-            modify_result = result.get("modify_result")
-            if modify_result:
-                yield f"data: {json.dumps({'type': 'modify_preview', 'target_field': result.get('modify_target_field'), 'original_content': modify_result['original_content'], 'new_content': modify_result['new_content'], 'changes': modify_result['changes'], 'summary': modify_result['summary']}, ensure_ascii=False)}\n\n"
-
-            pending_edits = result.get("pending_edits")
-            if pending_edits:
-                yield f"data: {json.dumps({'type': 'modify_confirm_needed', 'target_field': pending_edits['target_field'], 'edits': pending_edits['edits'], 'summary': pending_edits['summary']}, ensure_ascii=False)}\n\n"
+# 在 event_generator() 中（modify_field 始终返回 JSON 字符串）
+if event["event"] == "on_tool_end":
+    tool_name = event.get("name", "")
+    tool_output = event["data"].get("output", "")
+    
+    if tool_name == "modify_field":
+        import json
+        try:
+            result = json.loads(tool_output)
+            status = result.get("status")
+            if status == "need_confirm":
+                yield sse_event({
+                    "type": "modify_confirm_needed",
+                    "target_field": result["target_field"],
+                    "edits": result["edits"],
+                    "summary": result["summary"],
+                    "ambiguity": result.get("ambiguity"),
+                })
+            elif status == "applied":
+                yield sse_event({
+                    "type": "modify_preview",
+                    "target_field": result["target_field"],
+                    "original_content": result.get("original_content", ""),
+                    "new_content": result.get("new_content", ""),
+                    "changes": result.get("changes", []),
+                    "summary": result["summary"],
+                })
+            # partial_fail 无需特殊处理，Agent 会用自然语言告知用户
+        except json.JSONDecodeError:
+            pass  # 降级：忽略非 JSON 输出
+    # 其他工具走通用 tool_end 逻辑（见 langgraph_migration.md 3.5 节）
 ```
 
 ---
@@ -2496,7 +2598,7 @@ def accept_changes(
 **文件**: `frontend/components/revision-view.tsx`（新建）
 
 > 包含: Change 接口定义、RevisionView 组件、工具栏（接受全部/拒绝全部/完成/取消）、逐条 toggle、ReactMarkdown+rehypeRaw 渲染。
-> 详细代码见上方「三、字段精细编辑」章节完整描述。
+> 详细代码见上方「三、内容块精细编辑」章节完整描述。
 
 核心 props:
 
@@ -2546,43 +2648,62 @@ interface RevisionViewProps {
 
 ## Phase 4: 提示词更新
 
-### Step 4.1 — ChatRequest 新增字段
+> ⚠️ **LangGraph 适配**：提示词更新功能通过 `update_prompt` 和 `execute_prompt_update` @tool 实现。
+> Agent 自动识别用户的提示词修改意图并调用对应工具，无需 `mode` 手动分发。
+
+### Step 4.1 — ChatRequest 扩展（简化）
 
 **文件**: `backend/api/agent.py`
 
-ChatRequest 追加:
+ChatRequest 追加（可选，用于前端 toggle）:
 
 ```python
-    update_prompt: bool = False
-    mode: Optional[str] = None  # "prompt_plan" | "prompt_execute" | None
+    update_prompt: bool = False  # 前端 toggle 开关
+    # mode 不再需要 "prompt_plan" / "prompt_execute" — Agent 自动判断
 ```
 
 ---
 
 ### Step 4.2 — 辅助函数
 
-**文件**: `backend/api/agent.py`
+**文件**: `backend/core/agent_tools.py`（或独立 `backend/core/prompt_service.py`）
 
 追加 `get_field_ai_prompt(project_id, field_name) -> str|None` 和 `save_prompt_update(project_id, field_name, new_prompt, old_prompt)` 两个函数。
 
 ---
 
-### Step 4.3 — prompt_plan_node / prompt_execute_node
+### Step 4.3 — update_prompt / execute_prompt_update @tool
 
-**文件**: `backend/core/orchestrator.py`
+> ⚠️ **LangGraph 适配**：原 `prompt_plan_node` / `prompt_execute_node` 改为 @tool 函数。
 
-在 `modify_node` 之后追加。
+**文件**: `backend/core/agent_tools.py`
 
-`prompt_plan_node` 的 system prompt:
+```python
+@tool
+async def update_prompt(
+    field_name: str,
+    instruction: str,
+    config: RunnableConfig,
+) -> str:
+    """修改指定内容块的生成提示词（ai_prompt）。当用户要求修改某个内容块的"提示词"或"生成规则"时使用。
 
-```
-你要为一个字段的生成提示词做修改计划。
+    Args:
+        field_name: 要修改提示词的内容块名称
+        instruction: 用户的修改指令
+    """
+    project_id = config["configurable"]["project_id"]
+    current_prompt = get_field_ai_prompt(project_id, field_name)
+    if not current_prompt:
+        return f"未找到内容块 '{field_name}' 的提示词"
+    
+    messages = [
+        SystemMessage(content=f"""你要为一个内容块的生成提示词做修改计划。
 
-## 当前提示词（字段：{target_field}）
+## 当前提示词（内容块：{field_name}）
 {current_prompt}
 
 ## 用户的修改要求
-{user_input}
+{instruction}
 
 ## 输出要求
 以"所见即所得"的方式，对于每处改动，直接给出：
@@ -2590,13 +2711,28 @@ ChatRequest 追加:
   改为：「修改后的具体文字」
 
 如果新要求和现有规则有冲突，简要指出冲突在哪。
-不要输出其他内容。
-```
+不要输出其他内容。"""),
+        HumanMessage(content=instruction),
+    ]
+    response = await llm.ainvoke(messages)
+    return response.content
 
-`prompt_execute_node` 的 system prompt:
+@tool
+async def execute_prompt_update(
+    field_name: str,
+    plan: str,
+    config: RunnableConfig,
+) -> str:
+    """执行已确认的提示词修改计划。当用户确认了提示词修改计划后调用。
 
-```
-你要按照已确认的修改计划，修改一个字段的生成提示词。
+    Args:
+        field_name: 要修改的内容块名称
+        plan: 已确认的修改计划内容
+    """
+    project_id = config["configurable"]["project_id"]
+    current_prompt = get_field_ai_prompt(project_id, field_name)
+    messages = [
+        SystemMessage(content=f"""你要按照已确认的修改计划，修改一个内容块的生成提示词。
 
 ## 当前提示词
 {current_prompt}
@@ -2605,29 +2741,28 @@ ChatRequest 追加:
 {plan}
 
 ## 输出要求
-输出修改后的完整提示词。只输出提示词本身。
+输出修改后的完整提示词。只输出提示词本身。"""),
+        HumanMessage(content="请执行修改"),
+    ]
+    response = await llm.ainvoke(messages)
+    new_prompt = response.content
+    save_prompt_update(project_id, field_name, new_prompt, current_prompt)
+    return f"提示词已更新。\n\n{generate_revision_markdown(current_prompt, new_prompt)}"
 ```
 
 ---
 
-### Step 4.4 — stream_chat: mode 快捷分发
+### ~~Step 4.4 — stream_chat: mode 快捷分发~~ → 废弃
 
-**文件**: `backend/api/agent.py`
-
-在 `# ===== 唯一路由决策 =====` 之前插入 mode 分支:
-- `mode == "prompt_plan"` -> 调用 prompt_plan_node
-- `mode == "prompt_execute"` -> 调用 prompt_execute_node
+> ⚠️ **LangGraph 适配**：不再需要手动 mode 分发。Agent 通过 Tool Calling 自动路由到 `update_prompt` / `execute_prompt_update`。**此 Step 废弃。**
 
 ---
 
-### Step 4.5 — SSE done 事件追加字段
+### Step 4.5 — SSE 通过 tool_end 事件传递提示词更新
 
-在 done JSON 追加:
+> ⚠️ **LangGraph 适配**：不再在 done JSON 中追加额外数据。提示词更新结果通过 `on_tool_end` 事件中 `update_prompt` / `execute_prompt_update` 的返回值传递。
 
-```python
-'pending_prompt_update': bool,
-'prompt_target_field': str,
-```
+前端在 `on_tool_end` 事件中检测 `tool_name == "execute_prompt_update"` 时，解析并显示修订预览。
 
 ---
 
@@ -2644,14 +2779,16 @@ VERSION_SOURCES 追加:
 
 ---
 
-### Step 4.7 — 前端 toggle "同步修改提示词"
+### Step 4.7 — 前端 toggle "同步修改提示词"（可选）
 
 **文件**: `frontend/components/agent-panel.tsx`
 
 - 新增 `updatePrompt` state
 - fetch body 追加 `update_prompt: updatePrompt`
 - textarea 上方追加 checkbox UI
-- SSE done 处理 `pending_prompt_update` 事件
+- `update_prompt: true` 时，API 层在用户消息末尾追加系统提示（见 §1.3 LangGraph 适配说明）
+
+> **注意**：这是一个可选的便利功能。即使没有 toggle，Agent 也能通过用户的自然语言自动判断是否需要修改提示词。
 
 ---
 
@@ -2659,21 +2796,26 @@ VERSION_SOURCES 追加:
 
 | 检查项 | 说明 |
 |--------|------|
+| **langgraph_migration 完成** | `orchestrator.py` 已重写、`agent_tools.py` 已创建、`ai_client.py` 已删除 |
 | import 完整 | 新函数引用的模块是否在文件顶部导入 |
-| 参数传递链 | 新参数是否从调用方一路传到被调用方 |
-| 类型定义 | 新增的 state 字段是否在 ContentProductionState 中声明 |
+| 参数传递链 | @tool 函数签名参数是否能从 LLM tool_call 获得 |
+| 类型定义 | 新增的 state 字段是否在 `AgentState` 中声明（仅 4 字段：messages / project_id / current_phase / creator_profile） |
 | 数据库列 | 新增的列是否同时出现在 Model 和迁移脚本中 |
-| SSE 事件 | 新增的事件类型是否在前端有对应的处理分支 |
-| 向后兼容 | 新增字段是否有默认值，不影响已有数据 |
+| SSE 事件 | `astream_events` 输出的事件是否在前端有对应的处理分支 |
+| 向后兼容 | 新增列是否有默认值，不影响已有数据 |
+| LLM 调用方式 | 是否全部使用 `llm` / `llm_mini`（`from core.llm import llm`），**禁止使用 `ai_client`** |
+| 上下文工程 | Checkpointer 已配置、`trim_messages` 已添加、旧组过滤已删除（见 `langgraph_migration.md` 第八节） |
+| 前端术语已更新 | 面向用户的 "字段" → "内容块"，"阶段" → "组"（见 `langgraph_migration.md` §10.4） |
 
 ---
 
 ## 十、执行后验证清单
 
-| 阶段 | 验证方法 |
+| 实施阶段 | 验证方法 |
 |------|----------|
+| Phase 0 | 见 `langgraph_migration.md` 验证清单 |
 | Phase 1 | 1. 迁移脚本无报错 2. `from core.edit_engine import apply_edits` 成功 3. `from core.digest_service import build_field_index` 成功 |
-| Phase 2 | 1. 修改字段后 digest 有值 2. system prompt 末尾出现字段索引 3. route_intent 输出含 required_fields |
-| Phase 3 | 1. `@字段 把X改成Y` → edits JSON → apply_edits 成功 2. SSE 含 modify_preview 3. accept-changes 返回 200 |
-| Phase 4 | 1. toggle → done 含 pending_prompt_update 2. prompt_plan 返回计划 3. prompt_execute 更新并返回预览 |
+| Phase 2 | 1. 修改内容块后 digest 有值 2. `build_system_prompt()` 输出含内容块索引 3. Agent 能调用 `read_field` 工具按需获取全文 |
+| Phase 3 | 1. `@内容块 把X改成Y` → Agent 调用 `modify_field` → edits JSON → apply_edits 成功 2. `tool_end` 事件含修改结果 3. accept-changes 返回 200 |
+| Phase 4 | 1. Agent 自动识别提示词修改意图 → 调用 `update_prompt` → 返回计划 2. 调用 `execute_prompt_update` → 更新并返回预览 |
 | Phase 5 | 1. 共创 tab 切换正常 2. 选择角色后对话返回角色扮演内容 3. 切回助手后，助手能引用共创对话 4. Persona CRUD 正常 |

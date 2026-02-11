@@ -15,6 +15,19 @@
 4. **多 API 切换**：利用 LangChain 的 `BaseChatModel` 抽象层，在配置层支持多个 LLM Provider（OpenAI / Gemini / Qwen / DeepSeek），用户可在后台切换。
 5. **Token 级流式输出**：统一用 `graph.astream_events(version="v2")` 实现所有路由的 token-by-token 流式输出，而非只有 `chat` 路由支持。
 
+
+### 术语映射（前端显示 ↔ 后端代码）
+
+> 为了对创作者友好，前端和用户面向的文本使用以下术语。后端代码中的变量名保持不变。
+
+| 前端显示（用户看到的） | 后端代码/变量名 | 说明 |
+|----------------------|---------------|------|
+| **内容块** | `field_name`, `ProjectField`, `ContentBlock` | 项目中的一个内容单元（如"场景库"、"人物设定"） |
+| **组** | `phase`, `current_phase` | 组织内容块的分组（如 intent、inner、outer） |
+
+> **注意**：工具参数名（如 `field_name`、`target_phase`）保持英文不变，但工具的 docstring 描述和 LLM 系统提示中使用"内容块"和"组"。
+
+
 ---
 
 ## 二、现有架构问题诊断
@@ -190,128 +203,273 @@ class Settings(BaseSettings):
 
 **新文件 `backend/core/agent_tools.py`**：
 
-所有现有的"节点函数"中涉及实际操作的部分（修改字段、生成内容、调研、管理架构等），转化为 LangChain `@tool` 函数。
+所有现有的"节点函数"中涉及实际操作的部分（修改内容块、生成内容、调研、管理架构等），转化为 LangChain `@tool` 函数。
+
+> **docstring 设计原则**：docstring 是 LLM 选择工具的唯一依据（通过 `bind_tools` 转化为 JSON Schema 中的 `description` 字段）。
+> 必须包含：① 做什么（一句话）② 什么时候用 ③ 与易混淆工具的区分 ④ 参数说明 + 示例值。
+> 与 `build_system_prompt` 中的消歧规则互补——system prompt 提供全局规则，docstring 提供工具级指引。
 
 ```python
 """
 Agent 工具定义
-使用 LangChain @tool 装饰器，让 LLM 通过 Tool Calling 自动选择
+使用 LangChain @tool 装饰器，让 LLM 通过 Tool Calling 自动选择。
+
+每个工具的 docstring 会被 bind_tools() 提取为 function calling 的 description，
+是 LLM 决定"什么时候调什么工具"的核心依据。
+
+工具函数内部通过 RunnableConfig 获取 project_id 等上下文，
+通过 DB session 读写数据，不依赖 AgentState 传递。
 """
 from langchain_core.tools import tool
+from langchain_core.runnables import RunnableConfig
 from typing import Optional
 
+
 @tool
-def modify_field(field_name: str, instruction: str, reference_fields: list[str] = []) -> str:
-    """修改指定字段的内容。当用户要求修改、调整、重写某个字段时使用。
+def modify_field(
+    field_name: str,
+    instruction: str,
+    reference_fields: list[str] = [],
+    config: RunnableConfig = None,
+) -> str:
+    """修改指定内容块的已有内容。当用户要求修改、调整、重写、优化某个内容块的文本时使用。
+
+    ⚠️ 这是修改【已有内容】（改文字），不是创建新内容块（改结构）。
+    - 创建/删除/移动内容块 → 请用 manage_architecture
+    - 内容块为空需要首次生成 → 请用 generate_field_content
+
+    修改流程：读取当前内容 → 根据指令生成修改方案 → 返回预览（含 Track Changes 标记）。
+    如果修改较大，会返回 status="need_confirm" 等待用户确认。
 
     Args:
-        field_name: 要修改的目标字段名称
-        instruction: 用户的修改指令（如"把5个模块改成7个"）
-        reference_fields: 需要参考的其他字段名称列表
+        field_name: 要修改的目标内容块名称（如"场景库"、"逐字稿1"）
+        instruction: 用户的具体修改指令（如"把5个模块改成7个"、"语气更专业一些"）
+        reference_fields: 需要参考的其他内容块名称列表（如用户说"参考@用户画像来修改"）
     """
-    # 实现：读取字段内容 → 构建 prompt → LLM 生成 edits → apply_edits
+    # 实现：读取内容块 → 构建 prompt → LLM 生成 edits → apply_edits
     ...
 
-@tool
-def generate_field_content(field_name: str, instruction: str = "") -> str:
-    """生成指定字段的内容。当用户要求生成、创建某个字段的内容时使用。
-
-    Args:
-        field_name: 要生成内容的字段名称
-        instruction: 额外的生成指令（可选）
-    """
-    ...
 
 @tool
-def query_field(field_name: str, question: str) -> str:
-    """查询字段内容并回答问题。当用户询问某个字段的内容或想了解相关信息时使用。
+def generate_field_content(
+    field_name: str,
+    instruction: str = "",
+    config: RunnableConfig = None,
+) -> str:
+    """为指定内容块生成内容。当内容块为空、或用户要求重新生成全部内容时使用。
+
+    与 modify_field 的区别：
+    - generate = 从零生成（内容块为空或需要全部重写）
+    - modify = 在已有内容基础上局部修改
 
     Args:
-        field_name: 要查询的字段名称
-        question: 用户的问题
-    """
-    ...
-
-@tool
-def manage_architecture(operation: str, target: str, details: str = "") -> str:
-    """管理项目架构（添加/删除/移动字段或阶段）。
-
-    Args:
-        operation: 操作类型（add_field/remove_field/add_phase/remove_phase/move_field）
-        target: 操作目标（字段名或阶段名）
-        details: 操作详情（如新字段的描述、目标位置等）
-    """
-    ...
-
-@tool
-def advance_to_phase(target_phase: str = "") -> str:
-    """推进项目到下一阶段或指定阶段。
-
-    Args:
-        target_phase: 目标阶段名称（空字符串表示下一阶段）
+        field_name: 要生成内容的内容块名称（如"场景库"、"用户画像"）
+        instruction: 额外的生成指令或要求（可选，如"要包含3个案例"、"用故事化风格"）
     """
     ...
 
+
 @tool
-def run_research(query: str, research_type: str = "consumer") -> str:
-    """执行调研。consumer=消费者调研，generic=通用深度调研。
+def query_field(field_name: str, question: str, config: RunnableConfig = None) -> str:
+    """查询内容块并回答相关问题。当用户想了解、分析、总结某个内容块时使用。
+
+    典型场景：
+    - "@场景库 这个内容怎么样" → query_field("场景库", "怎么样")
+    - "帮我总结一下用户画像的核心洞察" → query_field("用户画像", "核心洞察是什么")
+
+    与 read_field 的区别：query_field 会用 LLM 分析并回答，read_field 只返回原文。
 
     Args:
-        query: 调研主题或查询
-        research_type: 调研类型（consumer/generic）
+        field_name: 要查询的内容块名称
+        question: 用户的具体问题
     """
     ...
 
+
 @tool
-def manage_persona(operation: str, persona_data: str = "") -> str:
-    """管理用户画像/角色。
+def read_field(field_name: str, config: RunnableConfig = None) -> str:
+    """读取指定内容块的完整原始内容并返回。当你需要查看内容块的完整文本时使用。
+
+    典型场景：
+    - 在修改前先读取当前内容
+    - 用户说"看看场景库" → read_field("场景库")
+    - 需要判断内容块是否为空（为空则用 generate_field_content）
 
     Args:
-        operation: 操作类型（list/create/update/delete/generate）
-        persona_data: 角色数据（JSON 格式，创建/更新时需要）
+        field_name: 要读取的内容块名称
     """
     ...
 
-@tool
-def run_evaluation() -> str:
-    """对项目内容执行全面评估，生成评估报告。"""
-    ...
 
 @tool
-def read_field(field_name: str) -> str:
-    """读取指定字段的完整内容。当用户想查看某个字段的内容时使用。
+def update_field(field_name: str, content: str, config: RunnableConfig = None) -> str:
+    """直接用给定内容完整覆写指定内容块。仅当用户提供了完整的新内容要求直接替换时使用。
+
+    ⚠️ 这会直接覆盖全部内容，没有预览和确认流程。
+    - 局部修改（保留大部分原文，改动部分）→ 请用 modify_field
+    - 从零生成（让 AI 写）→ 请用 generate_field_content
+    - 此工具适用于：用户自己写好了内容，要你直接保存
 
     Args:
-        field_name: 要读取的字段名称
+        field_name: 要更新的内容块名称
+        content: 新的完整内容（将替换全部现有内容）
     """
     ...
 
+
 @tool
-def update_field(field_name: str, content: str) -> str:
-    """直接用给定内容覆写指定字段。当用户提供了完整内容要求直接替换时使用。
+def manage_architecture(
+    operation: str, target: str, details: str = "", config: RunnableConfig = None
+) -> str:
+    """管理项目结构：添加/删除/移动内容块或组。当用户要求改变项目的结构时使用。
+
+    ⚠️ 这是改【项目结构】（增删内容块/组），不是改内容块里的文字。
+    - 改文字内容 → 请用 modify_field
+    - 改结构 → 用此工具
+
+    典型场景：
+    - "帮我加一个新字段" → manage_architecture("add_field", "新字段名", "字段描述")
+    - "把这个阶段删掉" → manage_architecture("remove_phase", "design_outer")
+    - "把场景库移到用户画像后面" → manage_architecture("move_field", "场景库", "after:用户画像")
+    - "在内涵设计补充一个内容块" → manage_architecture("add_field", "新内容块名", "phase:design_inner")
 
     Args:
-        field_name: 要更新的字段名称
-        content: 新内容（完整替换）
+        operation: 操作类型 — add_field / remove_field / move_field / add_phase / remove_phase
+        target: 操作目标（内容块名或组名）
+        details: 操作详情（如新内容块的描述、目标位置、所属组等）
     """
     ...
 
+
 @tool
-def generate_outline(topic: str = "") -> str:
-    """生成内容大纲/规划。
+def advance_to_phase(target_phase: str = "", config: RunnableConfig = None) -> str:
+    """推进项目到下一组或跳转到指定组。
+
+    当用户说这些话时使用：
+    - "继续" / "下一步" / "进入下一阶段" → advance_to_phase("")（自动下一组）
+    - "进入外延设计" / "开始消费者调研" → advance_to_phase("design_outer") / advance_to_phase("research")
+
+    ⚠️ 与 manage_architecture 的区别：
+    - "进入XX" = 推进流程 → advance_to_phase
+    - "在XX里加字段" = 改结构 → manage_architecture
 
     Args:
-        topic: 大纲主题（为空则基于项目意图自动生成）
+        target_phase: 目标组名称（如 "research"、"design_inner"、"produce_outer"）。
+                      为空字符串表示自动进入下一组。
     """
     ...
+
+
+@tool
+def run_research(
+    query: str, research_type: str = "consumer", config: RunnableConfig = None
+) -> str:
+    """执行调研。
+
+    两种类型：
+    - consumer（消费者调研）：分析目标用户画像、痛点、需求。
+      触发词："开始消费者调研"、"做用户调研"
+    - generic（通用深度调研）：搜索并整理特定主题的资料。
+      触发词："帮我调研一下X市场"、"搜索Y的资料"、"对Z做个调研"
+
+    Args:
+        query: 调研主题或查询内容（如"目标用户痛点分析"、"中国教育培训市场趋势"）
+        research_type: "consumer"（消费者调研）或 "generic"（通用深度调研）
+    """
+    ...
+
+
+@tool
+def manage_persona(
+    operation: str, persona_data: str = "", config: RunnableConfig = None
+) -> str:
+    """管理消费者画像/角色。生成、查看、编辑用户画像。
+
+    典型场景：
+    - "看看有哪些人物" → manage_persona("list")
+    - "再生成一个程序员用户" → manage_persona("generate", "程序员")
+    - "补充一个角色，22岁应届毕业生" → manage_persona("create", "22岁应届毕业生")
+
+    Args:
+        operation: list（查看全部）/ create（手动创建）/ generate（AI 生成）/ update（更新）/ delete（删除）
+        persona_data: 角色描述或数据（创建/生成/更新时需要）
+    """
+    ...
+
+
+@tool
+def run_evaluation(config: RunnableConfig = None) -> str:
+    """对项目内容执行全面质量评估，生成评估报告。
+
+    当用户说"评估一下"、"检查内容质量"、"帮我评一下"时使用。
+    """
+    ...
+
+
+@tool
+def generate_outline(topic: str = "", config: RunnableConfig = None) -> str:
+    """生成内容大纲/结构规划。帮助创作者规划内容的整体架构。
+
+    典型场景：
+    - "帮我设计一下大纲" → generate_outline()
+    - "这个内容怎么组织比较好" → generate_outline()
+    - "做一个关于AI培训的课程大纲" → generate_outline("AI培训课程")
+
+    Args:
+        topic: 大纲主题（为空则基于项目意图自动规划）
+    """
+    ...
+
+
+@tool
+def manage_skill(
+    operation: str,
+    skill_name: str = "",
+    target_field: str = "",
+    config: RunnableConfig = None,
+) -> str:
+    """管理和使用写作技能/风格。查看可用技能、用特定风格重写内容。
+
+    典型场景：
+    - "有什么技能可以用" → manage_skill("list")
+    - "用专业文案帮我写场景库" → manage_skill("apply", "专业文案", "场景库")
+    - "用故事化方式重写" → manage_skill("apply", "故事化", "目标内容块名")
+
+    Args:
+        operation: list（查看可用技能）/ apply（应用技能到内容）
+        skill_name: 技能名称（如"专业文案"、"故事化"、"批判分析"）
+        target_field: 要应用技能的内容块名称
+    """
+    ...
+
+
+# ============== 工具列表（注册到 Agent） ==============
+
+AGENT_TOOLS = [
+    modify_field,
+    generate_field_content,
+    query_field,
+    read_field,
+    update_field,
+    manage_architecture,
+    advance_to_phase,
+    run_research,
+    manage_persona,
+    run_evaluation,
+    generate_outline,
+    manage_skill,
+]
 ```
 
 **关键设计要点**：
 
-1. 每个 `@tool` 的 docstring 就是 LLM 看到的工具描述，必须写清楚"什么时候用"
-2. 参数通过 `Args` 描述，LLM 会自动提取
-3. 工具函数内部可以访问 DB（通过闭包或全局 session），不需要从 State 传递
-4. 工具函数返回字符串（LLM 会看到返回值并决定下一步）
+1. **docstring 就是 LLM 的"使用说明书"**：`bind_tools()` 会将每个工具的 docstring + Args 转化为 OpenAI function calling 的 JSON Schema，LLM 据此决定调用哪个工具、传什么参数
+2. **与 system prompt 互补**：system prompt 提供全局消歧规则（4 对消歧）和特殊流程指南；docstring 提供工具级的"什么时候用 / 不要用"指引
+3. **参数通过 `Args` 描述**：LLM 自动提取参数名和类型
+4. **`config: RunnableConfig`**：LangChain 标准参数，从中提取 `project_id` 等上下文（通过 `config["configurable"]["project_id"]`）
+5. **工具函数内部可以访问 DB**（通过 `get_db()`），不需要从 State 传递
+6. **工具函数返回字符串**：LLM 会看到返回值并决定下一步（继续调工具 or 回复用户）
+7. **添加新工具**只需定义 `@tool` 函数并加入 `AGENT_TOOLS` 列表
 
 ### 3.4 Graph 定义
 
@@ -360,51 +518,144 @@ class AgentState(TypedDict):
 
 def build_system_prompt(state: AgentState) -> str:
     """
-    构建 system prompt。
-    包含：角色定义 + 创作者特质 + 字段索引 + 阶段上下文
+    构建 system prompt — Agent 行为的「宪法」。
+    
+    设计原则（以终为始）：
+    - 取代原 route_intent() 中的 5000 字意图分类 prompt
+    - 取代原 chat_node() 中的能力介绍 prompt
+    - 取代原硬编码规则（@ 引用路由、意图阶段检测）
+    - 与 @tool docstrings 互补：system prompt 提供上下文和规则，
+      docstrings 提供"什么时候用这个工具"的说明
     """
     creator_profile = state.get("creator_profile", "")
     current_phase = state.get("current_phase", "intent")
     project_id = state.get("project_id", "")
 
-    # 字段索引（平台记忆 — 需要 implementation_plan_v3 中的 digest_service 模块）
-    # 注意：digest_service 是新建模块，初始迁移时可跳过此段
+    # ---- 动态段落 1: 内容块索引 ----
+    # 来自 digest_service（impl_v3 话题二），初始迁移时可跳过
     field_index_section = ""
     if project_id:
         try:
             from core.digest_service import build_field_index
         except ImportError:
-            build_field_index = None  # digest_service 尚未实现时的降级
+            build_field_index = None
         fi = build_field_index(project_id) if build_field_index else None
         if fi:
             field_index_section = f"""
-
-## 项目字段索引
-以下是本项目所有字段及其摘要。
-用途：帮你定位与用户指令相关的字段。
-注意：摘要只是索引，不是完整内容。不要基于摘要猜测或编造内容。
+## 项目内容块索引
+以下是本项目所有内容块及其摘要，按组归类。
+用途：帮你定位与用户指令相关的内容块，选择正确的工具参数（field_name）。
+**注意**：摘要只是索引，不代表完整内容。需要完整内容时请使用 read_field 工具。
 
 {fi}
 """
 
-    return f"""你是一个智能的内容生产 Agent。
+    # ---- 动态段落 2: 组状态 ----
+    phase_context = ""
+    if project_id:
+        try:
+            from core.models.database import get_db
+            from core.models.project import Project
+            db = next(get_db())
+            project = db.query(Project).filter(Project.id == project_id).first()
+            if project:
+                ps = project.phase_status or {}
+                po = project.phase_order or []
+                current_status = ps.get(current_phase, "pending")
+                phase_context = f"组状态: {current_status}\n项目组顺序: {' → '.join(po)}"
+            db.close()
+        except Exception:
+            pass
+
+    # ---- 动态段落 3: 意图分析阶段专用指南 ----
+    intent_guide = ""
+    if current_phase == "intent":
+        intent_guide = """
+## 🎯 意图分析流程（当前组 = intent）
+你当前正在帮助创作者明确内容目标。请通过 3 轮对话收集以下信息：
+
+1. **做什么**（主题和目的）— 问法举例：「你这次想做什么内容？请简单描述主题或方向。」
+2. **给谁看**（目标受众）— 根据上一个回答个性化提问
+3. **期望行动**（看完后希望受众做什么）— 根据之前的回答个性化提问
+
+### 流程规则
+- 每次只问一个问题，用编号标记（如【问题 1/3】）
+- 用户回答后，先简要确认你的理解，再追问下一个
+- 3 个问题都回答后：
+  1. 输出结构化的意图分析摘要
+  2. 调用 update_field(field_name="意图分析", content=摘要内容) 保存
+  3. 告诉用户「✅ 已生成意图分析，请在工作台查看。输入"继续"进入下一组」
+- **如果用户在此阶段问其他问题（如"你能做什么"），正常回答，不影响问答流程**
+- **如果用户说"继续"/"下一步"且意图分析已保存，调用 advance_to_phase 进入下一组**
+"""
+
+    return f"""你是一个智能内容生产 Agent，帮助创作者完成从意图分析到内容发布的全流程。
 
 ## 你的能力
-你可以通过工具来执行各种操作。LLM 会根据用户指令自动选择合适的工具。
-如果用户只是聊天或提问（不需要执行操作），直接回复即可，不要调用工具。
+1. **意图分析** — 通过 3 个问题帮创作者明确内容目标（做什么、给谁看、期望行动）
+2. **消费者调研** — 使用 DeepResearch 深度分析目标用户画像和痛点
+3. **内容规划** — 设计内容大纲和架构（组、内容块的组织方式）
+4. **内容生成** — 根据设计方案为各内容块生成具体内容
+5. **内容修改** — 根据指令修改已有内容，支持 Track Changes 预览
+6. **架构管理** — 添加/删除/移动内容块和组
+7. **人物管理** — 生成和管理消费者画像
+8. **评估** — 多维度评估内容质量
 
 ## 创作者信息
 {creator_profile or '（暂无创作者信息）'}
 
-## 当前阶段
-{current_phase}
+## 当前项目上下文
+当前组: {current_phase}
+{phase_context}
 {field_index_section}
+{intent_guide}
+
+## @ 引用约定
+用户消息中的 `@内容块名` 表示引用了项目中的某个内容块。引用内容会附在用户消息末尾。
+- `@场景库 把5个模块改成7个` → 用户想修改"场景库" → 使用 modify_field
+- `@逐字稿1 这个怎么样` → 用户想了解"逐字稿1"的内容 → 使用 query_field
+- `参考 @用户画像 修改 @场景库` → "用户画像"是参考源，"场景库"是修改目标 → modify_field(field_name="场景库", reference_fields=["用户画像"])
+
+## ⚠️ 关键消歧规则
+
+### 1. "添加内容块" vs "修改内容"
+- 「帮我加/新增/补充一个字段/内容块」→ **manage_architecture**（创建新的结构）
+- 「修改/调整/重写场景库的内容」「把5个改成7个」→ **modify_field**（改已有文本）
+- **判断标准**：用户想改变项目结构（增删内容块/组）→ manage_architecture；想改文字内容 → modify_field
+
+### 2. "进入阶段" vs "在阶段里操作"
+- 「进入外延设计」「开始下一阶段」「继续」→ **advance_to_phase**
+- 「在外延设计加一个字段」→ **manage_architecture**
+- **判断标准**：有"进入/开始/继续/下一步"且没有具体操作词 → advance_to_phase
+
+### 3. "消费者调研" vs "通用调研"
+- 「开始消费者调研」「做用户调研」→ run_research(research_type="consumer")
+- 「帮我调研一下X市场」「搜索Y的资料」→ run_research(research_type="generic")
+
+### 4. "生成" vs "修改"
+- 内容块为空（索引中无摘要或标记为空）→ **generate_field_content**
+- 内容块已有内容 → **modify_field**
+- 不确定时，先用 read_field 查看内容块是否为空
+
+## 什么时候不调用工具（直接回复）
+- 用户打招呼：「你好」「hi」
+- 用户问你的能力：「你能做什么？」「你是谁？」
+- 用户问通用问题：「帮我解释一下内涵设计是什么」「这个系统怎么用」
+- 用户在意图分析流程中回答你的提问（不要把回答当成指令！）
+- 任何不涉及具体操作的对话
+
+## 修改确认流程
+modify_field 工具可能返回需要用户确认的修改计划：
+- 返回 status="need_confirm" → 向用户展示修改计划，等待确认
+- 返回 status="applied" → 修改已直接应用，告诉用户结果
+- 用户确认后，工具会自动完成修改
 
 ## 交互规则
-1. 用户要求"做"某事 → 调用对应工具
-2. 用户在问问题或闲聊 → 直接回复
-3. 一次可以调用多个工具（如果用户有多个要求）
-4. 工具返回结果后，用简洁的语言告诉用户结果
+1. 用户要求"做"某事（创建/添加/删除/修改/生成/调研/评估）→ 调用对应工具
+2. 一次对话中可以调用多个工具（如「删掉这个字段，再帮我生成一个新的」→ manage_architecture + generate_field_content）
+3. 工具执行完成后，用简洁友好的中文告诉用户结果
+4. 使用中文回复，语气专业但亲切
+5. 如果不确定用户意图，先确认再操作，不要猜测
 """
 
 
@@ -413,11 +664,25 @@ async def agent_node(state: AgentState) -> dict:
     Agent 决策节点。
     用 bind_tools 的 LLM 决定：直接回复 or 调用工具。
     """
+    from langchain_core.messages import trim_messages
+
     system_prompt = build_system_prompt(state)
 
+    # Token 预算管理：保留最近消息，裁剪过早历史
+    # Checkpointer 会累积所有历史（包括 ToolMessage），可能超出 context window
+    trimmed = trim_messages(
+        state["messages"],
+        max_tokens=100_000,    # 为 system prompt (~5K) + 回复 (~10K) 预留
+        token_counter=llm,     # 使用 LLM 内置 token 计数
+        strategy="last",       # 保留最新消息
+        start_on="human",      # 确保从 HumanMessage 开始
+        include_system=False,  # system prompt 由我们单独管理
+        allow_partial=False,   # 不截断单条消息
+    )
+
     # 将 system prompt 作为第一条消息注入
-    # 注意：每次调用都重新生成 system prompt（因为字段索引可能变化）
-    messages_with_system = [SystemMessage(content=system_prompt)] + state["messages"]
+    # 注意：每次调用都重新生成 system prompt（因为内容块索引可能变化）
+    messages_with_system = [SystemMessage(content=system_prompt)] + trimmed
 
     # LLM 调用（已 bind_tools，LLM 会自动决定是否调用工具）
     llm_with_tools = llm.bind_tools(AGENT_TOOLS)
@@ -442,13 +707,17 @@ def should_continue(state: AgentState) -> str:
 
 def create_agent_graph():
     """
-    创建 Agent 图。
+    创建 Agent 图（带 Checkpointer）。
 
     结构：
         agent_node ──(有tool_calls)──→ tool_node ──→ agent_node（循环）
             │
             └──(无tool_calls)──→ END
+
+    Checkpointer 使对话状态在请求间自动累积。
     """
+    from langgraph.checkpoint.memory import MemorySaver
+
     graph = StateGraph(AgentState)
 
     # 节点
@@ -467,7 +736,14 @@ def create_agent_graph():
     # tools 执行完后回到 agent（让 LLM 看到工具结果，决定下一步）
     graph.add_edge("tools", "agent")
 
-    return graph.compile()
+    # Checkpointer：跨请求保持对话状态（ToolMessage 等）
+    # 当前使用 MemorySaver（内存，重启后丢失，自动从 DB Bootstrap）
+    # 生产升级（一行切换）：
+    #   from langgraph.checkpoint.sqlite import SqliteSaver
+    #   checkpointer = SqliteSaver.from_conn_string("agent_checkpoints.db")
+    checkpointer = MemorySaver()
+
+    return graph.compile(checkpointer=checkpointer)
 
 
 # 全局实例
@@ -500,29 +776,64 @@ async def stream_chat(request: ChatRequest, db: Session = Depends(get_db)):
     db.add(user_msg)
     db.commit()
 
-    # 加载对话历史 → LangChain Message 列表
-    chat_history = _load_chat_history(db, request.project_id, current_phase)
+    # ---- 共创模式分流（详见 implementation_plan_v3.md 5.6-5.7 节）----
+    # 共创是纯角色扮演对话，不走 Agent Graph，不使用 Checkpointer
+    if getattr(request, 'mode', 'assistant') == "cocreation":
+        return StreamingResponse(
+            handle_cocreation_stream(request, db, project, user_msg.id),
+            media_type="text/event-stream",
+        )
 
-    # 构建 AgentState（只有 4 个字段）
+    # ---- 助手模式：走 Agent Graph ----
+
+    # 处理 @ 引用
+    augmented_message = request.message
+    if request.references:
+        ref_contents = _resolve_references(db, request.project_id, request.references)
+        if ref_contents:
+            ref_text = "\n".join(f"【{n}】\n{c}" for n, c in ref_contents.items())
+            augmented_message = f"{request.message}\n\n---\n以下是用户引用的内容块：\n{ref_text}"
+
+    # 构建 thread 配置（Checkpointer 通过 thread_id 定位历史）
+    thread_id = f"{request.project_id}:assistant"
+    config = {
+        "configurable": {
+            "thread_id": thread_id,
+            "project_id": request.project_id,
+        }
+    }
+
+    # Bootstrap 检查：首次请求（或服务器重启后）从 DB 加载种子历史
+    try:
+        existing = await agent_graph.aget_state(config)
+        has_checkpoint = existing and existing.values and existing.values.get("messages")
+    except Exception:
+        has_checkpoint = False
+
+    if not has_checkpoint:
+        db_history = _load_seed_history(db, request.project_id)
+        input_messages = db_history + [HumanMessage(content=augmented_message)]
+    else:
+        input_messages = [HumanMessage(content=augmented_message)]
+
+    # 构建 AgentState（只有 4 个字段，messages 由 Checkpointer 累积）
     input_state = {
-        "messages": chat_history + [HumanMessage(content=request.message)],
+        "messages": input_messages,
         "project_id": request.project_id,
         "current_phase": current_phase,
         "creator_profile": project.creator_profile.to_prompt_context() if project.creator_profile else "",
     }
 
     # 产出类工具列表（这些工具执行后前端需刷新左侧面板）
-    PRODUCE_TOOLS = {"modify_field", "generate_field_content", "manage_architecture", "advance_to_phase"}
+    PRODUCE_TOOLS = {"modify_field", "generate_field_content", "manage_architecture", "advance_to_phase", "update_field", "execute_prompt_update"}
 
     async def event_generator():
         yield sse_event({"type": "user_saved", "message_id": user_msg.id})
 
         full_content = ""
         current_tool = None
-        is_producing = False   # 是否有字段产出（从工具名推断）
-
-        # config 传递 project_id 等信息给 @tool 函数
-        config = {"configurable": {"project_id": request.project_id}}
+        tools_used = []        # 记录本次调用的工具名
+        is_producing = False   # 是否有内容块产出（从工具名推断）
 
         async for event in agent_graph.astream_events(input_state, config=config, version="v2"):
             kind = event["event"]
@@ -542,6 +853,7 @@ async def stream_chat(request: ChatRequest, db: Session = Depends(get_db)):
             elif kind == "on_tool_start":
                 tool_name = event["name"]
                 current_tool = tool_name
+                tools_used.append(tool_name)
                 yield sse_event({"type": "tool_start", "tool": tool_name})
 
             # 工具结束
@@ -550,21 +862,41 @@ async def stream_chat(request: ChatRequest, db: Session = Depends(get_db)):
                 field_updated = current_tool in PRODUCE_TOOLS
                 if field_updated:
                     is_producing = True
-                yield sse_event({
-                    "type": "tool_end",
-                    "tool": current_tool,
-                    "output": tool_output[:500],
-                    "field_updated": field_updated,
-                })
+
+                # modify_field 特殊处理：返回 JSON，提取结构化数据给前端
+                # 详见 implementation_plan_v3.md Step 3.3
+                if current_tool == "modify_field":
+                    try:
+                        import json as _json
+                        result = _json.loads(tool_output)
+                        if result.get("status") == "need_confirm":
+                            yield sse_event({"type": "modify_confirm_needed", **{k: result[k] for k in ("target_field", "edits", "summary") if k in result}})
+                        elif result.get("status") == "applied":
+                            yield sse_event({"type": "modify_preview", **{k: result.get(k) for k in ("target_field", "original_content", "new_content", "changes", "summary")}})
+                            field_updated = True
+                    except Exception:
+                        pass  # 降级走通用逻辑
+                else:
+                    yield sse_event({
+                        "type": "tool_end",
+                        "tool": current_tool,
+                        "output": tool_output[:500],
+                        "field_updated": field_updated,
+                    })
                 current_tool = None
 
-        # 图执行完毕 → 保存响应 + 发送 done
+        # 图执行完毕 → 保存用户可见消息到 ChatMessage DB + 发送 done
+        # 注意：ToolMessage 和 AIMessage(tool_calls) 由 Checkpointer 保存，不需要存 DB
         agent_msg = ChatMessage(
             id=generate_uuid(),
             project_id=request.project_id,
             role="assistant",
             content=full_content,
-            message_metadata={"phase": current_phase},
+            message_metadata={
+                "phase": current_phase,
+                "mode": "assistant",
+                "tools_used": tools_used,  # 记录调用了哪些工具
+            },
         )
         db.add(agent_msg)
         db.commit()
@@ -641,6 +973,12 @@ async def stream_chat(request: ChatRequest, db: Session = Depends(get_db)):
 | `update_field` | `update_field_node` | P1 |
 | `manage_skill` | `tool_node` (skill) | P2 |
 
+> **扩展说明**：以上是迁移现有功能的初始工具集。`implementation_plan_v3.md` 中定义的新功能会追加新工具：
+> - `update_prompt` / `execute_prompt_update`：提示词修改（话题一）
+> - 共创模式不使用 @tool，直接走 `llm.astream()`
+>
+> 添加新工具只需在 `agent_tools.py` 中定义 `@tool` 函数并加入 `AGENT_TOOLS` 列表即可。
+
 **验证**: `cd backend && python -c "from core.agent_tools import AGENT_TOOLS; print(f'{len(AGENT_TOOLS)} tools loaded')"`
 
 #### Step 1.4 — 更新 `backend/requirements.txt`
@@ -674,7 +1012,7 @@ async def stream_chat(request: ChatRequest, db: Session = Depends(get_db)):
 **改造的节点函数** → 移入 `agent_tools.py` 作为 `@tool`：
 - `intent_analysis_node` → 特殊处理（意图分析是对话式多轮，不适合做工具，保留为特殊节点或用 interrupt 机制）
 - `research_node` → `run_research` @tool
-- `design_inner_node` / `produce_inner_node` / `design_outer_node` / `produce_outer_node` → 合并为 `generate_field_content` @tool（根据字段名和阶段自动选择 prompt）
+- `design_inner_node` / `produce_inner_node` / `design_outer_node` / `produce_outer_node` → 合并为 `generate_field_content` @tool（根据内容块名和组自动选择 prompt）
 - `evaluate_node` → `run_evaluation` @tool
 - `modify_node` → `modify_field` @tool
 - `query_node` → `query_field` @tool
@@ -688,7 +1026,7 @@ async def stream_chat(request: ChatRequest, db: Session = Depends(get_db)):
 
 意图分析是一个 3 轮问答流程，不适合用单次 Tool Calling。解决方案：
 
-1. 意图分析阶段的逻辑放在 `build_system_prompt()` 中：当 `current_phase == "intent"` 且未完成时，system prompt 指导 LLM 执行问答流程。
+1. 意图分析组的逻辑放在 `build_system_prompt()` 中：当 `current_phase == "intent"` 且未完成时，system prompt 指导 LLM 执行问答流程。
 2. 不需要单独的节点或工具，LLM 在 system prompt 引导下自然地进行多轮对话。
 3. 当 LLM 认为收集够信息时，调用 `generate_field_content(field_name="意图分析")` 工具来生成和保存结果。
 
@@ -860,12 +1198,12 @@ from core.database import get_db
 
 @tool
 def modify_field(field_name: str, instruction: str, reference_fields: list[str] = []) -> str:
-    """修改指定字段的内容。"""
+    """修改指定内容块的内容。"""
     db = next(get_db())
     try:
-        # ... 读取字段、调用 LLM、apply_edits、保存 ...
+        # ... 读取内容块、调用 LLM、apply_edits、保存 ...
         db.commit()
-        return f"已修改字段「{field_name}」"
+        return f"已修改内容块「{field_name}」"
     except Exception as e:
         db.rollback()
         return f"修改失败: {str(e)}"
@@ -882,7 +1220,7 @@ def modify_field(field_name: str, instruction: str, reference_fields: list[str] 
    def create_tools_for_project(project_id: str) -> list:
        @tool
        def modify_field(field_name: str, instruction: str) -> str:
-           """修改指定字段的内容。"""
+           """修改指定内容块的内容。"""
            # 这里可以直接使用外层的 project_id
            ...
        return [modify_field, ...]
@@ -895,7 +1233,7 @@ def modify_field(field_name: str, instruction: str, reference_fields: list[str] 
 
    @tool
    def modify_field(field_name: str, instruction: str, config: RunnableConfig) -> str:
-       """修改指定字段的内容。"""
+       """修改指定内容块的内容。"""
        project_id = config["configurable"]["project_id"]
        ...
    ```
@@ -908,24 +1246,47 @@ def modify_field(field_name: str, instruction: str, reference_fields: list[str] 
 ## 五、@ 引用机制的变化
 
 ### 现有机制
-前端解析 `@字段名` → 传入 `references: ["字段名"]` → 后端 `_resolve_references()` 查内容 → 注入到 `referenced_contents` state 字段。
+前端解析 `@内容块名` → 传入 `references: ["内容块名"]` → 后端 `_resolve_references()` 查内容 → 注入到 `referenced_contents` state 字段 → 在 `route_intent` 硬编码规则中自动路由到 modify/query。
 
 ### 新机制
-@ 引用仍然由前端解析，但注入方式改变：
+@ 引用仍然由前端解析，但路由逻辑和注入方式都改变了：
+
+**两层协作**：
+1. **API 层**：将 @ 引用内容附加到用户消息中，让 LLM 能**看到**引用内容
+2. **system prompt**：`@ 引用约定` 章节告诉 LLM 如何**理解和处理** @ 引用（选择正确的工具 + 参数）
 
 ```python
-# API 层：将 @ 引用内容作为用户消息的一部分
+# API 层（stream_chat 端点）：将 @ 引用内容附加到 HumanMessage
+references = request.references or []
 if references:
-    ref_contents = _resolve_references(db, project_id, references)
-    ref_text = "\n".join(f"【{name}】\n{content}" for name, content in ref_contents.items())
-    # 附加到用户消息中
-    augmented_message = f"{request.message}\n\n---\n以下是用户引用的字段内容：\n{ref_text}"
-    input_messages.append(HumanMessage(content=augmented_message))
+    ref_contents = _resolve_references(db, request.project_id, references)
+    if ref_contents:
+        ref_text = "\n".join(f"【{name}】\n{content[:2000]}" for name, content in ref_contents.items())
+        # 附加到用户消息中，LLM 会自然看到引用内容
+        augmented_message = f"{request.message}\n\n---\n以下是用户引用的内容块：\n{ref_text}"
+    else:
+        augmented_message = request.message
 else:
-    input_messages.append(HumanMessage(content=request.message))
+    augmented_message = request.message
+
+input_messages = [HumanMessage(content=augmented_message)]
 ```
 
-这样 LLM 自然地看到引用内容，无需在 State 中传递。
+**设计要点**：
+- 引用内容截断到 2000 字（防止超长内容撑爆 context window）
+- 引用名用【】包裹，与 system prompt 中的 `@ 引用约定` 格式一致
+- LLM 看到引用内容后，结合 system prompt 的消歧规则，自动选择 `modify_field` / `query_field` / `read_field`
+- 引用中的内容块名会被 LLM 提取为工具参数的 `field_name`
+- **不再需要硬编码的 `query_keywords` 列表来判断是查询还是修改** — 这完全由 LLM 理解语义来决定
+
+### 为什么取代硬编码规则是更好的
+
+现有硬编码（`orchestrator.py` 第 261-287 行）的问题：
+- 用关键词列表 `["是什么", "什么意思", "解释", ...]` 判断是否为查询 — 无法覆盖所有表述
+- 默认 @ 引用 = 修改 — 但用户可能在引用内容块时有其他意图（如"参考@A和@B设计大纲"）
+- 无法处理复合意图（如"看看@场景库，然后帮我修改一下"）
+
+新方式让 LLM 全语义理解，只需要在 system prompt 中给出几个示例即可。
 
 ---
 
@@ -935,7 +1296,7 @@ else:
 
 | 场景 | 文件 | 调用方式 |
 |------|------|---------|
-| 字段独立生成（内容块生成按钮） | `api/blocks.py`, `tools/field_generator.py` | `llm.ainvoke()` / `llm.astream()` |
+| 内容块独立生成（内容块生成按钮） | `api/blocks.py`, `tools/field_generator.py` | `llm.ainvoke()` / `llm.astream()` |
 | 摘要生成 | `core/digest_service.py` | `llm_mini.ainvoke()` |
 | DeepResearch 综合分析 | `tools/deep_research.py` | `llm.ainvoke()` |
 | Eval 引擎（模拟器/评审） | `tools/eval_engine.py` | `llm.ainvoke()` |
@@ -980,7 +1341,344 @@ text = response.content
 
 ---
 
-## 八、迁移风险与 Fallback
+## 八、上下文工程（Context Engineering）
+
+### 8.1 现状问题诊断
+
+当前的对话历史处理存在 **5 个根本性缺陷**：
+
+#### 问题 1：ToolMessage 不持久化
+
+LangGraph 的 Agent Loop 在单次请求内产生多条消息：
+
+```
+HumanMessage("修改场景库的5个模块改成7个")
+→ AIMessage(tool_calls=[{name: "modify_field", args: {field_name: "场景库", instruction: "..."}}])
+→ ToolMessage("✅ 已修改内容块「场景库」，共2处修改")
+→ AIMessage("我已经帮你把场景库的模块从5个改成了7个...")
+```
+
+但当前代码只保存了：
+- HumanMessage → `ChatMessage(role="user")`
+- 最终 AIMessage → `ChatMessage(role="assistant")`
+
+中间的 **AIMessage(with tool_calls)** 和 **ToolMessage** 完全丢失。下一次请求时，Agent 不知道自己曾经调用过什么工具、用了什么参数。
+
+**后果**：用户说"撤销刚才的修改"或"刚才改少了，再加一个"，Agent 没有上下文。
+
+#### 问题 2：20 条硬截断、无摘要
+
+```python
+chat_history = []
+for m in current_phase_msgs[-20:]:  # 硬截断，超过直接丢弃
+```
+
+超过 20 条的历史直接丢弃，没有任何摘要或压缩。对于频繁对话的项目，Agent 很快就会"失忆"。
+
+#### 问题 3：组过滤过于严格
+
+```python
+if msg_phase is None or msg_phase == current_phase:
+    current_phase_msgs.append(m)
+```
+
+切换组后，之前组的所有对话完全不可见。但在新架构中，Agent 可以跨组操作（如在 inner 组修改 intent 组的内容块），组过滤会导致上下文断裂。
+
+#### 问题 4：工具调用无会话上下文
+
+当前的 `modify_node` 等节点函数在 `/stream` 手动分发中执行时，只收到由 API 层构建的简化 `initial_state`（仅包含最近 10-20 条 user/assistant 消息），不包含 Agent Loop 中间产生的 ToolMessage。每次工具调用都是"无记忆"的独立调用。
+
+#### 问题 5：无持久化 Checkpointer
+
+当前文档中 `create_agent_graph()` 未配置 checkpointer。这意味着即使正确使用 LangGraph，每次 HTTP 请求都是全新的图执行，无法在请求间累积状态（包括 ToolMessage）。
+
+---
+
+### 8.2 目标架构：LangGraph Checkpointer + ChatMessage DB 双层
+
+```
+┌────────────────────────────────────────────────────────────┐
+│                        数据层                               │
+│                                                            │
+│  ┌─────────────────────────┐  ┌──────────────────────────┐ │
+│  │ MemorySaver (Checkpointer)│  │ ChatMessage 表            │ │
+│  │                          │  │ (前端展示 + 审计日志)      │ │
+│  │ 存储内容：                │  │                            │ │
+│  │ • HumanMessage           │  │ 存储内容：                  │ │
+│  │ • AIMessage(含tool_calls)│  │ • user 消息                │ │
+│  │ • ToolMessage            │  │ • assistant 最终回复        │ │
+│  │ • 完整 AgentState        │  │ • mode/phase/tools_used    │ │
+│  │                          │  │                            │ │
+│  │ 用途：                    │  │ 用途：                     │ │
+│  │ • LLM 推理上下文          │  │ • 前端聊天面板展示          │ │
+│  │ • 跨请求状态累积          │  │ • 历史导出 / 编辑重发       │ │
+│  │ • ToolMessage 保留        │  │ • 审计日志                 │ │
+│  └───────────┬──────────────┘  └─────────────┬────────────┘ │
+│              │                                │              │
+└──────────────┼────────────────────────────────┼──────────────┘
+               │                                │
+      ┌────────▼────────┐             ┌─────────▼──────────┐
+      │  agent_node       │             │ 前端 agent-panel    │
+      │  (LLM 推理)       │             │ (消息展示)           │
+      │  看到完整对话链     │             │ 只展示 user/assistant│
+      └──────────────────┘             └────────────────────┘
+```
+
+**设计原则**：
+1. **Checkpointer** = LLM 的"大脑记忆"（完整，包含工具调用链、ToolMessage）
+2. **ChatMessage DB** = 给用户看的"对话记录"（精简，只有 user + assistant 最终回复）
+3. 两者各司其职，不互相替代
+4. **升级路径**：当前用 `MemorySaver`（内存），未来可一行切换到 `SqliteSaver` / `PostgresSaver` 实现持久化
+
+---
+
+### 8.3 Checkpointer 配置
+
+**Graph 构建变化**（`backend/core/orchestrator.py`）：
+
+```python
+from langgraph.checkpoint.memory import MemorySaver
+
+def create_agent_graph():
+    """
+    创建 Agent 图（带 Checkpointer）。
+    Checkpointer 使请求间对话状态自动累积。
+    """
+    graph = StateGraph(AgentState)
+    graph.add_node("agent", agent_node)
+    graph.add_node("tools", ToolNode(AGENT_TOOLS))
+    graph.set_entry_point("agent")
+    graph.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
+    graph.add_edge("tools", "agent")
+
+    # Checkpointer：跨请求保持对话状态
+    # 当前使用 MemorySaver（内存，重启丢失）
+    # 生产环境升级：
+    #   from langgraph.checkpoint.sqlite import SqliteSaver
+    #   checkpointer = SqliteSaver.from_conn_string("agent_checkpoints.db")
+    checkpointer = MemorySaver()
+
+    return graph.compile(checkpointer=checkpointer)
+
+
+# 全局实例
+agent_graph = create_agent_graph()
+```
+
+**Thread ID 策略**：
+
+| 场景 | Thread ID 格式 | 说明 |
+|------|---------------|------|
+| 助手模式 | `{project_id}:assistant` | 同项目所有助手对话共享线程，跨组累积 |
+| 共创模式 | 不走 Graph，不使用 checkpointer | 共创直接用 `llm.astream()`，历史从 DB 加载 |
+
+> **注意**：共创模式不经过 Agent Graph（见 `implementation_plan_v3.md` 5.7 节），因此不使用 checkpointer。共创历史仍从 ChatMessage DB 加载。
+
+---
+
+### 8.4 对话历史加载策略变化
+
+**核心变化**：使用 Checkpointer 后，**不再需要手动从 DB 加载全部历史**。每次请求只传递新消息，Checkpointer 自动提供之前的上下文。
+
+**变化前**（当前代码）：
+
+```python
+# 1. 从 DB 加载全部历史
+history_msgs = db.query(ChatMessage).filter(...).all()
+# 2. 按组过滤（旧逻辑，已删除）
+current_phase_msgs = [m for m in history_msgs if m_phase == current_phase]
+# 3. 取最近 20 条
+chat_history = [convert(m) for m in current_phase_msgs[-20:]]
+# 4. 拼接新消息
+input_state = {"messages": chat_history + [HumanMessage(content=new_msg)]}
+```
+
+**变化后**（新架构）：
+
+```python
+# 1. 构建 thread 配置（Checkpointer 通过 thread_id 定位历史）
+thread_id = f"{request.project_id}:assistant"
+config = {
+    "configurable": {
+        "thread_id": thread_id,
+        "project_id": request.project_id,
+    }
+}
+
+# 2. 检查是否需要 Bootstrap（首次请求 / 服务器重启后）
+try:
+    existing = await agent_graph.aget_state(config)
+    has_checkpoint = existing and existing.values and existing.values.get("messages")
+except Exception:
+    has_checkpoint = False
+
+if not has_checkpoint:
+    # 首次使用：从 DB 加载历史作为种子
+    db_history = _load_seed_history(db, request.project_id)
+    input_messages = db_history + [HumanMessage(content=augmented_message)]
+else:
+    # 已有 checkpoint：只传新消息，Checkpointer 自动补全历史
+    input_messages = [HumanMessage(content=augmented_message)]
+
+# 3. 构建精简 input_state
+input_state = {
+    "messages": input_messages,
+    "project_id": request.project_id,
+    "current_phase": current_phase,
+    "creator_profile": creator_profile_str,
+}
+```
+
+**`_load_seed_history` 函数**（Bootstrap 用，仅在无 checkpoint 时调用）：
+
+```python
+def _load_seed_history(db: Session, project_id: str, limit: int = 30) -> list[BaseMessage]:
+    """
+    从 ChatMessage DB 加载历史，用于 Checkpointer 的 Bootstrap。
+    注意：DB 中只有 user/assistant 消息，没有 ToolMessage。
+    Bootstrap 后 Checkpointer 会接管，后续请求不再调用此函数。
+    """
+    msgs = db.query(ChatMessage).filter(
+        ChatMessage.project_id == project_id,
+    ).order_by(ChatMessage.created_at.desc()).limit(limit).all()
+
+    msgs.reverse()  # 时间正序
+    result = []
+    for m in msgs:
+        meta = m.message_metadata or {}
+        mode = meta.get("mode", "assistant")
+        if mode != "assistant":
+            continue  # 只加载助手模式消息
+        if m.role == "user":
+            result.append(HumanMessage(content=m.content))
+        elif m.role == "assistant":
+            result.append(AIMessage(content=m.content))
+    return result
+```
+
+---
+
+### 8.5 Token 预算管理
+
+即使 Checkpointer 保存了完整历史，也不能把所有消息都发给 LLM（context window 有限）。
+
+**解决方案**：在 `agent_node` 中使用 LangChain 的 `trim_messages`：
+
+```python
+from langchain_core.messages import trim_messages
+
+async def agent_node(state: AgentState) -> dict:
+    system_prompt = build_system_prompt(state)
+
+    # Token 预算管理：保留最近的消息，裁剪过早的历史
+    trimmed = trim_messages(
+        state["messages"],
+        max_tokens=100_000,    # 为 system prompt (~5K) + 回复 (~10K) 预留空间
+        token_counter=llm,     # 使用 LLM 内置 token 计数器
+        strategy="last",       # 保留最新消息
+        start_on="human",      # 确保从 HumanMessage 开始（不截断到孤立的 ToolMessage）
+        include_system=False,  # system prompt 由我们单独管理
+        allow_partial=False,   # 不截断单条消息
+    )
+
+    messages_with_system = [SystemMessage(content=system_prompt)] + trimmed
+    llm_with_tools = llm.bind_tools(AGENT_TOOLS)
+    response = await llm_with_tools.ainvoke(messages_with_system)
+    return {"messages": [response]}
+```
+
+**Token 预算分配**（以 GPT-4o 128K 为例）：
+
+| 组件 | 预算 | 说明 |
+|------|------|------|
+| System Prompt | ~5,000 tokens | 角色定义 + 内容块索引 + 工具描述 + 交互规则 |
+| 对话历史 | ~100,000 tokens | `trim_messages` 管理，包含 ToolMessage |
+| LLM 回复 + 工具参数 | ~10,000 tokens | 预留 |
+| 安全余量 | ~13,000 tokens | — |
+| **总计** | **~128,000 tokens** | — |
+
+> **未来优化方向**：当历史过长时，可在 `trim_messages` 之前增加一步"老消息摘要"：将被裁剪的消息用 `llm_mini` 生成摘要，作为 SystemMessage 的一部分注入。这能在有限 token 内保留更多上下文。当前阶段不实现。
+
+---
+
+### 8.6 消息保存策略
+
+**Agent 执行完毕后**，只保存用户可见的消息到 ChatMessage DB：
+
+```python
+# 在 event_generator 结束后（graph 执行完毕）
+agent_msg = ChatMessage(
+    id=generate_uuid(),
+    project_id=request.project_id,
+    role="assistant",
+    content=full_content,  # 从 token 流收集的 Agent 最终文字回复
+    message_metadata={
+        "phase": current_phase,
+        "mode": "assistant",
+        "tools_used": list(tools_used_in_this_request),  # 记录调用了哪些工具名
+    },
+)
+db.add(agent_msg)
+db.commit()
+```
+
+**不保存到 ChatMessage DB**（但 Checkpointer 中有）：
+- AIMessage 中的 `tool_calls` 细节
+- ToolMessage（工具返回值）
+- Agent Loop 中间的 AIMessage
+
+**对前端的影响**：无。前端仍然只看到 `user` 和 `assistant` 消息。
+
+---
+
+### 8.7 组切换不再丢失上下文
+
+当前的组过滤（`msg_phase == current_phase`）在新架构中 **不再需要**：
+
+1. Checkpointer 的 `thread_id = {project_id}:assistant` 不区分组
+2. 所有组的对话都在同一个线程中自然累积
+3. `current_phase` 只影响 `build_system_prompt` 中的上下文提示，不影响消息过滤
+4. `trim_messages` 按时间顺序保留最新消息，自然覆盖跨组场景
+
+**前端组过滤**：ChatMessage DB 中仍然记录 `phase` metadata，前端可以按需过滤展示（只显示当前组的消息），但这是 **展示层过滤**，不影响 LLM 的上下文。
+
+---
+
+### 8.8 跨模式上下文桥接
+
+已在 `implementation_plan_v3.md` 5.8 节设计。核心要点：
+
+- **助手 → 共创**：不注入（共创角色不知道助手的存在）
+- **共创 → 助手**：自动注入最近共创对话摘要到 `build_system_prompt()`
+- **桥接数据源**：从 ChatMessage DB 读取（不从 Checkpointer），因为桥接只需要摘要
+
+```python
+# build_system_prompt 中追加
+cocreation_bridge = build_assistant_context_with_bridge(project_id)
+# → 返回最近共创对话的摘要（≤10条消息）
+```
+
+---
+
+### 8.9 上下文工程迁移步骤
+
+| 步骤 | 内容 | 所属阶段 |
+|------|------|---------|
+| 1 | `create_agent_graph()` 添加 `MemorySaver` checkpointer | Phase 2 |
+| 2 | `agent_node()` 添加 `trim_messages` token 预算管理 | Phase 2 |
+| 3 | `/stream` endpoint 改为只传新消息 + Bootstrap 逻辑 | Phase 3 |
+| 4 | `/stream` endpoint 结束后只保存 user-facing 消息 | Phase 3 |
+| 5 | 删除旧的组过滤 + 20 条硬截断逻辑 | Phase 3 |
+| 6 | 共创桥接函数 `build_assistant_context_with_bridge()` | Phase 5 (共创) |
+
+> **生产升级（可选，当前不实施）**：
+> - `pip install langgraph-checkpoint-sqlite`
+> - 将 `MemorySaver()` 替换为 `SqliteSaver.from_conn_string("agent_checkpoints.db")`
+> - 一行改动，无其他变化
+
+---
+
+## 九、迁移风险与 Fallback
 
 | 风险 | 影响 | Fallback |
 |------|------|---------|
@@ -988,12 +1686,14 @@ text = response.content
 | LLM 调用错误的工具 | 用户说"看看XX"但调用了 modify_field | 工具 docstring 精确描述使用场景；每个工具加入安全检查 |
 | Tool Calling 不支持的模型 | 切换到不支持 function calling 的模型 | `get_chat_model()` 检查 provider 是否支持，不支持则降级为 prompt 方式 |
 | astream_events 事件格式变化 | LangGraph 版本升级导致事件名变化 | 锁定 langgraph 版本；事件处理加 try/except |
-| 工具执行超时 | 深度调研、字段生成可能超过 60s | 工具内部加 timeout；SSE 定期发送 heartbeat |
+| 工具执行超时 | 深度调研、内容块生成可能超过 60s | 工具内部加 timeout；SSE 定期发送 heartbeat |
 | project_id 获取失败 | RunnableConfig 传递丢失 | 工具函数内检查，缺失则返回错误信息 |
+| 服务器重启丢失 MemorySaver | Checkpointer 中的 ToolMessage 历史丢失 | 自动从 ChatMessage DB Bootstrap 种子历史；升级到 SqliteSaver 彻底解决 |
+| 对话历史过长导致 token 超限 | 长期项目累积大量消息 | `trim_messages` 自动裁剪；未来可增加老消息摘要压缩 |
 
 ---
 
-## 九、实施顺序与依赖关系
+## 十、实施顺序与依赖关系
 
 ```
 Phase 1: 基础设施（可独立执行，不影响现有功能）
@@ -1005,9 +1705,14 @@ Phase 1: 基础设施（可独立执行，不影响现有功能）
 Phase 2: Agent Graph（核心改造）
   Step 2.1 重写 orchestrator.py  ← 依赖 Phase 1
   Step 2.2 更新 AgentState       ← 包含在 Step 2.1 中
+  Step 2.3 添加 MemorySaver checkpointer ← 包含在 Step 2.1 中
+  Step 2.4 agent_node 添加 trim_messages ← 包含在 Step 2.1 中
 
 Phase 3: API 层（对外接口改造）
   Step 3.1 重写 /stream          ← 依赖 Phase 2
+    - 上下文工程：Checkpointer Bootstrap 逻辑
+    - 上下文工程：只传新消息，删除旧历史加载
+    - 上下文工程：删除组过滤和 20 条硬截断
   Step 3.2 重写 /chat            ← 依赖 Phase 2
   Step 3.3 清理旧 endpoint       ← 依赖 Step 3.1, 3.2
 
@@ -1030,7 +1735,7 @@ Phase 5: 工具函数内部 ai_client → llm 替换
 
 ---
 
-## 十、前端适配
+## 十一、前端适配
 
 ### 10.1 agent-panel.tsx SSE 事件处理
 
@@ -1051,7 +1756,7 @@ case "tool_start":
   break;
 
 case "tool_end":
-  // 更新状态，触发字段刷新
+  // 更新状态，触发内容块刷新
   if (data.field_updated) {
     onContentUpdate?.();
   }
@@ -1062,23 +1767,27 @@ case "tool_end":
 
 ```typescript
 const toolNameMap: Record<string, string> = {
-  "modify_field": "修改字段内容",
-  "generate_field_content": "生成字段内容",
-  "query_field": "查询字段信息",
+  "modify_field": "修改内容块",
+  "generate_field_content": "生成内容块内容",
+  "query_field": "查询内容块信息",
   "manage_architecture": "管理项目架构",
-  "advance_to_phase": "推进阶段",
+  "advance_to_phase": "推进到下一组",
   "run_research": "执行调研",
   "run_evaluation": "执行评估",
   "manage_persona": "管理用户画像",
   "generate_outline": "生成大纲",
-  "read_field": "读取字段内容",
-  "update_field": "更新字段内容",
+  "read_field": "读取内容块内容",
+  "update_field": "更新内容块内容",
+  "manage_skill": "应用写作技能",
+  // 以下是 implementation_plan_v3.md 新增的工具
+  "update_prompt": "分析提示词修改",
+  "execute_prompt_update": "执行提示词修改",
 };
 ```
 
 ### 10.3 PRODUCE_ROUTES 的变化
 
-现有 `PRODUCE_ROUTES` 通过 route_target 判断是否为产出路由。新架构中，这个判断改为通过 `tool_end` 事件的 `field_updated` 字段：
+现有 `PRODUCE_ROUTES` 通过 route_target 判断是否为产出路由。新架构中，这个判断改为通过 `tool_end` 事件的 `field_updated` 标志：
 
 ```typescript
 // 旧：通过 route 事件判断
@@ -1087,15 +1796,41 @@ if (PRODUCE_ROUTES.includes(currentRoute)) { ... }
 // 新：通过 tool_end 事件判断
 case "tool_end":
   if (data.field_updated) {
-    // 字段已更新，触发左侧工作台刷新
+    // 内容块已更新，触发左侧工作台刷新
     onContentUpdate?.();
   }
   break;
 ```
 
+### 10.4 前端术语更新（"字段"→"内容块"、"阶段"→"组"）
+
+> 为了对创作者友好，前端 UI 中面向用户的中文文本需要统一更新。**后端变量名（`field_name`、`phase`、`current_phase`）保持不变。**
+
+需要修改的前端文件及关键字符串：
+
+| 文件 | 旧文本（示例） | 新文本 |
+|------|--------------|--------|
+| `agent-panel.tsx` | `"生成字段"` | `"生成内容块"` |
+| `agent-panel.tsx` | `"根据上下文生成指定字段内容"` | `"根据上下文生成指定内容块内容"` |
+| `agent-panel.tsx` | `"添加/删除/移动阶段和字段"` | `"添加/删除/移动组和内容块"` |
+| `agent-panel.tsx` | `"⚙️ 正在生成字段内容..."` | `"⚙️ 正在生成内容块内容..."` |
+| `agent-panel.tsx` | `"选择要引用的字段"` | `"选择要引用的内容块"` |
+| `agent-panel.tsx` | `` `输入消息... 使用 @ 引用字段` `` | `` `输入消息... 使用 @ 引用内容块` `` |
+| `workspace/page.tsx` | `"加载字段失败"` / `"更新字段失败"` | `"加载内容块失败"` / `"更新内容块失败"` |
+| `workspace/page.tsx` | `"受影响的字段"` | `"受影响的内容块"` |
+| `progress-panel.tsx` | `"迁移后可以自由添加/删除/排序阶段和字段"` | `"迁移后可以自由添加/删除/排序组和内容块"` |
+| `progress-panel.tsx` | `"该阶段暂无字段"` | `"该组暂无内容块"` |
+| `content-panel.tsx` | `"阶段"` (面向用户的标签) | `"组"` |
+| `content-panel.tsx` | `"字段"` (面向用户的标签) | `"内容块"` |
+| `global-search-modal.tsx` | `result.type === "field" ? "字段" : "内容块"` | 统一使用 `"内容块"` |
+| `settings/page.tsx` | `"传统流程中各阶段的提示词"` | `"传统流程中各组的提示词"` |
+| `settings/page.tsx` | `"添加/删除/移动阶段和字段"` | `"添加/删除/移动组和内容块"` |
+
+**执行方式**：全局搜索 `字段` 和 `阶段`，逐个判断是否为面向用户的中文文本（而非代码变量），替换为 `内容块` 和 `组`。注意保留注释中描述后端概念的"字段"不变（如 `// JSON 字段查询`）。
+
 ---
 
-## 十一、执行前检查清单
+## 十二、执行前检查清单
 
 | 检查项 | 说明 |
 |--------|------|
@@ -1108,15 +1843,22 @@ case "tool_end":
 | `RunnableConfig` 传递 `project_id` | 所有工具函数能获取 project_id |
 | SSE 事件类型对齐 | 前端能处理新的 `tool_start` / `tool_end` 事件 |
 | 前端 `route` 事件处理降级 | 过渡期兼容旧的 `route` 事件 |
+| 前端术语已更新 | 面向用户的 "字段" → "内容块"，"阶段" → "组"（见 §10.4） |
+| Checkpointer 已配置 | `create_agent_graph()` 中有 `MemorySaver()` |
+| `trim_messages` 已添加 | `agent_node()` 中有 token 预算管理 |
+| `thread_id` 传递正确 | `config["configurable"]["thread_id"]` 格式为 `{project_id}:assistant` |
+| Bootstrap 逻辑存在 | 首次请求从 DB 加载种子历史 |
+| 旧的组过滤已删除 | 不再有 `msg_phase == current_phase` 过滤 |
+| `ChatMessage.message_metadata` 字段变更 | `tool_used`(str) → `tools_used`(list)，其余不变 |
 
 ---
 
-## 十二、执行后验证清单
+## 十三、执行后验证清单
 
-| 阶段 | 验证方法 |
+| 实施阶段 | 验证方法 |
 |------|----------|
-| Phase 1 | 1. `from core.llm import llm, llm_mini` 成功 2. `from core.agent_tools import AGENT_TOOLS` 成功 3. `len(AGENT_TOOLS) >= 8` |
+| Phase 1 | 1. `from core.llm import llm, llm_mini` 成功 2. `from core.agent_tools import AGENT_TOOLS` 成功 3. `len(AGENT_TOOLS) == 12` |
 | Phase 2 | 1. `from core.orchestrator import agent_graph` 成功 2. `agent_graph.get_graph().nodes` 包含 "agent" 和 "tools" |
-| Phase 3 | 1. `/stream` 请求返回 SSE 流 2. 纯聊天返回 `token` 事件 3. "修改@字段" 返回 `tool_start` → `token` → `tool_end` → `done` 4. `content` 事件不再出现 |
+| Phase 3 | 1. `/stream` 请求返回 SSE 流 2. 纯聊天返回 `token` 事件 3. "修改@内容块" 返回 `tool_start` → `token` → `tool_end` → `done` 4. `content` 事件不再出现 5. **上下文连续性**：第二次请求"刚才改了什么？" Agent 能正确回答 6. 服务器重启后首次请求自动 Bootstrap |
 | Phase 4 | 1. `grep -r "ai_client" backend/` 无结果 2. `backend/core/ai_client.py` 不存在 |
-| Phase 5 | 1. 字段独立生成仍正常 2. 摘要生成正常 3. DeepResearch 正常 4. Eval 引擎正常 |
+| Phase 5 | 1. 内容块独立生成仍正常 2. 摘要生成正常 3. DeepResearch 正常 4. Eval 引擎正常 |
