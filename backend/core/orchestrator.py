@@ -1490,6 +1490,7 @@ Markdown 格式硬性要求（如输出包含表格，必须严格遵守）：
     return {
         **state,
         "agent_output": modified_content,
+        "display_output": f"✅ 已修改【{target_field}】，请在左侧工作台查看和编辑。",
         "is_producing": True,  # 标记为产出模式，触发字段保存
         "waiting_for_human": False,
         "current_phase": state.get("current_phase", "intent"),  # 保持当前阶段
@@ -1784,8 +1785,14 @@ async def generate_field_node(state: ContentProductionState) -> ContentProductio
     return {
         **state,
         "agent_output": response.content,
+        "display_output": f"✅ 已生成【{field_name}】，请在左侧工作台查看和编辑。",
         "messages": [AIMessage(content=response.content)],
         "is_producing": True,  # 生成字段一定是产出模式
+        "tokens_in": response.tokens_in,
+        "tokens_out": response.tokens_out,
+        "duration_ms": response.duration_ms,
+        "cost": response.cost,
+        "full_prompt": f"[System]\n{context.to_system_prompt()}\n\n[User]\n请生成{field_name}。用户补充说明：{user_input}",
     }
 
 

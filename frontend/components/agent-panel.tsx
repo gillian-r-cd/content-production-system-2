@@ -478,8 +478,12 @@ export function AgentPanel({
                 const isProducing = data.is_producing || PRODUCE_ROUTES.includes(actualRoute);
                 
                 if (isProducing) {
-                  // 产出模式：使用后端发来的 display_content（在 fullContent 中），已包含正确的字段/阶段名
-                  const displayContent = fullContent || "✅ 内容已生成，请在左侧工作台查看和编辑。";
+                  // 产出模式：使用后端发来的 display_content
+                  // 防御：过滤掉"已生成【】"等空名称情况
+                  let displayContent = fullContent || "";
+                  if (!displayContent || displayContent.includes("已生成【】") || displayContent.includes("已生成 []")) {
+                    displayContent = "✅ 内容已生成，请在左侧工作台查看和编辑。";
+                  }
                   setMessages((prev) =>
                     prev.map((m) =>
                       m.id === tempAiMsg.id

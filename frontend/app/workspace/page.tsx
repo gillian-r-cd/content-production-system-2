@@ -10,10 +10,11 @@ import { ProgressPanel } from "@/components/progress-panel";
 import { ContentPanel } from "@/components/content-panel";
 import { AgentPanel } from "@/components/agent-panel";
 import { CreateProjectModal } from "@/components/create-project-modal";
+import { GlobalSearchModal } from "@/components/global-search-modal";
 import { projectAPI, fieldAPI, agentAPI } from "@/lib/api";
 import { requestNotificationPermission } from "@/lib/utils";
 import type { Project, Field, ContentBlock } from "@/lib/api";
-import { Copy, Trash2, ChevronDown, CheckSquare, Square, X, Download, Upload } from "lucide-react";
+import { Copy, Trash2, ChevronDown, CheckSquare, Square, X, Download, Upload, Search } from "lucide-react";
 
 export default function WorkspacePage() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -34,6 +35,9 @@ export default function WorkspacePage() {
   const [isBatchMode, setIsBatchMode] = useState(false);
   const [selectedProjectIds, setSelectedProjectIds] = useState<Set<string>>(new Set());
   const [isDeleting, setIsDeleting] = useState(false);
+  
+  // 全局搜索
+  const [showSearch, setShowSearch] = useState(false);
 
   // 点击外部关闭下拉菜单
   useEffect(() => {
@@ -45,6 +49,20 @@ export default function WorkspacePage() {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  // 全局搜索快捷键 Cmd/Ctrl+Shift+F
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "f") {
+        e.preventDefault();
+        if (currentProject) {
+          setShowSearch(true);
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [currentProject]);
 
   // 加载项目列表 + 请求通知权限
   useEffect(() => {
@@ -540,6 +558,16 @@ export default function WorkspacePage() {
         </div>
 
         <div className="flex items-center gap-4">
+          {currentProject && (
+            <button
+              onClick={() => setShowSearch(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-zinc-400 hover:text-zinc-200 hover:bg-surface-3 rounded-lg transition-colors"
+              title="全局搜索替换 (⌘⇧F)"
+            >
+              <Search className="w-3.5 h-3.5" />
+              搜索
+            </button>
+          )}
           <a
             href="/settings"
             className="text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
@@ -672,6 +700,36 @@ export default function WorkspacePage() {
         onClose={() => setShowCreateModal(false)}
         onCreated={handleProjectCreated}
       />
+
+      {/* 全局搜索替换 */}
+      {currentProject && (
+        <GlobalSearchModal
+          projectId={currentProject.id}
+          open={showSearch}
+          onClose={() => setShowSearch(false)}
+          onNavigateToField={(fieldId, fieldType) => {
+            // 定位到字段：如果是 block，通过 allBlocks 找到并选中
+            if (fieldType === "block") {
+              const block = allBlocks.find(b => b.id === fieldId);
+              if (block) {
+                setSelectedBlock(block);
+              }
+            } else {
+              // 对于 ProjectField，找到对应的阶段并触发 phase click
+              const field = fields.find(f => f.id === fieldId);
+              if (field && field.phase) {
+                handlePhaseClick(field.phase);
+              }
+            }
+            setShowSearch(false);
+          }}
+          onContentUpdate={() => {
+            setRefreshKey(prev => prev + 1);
+            setBlocksRefreshKey(prev => prev + 1);
+            if (currentProject) loadFields(currentProject.id);
+          }}
+        />
+      )}
 
       {/* 版本警告弹窗（字段更新触发） */}
       {fieldVersionWarning && (

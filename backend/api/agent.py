@@ -319,13 +319,25 @@ def _build_chat_display(result: dict, current_phase: str) -> str:
         return display
 
     if result.get("is_producing", False):
+        # 修改操作：优先使用 modify_target_field 作为显示名
+        modify_target = result.get("modify_target_field")
+        if modify_target:
+            return f"✅ 已修改【{modify_target}】，请在左侧工作台查看和编辑。"
+
+        # 标准阶段名映射
         phase_names = {
             "intent": "意图分析", "research": "消费者调研报告",
             "design_inner": "内涵设计方案", "produce_inner": "内涵生产内容",
             "design_outer": "外延设计方案", "produce_outer": "外延生产内容",
             "evaluate": "评估报告",
         }
-        name = phase_names.get(result.get("current_phase", current_phase), current_phase)
+        result_phase = result.get("current_phase") or current_phase or ""
+        name = phase_names.get(result_phase, result_phase)
+
+        # 绝对兜底：不允许出现空名称
+        if not name:
+            return "✅ 内容已生成，请在左侧工作台查看和编辑。"
+
         return f"✅ 已生成【{name}】，请在左侧工作台查看和编辑。"
 
     return result.get("agent_output", "")

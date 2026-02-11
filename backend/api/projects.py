@@ -924,6 +924,261 @@ def import_project(
         raise HTTPException(status_code=500, detail=f"导入失败: {str(e)}")
 
 
+# ============== Global Search & Replace ==============
+
+
+class SearchRequest(BaseModel):
+    """全局搜索请求"""
+    query: str
+    case_sensitive: bool = False
+
+
+class ReplaceRequest(BaseModel):
+    """全局替换请求"""
+    query: str
+    replacement: str
+    case_sensitive: bool = False
+    # 指定要替换的位置：[{"type": "field"|"block", "id": "xxx", "indices": [0,1,2]}]
+    # indices 表示该字段中第几个匹配项（0-based），不传则替换该字段所有匹配
+    targets: Optional[List[Dict[str, Any]]] = None
+
+
+@router.post("/{project_id}/search")
+def search_project(
+    project_id: str,
+    request: SearchRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    全局搜索：在项目的所有字段和内容块中搜索内容。
+    返回每个匹配的字段/块名称、匹配片段（含上下文）、位置信息。
+    """
+    from core.models import ProjectField, ContentBlock
+    import re
+
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(404, "Project not found")
+
+    query = request.query
+    if not query:
+        return {"results": [], "total_matches": 0}
+
+    flags = 0 if request.case_sensitive else re.IGNORECASE
+    pattern = re.compile(re.escape(query), flags)
+
+    results = []
+
+    # 搜索 ProjectField
+    fields = db.query(ProjectField).filter(
+        ProjectField.project_id == project_id,
+    ).all()
+    for f in fields:
+        if not f.content:
+            continue
+        matches = list(pattern.finditer(f.content))
+        if matches:
+            snippets = _build_search_snippets(f.content, matches, query)
+            results.append({
+                "type": "field",
+                "id": f.id,
+                "name": f.name,
+                "phase": f.phase or "",
+                "match_count": len(matches),
+                "snippets": snippets,
+            })
+
+    # 搜索 ContentBlock
+    blocks = db.query(ContentBlock).filter(
+        ContentBlock.project_id == project_id,
+        ContentBlock.deleted_at == None,
+    ).all()
+    for b in blocks:
+        if not b.content:
+            continue
+        matches = list(pattern.finditer(b.content))
+        if matches:
+            snippets = _build_search_snippets(b.content, matches, query)
+            results.append({
+                "type": "block",
+                "id": b.id,
+                "name": b.name,
+                "phase": "",
+                "parent_id": b.parent_id,
+                "match_count": len(matches),
+                "snippets": snippets,
+            })
+
+    total_matches = sum(r["match_count"] for r in results)
+
+    return {"results": results, "total_matches": total_matches}
+
+
+@router.post("/{project_id}/replace")
+def replace_in_project(
+    project_id: str,
+    request: ReplaceRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    全局替换：在项目的指定字段/块中替换内容。
+    支持指定替换哪些匹配项（targets），也支持全部替换。
+    """
+    from core.models import ProjectField, ContentBlock
+    from core.models.content_version import ContentVersion
+    import re
+
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(404, "Project not found")
+
+    query = request.query
+    replacement = request.replacement
+    if not query:
+        raise HTTPException(400, "Search query cannot be empty")
+
+    flags = 0 if request.case_sensitive else re.IGNORECASE
+    pattern = re.compile(re.escape(query), flags)
+
+    replaced_count = 0
+    affected_items = []
+
+    if request.targets:
+        # 精确替换：只替换指定的匹配项
+        for target in request.targets:
+            item_type = target.get("type")
+            item_id = target.get("id")
+            indices = target.get("indices")  # None = 全部替换
+
+            if item_type == "field":
+                item = db.query(ProjectField).filter_by(id=item_id).first()
+            elif item_type == "block":
+                item = db.query(ContentBlock).filter_by(id=item_id).first()
+            else:
+                continue
+
+            if not item or not item.content:
+                continue
+
+            old_content = item.content
+            new_content, count = _replace_content(old_content, pattern, replacement, indices)
+            if count > 0:
+                # 保存版本
+                _save_search_replace_version(db, item.id, old_content, item.name if hasattr(item, 'name') else "")
+                item.content = new_content
+                replaced_count += count
+                affected_items.append({
+                    "type": item_type,
+                    "id": item.id,
+                    "name": item.name if hasattr(item, 'name') else "",
+                    "count": count,
+                })
+    else:
+        # 全量替换：在项目所有字段和块中替换
+        fields = db.query(ProjectField).filter(
+            ProjectField.project_id == project_id,
+        ).all()
+        for f in fields:
+            if not f.content:
+                continue
+            old_content = f.content
+            new_content, count = _replace_content(old_content, pattern, replacement, None)
+            if count > 0:
+                _save_search_replace_version(db, f.id, old_content, f.name)
+                f.content = new_content
+                replaced_count += count
+                affected_items.append({"type": "field", "id": f.id, "name": f.name, "count": count})
+
+        blocks = db.query(ContentBlock).filter(
+            ContentBlock.project_id == project_id,
+            ContentBlock.deleted_at == None,
+        ).all()
+        for b in blocks:
+            if not b.content:
+                continue
+            old_content = b.content
+            new_content, count = _replace_content(old_content, pattern, replacement, None)
+            if count > 0:
+                _save_search_replace_version(db, b.id, old_content, b.name)
+                b.content = new_content
+                replaced_count += count
+                affected_items.append({"type": "block", "id": b.id, "name": b.name, "count": count})
+
+    db.commit()
+    return {
+        "replaced_count": replaced_count,
+        "affected_items": affected_items,
+    }
+
+
+def _build_search_snippets(content: str, matches: list, query: str, context_chars: int = 60) -> list:
+    """构建搜索结果片段，带上下文"""
+    snippets = []
+    for i, m in enumerate(matches[:20]):  # 每个字段最多展示20个匹配
+        start = max(0, m.start() - context_chars)
+        end = min(len(content), m.end() + context_chars)
+
+        prefix = ("..." if start > 0 else "") + content[start:m.start()]
+        matched = content[m.start():m.end()]
+        suffix = content[m.end():end] + ("..." if end < len(content) else "")
+
+        snippets.append({
+            "index": i,
+            "offset": m.start(),
+            "prefix": prefix,
+            "match": matched,
+            "suffix": suffix,
+            "line": content[:m.start()].count("\n") + 1,
+        })
+    return snippets
+
+
+def _replace_content(content: str, pattern, replacement: str, indices: list | None) -> tuple[str, int]:
+    """
+    替换内容。如果 indices 为 None，替换所有匹配；否则只替换指定索引的匹配。
+    返回 (新内容, 替换次数)
+    """
+    if indices is None:
+        new_content, count = pattern.subn(replacement, content)
+        return new_content, count
+
+    matches = list(pattern.finditer(content))
+    if not matches:
+        return content, 0
+
+    indices_set = set(indices)
+    count = 0
+    parts = []
+    last_end = 0
+    for i, m in enumerate(matches):
+        parts.append(content[last_end:m.start()])
+        if i in indices_set:
+            parts.append(replacement)
+            count += 1
+        else:
+            parts.append(m.group())
+        last_end = m.end()
+    parts.append(content[last_end:])
+    return "".join(parts), count
+
+
+def _save_search_replace_version(db, item_id: str, old_content: str, item_name: str):
+    """保存替换前的版本"""
+    from core.models.content_version import ContentVersion
+    max_ver = db.query(ContentVersion).filter(
+        ContentVersion.block_id == item_id,
+    ).count()
+    ver = ContentVersion(
+        id=generate_uuid(),
+        block_id=item_id,
+        version_number=max_ver + 1,
+        content=old_content,
+        source="search_replace",
+        source_detail=f"search_replace:{item_name}",
+    )
+    db.add(ver)
+
+
 # ============== Helpers ==============
 
 def _project_to_response(project: Project) -> ProjectResponse:

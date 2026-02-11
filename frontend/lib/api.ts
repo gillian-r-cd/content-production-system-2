@@ -203,7 +203,59 @@ export const projectAPI = {
         body: JSON.stringify({ data, match_creator_profile: matchCreatorProfile }),
       }
     ),
+
+  search: (id: string, query: string, caseSensitive: boolean = false) =>
+    fetchAPI<{
+      results: SearchResult[];
+      total_matches: number;
+    }>(`/api/projects/${id}/search`, {
+      method: "POST",
+      body: JSON.stringify({ query, case_sensitive: caseSensitive }),
+    }),
+
+  replace: (
+    id: string,
+    query: string,
+    replacement: string,
+    options?: {
+      caseSensitive?: boolean;
+      targets?: Array<{ type: string; id: string; indices?: number[] }>;
+    }
+  ) =>
+    fetchAPI<{
+      replaced_count: number;
+      affected_items: Array<{ type: string; id: string; name: string; count: number }>;
+    }>(`/api/projects/${id}/replace`, {
+      method: "POST",
+      body: JSON.stringify({
+        query,
+        replacement,
+        case_sensitive: options?.caseSensitive || false,
+        targets: options?.targets || null,
+      }),
+    }),
 };
+
+// ============== Search Types ==============
+
+export interface SearchSnippet {
+  index: number;
+  offset: number;
+  prefix: string;
+  match: string;
+  suffix: string;
+  line: number;
+}
+
+export interface SearchResult {
+  type: "field" | "block";
+  id: string;
+  name: string;
+  phase: string;
+  parent_id?: string;
+  match_count: number;
+  snippets: SearchSnippet[];
+}
 
 // ============== Field API ==============
 
