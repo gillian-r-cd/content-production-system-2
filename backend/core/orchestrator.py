@@ -1372,35 +1372,54 @@ async def modify_node(state: ContentProductionState) -> ContentProductionState:
     original_content = referenced_contents.get(target_field, "")
     user_input = state.get("user_input", "")
     
-    # 如果引用中没有找到，尝试直接从数据库查找（支持用户直接输入字段名而不用 @）
+    # 标记字段是否存在（用于区分"修改已有"和"写入空字段"）
+    field_exists = False
+    
+    # 如果引用中没有找到内容，尝试直接从数据库查找
     if not original_content and target_field and project_id:
         try:
             field_data = get_field_content(project_id, target_field)
-            if field_data and field_data.get("content"):
-                original_content = field_data["content"]
-                referenced_contents[target_field] = original_content
-                print(f"[modify_node] 通过数据库直接查找到字段: {target_field}")
+            if field_data:
+                field_exists = True
+                content = field_data.get("content", "")
+                if content and content.strip():
+                    original_content = content
+                    referenced_contents[target_field] = original_content
+                    print(f"[modify_node] 通过数据库直接查找到字段: {target_field}")
+                else:
+                    print(f"[modify_node] 字段「{target_field}」存在但无内容，将生成新内容")
         except Exception as e:
             print(f"[modify_node] 查找字段失败: {e}")
+    elif original_content:
+        field_exists = True
     
-    if not original_content:
-        # 列出所有可用的字段名（同时搜索 ProjectField 和 ContentBlock）
+    # 即使引用中有但内容为空，也检查字段是否存在
+    if not field_exists and target_field and project_id:
+        try:
+            field_data = get_field_content(project_id, target_field)
+            if field_data:
+                field_exists = True
+        except Exception:
+            pass
+    
+    if not field_exists:
+        # 字段确实不存在 — 列出所有可用的字段名
         all_available = list(referenced_contents.keys())
         try:
             from core.database import get_db
             from core.models import ProjectField
             db = next(get_db())
-            # 搜索 ProjectField
+            # 搜索 ProjectField（所有字段，不限制有无内容）
             pf_names = [f.name for f in db.query(ProjectField).filter(
                 ProjectField.project_id == project_id
-            ).all() if f.content and f.content.strip()]
-            # 搜索 ContentBlock
+            ).all()]
+            # 搜索 ContentBlock（所有字段，不限制有无内容）
             from core.models.content_block import ContentBlock
             cb_names = [b.name for b in db.query(ContentBlock).filter(
                 ContentBlock.project_id == project_id,
                 ContentBlock.block_type == "field",
                 ContentBlock.deleted_at == None,
-            ).all() if b.content and b.content.strip()]
+            ).all()]
             all_available = list(set(pf_names + cb_names))
         except Exception:
             pass
@@ -1417,7 +1436,7 @@ async def modify_node(state: ContentProductionState) -> ContentProductionState:
 """
         return {
             **state,
-            "agent_output": f"未找到字段「{target_field}」的内容，无法修改。\n\n可用字段: {all_available}",
+            "agent_output": f"未找到字段「{target_field}」。\n\n可用字段: {all_available}",
             "is_producing": False,
             "waiting_for_human": False,
             "full_prompt": debug_prompt,
@@ -1427,13 +1446,16 @@ async def modify_node(state: ContentProductionState) -> ContentProductionState:
     deps = get_intent_and_research(project_id)
     intent_str = normalize_intent(deps.get("intent", ""))
     
-    # 检测原始内容是否是 JSON（例如方案结构）
+    # 检测原始内容是否是 JSON 对象/数组（严格模式：仅 dict/list，排除 int/str/bool 等原始类型）
     is_json_content = False
-    try:
-        json_module.loads(original_content)
-        is_json_content = True
-    except (json_module.JSONDecodeError, TypeError):
-        pass
+    if original_content and original_content.strip():
+        try:
+            parsed = json_module.loads(original_content)
+            # 只有 dict 或 list 才算真正的 JSON 结构内容
+            if isinstance(parsed, (dict, list)):
+                is_json_content = True
+        except (json_module.JSONDecodeError, TypeError):
+            pass
     
     format_hint = ""
     if is_json_content:
@@ -1449,8 +1471,12 @@ async def modify_node(state: ContentProductionState) -> ContentProductionState:
             ref_parts.append(f"### 参考字段「{name}」:\n{content}")
         reference_section = "\n\n参考内容（用户指定的参考材料）:\n" + "\n\n".join(ref_parts)
     
-    # 构建修改提示词
-    system_prompt = f"""你是一个专业的内容编辑。请根据用户的修改指令，对原始内容进行修改。
+    # 根据是否有原始内容，构建不同的系统提示词和显示消息
+    is_empty_field = not (original_content and original_content.strip())
+    
+    if not is_empty_field:
+        # 有原始内容 → 修改模式
+        system_prompt = f"""你是一个专业的内容编辑。请根据用户的指令，对原始内容进行修改。
 
 项目上下文:
 {creator_profile}
@@ -1460,10 +1486,11 @@ async def modify_node(state: ContentProductionState) -> ContentProductionState:
 {original_content}{reference_section}
 
 规则：
-1. 严格按照用户的修改指令进行修改
+1. 严格按照用户的指令进行修改
 2. 保持内容的专业性和一致性
 3. 只输出修改后的完整内容，不要添加任何解释
 4. 保持原有的格式风格{format_hint}
+5. 输出格式为 Markdown，直接面向内容创作者阅读和编辑，禁止输出 JSON
 
 Markdown 格式硬性要求（如输出包含表格，必须严格遵守）：
 - 表格每一行的列数（| 的数量）必须与表头完全一致，绝对不能多也不能少
@@ -1471,6 +1498,27 @@ Markdown 格式硬性要求（如输出包含表格，必须严格遵守）：
 - 表格必须有表头分隔行（如 | --- | --- | --- |）
 - 表格每行必须以 | 开头、以 | 结尾
 - 示例：在一个单元格中放多条场景的正确写法：| 场景1描述 <br> 场景2描述 <br> 场景3描述 |"""
+    else:
+        # 无原始内容 → 写入新内容模式
+        system_prompt = f"""你是一个专业的内容创作者。用户要求为字段「{target_field}」生成内容，请根据用户的指令生成。
+
+项目上下文:
+{creator_profile}
+{intent_str}
+{reference_section}
+
+规则：
+1. 严格按照用户的指令生成内容
+2. 内容要专业、结构清晰、可直接使用
+3. 只输出生成的内容，不要添加任何额外解释
+4. 输出格式为 Markdown，直接面向内容创作者阅读和编辑，禁止输出 JSON
+5. 使用适当的标题层级、列表、表格等 Markdown 格式使内容清晰易读
+
+Markdown 格式硬性要求（如输出包含表格，必须严格遵守）：
+- 表格每一行的列数（| 的数量）必须与表头完全一致，绝对不能多也不能少
+- 如果一个单元格内需要放置多条内容，请在单元格内部使用 <br> 换行或数字编号（1. 2. 3.），不要用 | 增加列
+- 表格必须有表头分隔行（如 | --- | --- | --- |）
+- 表格每行必须以 | 开头、以 | 结尾"""
 
     # 关键修复：使用用户真实输入作为 user message，而非硬编码模板
     # 之前 "请修改「逐字稿1」的内容" 会传错目标（取了 references[0]），
@@ -1487,10 +1535,11 @@ Markdown 格式硬性要求（如输出包含表格，必须严格遵守）：
     full_prompt = f"[System]\n{system_prompt}\n\n[User]\n{user_input}"
     
     # 返回修改后的内容（is_producing=True 会触发保存）
+    action_word = "生成" if is_empty_field else "修改"
     return {
         **state,
         "agent_output": modified_content,
-        "display_output": f"✅ 已修改【{target_field}】，请在左侧工作台查看和编辑。",
+        "display_output": f"✅ 已{action_word}【{target_field}】，请在左侧工作台查看和编辑。",
         "is_producing": True,  # 标记为产出模式，触发字段保存
         "waiting_for_human": False,
         "current_phase": state.get("current_phase", "intent"),  # 保持当前阶段
