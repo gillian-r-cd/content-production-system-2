@@ -1,6 +1,7 @@
-# 三大功能实现方案（最终版）
+# 四大功能实现方案（最终版）
 
 > 创建时间: 2026-02-10
+> 最后更新: 2026-02-11
 > 状态: 方案已确认，待实施
 
 ---
@@ -27,6 +28,15 @@
 - 后端 `apply_edits()` 确定性执行，返回结构化 changes
 - 前端 **Word Track Changes** 级别的逐条接受/拒绝
 - 所有 ReactMarkdown 渲染点启用 `rehypeRaw`，支持 `<del>/<ins>` 修订标记
+
+### 话题四：共创模式
+- Agent 面板新增 `助手 / 共创` **Tab 切换**
+- 共创模式下 AI 扮演指定角色与用户实时对话，用于获取目标受众反馈、共创迭代
+- Persona 三层来源：**全局预置**（编辑/Coach/消费者/专家）+ **项目人物库** + **用户自建**
+- Persona 配置区在共创 Tab 顶部，支持下拉选择、直接编写、保存复用
+- 对话历史**分离显示**（两个 Tab 各自只显示本模式消息），数据存同一张表
+- 上下文**单向自动桥接**：助手能看到最近共创对话（只读注入），共创角色看不到助手对话
+- 共创模式下跳过 `route_intent`，直接走 `cocreation_node`
 
 ---
 
@@ -1135,37 +1145,610 @@ _save_version_before_overwrite(
 
 ---
 
-## 五、实施顺序
+## 五、共创模式（Co-creation Mode）
 
-### Phase 1: 基建（无 UI 变化）
-1. ✅ 迁移脚本：ProjectField / ContentBlock 加 `digest` 列
-2. ✅ `backend/core/edit_engine.py`：`apply_edits()` + `generate_revision_markdown()`
-3. ✅ `backend/core/digest_service.py`：摘要生成 + 字段索引构建
-4. ✅ `npm install rehype-raw`
+### 5.1 概述
 
-### Phase 2: 话题二 — 平台记忆
-5. 所有内容保存触发点加 `trigger_digest_update()`
-6. 所有 LLM 节点的 system prompt 注入 `field_index_block`
-7. route_intent 输出 `required_fields`，节点执行前获取全文
+内容创作者希望在发布前，能和目标受众实时对话。例如课程设计者让一个"学生"看完课程内容，说"学到了什么""还想学什么"。这是一个**人驱动的角色扮演对话**，区别于：
 
-### Phase 3: 话题三 — 精细编辑
-8. modify_node 重写（新提示词 + edits JSON 输出 + need_confirm 判断）
-9. SSE 新增 `modify_preview` / `modify_confirm_needed` 事件
-10. `POST /api/fields/{id}/accept-changes` endpoint
-11. 前端 `RevisionView` 组件
-12. ReactMarkdown 启用 rehypeRaw + del/ins 样式
-13. 字段面板集成 RevisionView（收到 modify_preview 事件时切换到修订模式）
+- **助手模式（现有）**：AI 是生产工具，执行用户指令
+- **模拟器（现有）**：AI ↔ AI 自动对话，产出分数
+- **共创模式（新增）**：用户 ↔ AI-as-角色，实时对话，产出洞察
 
-### Phase 4: 话题一 — 提示词更新
-14. ChatRequest 新增 `update_prompt` + `mode` 字段
-15. 前端 toggle "同步修改提示词"
-16. `prompt_plan_node` + `prompt_execute_node`
-17. SSE `pending_prompt_update` 事件 → 前端自动触发 Phase B
-18. 提示词修订预览（复用 `generate_revision_markdown`）
+共创模式和模拟器**共享 persona 定义和内容注入机制**，但**交互模式完全不同**：共创是人驱动，模拟器是全自动。
+
+### 5.2 前端：Mode 切换 + Persona 配置
+
+**位置**：Agent 面板顶部
+
+```
+┌──────────────────────────────────┐
+│  [助手]  [共创]      ← tab 切换   │
+├──────────────────────────────────┤
+│  🎭 角色配置（仅共创 tab 显示）    │
+│  ┌───────────────────────────┐   │
+│  │ [选择角色 ▾]  [＋ 新建]    │   │
+│  ├───────────────────────────┤   │
+│  │ 你是一个刚学完急诊护理课程 │   │
+│  │ 的一年级护理学生，对临床   │   │
+│  │ 流程还不太熟悉...         │   │
+│  └───────────────────────────┘   │
+│  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─  │
+│  [对话区域 - 只显示共创消息]      │
+│  ...                              │
+│  ┌──────────────────────┐ [发送] │
+│  │ @场景库 你觉得怎么样？ │       │
+│  └──────────────────────┘        │
+└──────────────────────────────────┘
+```
+
+### 5.3 Persona 来源：三层
+
+| 层级 | 示例 | 来源 | 存储 |
+|------|------|------|------|
+| **全局预置** | 编辑、Coach、典型消费者、行业专家 | 系统内置 | 代码常量 `COCREATION_PRESETS` |
+| **项目人物库** | eval 系统创建的人物小传 | persona_manager | research field JSON |
+| **用户自建** | "一年级护理学生，对临床不熟悉" | 用户在共创面板配置 | `Project.cocreation_personas` JSON |
+
+**全局预置角色定义**：
+
+```python
+COCREATION_PRESETS = [
+    {
+        "id": "preset_editor",
+        "name": "编辑",
+        "description": "审稿人视角，关注逻辑、表达和可读性",
+        "system_prompt_template": """你是一位资深编辑。你的职责是从读者体验的角度审视内容。
+你关注：逻辑是否通顺、表达是否清晰、结构是否合理、有无冗余或遗漏。
+你会直接指出问题，给出具体修改建议，不说空话。
+说话风格：专业但不刻板，像一个有经验的同事在和你讨论稿件。""",
+    },
+    {
+        "id": "preset_coach",
+        "name": "Coach",
+        "description": "教练视角，关注成长、引导和启发",
+        "system_prompt_template": """你是一位经验丰富的教练。你通过提问来引导创作者思考。
+你不直接给答案，而是帮助创作者发现自己的盲点和可能性。
+你会问"如果...会怎样？""你有没有考虑过...？"这样的问题。
+说话风格：温和、有耐心，但不回避尖锐的问题。""",
+    },
+    {
+        "id": "preset_consumer",
+        "name": "典型消费者",
+        "description": "大众读者/用户视角，关注理解度和价值感",
+        "system_prompt_template": """你是一个普通的目标受众。你没有专业背景，但有真实需求。
+你会诚实地说：哪里看不懂、哪里觉得有用、哪里觉得无聊。
+你不会客气——如果内容对你没用，你会直说。
+说话风格：日常、口语化，像一个真实的用户在给反馈。""",
+    },
+    {
+        "id": "preset_expert",
+        "name": "行业专家",
+        "description": "领域深度视角，关注专业性和准确性",
+        "system_prompt_template": """你是该领域的资深专家。你对行业有深刻理解。
+你会评估内容的专业准确性、是否有常见误区、是否遗漏关键概念。
+你也会指出内容中的亮点——哪些地方的洞察让你觉得有价值。
+说话风格：专业、严谨，但不居高临下。""",
+    },
+]
+```
+
+**Persona 选择器下拉结构**：
+
+```
+🔧 全局角色
+  ├ 编辑（审稿人视角，关注逻辑和表达）
+  ├ Coach（教练视角，关注成长和引导）
+  ├ 典型消费者（大众读者视角）
+  └ 行业专家（领域深度视角）
+📁 项目人物
+  ├ 学生A - 李明（来自人物库）
+  └ HR总监 - 张琳（来自人物库）
+✏️ 自定义角色
+  ├ 一年级护理学生（上次保存）
+  └ ＋ 新建角色...
+```
+
+### 5.4 数据库变更
+
+**Project 模型新增字段**：
+
+```python
+# Project 新增
+cocreation_personas: Mapped[list] = mapped_column(
+    JSON, default=list
+)
+# 格式: [{"id": "custom_xxx", "name": "角色名", "description": "描述", "prompt": "角色设定文本"}]
+```
+
+**ChatMessage metadata 扩展**：
+
+```python
+# ChatMessage.message_metadata 增加字段
+{
+    "phase": "",
+    "tool_used": None,
+    "skill_used": None,
+    "references": [],
+    "mode": "assistant",        # 新增: "assistant" | "cocreation"
+    "persona_name": None,       # 新增: 共创模式下的角色名
+    "persona_id": None,         # 新增: 角色 ID（preset_xxx / custom_xxx / 项目人物 ID）
+}
+```
+
+**迁移脚本**：`backend/scripts/migrate_add_cocreation.py`
+
+```python
+"""为 Project 添加 cocreation_personas 列"""
+import sqlite3
+
+DB_PATH = "content_production.db"
+
+def migrate():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("ALTER TABLE projects ADD COLUMN cocreation_personas TEXT DEFAULT '[]'")
+        print("✅ Added 'cocreation_personas' column to projects")
+    except sqlite3.OperationalError as e:
+        if "duplicate column" in str(e).lower():
+            print("⏭️ Column already exists")
+        else:
+            raise
+    conn.commit()
+    conn.close()
+
+if __name__ == "__main__":
+    migrate()
+```
+
+### 5.5 后端：ChatRequest 扩展
+
+文件：`backend/api/agent.py`
+
+```python
+class ChatRequest(BaseModel):
+    project_id: str
+    message: str
+    references: list[str] = []
+    current_phase: str = ""
+    update_prompt: bool = False
+    mode: str = "assistant"                  # 新增: "assistant" | "cocreation"
+    persona_config: dict | None = None       # 新增: 共创角色配置
+    # persona_config 格式:
+    # {"id": "preset_editor", "name": "编辑", "prompt": "你是一位资深编辑..."}
+    # 或 {"id": "custom_xxx", "name": "自定义角色", "prompt": "用户自定义的角色描述"}
+```
+
+### 5.6 后端：路由分流
+
+文件：`backend/api/agent.py` 的 stream endpoint
+
+```python
+async def stream_chat(request: ChatRequest):
+    # ...
+    
+    if request.mode == "cocreation":
+        # 共创模式：跳过 route_intent，直接走 cocreation_node
+        result = await cocreation_node({
+            "project_id": request.project_id,
+            "user_input": request.message,
+            "references": request.references,
+            "referenced_contents": referenced_contents,
+            "persona_config": request.persona_config,
+            "messages": cocreation_history,  # 只加载共创消息
+        })
+        # SSE 输出（复用现有流式机制）
+        # ...
+    
+    elif request.mode == "prompt_plan":
+        # 提示词修改流程（话题一）
+        # ...
+    
+    else:
+        # 助手模式：正常 route_intent
+        # ...
+```
+
+### 5.7 后端：cocreation_node
+
+文件：`backend/core/orchestrator.py`（新增）
+
+```python
+async def cocreation_node(state: dict) -> dict:
+    """
+    共创对话节点
+    AI 扮演指定角色与用户实时对话
+    """
+    persona_config = state.get("persona_config", {})
+    referenced_contents = state.get("referenced_contents", {})
+    history = state.get("messages", [])
+    user_input = state.get("user_input", "")
+    
+    # 构建角色 system prompt
+    persona_prompt = persona_config.get("prompt", "")
+    persona_name = persona_config.get("name", "角色")
+    
+    # 如果是全局预置角色，使用其模板
+    if not persona_prompt:
+        preset_id = persona_config.get("id", "")
+        for preset in COCREATION_PRESETS:
+            if preset["id"] == preset_id:
+                persona_prompt = preset["system_prompt_template"]
+                break
+    
+    # 构建引用内容上下文
+    content_context = ""
+    if referenced_contents:
+        content_parts = []
+        for name, content in referenced_contents.items():
+            content_parts.append(f"### {name}\n{content}")
+        content_context = f"""
+
+【创作者分享给你的内容】
+{chr(10).join(content_parts)}
+
+你需要基于以上内容进行对话。如果用户 @ 了新的内容，也会在这里出现。"""
+    
+    system_prompt = f"""你正在扮演一个角色，与内容创作者进行一对一的共创对话。
+
+【你的角色设定】
+{persona_prompt}
+
+【你的名字】
+{persona_name}
+{content_context}
+
+【核心规则】
+1. 始终以 {persona_name} 的身份和视角说话
+2. 对内容给出真实反应——看不懂就说看不懂，觉得好就说好在哪
+3. 主动表达你的困惑、期待、建议
+4. 你不是 AI 助手，你就是 {persona_name}。不要说"作为AI"之类的话
+5. 回答要自然、口语化，像真人在聊天
+6. 如果创作者问你角色设定之外的事（比如帮我写代码），礼貌拒绝并把话题拉回内容"""
+    
+    messages = [ChatMessage(role="system", content=system_prompt)]
+    
+    # 添加共创历史消息
+    for msg in history[-20:]:  # 最近 20 条
+        messages.append(ChatMessage(
+            role="user" if msg.get("role") == "user" else "assistant",
+            content=msg.get("content", ""),
+        ))
+    
+    # 当前用户输入
+    messages.append(ChatMessage(role="user", content=user_input))
+    
+    response = await ai_client.async_chat(messages, temperature=0.8)
+    
+    return {
+        "agent_output": response.content,
+        "is_producing": False,  # 共创不产出字段内容
+        "tokens_in": response.tokens_in,
+        "tokens_out": response.tokens_out,
+        "duration_ms": response.duration_ms,
+    }
+```
+
+### 5.8 对话历史：分离显示 + 上下文自动桥接
+
+#### 前端：两个 Tab
+
+```tsx
+// agent-panel.tsx
+const [agentMode, setAgentMode] = useState<"assistant" | "cocreation">("assistant");
+
+// 消息过滤
+const displayMessages = messages.filter(
+  msg => (msg.metadata?.mode || "assistant") === agentMode
+);
+
+// Tab 切换时，在消息流中插入分隔符（可选）
+```
+
+#### 后端：消息加载 + 上下文桥接
+
+消息加载（按 mode 过滤）：
+
+```python
+def load_messages(project_id: str, mode: str, limit: int = 50):
+    """加载指定 mode 的消息"""
+    return db.query(ChatMessage).filter(
+        ChatMessage.project_id == project_id,
+        # JSON 字段查询：sqlite 的 json_extract
+        func.json_extract(ChatMessage.message_metadata, "$.mode") == mode,
+    ).order_by(ChatMessage.created_at.desc()).limit(limit).all()
+```
+
+**上下文桥接（共创→助手方向，单向）**：
+
+```python
+def build_assistant_context_with_bridge(project_id: str) -> str:
+    """
+    为助手模式构建上下文时，自动注入最近的共创对话摘要。
+    规则：
+    - 只注入共创→助手方向（助手能看到共创内容）
+    - 反方向不注入（共创角色不需要知道助手做了什么）
+    - 只注入最近 1 次共创会话（最近 5 轮 = 10 条消息）
+    """
+    recent_cocreation = db.query(ChatMessage).filter(
+        ChatMessage.project_id == project_id,
+        func.json_extract(ChatMessage.message_metadata, "$.mode") == "cocreation",
+    ).order_by(ChatMessage.created_at.desc()).limit(10).all()
+    
+    if not recent_cocreation:
+        return ""
+    
+    recent_cocreation.reverse()  # 时间正序
+    
+    persona_name = recent_cocreation[0].message_metadata.get("persona_name", "角色")
+    
+    bridge = f"\n\n【参考：最近与「{persona_name}」的共创对话】\n"
+    for msg in recent_cocreation:
+        speaker = persona_name if msg.role == "assistant" else "用户"
+        bridge += f"  {speaker}: {msg.content[:300]}\n"
+    bridge += "【共创对话结束】\n"
+    bridge += "如果用户提到"刚才的对话""角色说的"等，请参考上面的共创记录。\n"
+    bridge += "如果用户没有提及，不需要主动引用这些内容。\n"
+    
+    return bridge
+```
+
+**注入位置**：在助手模式所有节点（chat_node, modify_node, query_node 等）的 system prompt 末尾追加。
+
+#### 上下文桥接流程图
+
+```
+┌──────────────────────────────────────────────────┐
+│                 chat_messages 表                  │
+│  ┌─────────────────┐  ┌────────────────────────┐ │
+│  │ mode=assistant   │  │  mode=cocreation       │ │
+│  │ 用户: 生成场景库  │  │  用户: @场景库 怎么样？ │ │
+│  │ 助手: ✅已生成    │  │  🎭学生A: 不错但...    │ │
+│  │ ...              │  │  ...                   │ │
+│  └────────┬────────┘  └──────────┬─────────────┘ │
+│           │                      │                │
+└───────────┼──────────────────────┼────────────────┘
+            │                      │
+            ▼                      │
+  ┌─────────────────────┐          │
+  │ 助手 mode context   │ ◄────────┘  ✅ 自动桥接（只读注入最近共创对话）
+  │ = 助手历史           │
+  │ + 共创桥接摘要       │
+  │ + 字段索引           │
+  └─────────────────────┘
+
+            ▲
+            │ ✘ 不注入（共创角色不知道助手的存在）
+            │
+  ┌─────────────────────┐
+  │ 共创 mode context   │
+  │ = 共创历史（仅当前角色）│
+  │ + 角色设定           │
+  │ + @ 引用的字段内容    │
+  └─────────────────────┘
+```
+
+### 5.9 前端实现细节
+
+文件：`frontend/components/agent-panel.tsx`
+
+**新增状态**：
+
+```typescript
+// Mode 切换
+const [agentMode, setAgentMode] = useState<"assistant" | "cocreation">("assistant");
+
+// 共创角色
+const [currentPersona, setCurrentPersona] = useState<{
+  id: string;
+  name: string;
+  prompt: string;
+} | null>(null);
+
+// 共创角色配置面板是否展开
+const [showPersonaConfig, setShowPersonaConfig] = useState(true);
+```
+
+**Tab 切换 UI**：
+
+```tsx
+<div className="flex border-b border-surface-3">
+  <button
+    onClick={() => setAgentMode("assistant")}
+    className={cn(
+      "flex-1 py-2 text-sm font-medium transition-colors",
+      agentMode === "assistant"
+        ? "text-brand-400 border-b-2 border-brand-400"
+        : "text-zinc-500 hover:text-zinc-300"
+    )}
+  >
+    🤖 助手
+  </button>
+  <button
+    onClick={() => setAgentMode("cocreation")}
+    className={cn(
+      "flex-1 py-2 text-sm font-medium transition-colors",
+      agentMode === "cocreation"
+        ? "text-purple-400 border-b-2 border-purple-400"
+        : "text-zinc-500 hover:text-zinc-300"
+    )}
+  >
+    🎭 共创
+  </button>
+</div>
+```
+
+**发送消息时传递 mode**：
+
+```typescript
+body: JSON.stringify({
+  project_id: projectId,
+  message: userMessage,
+  references,
+  current_phase: currentPhase || undefined,
+  update_prompt: agentMode === "assistant" ? updatePrompt : false,
+  mode: agentMode,
+  persona_config: agentMode === "cocreation" ? currentPersona : undefined,
+}),
+```
+
+**消息气泡区分**（共创模式下 AI 消息的样式）：
+
+```tsx
+// 共创模式下的 AI 消息：紫色调，显示角色名
+const isCocreation = message.metadata?.mode === "cocreation";
+const personaName = message.metadata?.persona_name;
+
+<div className={cn(
+  "px-4 py-2 rounded-2xl",
+  isUser
+    ? "bg-brand-600 text-white rounded-br-md"
+    : isCocreation
+      ? "bg-purple-900/40 text-zinc-200 rounded-bl-md border border-purple-500/20"
+      : "bg-surface-3 text-zinc-200 rounded-bl-md"
+)}>
+  {!isUser && isCocreation && personaName && (
+    <div className="text-xs text-purple-400 font-medium mb-1">🎭 {personaName}</div>
+  )}
+  {/* ... message content ... */}
+</div>
+```
+
+### 5.10 Persona CRUD API
+
+文件：`backend/api/projects.py`（追加）
+
+```python
+@router.get("/{project_id}/cocreation-personas")
+def list_cocreation_personas(project_id: str, db: Session = Depends(get_db)):
+    """
+    获取共创角色列表（全局预置 + 项目人物 + 自建角色）
+    """
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(404, "Project not found")
+    
+    result = {
+        "presets": COCREATION_PRESETS,
+        "project_personas": _get_project_personas(project_id, db),
+        "custom": project.cocreation_personas or [],
+    }
+    return result
+
+
+@router.post("/{project_id}/cocreation-personas")
+def save_cocreation_persona(
+    project_id: str,
+    body: dict,  # {"name": str, "prompt": str}
+    db: Session = Depends(get_db),
+):
+    """保存自建共创角色"""
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(404, "Project not found")
+    
+    personas = project.cocreation_personas or []
+    new_persona = {
+        "id": f"custom_{uuid.uuid4().hex[:8]}",
+        "name": body.get("name", "自定义角色"),
+        "prompt": body.get("prompt", ""),
+    }
+    personas.append(new_persona)
+    project.cocreation_personas = personas
+    db.commit()
+    
+    return new_persona
+
+
+@router.delete("/{project_id}/cocreation-personas/{persona_id}")
+def delete_cocreation_persona(
+    project_id: str,
+    persona_id: str,
+    db: Session = Depends(get_db),
+):
+    """删除自建共创角色"""
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(404, "Project not found")
+    
+    personas = project.cocreation_personas or []
+    personas = [p for p in personas if p.get("id") != persona_id]
+    project.cocreation_personas = personas
+    db.commit()
+    
+    return {"status": "ok"}
+
+
+def _get_project_personas(project_id: str, db: Session) -> list:
+    """从 eval 系统的人物库读取 persona"""
+    field = db.query(ProjectField).filter(
+        ProjectField.project_id == project_id,
+        ProjectField.phase == "research",
+    ).first()
+    if not field or not field.content:
+        return []
+    try:
+        import json
+        data = json.loads(field.content)
+        raw_personas = data.get("personas", [])
+        return [
+            {
+                "id": p.get("id", f"proj_{i}"),
+                "name": p.get("name", "未命名"),
+                "prompt": f"你是{p.get('name', '一个用户')}。\n背景：{p.get('background', '')}\n痛点：{'、'.join(p.get('pain_points', []))}\n行为特征：{'、'.join(p.get('behaviors', []))}",
+            }
+            for i, p in enumerate(raw_personas)
+        ]
+    except Exception:
+        return []
+```
 
 ---
 
-## 六、风险与 Fallback
+## 六、实施顺序
+
+### Phase 1: 基建（无 UI 变化）
+1. 迁移脚本：ProjectField / ContentBlock 加 `digest` 列
+2. 迁移脚本：Project 加 `cocreation_personas` 列
+3. `backend/core/edit_engine.py`：`apply_edits()` + `generate_revision_markdown()`
+4. `backend/core/digest_service.py`：摘要生成 + 字段索引构建
+5. `npm install rehype-raw`
+
+### Phase 2: 话题二 — 平台记忆
+6. 所有内容保存触发点加 `trigger_digest_update()`
+7. 所有 LLM 节点的 system prompt 注入 `field_index_block`
+8. route_intent 输出 `required_fields`，节点执行前获取全文
+
+### Phase 3: 话题三 — 精细编辑
+9. modify_node 重写（新提示词 + edits JSON 输出 + need_confirm 判断）
+10. SSE 新增 `modify_preview` / `modify_confirm_needed` 事件
+11. `POST /api/fields/{id}/accept-changes` endpoint
+12. 前端 `RevisionView` 组件
+13. ReactMarkdown 启用 rehypeRaw + del/ins 样式
+14. 字段面板集成 RevisionView（收到 modify_preview 事件时切换到修订模式）
+
+### Phase 4: 话题一 — 提示词更新
+15. ChatRequest 新增 `update_prompt` + `mode` 字段
+16. 前端 toggle "同步修改提示词"
+17. `prompt_plan_node` + `prompt_execute_node`
+18. SSE `pending_prompt_update` 事件 → 前端自动触发 Phase B
+19. 提示词修订预览（复用 `generate_revision_markdown`）
+
+### Phase 5: 话题四 — 共创模式
+20. `COCREATION_PRESETS` 全局角色常量定义
+21. `cocreation_node` 实现（orchestrator.py）
+22. 后端路由分流（mode="cocreation" 时跳过 route_intent）
+23. 上下文桥接函数 `build_assistant_context_with_bridge()`
+24. Persona CRUD API（list / save / delete）
+25. 前端 Agent 面板 tab 切换 + persona 配置区
+26. 前端 PersonaSelector 组件（三层来源）
+27. 消息加载按 mode 过滤 + 共创消息视觉区分
+28. 前端发送消息传递 mode + persona_config
+
+---
+
+## 七、风险与 Fallback
 
 | 风险 | 应对 |
 |------|------|
@@ -1175,10 +1758,13 @@ _save_version_before_overwrite(
 | 摘要生成延迟（字段刚更新后立刻请求） | 索引中显示"有内容，摘要生成中"，不影响功能 |
 | rehypeRaw 导致用户内容中的 HTML 被意外渲染 | 只在修订模式下启用 rehypeRaw；正常渲染模式不启用 |
 | 大段内容的 diff 过于碎片化 | 如果 changes 超过 15 个，提示用户"修改较多，建议逐段确认" |
+| 共创角色跳出角色 | system prompt 强约束 + temperature=0.8 保持创造性但守住角色边界 |
+| 共创→助手上下文桥接不够精确 | 桥接最近 10 条消息 + 标签说明；用户也可以在助手模式显式 @ 引用 |
+| 共创对话过长导致 context window 溢出 | 共创历史限制最近 20 条；超过后提示用户"建议开始新会话" |
 
 ---
 
-# 七、逐步执行手册（Execution Spec）
+# 八、逐步执行手册（Execution Spec）
 
 > 以下是每一步修改的**精确执行指令**。每一步都标注了：
 > - 目标文件的绝对路径
@@ -2069,7 +2655,7 @@ VERSION_SOURCES 追加:
 
 ---
 
-## 八、执行前检查清单
+## 九、执行前检查清单
 
 | 检查项 | 说明 |
 |--------|------|
@@ -2082,11 +2668,12 @@ VERSION_SOURCES 追加:
 
 ---
 
-## 九、执行后验证清单
+## 十、执行后验证清单
 
 | 阶段 | 验证方法 |
 |------|----------|
 | Phase 1 | 1. 迁移脚本无报错 2. `from core.edit_engine import apply_edits` 成功 3. `from core.digest_service import build_field_index` 成功 |
 | Phase 2 | 1. 修改字段后 digest 有值 2. system prompt 末尾出现字段索引 3. route_intent 输出含 required_fields |
-| Phase 3 | 1. `@字段 把X改成Y` -> edits JSON -> apply_edits 成功 2. SSE 含 modify_preview 3. accept-changes 返回 200 |
-| Phase 4 | 1. toggle -> done 含 pending_prompt_update 2. prompt_plan 返回计划 3. prompt_execute 更新并返回预览 |
+| Phase 3 | 1. `@字段 把X改成Y` → edits JSON → apply_edits 成功 2. SSE 含 modify_preview 3. accept-changes 返回 200 |
+| Phase 4 | 1. toggle → done 含 pending_prompt_update 2. prompt_plan 返回计划 3. prompt_execute 更新并返回预览 |
+| Phase 5 | 1. 共创 tab 切换正常 2. 选择角色后对话返回角色扮演内容 3. 切回助手后，助手能引用共创对话 4. Persona CRUD 正常 |
