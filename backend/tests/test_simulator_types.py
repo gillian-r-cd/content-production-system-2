@@ -117,7 +117,7 @@ class TestDialogueSimulation:
             MagicMock(content='{"scores": {"响应相关性": 8, "问题解决率": 7, "交互体验": 8}, "comments": {"响应相关性": "回答切题", "问题解决率": "基本解答", "交互体验": "流畅"}, "questions_answered": ["特色功能"], "questions_unanswered": [], "friction_points": [], "would_continue": true, "overall": "体验良好"}'),  # evaluation
         ]
         
-        with patch("core.tools.simulator.ai_client.async_chat") as mock_chat:
+        with patch("core.tools.simulator.llm.ainvoke") as mock_chat:
             mock_chat.side_effect = mock_responses
             
             result = await run_dialogue_simulation(simulator, sample_content, base_persona, max_turns=3)
@@ -149,7 +149,7 @@ class TestDialogueSimulation:
             MagicMock(content='{"scores": {"响应相关性": 8, "问题解决率": 7, "交互体验": 9}, "comments": {"响应相关性": "切题", "问题解决率": "解决", "交互体验": "好"}, "questions_answered": [], "questions_unanswered": [], "friction_points": [], "would_continue": true, "overall": "满意"}'),
         ]
         
-        with patch("core.tools.simulator.ai_client.async_chat") as mock_chat:
+        with patch("core.tools.simulator.llm.ainvoke") as mock_chat:
             mock_chat.side_effect = mock_responses
             
             result = await run_dialogue_simulation(simulator, sample_content, base_persona)
@@ -186,7 +186,7 @@ class TestExplorationSimulation:
             "overall": "能找到需要的信息"
         }''')
         
-        with patch("core.tools.simulator.ai_client.async_chat", return_value=mock_response):
+        with patch("core.tools.simulator.llm.ainvoke", return_value=mock_response):
             result = await run_exploration_simulation(simulator, sample_content, base_persona)
             
             assert result.success is True
@@ -223,7 +223,7 @@ class TestExperienceSimulation:
             "overall": "体验良好"
         }''')
         
-        with patch("core.tools.simulator.ai_client.async_chat", return_value=mock_response):
+        with patch("core.tools.simulator.llm.ainvoke", return_value=mock_response):
             result = await run_experience_simulation(simulator, sample_content, base_persona)
             
             assert result.success is True

@@ -12,7 +12,9 @@
 from typing import AsyncGenerator, Optional, List
 from dataclasses import dataclass
 
-from core.ai_client import ai_client, ChatMessage, ChatResponse
+from langchain_core.messages import SystemMessage, HumanMessage
+
+from core.llm import llm
 from core.prompt_engine import prompt_engine, PromptContext
 from core.models import ProjectField, Project
 
@@ -22,7 +24,6 @@ class FieldGenerationResult:
     """字段生成结果"""
     field_id: str
     content: str
-    response: ChatResponse
     success: bool
     error: Optional[str] = None
 
@@ -48,22 +49,16 @@ async def generate_field(
         system_prompt = prompt_engine.get_field_generation_prompt(field, context)
         
         messages = [
-            ChatMessage(role="system", content=system_prompt),
-            ChatMessage(
-                role="user",
-                content=f"请生成「{field.name}」的内容。"
-            ),
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=f"请生成「{field.name}」的内容。"),
         ]
         
-        response = await ai_client.async_chat(
-            messages=messages,
-            temperature=temperature,
-        )
+        # 使用 bind 覆盖温度
+        response = await llm.bind(temperature=temperature).ainvoke(messages)
         
         return FieldGenerationResult(
             field_id=field.id,
             content=response.content,
-            response=response,
             success=True,
         )
         
@@ -71,14 +66,6 @@ async def generate_field(
         return FieldGenerationResult(
             field_id=field.id,
             content="",
-            response=ChatResponse(
-                content="",
-                model="",
-                tokens_in=0,
-                tokens_out=0,
-                duration_ms=0,
-                cost=0.0,
-            ),
             success=False,
             error=str(e),
         )
@@ -103,18 +90,13 @@ async def generate_field_stream(
     system_prompt = prompt_engine.get_field_generation_prompt(field, context)
     
     messages = [
-        ChatMessage(role="system", content=system_prompt),
-        ChatMessage(
-            role="user",
-            content=f"请生成「{field.name}」的内容。"
-        ),
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=f"请生成「{field.name}」的内容。"),
     ]
     
-    async for chunk in ai_client.stream_chat(
-        messages=messages,
-        temperature=temperature,
-    ):
-        yield chunk
+    async for chunk in llm.bind(temperature=temperature).astream(messages):
+        if chunk.content:
+            yield chunk.content
 
 
 async def generate_fields_parallel(
@@ -149,7 +131,6 @@ async def generate_fields_parallel(
             processed_results.append(FieldGenerationResult(
                 field_id=fields[i].id,
                 content="",
-                response=ChatResponse("", "", 0, 0, 0, 0.0),
                 success=False,
                 error=str(result),
             ))
@@ -204,5 +185,3 @@ def resolve_field_order(fields: List[ProjectField]) -> List[List[ProjectField]]:
             deps -= set(ready)
     
     return result
-
-

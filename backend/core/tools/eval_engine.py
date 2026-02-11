@@ -25,7 +25,10 @@ from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from core.ai_client import ai_client, ChatMessage
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage
+
+from core.llm import llm, get_chat_model
+from core.config import settings
 from core.models.eval_task import SIMULATOR_TYPES
 
 
@@ -88,22 +91,26 @@ async def _call_llm(
     所有 eval 相关的 LLM 调用都走这个函数，确保每次调用都被记录
     """
     messages = [
-        ChatMessage(role="system", content=system_prompt),
-        ChatMessage(role="user", content=user_message),
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=user_message),
     ]
     
     start_time = time.time()
-    response = await ai_client.async_chat(messages, temperature=temperature)
+    llm_t = get_chat_model(model=settings.openai_model, temperature=temperature)
+    response = await llm_t.ainvoke(messages)
     duration_ms = int((time.time() - start_time) * 1000)
+    
+    # 提取 token 用量（如可用）
+    usage = getattr(response, "usage_metadata", {}) or {}
     
     call = LLMCall(
         step=step,
         input_system=system_prompt,
         input_user=user_message,
         output=response.content,
-        tokens_in=response.tokens_in,
-        tokens_out=response.tokens_out,
-        cost=response.cost,
+        tokens_in=usage.get("input_tokens", 0),
+        tokens_out=usage.get("output_tokens", 0),
+        cost=0.0,  # LangChain 不直接提供 cost
         duration_ms=duration_ms,
         timestamp=datetime.now().isoformat(),
     )
@@ -112,37 +119,39 @@ async def _call_llm(
 
 
 async def _call_llm_multi(
-    messages: List[ChatMessage],
+    messages: List[BaseMessage],
     step: str,
     temperature: float = 0.6,
 ) -> Tuple[str, LLMCall]:
     """多消息版本的 LLM 调用（用于多轮对话）"""
     start_time = time.time()
-    response = await ai_client.async_chat(messages, temperature=temperature)
+    llm_t = get_chat_model(model=settings.openai_model, temperature=temperature)
+    response = await llm_t.ainvoke(messages)
     duration_ms = int((time.time() - start_time) * 1000)
     
-    # 提取完整对话历史用于日志（不能只记最后2条，否则用户看不到对话全貌）
+    # 提取完整对话历史用于日志
     system_prompt = ""
     conversation_parts = []
     for m in messages:
-        if m.role == "system":
+        if isinstance(m, SystemMessage):
             system_prompt = m.content
-        elif m.role == "assistant":
+        elif isinstance(m, AIMessage):
             conversation_parts.append(f"[我方(assistant)]: {m.content}")
-        elif m.role == "user":
+        elif isinstance(m, HumanMessage):
             conversation_parts.append(f"[对方(user)]: {m.content}")
     
-    # 将完整对话历史作为 input_user，让用户能看到每一轮谁说了什么
     full_history = "\n---\n".join(conversation_parts) if conversation_parts else ""
+    
+    usage = getattr(response, "usage_metadata", {}) or {}
     
     call = LLMCall(
         step=step,
         input_system=system_prompt,
         input_user=full_history,
         output=response.content,
-        tokens_in=response.tokens_in,
-        tokens_out=response.tokens_out,
-        cost=response.cost,
+        tokens_in=usage.get("input_tokens", 0),
+        tokens_out=usage.get("output_tokens", 0),
+        cost=0.0,
         duration_ms=duration_ms,
         timestamp=datetime.now().isoformat(),
     )
@@ -647,15 +656,15 @@ async def _run_dialogue(
     try:
         for turn in range(max_turns):
             # 消费者提问
-            user_messages = [ChatMessage(role="system", content=consumer_system)]
+            user_messages = [SystemMessage(content=consumer_system)]
             for log in interaction_log:
                 if log["role"] == "consumer":
-                    user_messages.append(ChatMessage(role="assistant", content=log["content"]))
+                    user_messages.append(AIMessage(content=log["content"]))
                 else:
-                    user_messages.append(ChatMessage(role="user", content=log["content"]))
+                    user_messages.append(HumanMessage(content=log["content"]))
             
             prompt = "请基于你的背景，提出你最想解决的第一个问题。" if turn == 0 else "请基于之前的对话，继续你的咨询。"
-            user_messages.append(ChatMessage(role="user", content=prompt))
+            user_messages.append(HumanMessage(content=prompt))
             
             user_response_text, user_call = await _call_llm_multi(
                 user_messages, step=f"consumer_turn_{turn+1}", temperature=0.8
@@ -673,12 +682,12 @@ async def _run_dialogue(
                 break
             
             # 内容代表回复
-            content_messages = [ChatMessage(role="system", content=content_system)]
+            content_messages = [SystemMessage(content=content_system)]
             for log in interaction_log:
                 if log["role"] == "consumer":
-                    content_messages.append(ChatMessage(role="user", content=log["content"]))
+                    content_messages.append(HumanMessage(content=log["content"]))
                 else:
-                    content_messages.append(ChatMessage(role="assistant", content=log["content"]))
+                    content_messages.append(AIMessage(content=log["content"]))
             
             content_response_text, content_call = await _call_llm_multi(
                 content_messages, step=f"content_rep_turn_{turn+1}", temperature=0.5
@@ -829,13 +838,13 @@ Phase 5 (最后): 总结价值，询问决定
     try:
         for turn in range(max_turns):
             # 销售发言
-            seller_messages = [ChatMessage(role="system", content=seller_system)]
+            seller_messages = [SystemMessage(content=seller_system)]
             for log in interaction_log:
                 if log["role"] == "seller":
-                    seller_messages.append(ChatMessage(role="assistant", content=log["content"]))
+                    seller_messages.append(AIMessage(content=log["content"]))
                 else:
-                    seller_messages.append(ChatMessage(role="user", content=log["content"]))
-            seller_messages.append(ChatMessage(role="user", content="请开始你的销售开场白。" if turn == 0 else "请继续。"))
+                    seller_messages.append(HumanMessage(content=log["content"]))
+            seller_messages.append(HumanMessage(content="请开始你的销售开场白。" if turn == 0 else "请继续。"))
             
             seller_text, seller_call = await _call_llm_multi(
                 seller_messages, step=f"seller_turn_{turn+1}", temperature=0.7
@@ -844,12 +853,12 @@ Phase 5 (最后): 总结价值，询问决定
             interaction_log.append({"role": "seller", "name": "销售顾问", "content": seller_text, "turn": turn + 1, "phase": _get_sales_phase(turn)})
             
             # 消费者回应
-            consumer_messages = [ChatMessage(role="system", content=consumer_system)]
+            consumer_messages = [SystemMessage(content=consumer_system)]
             for log in interaction_log:
                 if log["role"] == "consumer":
-                    consumer_messages.append(ChatMessage(role="assistant", content=log["content"]))
+                    consumer_messages.append(AIMessage(content=log["content"]))
                 else:
-                    consumer_messages.append(ChatMessage(role="user", content=log["content"]))
+                    consumer_messages.append(HumanMessage(content=log["content"]))
             
             consumer_text, consumer_call = await _call_llm_multi(
                 consumer_messages, step=f"consumer_turn_{turn+1}", temperature=0.8

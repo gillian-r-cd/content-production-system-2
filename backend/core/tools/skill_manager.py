@@ -25,7 +25,9 @@ from sqlalchemy import Column, String, Text, Integer, Boolean, JSON, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 
 from core.database import get_db, Base
-from core.ai_client import ai_client, ChatMessage
+from langchain_core.messages import SystemMessage, HumanMessage
+
+from core.llm import llm
 
 
 class SkillOperation(str, Enum):
@@ -480,11 +482,11 @@ async def apply_skill(
         
         # 调用 AI
         messages = [
-            ChatMessage(role="system", content=template),
-            ChatMessage(role="user", content="请执行任务"),
+            SystemMessage(content=template),
+            HumanMessage(content="请执行任务"),
         ]
         
-        response = await ai_client.async_chat(messages, temperature=0.7)
+        response = await llm.ainvoke(messages)
         
         # 更新使用次数
         skill.usage_count += 1

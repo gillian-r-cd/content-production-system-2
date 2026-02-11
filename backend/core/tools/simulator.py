@@ -11,7 +11,9 @@
 from typing import Optional, Dict, List, Union
 from dataclasses import dataclass, field
 
-from core.ai_client import ai_client, ChatMessage
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+
+from core.llm import llm
 from core.models import Simulator, SimulationRecord, ProjectField
 
 
@@ -75,12 +77,12 @@ async def run_reading_simulation(
 """
     
     messages = [
-        ChatMessage(role="system", content=system_prompt),
-        ChatMessage(role="user", content=eval_instruction),
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=eval_instruction),
     ]
     
     try:
-        response = await ai_client.async_chat(messages, temperature=0.7)
+        response = await llm.ainvoke(messages)
         
         # 解析反馈
         import json
@@ -204,27 +206,25 @@ async def run_dialogue_simulation(
         for turn in range(max_turns):
             # === 用户提问 ===
             user_messages = [
-                ChatMessage(role="system", content=user_system),
+                SystemMessage(content=user_system),
             ]
             # 加入对话历史（从用户视角）
             for log in interaction_log:
                 if log["role"] == "user":
-                    user_messages.append(ChatMessage(role="assistant", content=log["content"]))
+                    user_messages.append(AIMessage(content=log["content"]))
                 else:
-                    user_messages.append(ChatMessage(role="user", content=log["content"]))
+                    user_messages.append(HumanMessage(content=log["content"]))
             
             if turn == 0:
-                user_messages.append(ChatMessage(
-                    role="user", 
+                user_messages.append(HumanMessage(
                     content="请基于你的背景，提出你最想解决的第一个问题。"
                 ))
             else:
-                user_messages.append(ChatMessage(
-                    role="user",
+                user_messages.append(HumanMessage(
                     content="请基于之前的对话，继续你的咨询。你可以追问、换个问题、或者如果满意了就结束对话。"
                 ))
             
-            user_response = await ai_client.async_chat(user_messages, temperature=0.8)
+            user_response = await llm.bind(temperature=0.8).ainvoke(user_messages)
             user_msg = user_response.content
             
             interaction_log.append({
@@ -241,15 +241,15 @@ async def run_dialogue_simulation(
             
             # === 内容代表回复 ===
             content_messages = [
-                ChatMessage(role="system", content=content_system),
+                SystemMessage(content=content_system),
             ]
             for log in interaction_log:
                 if log["role"] == "user":
-                    content_messages.append(ChatMessage(role="user", content=log["content"]))
+                    content_messages.append(HumanMessage(content=log["content"]))
                 else:
-                    content_messages.append(ChatMessage(role="assistant", content=log["content"]))
+                    content_messages.append(AIMessage(content=log["content"]))
             
-            content_response = await ai_client.async_chat(content_messages, temperature=0.5)
+            content_response = await llm.bind(temperature=0.5).ainvoke(content_messages)
             content_msg = content_response.content
             
             interaction_log.append({
@@ -294,11 +294,11 @@ async def run_dialogue_simulation(
 }}"""
 
         eval_messages = [
-            ChatMessage(role="system", content=eval_system),
-            ChatMessage(role="user", content=eval_instruction),
+            SystemMessage(content=eval_system),
+            HumanMessage(content=eval_instruction),
         ]
         
-        eval_response = await ai_client.async_chat(eval_messages, temperature=0.5)
+        eval_response = await llm.bind(temperature=0.5).ainvoke(eval_messages)
         
         import json
         feedback_data = json.loads(eval_response.content)
@@ -394,12 +394,12 @@ async def run_decision_simulation(
 """
     
     messages = [
-        ChatMessage(role="system", content=system_prompt),
-        ChatMessage(role="user", content=eval_instruction),
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=eval_instruction),
     ]
     
     try:
-        response = await ai_client.async_chat(messages, temperature=0.7)
+        response = await llm.ainvoke(messages)
         
         import json
         feedback_data = json.loads(response.content)
@@ -505,12 +505,12 @@ async def run_exploration_simulation(
 }}"""
 
     messages = [
-        ChatMessage(role="system", content=system_prompt),
-        ChatMessage(role="user", content=eval_instruction),
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=eval_instruction),
     ]
     
     try:
-        response = await ai_client.async_chat(messages, temperature=0.7)
+        response = await llm.ainvoke(messages)
         
         import json
         feedback_data = json.loads(response.content)
@@ -624,12 +624,12 @@ async def run_experience_simulation(
 }}"""
 
     messages = [
-        ChatMessage(role="system", content=system_prompt),
-        ChatMessage(role="user", content=eval_instruction),
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=eval_instruction),
     ]
     
     try:
-        response = await ai_client.async_chat(messages, temperature=0.7)
+        response = await llm.ainvoke(messages)
         
         import json
         feedback_data = json.loads(response.content)

@@ -24,7 +24,9 @@ from sqlalchemy.orm import Session
 from core.database import get_db
 from core.models import Project, ProjectField
 from core.models.content_block import ContentBlock
-from core.ai_client import ai_client, ChatMessage
+from langchain_core.messages import SystemMessage, HumanMessage
+
+from core.llm import llm
 
 
 class PersonaOperation(str, Enum):
@@ -437,12 +439,12 @@ async def generate_persona(
 只输出JSON，不要其他解释。"""
 
     messages = [
-        ChatMessage(role="system", content=system_prompt),
-        ChatMessage(role="user", content="请生成人物小传"),
+        SystemMessage(content=system_prompt),
+        HumanMessage(content="请生成人物小传"),
     ]
     
     try:
-        response = await ai_client.async_chat(messages, temperature=0.8)
+        response = await llm.bind(temperature=0.8).ainvoke(messages)
         content = response.content.strip()
         
         # 提取 JSON

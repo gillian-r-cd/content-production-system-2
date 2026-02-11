@@ -12,7 +12,10 @@ aiosqlite>=0.22.0
 
 # LangChain / LangGraph
 langchain>=1.2.0
+langchain-openai>=0.3.0
+langchain-core>=0.3.0
 langgraph>=1.0.0
+langgraph-checkpoint>=2.0.0
 
 # AI/LLM
 openai>=2.17.0

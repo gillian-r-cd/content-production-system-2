@@ -905,8 +905,8 @@ async def generate_block_content(
 """
     
     # 调用 AI
-    from core.ai_client import AIClient, ChatMessage
-    ai_client = AIClient()
+    from core.llm import llm
+    from langchain_core.messages import SystemMessage, HumanMessage
     
     # ===== 生成前保存旧版本 =====
     _save_content_version(block, "ai_regenerate", db, source_detail="重新生成前的版本")
@@ -915,12 +915,11 @@ async def generate_block_content(
     db.commit()
     
     try:
-        # 将 system_prompt 作为第一条消息，使用 ChatMessage 对象
         messages = [
-            ChatMessage(role="system", content=system_prompt),
-            ChatMessage(role="user", content=f"请生成「{block.name}」的内容。"),
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=f"请生成「{block.name}」的内容。"),
         ]
-        response = await ai_client.async_chat(messages=messages, max_tokens=16384)
+        response = await llm.ainvoke(messages)
         
         block.content = response.content
         # 关键逻辑：need_review=True 时，生成完成后状态为 in_progress（等待用户确认）
@@ -929,19 +928,20 @@ async def generate_block_content(
         
         # 创建 GenerationLog 记录
         from core.models import GenerationLog, generate_uuid
+        usage = getattr(response, "usage_metadata", {}) or {}
         gen_log = GenerationLog(
             id=generate_uuid(),
             project_id=block.project_id,
-            field_id=block.id,  # 使用 block.id 作为 field_id
-            phase=block.parent_id or "content_block",  # 使用父级作为阶段标识
+            field_id=block.id,
+            phase=block.parent_id or "content_block",
             operation=f"block_generate_{block.name}",
-            model=response.model,
-            tokens_in=response.tokens_in,
-            tokens_out=response.tokens_out,
-            duration_ms=response.duration_ms,
+            model=response.response_metadata.get("model_name", ""),
+            tokens_in=usage.get("input_tokens", 0),
+            tokens_out=usage.get("output_tokens", 0),
+            duration_ms=0,
             prompt_input=system_prompt,
             prompt_output=response.content,
-            cost=response.cost,
+            cost=0.0,
             status="success",
         )
         db.add(gen_log)
@@ -1038,8 +1038,8 @@ async def generate_block_content_stream(
 {constraints_text}
 """
     
-    from core.ai_client import AIClient, ChatMessage
-    ai_client = AIClient()
+    from core.llm import llm
+    from langchain_core.messages import SystemMessage, HumanMessage
     
     # ===== 流式生成前保存旧版本 =====
     _save_content_version(block, "ai_regenerate", db, source_detail="重新生成前的版本")
@@ -1055,14 +1055,15 @@ async def generate_block_content_stream(
         
         try:
             messages = [
-                ChatMessage(role="system", content=system_prompt),
-                ChatMessage(role="user", content=f"请生成「{block.name}」的内容。"),
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=f"请生成「{block.name}」的内容。"),
             ]
             
-            async for chunk in ai_client.stream_chat(messages=messages, max_tokens=16384):
-                content_parts.append(chunk)
-                data = json.dumps({"chunk": chunk}, ensure_ascii=False)
-                yield f"data: {data}\n\n"
+            async for chunk in llm.astream(messages):
+                if chunk.content:
+                    content_parts.append(chunk.content)
+                    data = json.dumps({"chunk": chunk.content}, ensure_ascii=False)
+                    yield f"data: {data}\n\n"
             
             # AI 流完整结束
             stream_completed = True
@@ -1482,7 +1483,8 @@ async def generate_ai_prompt(
     - 记录日志
     """
     from core.models import SystemPrompt, GenerationLog
-    from core.ai_client import ai_client, ChatMessage
+    from core.llm import llm
+    from langchain_core.messages import SystemMessage, HumanMessage
     
     # 1. 从后台获取「AI生成提示词」的系统提示词
     prompt_template = db.query(SystemPrompt).filter(
@@ -1519,11 +1521,11 @@ async def generate_ai_prompt(
     
     # 3. 调用 LLM
     messages = [
-        ChatMessage(role="system", content=system_content),
-        ChatMessage(role="user", content=user_msg),
+        SystemMessage(content=system_content),
+        HumanMessage(content=user_msg),
     ]
     
-    response = await ai_client.async_chat(messages, temperature=0.7)
+    response = await llm.ainvoke(messages)
     generated_prompt = response.content.strip()
     
     # 4. 记录日志

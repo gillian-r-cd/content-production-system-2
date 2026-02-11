@@ -24,7 +24,9 @@ from pydantic import BaseModel, Field
 
 from tavily import TavilyClient
 
-from core.ai_client import ai_client, ChatMessage
+from langchain_core.messages import SystemMessage, HumanMessage
+
+from core.llm import llm
 
 
 class ConsumerPersona(BaseModel):
@@ -112,28 +114,22 @@ async def plan_search_queries(query: str, intent: str) -> List[str]:
         搜索查询列表（3-5个）
     """
     messages = [
-        ChatMessage(
-            role="system",
-            content="""你是一个搜索策略专家。你的任务是生成有效的搜索查询词，帮助了解特定项目的目标用户群体。
+        SystemMessage(content="""你是一个搜索策略专家。你的任务是生成有效的搜索查询词，帮助了解特定项目的目标用户群体。
 
 规则：
 1. 搜索词必须针对项目的目标用户、痛点、需求，而不是搜"消费者调研方法"这种方法论
 2. 搜索词要具体、有行业针对性
 3. 可以使用中文或英文搜索词（选择能获得更好结果的语言）
 4. 每个搜索词要从不同角度切入：用户画像、痛点、竞品、行业趋势、真实案例
-5. 生成5个搜索词，每行一个，不要编号"""
-        ),
-        ChatMessage(
-            role="user",
-            content=f"""项目意图:
+5. 生成5个搜索词，每行一个，不要编号"""),
+        HumanMessage(content=f"""项目意图:
 {intent}
 
 请为这个项目生成5个针对性的搜索查询词，用于了解它的目标受众是谁、有什么痛点和需求。
-注意不要搜"如何做消费者调研"这种方法论，而要搜实际的用户群体信息。"""
-        ),
+注意不要搜"如何做消费者调研"这种方法论，而要搜实际的用户群体信息。"""),
     ]
     
-    response = await ai_client.async_chat(messages, temperature=0.7)
+    response = await llm.ainvoke(messages)
     queries = [q.strip().lstrip("0123456789.-、) ") for q in response.content.strip().split("\n") if q.strip()]
     # 过滤掉太短或方法论类的查询词
     queries = [q for q in queries if len(q) >= 4]
@@ -183,9 +179,7 @@ async def synthesize_report(
     )
     
     messages = [
-        ChatMessage(
-            role="system",
-            content="""你是一个资深的用户研究专家。请基于搜索结果，生成一份详细的消费者调研报告。
+        SystemMessage(content="""你是一个资深的用户研究专家。请基于搜索结果，生成一份详细的消费者调研报告。
 
 **重要：你必须在报告中添加内联引用。** 
 - 在 summary、pain_points、value_propositions 等文字中，凡是引用了某个来源的信息，都要标注 [来源N] 或 [N]。
@@ -198,11 +192,8 @@ async def synthesize_report(
 - pain_points: 核心痛点列表（3-5个，每个痛点描述中包含引用标注）
 - value_propositions: 价值主张列表（3-5个，每个主张描述中包含引用标注）
 - personas: 3个典型用户小传，每个包含 {name, basic_info: {age, gender, city, occupation, income_level}, background, pain_points}
-- sources: 引用来源URL列表（直接使用提供的来源URL）"""
-        ),
-        ChatMessage(
-            role="user",
-            content=f"""# 调研主题
+- sources: 引用来源URL列表（直接使用提供的来源URL）"""),
+        HumanMessage(content=f"""# 调研主题
 {query}
 
 # 项目意图
@@ -214,15 +205,10 @@ async def synthesize_report(
 # 搜索结果（已标注来源编号，含实际网页内容）
 {combined}
 
-请基于以上真实搜索结果生成调研报告（记得在文中添加引用标注 [1] [2] 等）："""
-        ),
+请基于以上真实搜索结果生成调研报告（记得在文中添加引用标注 [1] [2] 等）："""),
     ]
     
-    report, _ = await ai_client.generate_structured(
-        messages=messages,
-        response_model=ResearchReport,
-        temperature=0.7,
-    )
+    report = await llm.with_structured_output(ResearchReport).ainvoke(messages)
     
     return report
 
@@ -313,9 +299,7 @@ async def quick_research(
         ResearchReport
     """
     messages = [
-        ChatMessage(
-            role="system",
-            content="""你是一个资深的用户研究专家。请基于你的知识，为以下项目生成消费者调研报告。
+        SystemMessage(content="""你是一个资深的用户研究专家。请基于你的知识，为以下项目生成消费者调研报告。
 
 注意：这是基于通用知识的推测（非实时搜索），建议后续补充真实调研数据。
 由于没有网络搜索来源，请勿添加引用标注。
@@ -326,24 +310,16 @@ async def quick_research(
 - pain_points: 核心痛点列表（3-5个）
 - value_propositions: 价值主张列表（3-5个）
 - personas: 3个典型用户小传，每个包含 {name, basic_info: {age, gender, city, occupation, income_level}, background, pain_points}
-- sources: 空列表（因为未使用网络搜索）"""
-        ),
-        ChatMessage(
-            role="user",
-            content=f"""# 调研主题
+- sources: 空列表（因为未使用网络搜索）"""),
+        HumanMessage(content=f"""# 调研主题
 {query}
 
 # 项目意图
 {intent}
 
-请生成调研报告："""
-        ),
+请生成调研报告："""),
     ]
     
-    report, _ = await ai_client.generate_structured(
-        messages=messages,
-        response_model=ResearchReport,
-        temperature=0.7,
-    )
+    report = await llm.with_structured_output(ResearchReport).ainvoke(messages)
     
     return report

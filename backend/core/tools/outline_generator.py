@@ -22,7 +22,9 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db
 from core.models import Project, ProjectField
-from core.ai_client import ai_client, ChatMessage
+from langchain_core.messages import SystemMessage, HumanMessage
+
+from core.llm import llm
 from core.tools.architecture_reader import get_project_architecture
 
 
@@ -214,11 +216,11 @@ async def generate_outline(
 只输出JSON，不要其他解释。"""
 
     messages = [
-        ChatMessage(role="system", content=system_prompt),
-        ChatMessage(role="user", content="请生成内容大纲"),
+        SystemMessage(content=system_prompt),
+        HumanMessage(content="请生成内容大纲"),
     ]
     
-    response = await ai_client.async_chat(messages, temperature=0.7)
+    response = await llm.ainvoke(messages)
     
     # 解析响应
     try:

@@ -1,46 +1,49 @@
 # backend/api/agent.py
-# 功能: Agent对话API，支持SSE流式输出、对话历史、编辑重发、Tool调用
-# 主要路由: /chat, /stream, /history, /retry, /tool
-# 数据结构: ChatRequest, ChatResponse, ChatMessage
-#
-# 架构原则（重构版）:
-# 1. stream_chat 是纯粹的传输层，不包含任何路由逻辑
-# 2. 所有路由决策由 route_intent() 统一做出
-# 3. 各阶段节点函数自行管理内部状态（问题计数、偏好检查等）
-# 4. 只有 chat 路由做 token-by-token 流式输出，其余走节点函数
+# 功能: Agent 对话 API，支持 SSE 流式输出、对话历史、编辑重发
+# 主要路由: /stream, /chat, /history, /retry, /advance
+# 架构: stream_chat 使用 LangGraph astream_events，不再手动路由
 
 """
 Agent 对话 API
-支持普通响应和SSE流式输出
-支持对话历史持久化、编辑重发、再试一次
+
+核心改动（LangGraph 迁移）：
+- /stream → agent_graph.astream_events(version="v2")
+- 取消 route_intent + if/elif 手动分发
+- 所有路由由 LLM Tool Calling 自动决定
+- SSE 事件从 LangGraph 事件流映射
 """
 
 import json
 import asyncio
 import time
+import logging
 from typing import Optional, List, Dict
+
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from core.database import get_db
-from core.models import Project, ProjectField, ChatMessage, GenerationLog, ContentVersion, generate_uuid
+from core.models import (
+    Project, ProjectField, ChatMessage, GenerationLog,
+    ContentVersion, generate_uuid,
+)
 from core.models.content_block import ContentBlock
-from core.orchestrator import content_agent
-
+from core.orchestrator import agent_graph, content_agent
+from core.agent_tools import PRODUCE_TOOLS
 
 router = APIRouter()
+logger = logging.getLogger("agent")
 
 
 # ============== Helpers ==============
 
-import logging
-_logger = logging.getLogger("agent")
-
-
-def _save_version_before_overwrite(db: Session, entity_id: str, old_content: str, source: str, source_detail: str = None):
-    """Agent 覆写字段/内容块前，先保存旧内容为版本（容错：表不存在时跳过）"""
+def _save_version_before_overwrite(
+    db: Session, entity_id: str, old_content: str,
+    source: str, source_detail: str = None,
+):
+    """Agent 覆写前保存旧内容为版本"""
     if not old_content or not old_content.strip():
         return
     try:
@@ -58,47 +61,40 @@ def _save_version_before_overwrite(db: Session, entity_id: str, old_content: str
         )
         db.add(ver)
         db.flush()
-        _logger.info(f"[版本] agent覆写前保存 v{next_ver} ({source})")
     except Exception as e:
-        # content_versions 表可能未创建，跳过版本保存不影响主流程
-        _logger.warning(f"[版本] 保存失败(可忽略): {e}")
+        logger.warning(f"[版本] 保存失败(可忽略): {e}")
         db.rollback()
 
 
 def _resolve_references(
-    db: Session,
-    project_id: str,
-    references: list[str],
+    db: Session, project_id: str, references: list[str],
 ) -> dict[str, str]:
-    """
-    统一的 @ 引用解析：ProjectField → ContentBlock → 方案JSON
-    返回: {引用名: 内容} 映射
-    """
+    """统一的 @ 引用解析：ProjectField → ContentBlock → 方案JSON"""
     if not references:
         return {}
 
     result = {}
 
-    # 1. 搜索 ProjectField
+    # 1. ProjectField
     ref_fields = db.query(ProjectField).filter(
         ProjectField.project_id == project_id,
-        ProjectField.name.in_(references)
+        ProjectField.name.in_(references),
     ).all()
     for f in ref_fields:
         result[f.name] = f.content or ""
 
-    # 2. 搜索 ContentBlock（灵活架构）
+    # 2. ContentBlock
     missing = [r for r in references if r not in result]
     if missing:
         ref_blocks = db.query(ContentBlock).filter(
             ContentBlock.project_id == project_id,
             ContentBlock.name.in_(missing),
-            ContentBlock.deleted_at == None,
+            ContentBlock.deleted_at == None,  # noqa: E711
         ).all()
         for b in ref_blocks:
             result[b.name] = b.content or ""
 
-    # 3. 从 design_inner 字段的 proposals JSON 中解析方案引用
+    # 3. 方案引用
     import re
     proposal_refs = [r for r in references if r not in result and r.startswith("方案")]
     if proposal_refs:
@@ -116,265 +112,69 @@ def _resolve_references(
                         if match:
                             idx = int(match.group(1)) - 1
                             if 0 <= idx < len(proposals):
-                                result[ref_name] = json.dumps(proposals[idx], ensure_ascii=False, indent=2)
+                                result[ref_name] = json.dumps(
+                                    proposals[idx], ensure_ascii=False, indent=2)
             except (json.JSONDecodeError, TypeError):
                 pass
-    
-    if result:
-        print(f"[Agent] @ 引用解析: {references} -> 找到 {len(result)} 个")
-    
+
     return result
 
 
-def _save_result_to_field(
-    db: Session,
-    project: Project,
-    result: dict,
-    current_phase: str,
-) -> Optional[dict]:
+def _load_seed_history(db: Session, project_id: str, limit: int = 30):
     """
-    将节点执行结果保存到 ProjectField。
-    返回 field_updated 信息（如有）。
+    从 ChatMessage DB 加载历史（Checkpointer Bootstrap 用）。
+    仅在 Checkpointer 无 checkpoint 时调用（首次请求或服务器重启后）。
     """
-    agent_output = result.get("agent_output", "")
-    is_producing = result.get("is_producing", False)
-    result_phase = result.get("current_phase", current_phase)
-    modify_target = result.get("modify_target_field")
+    from langchain_core.messages import HumanMessage, AIMessage
 
-    if not agent_output:
-        return None
+    msgs = db.query(ChatMessage).filter(
+        ChatMessage.project_id == project_id,
+    ).order_by(ChatMessage.created_at.desc()).limit(limit).all()
 
-    field_updated = None
-
-    # 情况1: 修改已有字段
-    if modify_target:
-        import re as _re
-        # 情况1a: 方案引用（"方案N:..." 是 design_inner 字段内的子元素）
-        proposal_match = _re.match(r"方案(\d+)", modify_target)
-        if proposal_match:
-            idx = int(proposal_match.group(1)) - 1
-            design_field = db.query(ProjectField).filter(
-                ProjectField.project_id == project.id,
-                ProjectField.phase == "design_inner",
-            ).first()
-            if design_field and design_field.content:
-                try:
-                    data = json.loads(design_field.content)
-                    proposals = data.get("proposals", [])
-                    if 0 <= idx < len(proposals):
-                        # 保存旧版本
-                        _save_version_before_overwrite(db, design_field.id, design_field.content, "agent_modify", f"modify_proposal_{idx+1}")
-                        # 尝试将 agent_output 解析为 JSON 更新方案
-                        try:
-                            # 清理 markdown 代码块包裹
-                            clean = agent_output.strip()
-                            if clean.startswith("```"):
-                                clean = _re.sub(r'^```(?:json)?\s*', '', clean)
-                                clean = _re.sub(r'\s*```$', '', clean)
-                            modified_proposal = json.loads(clean)
-                            proposals[idx] = modified_proposal
-                        except (json.JSONDecodeError, TypeError):
-                            # LLM 输出不是 JSON → 作为 description 写入
-                            proposals[idx]["description"] = agent_output
-                        data["proposals"] = proposals
-                        design_field.content = json.dumps(data, ensure_ascii=False, indent=2)
-                        field_updated = {
-                            "id": design_field.id, "name": design_field.name,
-                            "phase": "design_inner", "action": "proposal_modified",
-                        }
-                        print(f"[save] 更新方案{idx+1}: {proposals[idx].get('name', '?')}")
-                except (json.JSONDecodeError, TypeError) as e:
-                    print(f"[save] 方案更新失败: {e}")
-        
-        # 情况1b: 普通字段名（ProjectField / ContentBlock）
-        if not field_updated:
-            target = db.query(ProjectField).filter(
-                ProjectField.project_id == project.id,
-                ProjectField.name == modify_target,
-            ).first()
-            if target:
-                _save_version_before_overwrite(db, target.id, target.content, "agent_modify", modify_target)
-                target.content = agent_output
-                target.status = "completed"
-                field_updated = {"id": target.id, "name": target.name, "phase": target.phase, "action": "modified"}
-            else:
-                target_block = db.query(ContentBlock).filter(
-                    ContentBlock.project_id == project.id,
-                    ContentBlock.name == modify_target,
-                    ContentBlock.deleted_at == None,
-                ).first()
-                if target_block:
-                    _save_version_before_overwrite(db, target_block.id, target_block.content, "agent_modify", modify_target)
-                    target_block.content = agent_output
-                    target_block.status = "completed"
-                    field_updated = {"id": target_block.id, "name": target_block.name, "phase": "", "action": "modified"}
-
-    # 情况2: 意图分析阶段 - 解析JSON保存为3个字段
-    elif is_producing and result_phase == "intent":
-        import re
-        try:
-            json_match = re.search(r'```json\s*(.*?)\s*```', agent_output, re.DOTALL)
-            json_str = json_match.group(1) if json_match else agent_output
-            intent_data = json.loads(json_str)
-
-            fields_created = []
-            for field_name in ["做什么", "给谁看", "期望行动"]:
-                content = intent_data.get(field_name, "")
-                if not content:
-                    continue
-                existing = db.query(ProjectField).filter(
-                    ProjectField.project_id == project.id,
-                    ProjectField.phase == "intent",
-                    ProjectField.name == field_name,
-                ).first()
-                if existing:
-                    _save_version_before_overwrite(db, existing.id, existing.content, "agent_produce", f"intent_{field_name}")
-                    existing.content = content
-                    existing.status = "completed"
-                    fields_created.append({"id": existing.id, "name": field_name})
-                else:
-                    new_field = ProjectField(
-                        id=generate_uuid(),
-                        project_id=project.id,
-                        name=field_name,
-                        phase="intent",
-                        content=content,
-                        field_type="text",
-                        status="completed",
-                    )
-                    db.add(new_field)
-                    fields_created.append({"id": new_field.id, "name": field_name})
-
-            field_updated = {"fields": fields_created, "phase": result_phase}
-        except (json.JSONDecodeError, Exception) as e:
-            print(f"[Agent] Intent JSON parse fallback: {e}")
-            new_field = ProjectField(
-                id=generate_uuid(),
-                project_id=project.id,
-                name="项目意图",
-                phase=result_phase,
-                content=agent_output,
-                field_type="richtext",
-                status="completed",
-            )
-            db.add(new_field)
-            field_updated = {"id": new_field.id, "name": "项目意图", "phase": result_phase}
-
-    # 情况3: 其他阶段产出 - 保存为单个字段
-    elif is_producing and result_phase:
-        field_name = _get_phase_field_name(result_phase)
-        existing = db.query(ProjectField).filter(
-            ProjectField.project_id == project.id,
-            ProjectField.phase == result_phase,
-            ProjectField.name == field_name,
-        ).first()
-        if existing:
-            _save_version_before_overwrite(db, existing.id, existing.content, "agent_produce", result_phase)
-            existing.content = agent_output
-            existing.status = "completed"
-            field_updated = {"id": existing.id, "name": existing.name, "phase": result_phase}
-        else:
-            new_field = ProjectField(
-                id=generate_uuid(),
-                project_id=project.id,
-                name=field_name,
-                phase=result_phase,
-                content=agent_output,
-                field_type="structured" if result_phase == "research" else "richtext",
-                status="completed",
-            )
-            db.add(new_field)
-            field_updated = {"id": new_field.id, "name": new_field.name, "phase": result_phase}
-
-    # 更新灵活架构的 ContentBlock（如有）
-    if is_producing and result_phase and project.use_flexible_architecture:
-        _update_content_block(db, project.id, result_phase, agent_output)
-
-    return field_updated
+    msgs.reverse()  # 时间正序
+    result = []
+    for m in msgs:
+        meta = m.message_metadata or {}
+        mode = meta.get("mode", "assistant")
+        if mode != "assistant":
+            continue  # 只加载助手模式消息
+        if m.role == "user":
+            result.append(HumanMessage(content=m.content))
+        elif m.role == "assistant":
+            result.append(AIMessage(content=m.content))
+    return result
 
 
-def _update_content_block(db: Session, project_id: str, phase: str, content: str):
-    """更新灵活架构中对应的 ContentBlock"""
-    handler_map = {
-        "intent": ["intent_analysis", "intent"],
-        "research": ["consumer_research", "research"],
+def sse_event(data: dict) -> str:
+    """格式化 SSE 事件"""
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _get_phase_field_name(phase: str) -> str:
+    """获取阶段对应的显示名"""
+    names = {
+        "intent": "意图分析",
+        "research": "消费者调研",
+        "design_inner": "内涵设计",
+        "produce_inner": "内涵生产",
+        "design_outer": "外延设计",
+        "produce_outer": "外延生产",
+        "simulate": "消费者模拟",
+        "evaluate": "评估",
     }
-    handlers = handler_map.get(phase)
-    if handlers:
-        block = db.query(ContentBlock).filter(
-            ContentBlock.project_id == project_id,
-            ContentBlock.special_handler.in_(handlers),
-            ContentBlock.deleted_at == None,
-        ).first()
-        if block:
-            _save_version_before_overwrite(db, block.id, block.content, "agent_produce", f"block_{phase}")
-            block.content = content
-            block.status = "completed"
+    return names.get(phase, phase)
 
 
-def _build_chat_display(result: dict, current_phase: str) -> str:
-    """构建对话区显示内容"""
-    display = result.get("display_output")
-    if display:
-        return display
-
-    if result.get("is_producing", False):
-        # 修改操作：优先使用 modify_target_field 作为显示名
-        modify_target = result.get("modify_target_field")
-        if modify_target:
-            return f"✅ 已修改【{modify_target}】，请在左侧工作台查看和编辑。"
-
-        # 标准阶段名映射
-        phase_names = {
-            "intent": "意图分析", "research": "消费者调研报告",
-            "design_inner": "内涵设计方案", "produce_inner": "内涵生产内容",
-            "design_outer": "外延设计方案", "produce_outer": "外延生产内容",
-            "evaluate": "评估报告",
-        }
-        result_phase = result.get("current_phase") or current_phase or ""
-        name = phase_names.get(result_phase, result_phase)
-
-        # 绝对兜底：不允许出现空名称
-        if not name:
-            return "✅ 内容已生成，请在左侧工作台查看和编辑。"
-
-        return f"✅ 已生成【{name}】，请在左侧工作台查看和编辑。"
-
-    return result.get("agent_output", "")
-
-
-def _build_chat_system_prompt(
-    current_phase: str,
-    creator_profile: str,
-    referenced_contents: dict,
-    references: list,
-) -> str:
-    """构建 chat 路由的 system prompt"""
-    ref_context = ""
-    if referenced_contents:
-        ref_parts = [f"### {name}\n{content}" for name, content in referenced_contents.items()]
-        ref_context = f"\n\n## 引用的字段内容\n" + "\n\n".join(ref_parts)
-
-    proposal_instruction = ""
-    if any(r.startswith("方案") for r in references):
-        proposal_instruction = "\n\n用户引用了具体方案。如需修改，请输出完整方案JSON（```json代码块包裹）。"
-
-    return f"""你是一个智能的内容生产 Agent。
-
-## 我的能力
-1. **意图分析**: 通过问答帮你明确内容目标
-2. **消费者调研**: DeepResearch 深度分析目标用户
-3. **内涵设计/生产**: 规划和生成核心内容
-4. **外延设计/生产**: 营销触达内容
-5. **消费者模拟**: 模拟用户反馈
-6. **评估**: 多维度质量评估
-
-## 项目上下文
-{creator_profile or '（暂无创作者信息）'}
-
-当前阶段: {current_phase}{ref_context}{proposal_instruction}
-
-请友好地回答用户的问题。"""
+def _to_message_response(m: ChatMessage):
+    return ChatMessageResponse(
+        id=m.id,
+        role=m.role,
+        content=m.content,
+        original_content=m.original_content or "",
+        is_edited=m.is_edited or False,
+        metadata=m.message_metadata or {},
+        created_at=m.created_at.isoformat() if m.created_at else "",
+    )
 
 
 # ============== Schemas ==============
@@ -385,10 +185,10 @@ class ChatRequest(BaseModel):
     message: str
     current_phase: Optional[str] = None
     references: List[str] = []
+    mode: str = "assistant"  # "assistant" | "cocreation"
 
 
 class FieldUpdatedInfo(BaseModel):
-    """字段更新信息"""
     id: str
     name: str
     phase: str
@@ -396,7 +196,6 @@ class FieldUpdatedInfo(BaseModel):
 
 
 class ChatResponseSchema(BaseModel):
-    """对话响应"""
     message_id: str
     message: str
     phase: str
@@ -406,19 +205,16 @@ class ChatResponseSchema(BaseModel):
 
 
 class MessageUpdate(BaseModel):
-    """消息编辑"""
     content: str
 
 
 class ToolCallRequest(BaseModel):
-    """Tool调用请求"""
     project_id: str
     tool_name: str
     parameters: dict = {}
 
 
 class ChatMessageResponse(BaseModel):
-    """对话消息响应"""
     id: str
     role: str
     content: str
@@ -426,12 +222,10 @@ class ChatMessageResponse(BaseModel):
     is_edited: bool
     metadata: dict
     created_at: str
-
     model_config = {"from_attributes": True}
 
 
 class ChatResponseExtended(BaseModel):
-    """扩展的对话响应 - 包含字段更新"""
     message_id: str
     message: str
     phase: str
@@ -467,33 +261,15 @@ async def chat(
     db: Session = Depends(get_db),
 ):
     """
-    与Agent对话（非流式）
-    
-    统一走 content_agent.run()，由 LangGraph 图决定路由和执行。
+    与 Agent 对话（非流式）。
+    使用 content_agent.run() 内部走 LangGraph graph.ainvoke()。
     """
-    from core.ai_client import ai_client
-    
     project = db.query(Project).filter(Project.id == request.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    
+
     current_phase = request.current_phase or project.current_phase
-    
-    # 加载当前阶段的历史对话
-    history_messages = (
-        db.query(ChatMessage)
-        .filter(ChatMessage.project_id == request.project_id)
-        .order_by(ChatMessage.created_at.asc())
-        .all()
-    )
-    current_phase_messages = []
-    for m in history_messages:
-        msg_phase = m.message_metadata.get("phase") if m.message_metadata else None
-        if msg_phase is None or msg_phase == current_phase:
-            current_phase_messages.append(m)
-    
-    chat_history = [{"role": m.role, "content": m.content} for m in current_phase_messages[-20:]]
-    
+
     # 保存用户消息
     user_msg = ChatMessage(
         id=generate_uuid(),
@@ -504,30 +280,18 @@ async def chat(
     )
     db.add(user_msg)
     db.commit()
-    
-    # 解析引用
-    referenced_contents = _resolve_references(db, request.project_id, request.references)
 
-    # 获取创作者特质
     creator_profile_str = ""
     if project.creator_profile:
         creator_profile_str = project.creator_profile.to_prompt_context()
-    
-    # 运行 Agent
+
     try:
         result = await asyncio.wait_for(
             content_agent.run(
                 project_id=request.project_id,
-                user_input=request.message,
+                message=request.message,
                 current_phase=current_phase,
                 creator_profile=creator_profile_str,
-                autonomy_settings=project.agent_autonomy or {},
-                use_deep_research=getattr(project, 'use_deep_research', True),
-                chat_history=chat_history,
-                phase_status=project.phase_status or {},
-                phase_order=project.phase_order,
-                references=request.references or [],
-                referenced_contents=referenced_contents,
             ),
             timeout=300,
         )
@@ -549,91 +313,26 @@ async def chat(
         db.add(error_msg)
         db.commit()
         return JSONResponse(status_code=500, content={"detail": str(agent_err)[:200]})
-    
-    result_phase = result.get("current_phase", current_phase)
-    is_producing = result.get("is_producing", False)
-    
-    # 保存结果到字段
-    field_updated = _save_result_to_field(db, project, result, current_phase)
 
-    # 记录日志
-    log_entry = GenerationLog(
-        id=generate_uuid(),
-        project_id=request.project_id,
-        phase=result_phase,
-        operation=f"agent_chat_{result_phase}",
-        model=ai_client.model,
-        prompt_input=result.get("full_prompt", request.message),
-        prompt_output=result.get("agent_output", ""),
-        tokens_in=result.get("tokens_in", 0),
-        tokens_out=result.get("tokens_out", 0),
-        duration_ms=result.get("duration_ms", 0),
-        cost=result.get("cost", 0.0),
-        status="success",
-    )
-    db.add(log_entry)
-    
-    # 构建对话区显示内容
-    chat_content = _build_chat_display(result, current_phase)
+    agent_output = result.get("agent_output", "") or result.get("display_output", "")
 
-    # 保存 Agent 响应
-    field_id = None
-    if field_updated:
-        field_id = field_updated.get("id") or (field_updated.get("fields", [{}])[0].get("id") if field_updated.get("fields") else None)
-    
     agent_msg = ChatMessage(
         id=generate_uuid(),
         project_id=request.project_id,
         role="assistant",
-        content=chat_content,
-        message_metadata={
-            "phase": result_phase,
-            "tool_used": result.get("tool_used"),
-            "waiting_for_human": result.get("waiting_for_human", False),
-            "field_id": field_id,
-            "is_producing": is_producing,
-        },
+        content=agent_output,
+        message_metadata={"phase": current_phase, "mode": "assistant"},
     )
     db.add(agent_msg)
-    
-    # 更新项目状态
-    project_updated = False
-    new_phase_status = result.get("phase_status", project.phase_status or {})
-    if result_phase == "intent" and is_producing and field_updated:
-        new_phase_status["intent"] = "completed"
-    if new_phase_status != project.phase_status:
-        project.phase_status = new_phase_status
-        project_updated = True
-    if result_phase != project.current_phase:
-        project.current_phase = result_phase
-        project_updated = True
-    
     db.commit()
-    
+
     return ChatResponseExtended(
         message_id=agent_msg.id,
-        message=chat_content,
-        phase=result_phase,
-        phase_status=new_phase_status,
-        waiting_for_human=result.get("waiting_for_human", False),
-        field_updated=field_updated,
-        project_updated=project_updated,
-        is_producing=is_producing,
+        message=agent_output,
+        phase=current_phase,
+        phase_status=project.phase_status or {},
+        waiting_for_human=False,
     )
-
-
-def _get_phase_field_name(phase: str) -> str:
-    """获取阶段对应的默认字段名"""
-    names = {
-        "intent": "项目意图",
-        "research": "消费者调研报告",
-        "design_inner": "内涵设计方案",
-        "produce_inner": "内涵生产内容",
-        "design_outer": "外延设计方案",
-        "produce_outer": "外延生产内容",
-        "evaluate": "项目评估报告",
-    }
-    return names.get(phase, f"{phase}_output")
 
 
 @router.put("/message/{message_id}", response_model=ChatMessageResponse)
@@ -648,12 +347,10 @@ async def edit_message(
         raise HTTPException(status_code=404, detail="Message not found")
     if msg.role != "user":
         raise HTTPException(status_code=400, detail="Only user messages can be edited")
-    
     if not msg.is_edited:
         msg.original_content = msg.content
     msg.content = update.content
     msg.is_edited = True
-    
     db.commit()
     db.refresh(msg)
     return _to_message_response(msg)
@@ -664,11 +361,11 @@ async def retry_message(
     message_id: str,
     db: Session = Depends(get_db),
 ):
-    """重新生成Assistant响应"""
+    """重新生成 Assistant 响应"""
     msg = db.query(ChatMessage).filter(ChatMessage.id == message_id).first()
     if not msg:
         raise HTTPException(status_code=404, detail="Message not found")
-    
+
     if msg.role == "assistant":
         user_msg = (
             db.query(ChatMessage)
@@ -684,25 +381,26 @@ async def retry_message(
             raise HTTPException(status_code=400, detail="No user message found to retry")
     else:
         user_msg = msg
-    
+
     project = db.query(Project).filter(Project.id == user_msg.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    
+
     creator_profile_str = ""
     if project.creator_profile:
         creator_profile_str = project.creator_profile.to_prompt_context()
-    
+
     result = await content_agent.run(
         project_id=user_msg.project_id,
-        user_input=user_msg.content,
-        current_phase=user_msg.message_metadata.get("phase", project.current_phase) if user_msg.message_metadata else project.current_phase,
+        message=user_msg.content,
+        current_phase=(
+            user_msg.message_metadata.get("phase", project.current_phase)
+            if user_msg.message_metadata
+            else project.current_phase
+        ),
         creator_profile=creator_profile_str,
-        autonomy_settings=project.agent_autonomy or {},
-        use_deep_research=getattr(project, 'use_deep_research', True),
-        phase_status=project.phase_status or {},
     )
-    
+
     new_msg = ChatMessage(
         id=generate_uuid(),
         project_id=user_msg.project_id,
@@ -711,19 +409,18 @@ async def retry_message(
         parent_message_id=message_id,
         message_metadata={
             "phase": result.get("current_phase", "intent"),
-            "tool_used": result.get("tool_used"),
             "is_retry": True,
         },
     )
     db.add(new_msg)
     db.commit()
-    
+
     return ChatResponseSchema(
         message_id=new_msg.id,
         message=result.get("agent_output", ""),
         phase=result.get("current_phase", "intent"),
-        phase_status=result.get("phase_status", {}),
-        waiting_for_human=result.get("waiting_for_human", False),
+        phase_status=project.phase_status or {},
+        waiting_for_human=False,
     )
 
 
@@ -732,117 +429,62 @@ async def call_tool(
     request: ToolCallRequest,
     db: Session = Depends(get_db),
 ):
-    """
-    直接调用Tool执行任务
-    """
-    from core.tools.deep_research import deep_research as deep_research_fn
-    from core.tools.simulator import run_simulation as run_simulation_fn
-    from core.tools.architecture_reader import get_intent_and_research, get_field_content
-    
+    """直接调用 Agent 工具（保留向后兼容）"""
+    from core.agent_tools import AGENT_TOOLS
+
     project = db.query(Project).filter(Project.id == request.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    
-    valid_tools = ["deep_research", "generate_field", "simulate_consumer", "evaluate_content"]
-    if request.tool_name not in valid_tools:
-        raise HTTPException(status_code=400, detail=f"Unknown tool: {request.tool_name}. Available: {valid_tools}")
-    
+
+    # 查找工具
+    tool_map = {t.name: t for t in AGENT_TOOLS}
+    tool_fn = tool_map.get(request.tool_name)
+    if not tool_fn:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown tool: {request.tool_name}. Available: {list(tool_map.keys())}",
+        )
+
     user_msg = ChatMessage(
         id=generate_uuid(),
         project_id=request.project_id,
         role="user",
         content=f"调用工具: {request.tool_name}",
-        message_metadata={"phase": project.current_phase, "tool_called": request.tool_name, "parameters": request.parameters},
+        message_metadata={
+            "phase": project.current_phase,
+            "tool_called": request.tool_name,
+            "parameters": request.parameters,
+        },
     )
     db.add(user_msg)
-    
+
     try:
-        output = ""
-        params = request.parameters or {}
-        
-        if request.tool_name == "deep_research":
-            deps = get_intent_and_research(request.project_id, db)
-            intent_str = deps.get("intent", "")
-            query = params.get("query", f"项目调研: {project.name}")
-            result = await deep_research_fn(query=query, intent=intent_str or project.name, max_sources=params.get("max_sources", 10))
-            output = json.dumps({
-                "summary": result.summary if hasattr(result, 'summary') else str(result),
-                "personas": [p.__dict__ if hasattr(p, '__dict__') else str(p) for p in (result.personas if hasattr(result, 'personas') else [])],
-                "sources_count": len(result.sources) if hasattr(result, 'sources') else 0,
-            }, ensure_ascii=False, default=str)
-            
-        elif request.tool_name == "generate_field":
-            field_name = params.get("field_name")
-            if not field_name:
-                output = "错误: 需要提供 field_name 参数"
-            else:
-                field_data = get_field_content(request.project_id, field_name, db)
-                if field_data:
-                    from api.blocks import generate_block_content
-                    block = db.query(ContentBlock).filter(ContentBlock.id == field_data["id"], ContentBlock.deleted_at == None).first()
-                    if block:
-                        result = await generate_block_content(block.id, db)
-                        output = f"已生成字段 '{field_name}'。\n\n{result.get('content', '')[:500]}..."
-                    else:
-                        output = f"未找到字段 '{field_name}'"
-                else:
-                    output = f"未找到字段 '{field_name}'"
-            
-        elif request.tool_name == "simulate_consumer":
-            from core.ai_client import AIClient, ChatMessage as AIChatMessage
-            content = params.get("content", "")
-            if not content:
-                fields = db.query(ProjectField).filter(ProjectField.project_id == request.project_id, ProjectField.content != None, ProjectField.content != "").all()
-                content = "\n\n".join([f"【{f.name}】\n{f.content}" for f in fields]) if fields else ""
-            if not content:
-                output = "暂无已生成的内容，请先生成字段内容。"
-            else:
-                ai = AIClient()
-                sim_result = await ai.async_chat(
-                    messages=[
-                        AIChatMessage(role="system", content="你是一位典型的内容消费者。请给出真实的感受、建议和评分（1-10分）。"),
-                        AIChatMessage(role="user", content=f"请体验以下内容：\n\n{content[:5000]}"),
-                    ], max_tokens=4096,
-                )
-                output = sim_result.content
-            
-        elif request.tool_name == "evaluate_content":
-            from core.ai_client import AIClient, ChatMessage as AIChatMessage
-            fields = db.query(ProjectField).filter(ProjectField.project_id == request.project_id, ProjectField.status == "completed").all()
-            parts = [f"【{f.name}】\n{f.content}" for f in fields if f.content]
-            if not parts:
-                output = "暂无已完成的内容，请先生成字段。"
-            else:
-                ai = AIClient()
-                eval_result = await ai.async_chat(
-                    messages=[
-                        AIChatMessage(role="system", content="你是专业内容评估专家。评估内容质量并给出1-10分和改进建议。"),
-                        AIChatMessage(role="user", content=f"请评估：\n\n{chr(10).join(parts)[:8000]}"),
-                    ], max_tokens=4096,
-                )
-                output = eval_result.content
-        
-        if not output:
-            output = f"工具 {request.tool_name} 执行完成，但没有返回结果。"
-        
+        # 直接调用工具函数
+        config = {"configurable": {"project_id": request.project_id}}
+        output = await asyncio.to_thread(
+            tool_fn.invoke, {**request.parameters, "config": config}
+        )
     except Exception as e:
         import traceback
         traceback.print_exc()
         output = f"工具执行失败: {str(e)}"
-    
+
     agent_msg = ChatMessage(
         id=generate_uuid(),
         project_id=request.project_id,
         role="assistant",
-        content=output,
-        message_metadata={"phase": project.current_phase, "tool_used": request.tool_name},
+        content=str(output),
+        message_metadata={
+            "phase": project.current_phase,
+            "tools_used": [request.tool_name],
+        },
     )
     db.add(agent_msg)
     db.commit()
-    
+
     return ChatResponseSchema(
         message_id=agent_msg.id,
-        message=output,
+        message=str(output),
         phase=project.current_phase,
         phase_status=project.phase_status or {},
         waiting_for_human=False,
@@ -868,501 +510,393 @@ async def stream_chat(
     db: Session = Depends(get_db),
 ):
     """
-    与Agent对话（SSE流式输出）
+    与 Agent 对话（SSE 流式输出）。
 
-    架构原则 — 彻底去除 if-else 路由:
-    1. 收集上下文（DB查询、历史加载、引用解析）
-    2. route_intent(state) → 唯一路由决策
-    3. 分发:
-       - chat → ai_client.stream_chat() (token-by-token)
-       - generic_research → 深度调研（非流式）
-       - 其余 → 调用对应节点函数（非流式），结果以SSE发送
-    4. 保存响应、更新状态
+    架构（LangGraph 迁移版）：
+    1. 保存用户消息 → yield user_saved
+    2. 构建 AgentState + Checkpointer Bootstrap
+    3. agent_graph.astream_events(version="v2") 遍历事件流
+    4. 根据事件类型 yield SSE：token / tool_start / tool_end / done / error
+    5. 保存 assistant 最终回复到 ChatMessage DB
     """
-    from core.ai_client import ai_client, ChatMessage as AIChatMessage
-    from core.models import PROJECT_PHASES
-    from core.orchestrator import (
-        route_intent, ContentProductionState,
-        intent_analysis_node, research_node, design_inner_node,
-        produce_inner_node, design_outer_node, produce_outer_node,
-        evaluate_node, modify_node, query_node, tool_node, chat_node,
-        generate_field_node,
-    )
     from langchain_core.messages import HumanMessage, AIMessage
-    
-    # --- 验证项目 ---
+
     project = db.query(Project).filter(Project.id == request.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    
+
     current_phase = request.current_phase or project.current_phase
-    
-    # --- 保存用户消息 ---
+
+    # ---- 保存用户消息 ----
     user_msg = ChatMessage(
         id=generate_uuid(),
         project_id=request.project_id,
         role="user",
         content=request.message,
-        message_metadata={"phase": current_phase, "references": request.references},
+        message_metadata={
+            "phase": current_phase,
+            "references": request.references,
+            "mode": request.mode,
+        },
     )
     db.add(user_msg)
     db.commit()
-    
-    # 保存 user_msg.id，在 SSE 事件中返回给前端（用于编辑重发等场景）
     saved_user_msg_id = user_msg.id
-    
-    # --- 加载当前阶段对话历史 ---
-    history_msgs = db.query(ChatMessage).filter(
-        ChatMessage.project_id == request.project_id
-    ).order_by(ChatMessage.created_at).all()
-    
-    current_phase_msgs = []
-    for m in history_msgs:
-        msg_phase = m.message_metadata.get("phase") if m.message_metadata else None
-        if msg_phase is None or msg_phase == current_phase:
-            current_phase_msgs.append(m)
-    
-    chat_history = []
-    for m in current_phase_msgs[-20:]:
-        if m.role == "user":
-            chat_history.append(HumanMessage(content=m.content))
-        else:
-            chat_history.append(AIMessage(content=m.content))
-    
-    # --- 解析 @ 引用 ---
-    references = request.references or []
-    referenced_contents = _resolve_references(db, request.project_id, references)
 
-    # --- SSE 事件生成器 ---
+    # ---- 共创模式分流 ----
+    if request.mode == "cocreation":
+        return StreamingResponse(
+            _handle_cocreation_stream(request, db, project, saved_user_msg_id),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive",
+                      "X-Accel-Buffering": "no"},
+        )
+
+    # ---- 助手模式：走 Agent Graph ----
+
+    # 处理 @ 引用：将引用内容追加到用户消息
+    augmented_message = request.message
+    if request.references:
+        ref_contents = _resolve_references(db, request.project_id, request.references)
+        if ref_contents:
+            ref_text = "\n".join(
+                f"【{name}】\n{content[:2000]}" for name, content in ref_contents.items()
+            )
+            augmented_message = (
+                f"{request.message}\n\n---\n以下是用户引用的内容块：\n{ref_text}"
+            )
+
+    # Checkpointer 配置
+    thread_id = f"{request.project_id}:assistant"
+    config = {
+        "configurable": {
+            "thread_id": thread_id,
+            "project_id": request.project_id,
+        }
+    }
+
+    # Bootstrap：首次请求或服务器重启后从 DB 加载种子历史
+    try:
+        existing = await agent_graph.aget_state(config)
+        has_checkpoint = (
+            existing and existing.values and existing.values.get("messages")
+        )
+    except Exception:
+        has_checkpoint = False
+
+    if not has_checkpoint:
+        db_history = _load_seed_history(db, request.project_id)
+        input_messages = db_history + [HumanMessage(content=augmented_message)]
+    else:
+        input_messages = [HumanMessage(content=augmented_message)]
+
+    # 构建 AgentState
+    creator_profile_str = ""
+    if project.creator_profile:
+        creator_profile_str = project.creator_profile.to_prompt_context()
+
+    input_state = {
+        "messages": input_messages,
+        "project_id": request.project_id,
+        "current_phase": current_phase,
+        "creator_profile": creator_profile_str,
+    }
+
+    # ---- 产出类工具集（执行后前端需刷新左侧面板） ----
+    produce_tools = PRODUCE_TOOLS | {
+        "manage_architecture", "advance_to_phase", "execute_prompt_update",
+    }
+
     async def event_generator():
         try:
-            # 先返回用户消息的真实 ID（前端用于编辑重发）
-            yield f"data: {json.dumps({'type': 'user_saved', 'message_id': saved_user_msg_id}, ensure_ascii=False)}\n\n"
-            
-            # 获取创作者特质
-            creator_profile_str = ""
-            if project.creator_profile:
-                creator_profile_str = project.creator_profile.to_prompt_context()
-            
-            # ===== 构建状态 =====
-            initial_state: ContentProductionState = {
-                "project_id": request.project_id,
-                "current_phase": current_phase,
-                "phase_order": project.phase_order if project.phase_order is not None else PROJECT_PHASES.copy(),
-                "phase_status": project.phase_status or {p: "pending" for p in PROJECT_PHASES},
-                "autonomy_settings": project.agent_autonomy or {},
-                "creator_profile": creator_profile_str,
-                "fields": {},
-                "messages": chat_history,
-                "user_input": request.message,
-                "agent_output": "",
-                "waiting_for_human": False,
-                "route_target": "",
-                "use_deep_research": getattr(project, 'use_deep_research', True),
-                "is_producing": False,
-                "error": None,
-                "references": references,
-                "referenced_contents": referenced_contents,
-                # 初始化路由相关字段
-                "tokens_in": 0, "tokens_out": 0, "duration_ms": 0, "cost": 0.0,
-                "full_prompt": "",
-                "parsed_intent_type": "", "parsed_target_field": None,
-                "parsed_operation": "", "modify_target_field": None,
-                "pending_intents": [],
-            }
+            # 1. 返回用户消息真实 ID
+            yield sse_event({"type": "user_saved", "message_id": saved_user_msg_id})
 
-            # ===== 唯一路由决策 =====
-            routed_state = await route_intent(initial_state)
-            route_target = routed_state.get("route_target", "chat")
+            full_content = ""
+            current_tool = None
+            tools_used = []
+            is_producing = False
+            first_tool_sent = False  # 用于向前端发 route 事件（兼容）
 
-            print(f"[stream] route_intent → {route_target}")
-            yield f"data: {json.dumps({'type': 'route', 'target': route_target}, ensure_ascii=False)}\n\n"
+            async for event in agent_graph.astream_events(
+                input_state, config=config, version="v2"
+            ):
+                kind = event["event"]
 
-            # ===== 分发: chat → 流式 =====
-            if route_target == "chat":
-                system_prompt = _build_chat_system_prompt(
-                    current_phase, creator_profile_str, referenced_contents, references)
+                # ---- Token 级流式（agent 节点的 LLM 输出） ----
+                if kind == "on_chat_model_stream":
+                    # 只转发 agent 节点的 LLM stream，工具内部 LLM 不转发
+                    tags = event.get("tags", [])
+                    name = event.get("name", "")
+                    # astream_events 中 agent 节点的 LLM 调用 name 通常是模型名
+                    # 通过 parent 节点判断
+                    metadata = event.get("metadata", {})
+                    langgraph_node = metadata.get("langgraph_node", "")
 
-                messages = [AIChatMessage(role="system", content=system_prompt)]
-                for m in chat_history[-10:]:
-                    if isinstance(m, HumanMessage):
-                        messages.append(AIChatMessage(role="user", content=m.content))
-                    elif isinstance(m, AIMessage):
-                        messages.append(AIChatMessage(role="assistant", content=m.content))
-                messages.append(AIChatMessage(role="user", content=request.message))
+                    if langgraph_node == "agent":
+                        chunk = event["data"]["chunk"]
+                        if hasattr(chunk, "content") and chunk.content:
+                            full_content += chunk.content
+                            yield sse_event({
+                                "type": "token",
+                                "content": chunk.content,
+                            })
 
-                full_content = ""
-                start_time = time.time()
-                async for token in ai_client.stream_chat(messages, temperature=0.7):
-                    full_content += token
-                    yield f"data: {json.dumps({'type': 'token', 'content': token}, ensure_ascii=False)}\n\n"
-                duration_ms = int((time.time() - start_time) * 1000)
+                # ---- 工具开始 ----
+                elif kind == "on_tool_start":
+                    tool_name = event["name"]
+                    current_tool = tool_name
+                    tools_used.append(tool_name)
 
-                # 处理方案引用修改
-                _handle_proposal_auto_update(db, request, references, full_content)
+                    # 向前端发送 route 事件（兼容旧前端）
+                    if not first_tool_sent:
+                        # 映射工具名到旧 route 名称
+                        route_map = {
+                            "run_research": "research",
+                            "modify_field": "modify",
+                            "generate_field_content": "generate_field",
+                            "query_field": "query",
+                            "run_evaluation": "evaluate",
+                            "advance_to_phase": "advance_phase",
+                            "manage_architecture": "generate_field",
+                            "generate_outline": "generate_field",
+                        }
+                        route_name = route_map.get(tool_name, tool_name)
+                        yield sse_event({
+                            "type": "route",
+                            "target": route_name,
+                        })
+                        first_tool_sent = True
 
-                # 保存日志
-                full_prompt = f"[System]\n{system_prompt}\n\n[User]\n{request.message}"
-                gen_log = GenerationLog(
-                    id=generate_uuid(), project_id=request.project_id,
-                    phase=current_phase, operation=f"agent_stream_chat",
-                    model=ai_client.model, prompt_input=full_prompt,
-                    prompt_output=full_content,
-                    tokens_in=len(full_prompt) // 4, tokens_out=len(full_content) // 4,
-                    duration_ms=duration_ms, cost=0.0, status="success",
-                )
-                db.add(gen_log)
-                
-                # 保存响应
-                agent_msg = ChatMessage(
-                    id=generate_uuid(), project_id=request.project_id,
-                    role="assistant", content=full_content,
-                    message_metadata={"phase": current_phase, "route": route_target},
-                )
-                db.add(agent_msg)
-                db.commit()
+                    yield sse_event({
+                        "type": "tool_start",
+                        "tool": tool_name,
+                    })
 
-                yield f"data: {json.dumps({'type': 'done', 'message_id': agent_msg.id, 'route': route_target}, ensure_ascii=False)}\n\n"
-                return
+                # ---- 工具结束 ----
+                elif kind == "on_tool_end":
+                    tool_output = event["data"].get("output", "")
+                    if isinstance(tool_output, str):
+                        output_str = tool_output
+                    else:
+                        output_str = str(tool_output)
 
-            # ===== 分发: generic_research → 深度调研 =====
-            if route_target == "generic_research":
-                yield f"data: {json.dumps({'type': 'content', 'content': '🔍 正在进行深度调研...'}, ensure_ascii=False)}\n\n"
-                report_md = await _do_generic_research(request.message, request.project_id, creator_profile_str)
+                    field_updated = current_tool in produce_tools
+                    if field_updated:
+                        is_producing = True
 
-                gen_log = GenerationLog(
-                    id=generate_uuid(), project_id=request.project_id,
-                    phase=current_phase, operation="agent_stream_generic_research",
-                    model=ai_client.model, prompt_input=f"[调研] {request.message}",
-                    prompt_output=report_md[:2000],
-                    tokens_in=0, tokens_out=len(report_md), duration_ms=0, cost=0.0, status="success",
-                )
-                db.add(gen_log)
-                db.commit()
+                    # modify_field 特殊处理
+                    if current_tool == "modify_field":
+                        try:
+                            result = json.loads(output_str)
+                            if result.get("status") == "need_confirm":
+                                yield sse_event({
+                                    "type": "modify_confirm_needed",
+                                    "target_field": result.get("target_field"),
+                                    "edits": result.get("edits"),
+                                    "summary": result.get("summary"),
+                                })
+                            elif result.get("status") == "applied":
+                                yield sse_event({
+                                    "type": "tool_end",
+                                    "tool": current_tool,
+                                    "output": result.get("summary", ""),
+                                    "field_updated": True,
+                                })
+                        except (json.JSONDecodeError, TypeError):
+                            yield sse_event({
+                                "type": "tool_end",
+                                "tool": current_tool,
+                                "output": output_str[:500],
+                                "field_updated": field_updated,
+                            })
+                    else:
+                        yield sse_event({
+                            "type": "tool_end",
+                            "tool": current_tool,
+                            "output": output_str[:500],
+                            "field_updated": field_updated,
+                        })
 
-                yield f"data: {json.dumps({'type': 'content', 'content': report_md}, ensure_ascii=False)}\n\n"
+                    current_tool = None
 
-                agent_msg = ChatMessage(
-                    id=generate_uuid(), project_id=request.project_id,
-                    role="assistant", content=report_md,
-                    message_metadata={"phase": current_phase, "route": "generic_research"},
-                )
-                db.add(agent_msg)
-                db.commit()
-                
-                yield f"data: {json.dumps({'type': 'done', 'is_producing': False}, ensure_ascii=False)}\n\n"
-                return
-
-            # ===== 分发: advance_phase → 推进阶段 =====
-            if route_target == "advance_phase":
-                advance_result = _do_advance_phase(db, project, routed_state)
-                yield f"data: {json.dumps({'type': 'content', 'content': advance_result['message']}, ensure_ascii=False)}\n\n"
-
-                agent_msg = ChatMessage(
-                    id=generate_uuid(), project_id=request.project_id,
-                    role="assistant", content=advance_result["message"],
-                    message_metadata={"phase": advance_result.get("phase", current_phase), "route": "advance_phase"},
-                )
-                db.add(agent_msg)
-                db.commit()
-
-                yield f"data: {json.dumps({'type': 'done', 'message_id': agent_msg.id, 'route': 'advance_phase', 'is_producing': False}, ensure_ascii=False)}\n\n"
-                return
-
-            # ===== 分发: 所有其他路由 → 调用节点函数 =====
-            # 映射 route_target → 节点函数
-            node_map = {
-                "phase_intent": intent_analysis_node,
-                "phase_research": research_node,
-                "phase_design_inner": design_inner_node,
-                "phase_produce_inner": produce_inner_node,
-                "phase_design_outer": design_outer_node,
-                "phase_produce_outer": produce_outer_node,
-                "phase_evaluate": evaluate_node,
-                "research": research_node,
-                "modify": modify_node,
-                "query": query_node,
-                "generate": generate_field_node,
-                "generate_field": generate_field_node,
-            }
-            # tool_* 路由统一走 tool_node
-            if route_target.startswith("tool_"):
-                node_map[route_target] = tool_node
-
-            # "phase_current" → 映射到当前阶段的节点
-            if route_target == "phase_current":
-                route_target = f"phase_{current_phase}"
-
-            node_fn = node_map.get(route_target)
-
-            if not node_fn:
-                # 未知路由 → 回退到 chat
-                print(f"[stream] 未知路由 {route_target}，回退到 chat")
-                node_fn = chat_node
-
-            # 执行节点函数
-            yield f"data: {json.dumps({'type': 'content', 'content': '⏳ 正在处理...'}, ensure_ascii=False)}\n\n"
-            result = await node_fn(routed_state)
-
-            # ===== 统一后处理 =====
-            agent_output = result.get("agent_output", "")
-            is_producing = result.get("is_producing", False)
-            result_phase = result.get("current_phase", current_phase)
-
-            # 保存到 ProjectField
-            field_updated = _save_result_to_field(db, project, result, current_phase)
-
-            # 保存日志
-            gen_log = GenerationLog(
-                id=generate_uuid(), project_id=request.project_id,
-                phase=result_phase, operation=f"agent_stream_{route_target}",
-                model=ai_client.model,
-                prompt_input=result.get("full_prompt", ""),
-                prompt_output=agent_output[:2000] if agent_output else "",
-                tokens_in=result.get("tokens_in", 0), tokens_out=result.get("tokens_out", 0),
-                duration_ms=result.get("duration_ms", 0), cost=result.get("cost", 0.0),
-                status="success",
-            )
-            db.add(gen_log)
-
-            # 更新项目状态
-            new_phase_status = result.get("phase_status", project.phase_status or {})
-            if result_phase == "intent" and is_producing and field_updated:
-                new_phase_status["intent"] = "completed"
-            if new_phase_status != project.phase_status:
-                project.phase_status = new_phase_status
-            if result_phase != project.current_phase:
-                project.current_phase = result_phase
-            db.add(project)
-
-            # 构建对话区显示
-            display_content = _build_chat_display(result, current_phase)
-
-            # 发送内容
-            yield f"data: {json.dumps({'type': 'content', 'content': display_content}, ensure_ascii=False)}\n\n"
-
-            # 保存响应
+            # ---- 图执行完毕 ----
+            # 保存 assistant 最终回复到 ChatMessage DB
             agent_msg = ChatMessage(
-                id=generate_uuid(), project_id=request.project_id,
-                role="assistant", content=display_content,
-                message_metadata={"phase": result_phase, "route": route_target},
+                id=generate_uuid(),
+                project_id=request.project_id,
+                role="assistant",
+                content=full_content,
+                message_metadata={
+                    "phase": current_phase,
+                    "mode": "assistant",
+                    "tools_used": tools_used,
+                },
             )
             db.add(agent_msg)
             db.commit()
 
-            yield f"data: {json.dumps({'type': 'done', 'message_id': agent_msg.id, 'route': route_target, 'is_producing': is_producing}, ensure_ascii=False)}\n\n"
+            yield sse_event({
+                "type": "done",
+                "message_id": agent_msg.id,
+                "is_producing": is_producing,
+                "route": tools_used[0] if tools_used else "chat",
+            })
 
         except Exception as e:
             import traceback
             tb = traceback.format_exc()
-            print(f"[stream] EXCEPTION: {e}\n{tb}")
-            yield f"data: {json.dumps({'type': 'error', 'error': str(e), 'traceback': tb[:500]}, ensure_ascii=False)}\n\n"
+            logger.error(f"[stream] EXCEPTION: {e}\n{tb}")
+            yield sse_event({
+                "type": "error",
+                "error": str(e),
+                "traceback": tb[:500],
+            })
 
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
-def _handle_proposal_auto_update(db: Session, request: ChatRequest, references: list, content: str):
-    """如果 chat 回复中包含方案 JSON，自动更新 design_inner 字段"""
-    import re
-    has_proposal_ref = any(r.startswith("方案") for r in references)
-    if not has_proposal_ref or not content:
-        return
+# ============== Cocreation Stream (placeholder) ==============
 
-    json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', content)
-    if not json_match:
-        return
+async def _handle_cocreation_stream(request, db, project, user_msg_id):
+    """
+    共创模式流式输出。
+    不走 Agent Graph，直接用 llm.astream() 进行纯角色扮演对话。
+    （完整实现在 M6+ 阶段，当前为基础版本）
+    """
+    from core.llm import llm
+    from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
-    try:
-        modified = json.loads(json_match.group(1))
-        if not isinstance(modified, dict) or "name" not in modified or "fields" not in modified:
-            return
-
-        design_field = db.query(ProjectField).filter(
-            ProjectField.project_id == request.project_id,
-            ProjectField.phase == "design_inner",
-        ).first()
-        if not design_field or not design_field.content:
-            return
-
-        data = json.loads(design_field.content)
-        proposals = data.get("proposals", [])
-        for i, p in enumerate(proposals):
-            if p.get("id") == modified.get("id") or p.get("name") == modified.get("name"):
-                proposals[i] = modified
-                data["proposals"] = proposals
-                design_field.content = json.dumps(data, ensure_ascii=False, indent=2)
-                print(f"[stream] 自动更新方案: {modified.get('name')}")
-                break
-    except (json.JSONDecodeError, TypeError):
-        pass
-
-
-async def _do_generic_research(query: str, project_id: str, creator_profile: str) -> str:
-    """执行通用深度调研，返回 Markdown 报告"""
-    from core.tools.deep_research import search_tavily, plan_search_queries
-    from core.tools.architecture_reader import get_intent_and_research
-    from core.ai_client import ai_client as _ai, ChatMessage as _CM
-
-    deps = get_intent_and_research(project_id)
-    intent = deps.get("intent", query)
+    yield sse_event({"type": "user_saved", "message_id": user_msg_id})
 
     try:
-        search_queries = await plan_search_queries(query, intent)
-        if not search_queries:
-            search_queries = [query[:100]]
+        # 加载共创对话历史
+        history = db.query(ChatMessage).filter(
+            ChatMessage.project_id == request.project_id,
+        ).order_by(ChatMessage.created_at.desc()).limit(20).all()
+        history.reverse()
 
-        all_results = []
-        for q in search_queries:
-            results = search_tavily(q, max_results=5)
-            all_results.extend(results)
+        # 构建消息
+        messages = [
+            SystemMessage(content="你是一个创意共创伙伴。与创作者进行头脑风暴，帮助发展想法。"),
+        ]
+        for m in history:
+            meta = m.message_metadata or {}
+            if meta.get("mode") != "cocreation":
+                continue
+            if m.role == "user":
+                messages.append(HumanMessage(content=m.content))
+            else:
+                messages.append(AIMessage(content=m.content))
+        messages.append(HumanMessage(content=request.message))
 
-        seen_urls = set()
-        unique_results = []
-        for r in all_results:
-            url = r.get("url", "")
-            if url and url not in seen_urls:
-                seen_urls.add(url)
-                unique_results.append(r)
-                if len(unique_results) >= 10:
-                    break
+        # 流式输出
+        full_content = ""
+        async for chunk in llm.astream(messages):
+            if chunk.content:
+                full_content += chunk.content
+                yield sse_event({"type": "token", "content": chunk.content})
 
-        sections = []
-        source_urls = []
-        for idx, item in enumerate(unique_results[:10]):
-            url = item.get("url", f"来源{idx+1}")
-            title = item.get("title", "")
-            content = item.get("content", "")[:3000]
-            source_urls.append(url)
-            sections.append(f"[来源{idx+1}] ({url})\n标题: {title}\n{content}")
+        # 保存回复
+        agent_msg = ChatMessage(
+            id=generate_uuid(),
+            project_id=request.project_id,
+            role="assistant",
+            content=full_content,
+            message_metadata={
+                "phase": project.current_phase,
+                "mode": "cocreation",
+            },
+        )
+        db.add(agent_msg)
+        db.commit()
 
-        combined = "\n\n---\n\n".join(sections)[:15000]
-        source_list = "\n".join(f"[{i+1}] {url}" for i, url in enumerate(source_urls))
-
-        response = await _ai.async_chat([
-            _CM(role="system", content=f"""你是一个专业的调研分析师。基于搜索结果生成结构化调研报告。
-使用内联引用 [1] [2] 标注来源。输出纯 Markdown 格式。
-创作者特质: {creator_profile or '通用'}"""),
-            _CM(role="user", content=f"""# 调研主题\n{query}\n\n# 来源列表\n{source_list}\n\n# 搜索结果\n{combined}\n\n请生成调研报告："""),
-        ], temperature=0.7)
-
-        report_md = response.content
-        if source_urls:
-            report_md += "\n\n---\n\n## 参考来源\n\n" + "\n\n".join(f"[{i+1}] {url}" for i, url in enumerate(source_urls))
-
-        return report_md
+        yield sse_event({
+            "type": "done",
+            "message_id": agent_msg.id,
+            "is_producing": False,
+            "route": "cocreation",
+        })
 
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return f"调研执行失败: {str(e)}"
+        logger.error(f"[cocreation] error: {e}")
+        yield sse_event({"type": "error", "error": str(e)})
 
 
-def _do_advance_phase(db: Session, project: Project, state: dict) -> dict:
-    """推进到下一阶段"""
-    phase_order = project.phase_order
-    target_field = state.get("parsed_target_field", "")
-
-    # 如果指定了目标阶段
-    if target_field:
-        phase_map = {
-            "意图分析": "intent", "intent": "intent",
-            "消费者调研": "research", "调研": "research", "research": "research",
-            "内涵设计": "design_inner", "design_inner": "design_inner",
-            "内涵生产": "produce_inner", "produce_inner": "produce_inner",
-            "外延设计": "design_outer", "design_outer": "design_outer",
-            "外延生产": "produce_outer", "produce_outer": "produce_outer",
-            "评估": "evaluate", "evaluate": "evaluate",
-        }
-        target_phase = phase_map.get(target_field.strip(), "")
-        if target_phase and target_phase in phase_order:
-            prev = project.current_phase
-            project.phase_status[prev] = "completed"
-            project.current_phase = target_phase
-            project.phase_status[target_phase] = "in_progress"
-            db.commit()
-            return {"message": f"✅ 已进入【{_get_phase_field_name(target_phase)}】阶段。", "phase": target_phase}
-
-    # 默认推进到下一阶段
-    try:
-        idx = phase_order.index(project.current_phase)
-        if idx >= len(phase_order) - 1:
-            return {"message": "已经是最后一个阶段了。", "phase": project.current_phase}
-
-        prev = project.current_phase
-        next_phase = phase_order[idx + 1]
-        project.phase_status[prev] = "completed"
-        project.current_phase = next_phase
-        project.phase_status[next_phase] = "in_progress"
-        db.commit()
-        return {"message": f"✅ 已进入【{_get_phase_field_name(next_phase)}】阶段。请在右侧对话框输入「开始」来生成内容。", "phase": next_phase}
-
-    except ValueError:
-        return {"message": "无法确定下一阶段。", "phase": project.current_phase}
-
+# ============== Advance Phase ==============
 
 @router.post("/advance")
 async def advance_phase(
     request: ChatRequest,
     db: Session = Depends(get_db),
-    background_tasks: BackgroundTasks = None,
 ):
     """推进到下一阶段（用户点击确认按钮后调用）"""
     project = db.query(Project).filter(Project.id == request.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    
-    current_idx = project.phase_order.index(project.current_phase)
-    if current_idx >= len(project.phase_order) - 1:
+
+    phase_order = project.phase_order or []
+    if not phase_order:
         return ChatResponseExtended(
-            message_id="", message="已经是最后一个阶段了",
-            phase=project.current_phase, phase_status=project.phase_status,
+            message_id="", message="项目未定义阶段顺序",
+            phase=project.current_phase, phase_status=project.phase_status or {},
             waiting_for_human=False,
         )
-    
+
+    try:
+        current_idx = phase_order.index(project.current_phase)
+    except ValueError:
+        return ChatResponseExtended(
+            message_id="", message="无法确定当前阶段",
+            phase=project.current_phase, phase_status=project.phase_status or {},
+            waiting_for_human=False,
+        )
+
+    if current_idx >= len(phase_order) - 1:
+        return ChatResponseExtended(
+            message_id="", message="已经是最后一个阶段了",
+            phase=project.current_phase, phase_status=project.phase_status or {},
+            waiting_for_human=False,
+        )
+
     prev_phase = project.current_phase
-    next_phase = project.phase_order[current_idx + 1]
-    
-    project.phase_status[prev_phase] = "completed"
+    next_phase = phase_order[current_idx + 1]
+
+    ps = dict(project.phase_status or {})
+    ps[prev_phase] = "completed"
+    ps[next_phase] = "in_progress"
+    project.phase_status = ps
     project.current_phase = next_phase
-    project.phase_status[next_phase] = "in_progress"
     db.commit()
-    
+
+    display_name = _get_phase_field_name(next_phase)
+    msg_content = f"✅ 已进入【{display_name}】阶段。"
+
     enter_msg = ChatMessage(
         id=generate_uuid(),
         project_id=request.project_id,
         role="assistant",
-        content=f"✅ 已进入【{_get_phase_field_name(next_phase)}】阶段。请在右侧对话框输入「开始」来生成内容。",
+        content=msg_content,
         message_metadata={"phase": next_phase},
     )
     db.add(enter_msg)
     db.commit()
-    
     db.refresh(project)
-    
+
     return ChatResponseExtended(
         message_id=enter_msg.id,
-        message=f"✅ 已进入【{_get_phase_field_name(next_phase)}】阶段。请在右侧对话框输入「开始」来生成内容。",
+        message=msg_content,
         phase=next_phase,
-        phase_status=project.phase_status,
+        phase_status=project.phase_status or {},
         waiting_for_human=False,
         project_updated=True,
         is_producing=False,
-    )
-
-
-# ============== Helpers ==============
-
-def _to_message_response(m: ChatMessage) -> ChatMessageResponse:
-    return ChatMessageResponse(
-        id=m.id,
-        role=m.role,
-        content=m.content,
-        original_content=m.original_content or "",
-        is_edited=m.is_edited or False,
-        metadata=m.message_metadata or {},
-        created_at=m.created_at.isoformat() if m.created_at else "",
     )

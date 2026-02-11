@@ -12,7 +12,10 @@ from typing import Optional, Dict, List
 from dataclasses import dataclass, field
 from pydantic import BaseModel, Field as PydanticField
 
-from core.ai_client import ai_client, ChatMessage
+from langchain_core.messages import SystemMessage, HumanMessage
+
+from core.llm import llm, get_chat_model
+from core.config import settings
 from core.models import (
     Project,
     ProjectField,
@@ -83,9 +86,7 @@ async def evaluate_section(
         context += f"\n# 消费者模拟反馈\n{simulation_summary}"
     
     messages = [
-        ChatMessage(
-            role="system",
-            content=f"""{grader_prompt}
+        SystemMessage(content=f"""{grader_prompt}
 
 请评估以下指标：
 {metrics_instruction}
@@ -95,16 +96,12 @@ async def evaluate_section(
     "scores": {{"指标名": 分数, ...}},
     "comments": {{"指标名": "评语", ...}},
     "summary": "板块总结"
-}}"""
-        ),
-        ChatMessage(role="user", content=context),
+}}"""),
+        HumanMessage(content=context),
     ]
     
-    score, _ = await ai_client.generate_structured(
-        messages=messages,
-        response_model=SectionScore,
-        temperature=0.5,
-    )
+    llm_eval = get_chat_model(model=settings.openai_model, temperature=0.5)
+    score = await llm_eval.with_structured_output(SectionScore).ainvoke(messages)
     
     return score
 
@@ -130,9 +127,7 @@ async def generate_suggestions(
     ])
     
     messages = [
-        ChatMessage(
-            role="system",
-            content="""你是一个资深的内容评审专家。基于评估结果，生成具体的、可操作的修改建议。
+        SystemMessage(content="""你是一个资深的内容评审专家。基于评估结果，生成具体的、可操作的修改建议。
 
 要求：
 1. 建议要具体，指出问题和解决方案
@@ -152,26 +147,19 @@ async def generate_suggestions(
     ]
 }"""
         ),
-        ChatMessage(
-            role="user",
-            content=f"""# 项目上下文
+        HumanMessage(content=f"""# 项目上下文
 {project_context}
 
 # 评估结果
 {scores_summary}
 
-请生成修改建议："""
-        ),
+请生成修改建议："""),
     ]
     
     class SuggestionList(BaseModel):
         suggestions: List[Suggestion]
     
-    result, _ = await ai_client.generate_structured(
-        messages=messages,
-        response_model=SuggestionList,
-        temperature=0.7,
-    )
+    result = await llm.with_structured_output(SuggestionList).ainvoke(messages)
     
     return result.suggestions
 
