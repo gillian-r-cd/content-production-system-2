@@ -18,7 +18,12 @@ import { ChannelSelector } from "./channel-selector";
 import { ResearchPanel } from "./research-panel";
 import { EvalPhasePanel } from "./eval-phase-panel";
 import { ProposalSelector } from "./proposal-selector";
-import { FileText, Folder, Settings, ChevronRight } from "lucide-react";
+import { 
+  FileText, Folder, ChevronRight, Check,
+  Play, Square, RefreshCw, Pencil, Trash2,
+  MessageSquarePlus, AlertCircle, Workflow,
+  ShieldCheck, Zap
+} from "lucide-react";
 
 interface ContentPanelProps {
   projectId: string | null;
@@ -51,6 +56,14 @@ export function ContentPanel({
   const [showFieldTemplateModal, setShowFieldTemplateModal] = useState(false);
   const [fieldTemplates, setFieldTemplates] = useState<any[]>([]);
   const autoGenRef = useRef(false); // ref 守卫，防止 stale closure 导致重复启动
+  
+  // Escape 键关闭模板选择弹窗
+  useEffect(() => {
+    if (!showFieldTemplateModal) return;
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") setShowFieldTemplateModal(false); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [showFieldTemplateModal]);
   
   const phaseFields = fields.filter((f) => f.phase === currentPhase);
   const completedFieldIds = useMemo(() => new Set(fields.filter(f => f.status === "completed").map(f => f.id)), [fields]);
@@ -377,7 +390,7 @@ export function ContentPanel({
       // 生成描述文字
       const parts = [];
       if (phaseCount > 0) parts.push(`${phaseCount} 个子组`);
-      if (groupCount > 0) parts.push(`${groupCount} 个分组`);
+      if (groupCount > 0) parts.push(`${groupCount} 个子组`);
       if (fieldCount > 0) parts.push(`${fieldCount} 个内容块`);
       if (otherCount > 0) parts.push(`${otherCount} 个其他`);
       const description = parts.join("、") || "暂无内容";
@@ -391,7 +404,7 @@ export function ContentPanel({
                   ? "bg-purple-600/20 text-purple-400"
                   : "bg-amber-600/20 text-amber-400"
               }`}>
-                {selectedBlock.block_type === "phase" ? "组" : "分组"}
+                {selectedBlock.block_type === "phase" ? "组" : "子组"}
               </span>
               <h1 className="text-xl font-bold text-zinc-100">{selectedBlock.name}</h1>
             </div>
@@ -562,15 +575,15 @@ export function ContentPanel({
                     <div className="flex items-center justify-between">
                       <div>
                         <p className="text-zinc-400 text-sm">
-                          {isPhaseCompleted ? "✅ 当前组已确认" : "当前组内容已完成"}
+                          {isPhaseCompleted ? "当前组已确认" : "当前组内容已完成"}
                         </p>
                         <p className="text-zinc-500 text-xs mt-1">
                           下一组：{PHASE_NAMES[nextPhase] || nextPhase}
                         </p>
                       </div>
                       {isPhaseCompleted ? (
-                        <div className="px-6 py-3 rounded-xl font-medium bg-green-600/20 text-green-400 border border-green-500/30">
-                          ✅ 已确认
+                        <div className="flex items-center gap-2 px-6 py-3 rounded-xl font-medium bg-emerald-600/20 text-emerald-400 border border-emerald-500/30">
+                          <Check className="w-5 h-5" /> 已确认
                         </div>
                       ) : (
                         <button
@@ -584,10 +597,10 @@ export function ContentPanel({
                         >
                           {isAdvancing ? (
                             <span className="flex items-center gap-2">
-                              <span className="animate-spin">⏳</span> 处理中...
+                              处理中...
                             </span>
                           ) : (
-                            <span>✅ 确认，进入下一组</span>
+                            <span className="flex items-center gap-1"><Check className="w-4 h-4" /> 确认，进入下一组</span>
                           )}
                         </button>
                       )}
@@ -644,15 +657,15 @@ export function ContentPanel({
                     <div className="flex items-center justify-between">
                       <div>
                         <p className="text-zinc-400 text-sm">
-                          {isPhaseCompleted ? "✅ 当前组已确认" : "当前组内容已完成"}
+                          {isPhaseCompleted ? "当前组已确认" : "当前组内容已完成"}
                         </p>
                         <p className="text-zinc-500 text-xs mt-1">
                           下一组：{PHASE_NAMES[nextPhase] || nextPhase}
                         </p>
                       </div>
                       {isPhaseCompleted ? (
-                        <div className="px-6 py-3 rounded-xl font-medium bg-green-600/20 text-green-400 border border-green-500/30">
-                          ✅ 已确认
+                        <div className="flex items-center gap-2 px-6 py-3 rounded-xl font-medium bg-emerald-600/20 text-emerald-400 border border-emerald-500/30">
+                          <Check className="w-5 h-5" /> 已确认
                         </div>
                       ) : (
                         <button
@@ -666,10 +679,10 @@ export function ContentPanel({
                         >
                           {isAdvancing ? (
                             <span className="flex items-center gap-2">
-                              <span className="animate-spin">⏳</span> 处理中...
+                              处理中...
                             </span>
                           ) : (
-                            <span>✅ 确认，进入下一组</span>
+                            <span className="flex items-center gap-1"><Check className="w-4 h-4" /> 确认，进入下一组</span>
                           )}
                         </button>
                       )}
@@ -1050,8 +1063,8 @@ export function ContentPanel({
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-zinc-600">{index + 1}</span>
                     <span className={`w-2 h-2 rounded-full shrink-0 ${
-                      field.status === "completed" ? "bg-green-500" :
-                      field.status === "generating" ? "bg-yellow-500 animate-pulse" :
+                      field.status === "completed" ? "bg-emerald-500" :
+                      field.status === "generating" ? "bg-amber-500 animate-pulse" :
                       "bg-zinc-600"
                     }`} />
                     <span className="text-sm text-zinc-300 truncate flex-1">
@@ -1089,16 +1102,16 @@ export function ContentPanel({
           <div className="mt-6 pt-4 border-t border-surface-3">
             <div className="text-xs text-zinc-600 space-y-1">
               <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-green-500" />
+                <span className="w-2 h-2 rounded-full bg-emerald-500" />
                 <span>已完成</span>
               </div>
               <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-yellow-500" />
+                <span className="w-2 h-2 rounded-full bg-amber-500" />
                 <span>生成中</span>
               </div>
               <div className="flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-zinc-600" />
-                <span>待生成</span>
+                <span>待处理</span>
               </div>
             </div>
           </div>
@@ -1149,15 +1162,15 @@ export function ContentPanel({
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-zinc-400 text-sm">
-                  {isPhaseCompleted ? "✅ 当前组已确认" : "当前组内容已完成"}
+                  {isPhaseCompleted ? "当前组已确认" : "当前组内容已完成"}
                 </p>
                 <p className="text-zinc-500 text-xs mt-1">
                   下一组：{PHASE_NAMES[nextPhase] || nextPhase}
                 </p>
               </div>
               {isPhaseCompleted ? (
-                <div className="px-6 py-3 rounded-xl font-medium bg-green-600/20 text-green-400 border border-green-500/30">
-                  ✅ 已确认
+                <div className="flex items-center gap-2 px-6 py-3 rounded-xl font-medium bg-emerald-600/20 text-emerald-400 border border-emerald-500/30">
+                  <Check className="w-5 h-5" /> 已确认
                 </div>
               ) : (
                 <button
@@ -1171,10 +1184,10 @@ export function ContentPanel({
                 >
                   {isAdvancing ? (
                     <span className="flex items-center gap-2">
-                      <span className="animate-spin">⏳</span> 处理中...
+                      处理中...
                     </span>
                   ) : (
-                    <span>✅ 确认，进入下一组</span>
+                    <span className="flex items-center gap-1"><Check className="w-4 h-4" /> 确认，进入下一组</span>
                   )}
                 </button>
               )}
@@ -1246,6 +1259,19 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
   const [content, setContent] = useState(field.content);
   const [showDependencyModal, setShowDependencyModal] = useState(false);
   const [showConstraintsModal, setShowConstraintsModal] = useState(false);
+  
+  // Escape 键关闭弹窗
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (showDependencyModal) setShowDependencyModal(false);
+        else if (showConstraintsModal) setShowConstraintsModal(false);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [showDependencyModal, showConstraintsModal]);
+  
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatingContent, setGeneratingContent] = useState("");
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -1477,18 +1503,18 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
             <div className="flex items-center gap-2 mt-1">
               <span className={`text-xs px-2 py-0.5 rounded ${
                 field.status === "completed" 
-                  ? "bg-green-600/20 text-green-400"
+                  ? "bg-emerald-600/20 text-emerald-400"
                   : field.status === "generating"
-                  ? "bg-yellow-600/20 text-yellow-400"
+                  ? "bg-amber-600/20 text-amber-400"
                   : "bg-zinc-600/20 text-zinc-400"
               }`}>
-                {field.status === "completed" ? "已生成" 
-                  : field.status === "generating" ? "生成中..." 
-                  : "待生成"}
+                {field.status === "completed" ? "已完成" 
+                  : field.status === "generating" ? "生成中" 
+                  : "待处理"}
               </span>
               {hasPreQuestions && hasUnansweredQuestions && (
                 <span className="text-xs px-2 py-0.5 rounded bg-amber-600/20 text-amber-400">
-                  📝 有未回答的提问
+                  有未回答的提问
                 </span>
               )}
             </div>
@@ -1502,7 +1528,7 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
                 className="flex items-center gap-1.5 px-3 py-1 text-sm bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
                 title="停止生成"
               >
-                <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="3" width="10" height="10" rx="1" /></svg>
+                <Square className="w-3.5 h-3.5" />
                 停止生成
               </button>
             )}
@@ -1519,7 +1545,7 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
                 }`}
                 title={canGenerate ? "生成内容" : `依赖未满足: ${unmetDependencies.map(f => f.name).join(", ")}`}
               >
-                生成
+                <Play className="w-3.5 h-3.5 inline mr-1" />生成
               </button>
             )}
             
@@ -1530,7 +1556,7 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
                 className="px-3 py-1 text-sm bg-amber-600/20 hover:bg-amber-600/30 text-amber-400 border border-amber-500/30 rounded-lg transition-colors"
                 title="重新生成内容（会覆盖现有内容）"
               >
-                🔄 重新生成
+                <RefreshCw className="w-3.5 h-3.5 inline mr-1" />重新生成
               </button>
             )}
 
@@ -1564,19 +1590,19 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
             ) : (
               <button
                 onClick={() => setIsEditing(true)}
-                className="px-3 py-1 text-sm bg-surface-3 hover:bg-surface-4 rounded-lg transition-colors"
+                className="flex items-center gap-1 px-3 py-1 text-sm bg-surface-3 hover:bg-surface-4 rounded-lg transition-colors"
               >
-                编辑
+                <Pencil className="w-3 h-3" />编辑
               </button>
             )}
             
             {/* 删除按钮 */}
             <button
               onClick={handleDelete}
-              className="px-3 py-1 text-sm bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/30 rounded-lg transition-colors"
+              className="flex items-center gap-1 px-3 py-1 text-sm bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/30 rounded-lg transition-colors"
               title="删除此内容块"
             >
-              🗑️
+              <Trash2 className="w-3 h-3" />
             </button>
           </div>
         </div>
@@ -1588,14 +1614,14 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
             onClick={() => setShowDependencyModal(true)}
             className="text-zinc-500 hover:text-zinc-300 flex items-center gap-1"
           >
-            <span>📎 依赖:</span>
+            <Workflow className="w-3.5 h-3.5 inline" /><span> 依赖:</span>
             {dependencyFields.length > 0 ? (
               dependencyFields.map((df) => (
                 <span
                   key={df.id}
                   className={`px-1.5 py-0.5 rounded ${
                     df.status === "completed"
-                      ? "bg-green-600/20 text-green-400"
+                      ? "bg-emerald-600/20 text-emerald-400"
                       : "bg-red-600/20 text-red-400"
                   }`}
                 >
@@ -1609,7 +1635,7 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
           
           {/* 自动生成开关 */}
           <label className="flex items-center gap-1.5 cursor-pointer select-none" title={field.need_review ? "当前需手动点击生成" : "依赖完成后自动生成"}>
-            <span className="text-zinc-500">⚡</span>
+            {field.need_review === false ? <Zap className="w-3.5 h-3.5 text-emerald-400" /> : <ShieldCheck className="w-3.5 h-3.5 text-zinc-500" />}
             <span className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${field.need_review === false ? "bg-brand-600" : "bg-zinc-600"}`}>
               <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${field.need_review === false ? "translate-x-3.5" : "translate-x-0.5"}`} />
             </span>
@@ -1644,14 +1670,14 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
             }`}>
               {field.ai_prompt && field.ai_prompt !== "请在这里编写生成提示词..." ? (
                 <>
-                  <span>✨</span>
+                  <MessageSquarePlus className="w-3.5 h-3.5" />
                   <span className="px-1.5 py-0.5 bg-brand-600/20 rounded max-w-[150px] truncate" title={field.ai_prompt}>
                     {field.ai_prompt.slice(0, 20)}{field.ai_prompt.length > 20 ? "..." : ""}
                   </span>
                 </>
               ) : (
                 <>
-                  <span>⚠️</span>
+                  <AlertCircle className="w-3.5 h-3.5" />
                   <span className="px-1.5 py-0.5 bg-red-600/20 rounded">未设置提示词</span>
                 </>
               )}
@@ -1679,7 +1705,6 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
         <div className="mx-4 mb-4 p-4 bg-surface-1 border border-amber-500/30 rounded-lg">
           <div className="flex items-center justify-between mb-3">
             <h4 className="text-sm font-medium text-amber-400 flex items-center gap-2">
-              <span>📝</span>
               生成前请先回答以下问题
             </h4>
             <div className="flex items-center gap-2">
@@ -1731,7 +1756,7 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
               onClick={handleGenerate}
               className="px-4 py-1.5 text-sm bg-brand-600 hover:bg-brand-700 text-white rounded-lg transition-colors"
             >
-              ✅ 确认并生成
+              确认并生成
             </button>
           </div>
         </div>
@@ -1741,7 +1766,6 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
       {hasPreQuestions && !showPreQuestions && !field.content && (
         <div className="mx-4 mb-2 p-3 bg-amber-900/20 border border-amber-500/30 rounded-lg">
           <div className="flex items-center gap-2 text-sm text-amber-400">
-            <span>📝</span>
             <span>此内容块有 {field.pre_questions.length} 个预设问题需要回答</span>
           </div>
           <ul className="mt-2 space-y-1 text-xs text-zinc-400">
@@ -1761,12 +1785,12 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
           <div className="bg-surface-1 border border-surface-3 rounded-lg p-3">
             <div className="text-xs text-brand-400 mb-2">正在生成...</div>
             <div className="whitespace-pre-wrap text-zinc-300 animate-pulse">
-              {generatingContent || "⏳ 准备中..."}
+              {generatingContent || "准备中..."}
             </div>
           </div>
         ) : field.status === "generating" ? (
           <div className="bg-surface-1 border border-surface-3 rounded-lg p-3">
-            <div className="text-xs text-brand-400 mb-2 animate-pulse">⏳ 自动生成中...</div>
+            <div className="text-xs text-brand-400 mb-2 animate-pulse">自动生成中...</div>
             <div className="text-sm text-zinc-500">内容正在后台生成，完成后将自动显示</div>
           </div>
         ) : isEditing ? (
@@ -1907,7 +1931,7 @@ function DependencyModal({ field, allFields, onClose, onSave }: DependencyModalP
               </div>
               <span
                 className={`w-2 h-2 rounded-full ${
-                  f.status === "completed" ? "bg-green-500" : "bg-zinc-600"
+                  f.status === "completed" ? "bg-emerald-500" : "bg-zinc-600"
                 }`}
               />
             </label>
@@ -2034,7 +2058,7 @@ function ConstraintsModal({ field, onClose, onSave }: ConstraintsModalProps) {
           {/* ⭐ 核心：AI 生成提示词 */}
           <div className="bg-brand-600/10 border border-brand-500/30 rounded-lg p-3">
             <label className="block text-sm text-brand-400 mb-1.5 font-medium">
-              ✨ 生成提示词（最重要！）
+              生成提示词（最重要！）
             </label>
             <textarea
               value={aiPrompt}
@@ -2084,7 +2108,7 @@ function ConstraintsModal({ field, onClose, onSave }: ConstraintsModalProps) {
           {/* 最大字数 */}
           <div>
             <label className="block text-sm text-zinc-400 mb-1.5">
-              📏 最大字数
+              最大字数
             </label>
             <input
               type="number"

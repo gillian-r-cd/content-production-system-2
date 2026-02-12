@@ -680,6 +680,96 @@ def delete_block(
     }
 
 
+@router.post("/{block_id}/duplicate", response_model=BlockResponse)
+def duplicate_block(
+    block_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    深拷贝内容块（含所有子块）
+    
+    - 递归复制目标块及其全部后代
+    - 为所有新块生成新 ID
+    - 内部 depends_on 引用自动重映射到新 ID
+    - 副本插入到原块同级的下一个位置
+    """
+    block = db.query(ContentBlock).filter(
+        ContentBlock.id == block_id,
+        ContentBlock.deleted_at == None,
+    ).first()
+    if not block:
+        raise HTTPException(status_code=404, detail="内容块不存在")
+    
+    # 收集原始块及所有后代，建立 old_id → new_id 映射
+    id_mapping: Dict[str, str] = {}
+    
+    def _collect_tree(node: ContentBlock) -> list:
+        """递归收集节点及所有后代（BFS/DFS 均可，这里用 DFS）"""
+        nodes = [node]
+        children = db.query(ContentBlock).filter(
+            ContentBlock.parent_id == node.id,
+            ContentBlock.deleted_at == None,
+        ).order_by(ContentBlock.order_index).all()
+        for child in children:
+            nodes.extend(_collect_tree(child))
+        return nodes
+    
+    all_nodes = _collect_tree(block)
+    
+    # 为所有节点生成新 ID
+    for node in all_nodes:
+        id_mapping[node.id] = generate_uuid()
+    
+    # 创建副本
+    new_blocks = []
+    for node in all_nodes:
+        new_id = id_mapping[node.id]
+        
+        # 重映射 parent_id
+        if node.id == block.id:
+            # 根节点：parent 不变（和原块同级）
+            new_parent_id = block.parent_id
+        else:
+            new_parent_id = id_mapping.get(node.parent_id, node.parent_id)
+        
+        # 重映射 depends_on 中的内部引用
+        new_depends_on = []
+        for dep_id in (node.depends_on or []):
+            new_depends_on.append(id_mapping.get(dep_id, dep_id))
+        
+        new_block = ContentBlock(
+            id=new_id,
+            project_id=node.project_id,
+            parent_id=new_parent_id,
+            name=f"{node.name} (副本)" if node.id == block.id else node.name,
+            block_type=node.block_type,
+            depth=node.depth,
+            order_index=node.order_index if node.id != block.id else (block.order_index + 1),
+            content=node.content or "",
+            status="pending",  # 副本从 pending 开始
+            ai_prompt=node.ai_prompt or "",
+            constraints=node.constraints.copy() if node.constraints else {},
+            pre_questions=node.pre_questions.copy() if node.pre_questions else [],
+            pre_answers=node.pre_answers.copy() if node.pre_answers else {},
+            depends_on=new_depends_on,
+            special_handler=node.special_handler,
+            need_review=node.need_review,
+            is_collapsed=node.is_collapsed,
+        )
+        new_blocks.append(new_block)
+        db.add(new_block)
+    
+    # 重新排序同级（根副本插入后需要调整）
+    _reorder_siblings(block.project_id, block.parent_id, db)
+    
+    db.commit()
+    
+    # 返回根副本
+    root_copy = new_blocks[0]
+    db.refresh(root_copy)
+    return _block_to_response(root_copy, include_children=True)
+
+
 @router.post("/{block_id}/move", response_model=BlockResponse)
 def move_block(
     block_id: str,

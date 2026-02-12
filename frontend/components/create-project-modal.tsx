@@ -31,6 +31,14 @@ export function CreateProjectModal({
   onClose,
   onCreated,
 }: CreateProjectModalProps) {
+  // Escape 键关闭
+  useEffect(() => {
+    if (!isOpen) return;
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [isOpen, onClose]);
+  
   // 步骤状态
   const [step, setStep] = useState<Step>("info");
   

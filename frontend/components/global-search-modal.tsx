@@ -28,6 +28,14 @@ export function GlobalSearchModal({
   const [replaceText, setReplaceText] = useState("");
   const [showReplace, setShowReplace] = useState(false);
   const [caseSensitive, setCaseSensitive] = useState(false);
+  
+  // Escape 键关闭
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [open, onClose]);
   const [results, setResults] = useState<SearchResult[]>([]);
   const [totalMatches, setTotalMatches] = useState(0);
   const [isSearching, setIsSearching] = useState(false);

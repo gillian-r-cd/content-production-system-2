@@ -34,6 +34,13 @@ export function VersionHistoryPanel({ entityId, entityName, onRollback, onClose 
   const [expandedVersion, setExpandedVersion] = useState<string | null>(null);
   const [rollingBack, setRollingBack] = useState<string | null>(null);
 
+  // Escape 键关闭
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
   useEffect(() => {
     loadVersions();
   }, [entityId]);

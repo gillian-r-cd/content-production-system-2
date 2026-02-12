@@ -18,12 +18,16 @@ import {
   Folder, 
   ChevronRight,
   ChevronDown, 
-  Sparkles, 
+  Play,
+  Square,
+  MessageSquarePlus,
+  Workflow,
+  SlidersHorizontal,
+  ShieldCheck,
+  Zap,
+  Pencil,
   Save, 
-  Edit2, 
   Trash2,
-  Settings,
-  Link,
   RefreshCw,
   X,
   Copy,
@@ -52,6 +56,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
   const [showPromptModal, setShowPromptModal] = useState(false);
   const [showConstraintsModal, setShowConstraintsModal] = useState(false);
   const [showDependencyModal, setShowDependencyModal] = useState(false);
+  
   
   // 编辑状态
   const [editedPrompt, setEditedPrompt] = useState(block.ai_prompt || "");
@@ -217,6 +222,20 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
   // 版本警告状态
   const [versionWarning, setVersionWarning] = useState<string | null>(null);
   const [affectedBlocks, setAffectedBlocks] = useState<string[] | null>(null);
+
+  // Escape 键关闭弹窗
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (showPromptModal) setShowPromptModal(false);
+        else if (showConstraintsModal) setShowConstraintsModal(false);
+        else if (showDependencyModal) setShowDependencyModal(false);
+        else if (versionWarning) setVersionWarning(null);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [showPromptModal, showConstraintsModal, showDependencyModal, versionWarning]);
 
   // 保存内容
   const handleSaveContent = async () => {
@@ -510,10 +529,12 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
             <span className={`px-2 py-0.5 text-xs rounded ${
               block.status === "completed" ? "bg-emerald-600/20 text-emerald-400" :
               block.status === "in_progress" ? "bg-amber-600/20 text-amber-400" :
+              block.status === "failed" ? "bg-red-600/20 text-red-400" :
               "bg-zinc-700 text-zinc-400"
             }`}>
               {block.status === "completed" ? "已完成" :
-               block.status === "in_progress" ? "进行中" : "待处理"}
+               block.status === "in_progress" ? "生成中" :
+               block.status === "failed" ? "失败" : "待处理"}
             </span>
           </div>
           
@@ -526,7 +547,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
                 className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-red-600 hover:bg-red-700 text-white transition-colors"
                 title="停止生成"
               >
-                <svg className="w-4 h-4" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="3" width="10" height="10" rx="1" /></svg>
+                <Square className="w-4 h-4" />
                 停止生成
               </button>
             )}
@@ -542,7 +563,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
                 }`}
                 title={!canGenerate ? `依赖内容为空: ${unmetDependencies.map(d => d.name).join(", ")}` : "生成内容"}
               >
-                <Sparkles className="w-4 h-4" />
+                <Play className="w-4 h-4" />
                 生成
               </button>
             )}
@@ -550,7 +571,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
             {/* 依赖内容为空警告 */}
             {!canGenerate && !isGenerating && (
               <span className="text-xs text-amber-500" title={`依赖内容为空: ${unmetDependencies.map(d => d.name).join(", ")}`}>
-                ⚠️ {unmetDependencies.length}个依赖内容为空
+                {unmetDependencies.length}个依赖内容为空
               </span>
             )}
             
@@ -568,7 +589,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
                 }}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition-colors"
               >
-                ✅ 确认
+                <Check className="w-4 h-4" /> 确认
               </button>
             )}
             
@@ -618,8 +639,8 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
                 : "border-red-500/30 bg-red-600/10 text-red-400 hover:bg-red-600/20"
             }`}
           >
-            <Sparkles className="w-3.5 h-3.5" />
-            {block.ai_prompt ? "已配置提示词" : "⚠️ 未配置提示词"}
+            <MessageSquarePlus className="w-3.5 h-3.5" />
+            {block.ai_prompt ? "已配置提示词" : "未配置提示词"}
           </button>
           
           {/* 约束配置 */}
@@ -627,7 +648,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
             onClick={() => setShowConstraintsModal(true)}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs border border-surface-4 bg-surface-2 text-zinc-400 hover:bg-surface-3 rounded-lg transition-colors"
           >
-            <Settings className="w-3.5 h-3.5" />
+            <SlidersHorizontal className="w-3.5 h-3.5" />
             约束配置
             {block.constraints?.max_length && (
               <span className="ml-1 px-1.5 py-0.5 bg-surface-3 rounded text-zinc-500">
@@ -641,14 +662,14 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
             onClick={() => setShowDependencyModal(true)}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs border border-surface-4 bg-surface-2 text-zinc-400 hover:bg-surface-3 rounded-lg transition-colors"
           >
-            <Link className="w-3.5 h-3.5" />
+            <Workflow className="w-3.5 h-3.5" />
             {dependencyBlocks.length > 0 ? (
               <span className="flex items-center gap-1">
                 依赖:
                 {dependencyBlocks.map(dep => (
                   <span key={dep.id} className={`px-1.5 py-0.5 rounded ${
                     (dep.content && dep.content.trim() !== "")
-                      ? "bg-green-600/20 text-green-400" 
+                      ? "bg-emerald-600/20 text-emerald-400" 
                       : "bg-red-600/20 text-red-400"
                   }`}>
                     {dep.name}
@@ -661,11 +682,12 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
           </button>
           
           {/* need_review 状态 */}
-          <span className={`px-2 py-1 text-xs rounded ${
+          <span className={`flex items-center gap-1 px-2 py-1 text-xs rounded ${
             block.need_review 
               ? "bg-amber-600/10 text-amber-400"
-              : "bg-green-600/10 text-green-400"
+              : "bg-emerald-600/10 text-emerald-400"
           }`}>
+            {block.need_review ? <ShieldCheck className="w-3.5 h-3.5" /> : <Zap className="w-3.5 h-3.5" />}
             {block.need_review ? "需要人工确认" : "自动执行"}
           </span>
         </div>
@@ -683,7 +705,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
                 ) : (
                   <ChevronRight className="w-4 h-4 text-amber-400" />
                 )}
-                <span className="text-amber-400 text-sm font-medium">📝 生成前提问</span>
+                <span className="text-amber-400 text-sm font-medium">生成前提问</span>
                 <span className="text-xs text-zinc-500">
                   ({Object.values(preAnswers).filter(v => v && v.trim()).length}/{block.pre_questions?.length || 0} 已回答)
                 </span>
@@ -796,7 +818,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
                       onClick={(e) => { e.stopPropagation(); setIsEditing(true); }}
                       className="flex items-center gap-1 px-2 py-1 text-xs bg-surface-2 border border-surface-3 text-zinc-400 hover:text-zinc-200 rounded"
                     >
-                      <Edit2 className="w-3 h-3" />
+                      <Pencil className="w-3 h-3" />
                       编辑
                     </button>
                   </div>
@@ -806,7 +828,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
                 </div>
               ) : (
                 <div className="flex flex-col items-center justify-center h-[200px] text-zinc-500 border-2 border-dashed border-surface-3 rounded-lg">
-                  <Edit2 className="w-8 h-8 mb-2 opacity-50" />
+                  <Pencil className="w-8 h-8 mb-2 opacity-50" />
                   <p>点击此处编辑内容</p>
                   <p className="text-xs mt-1">或使用「生成」按钮让 AI 生成</p>
                 </div>
@@ -1040,7 +1062,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
                                 </span>
                                 <span className={`px-1.5 py-0.5 text-xs rounded ${
                                   (dep.content && dep.content.trim() !== "")
-                                    ? "bg-green-600/20 text-green-400" 
+                                    ? "bg-emerald-600/20 text-emerald-400" 
                                     : "bg-zinc-700 text-zinc-400"
                                 }`}>
                                   {(dep.content && dep.content.trim() !== "") ? "已完成" : "未完成"}
@@ -1057,7 +1079,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
                   {fieldDependencies.length > 0 && (
                     <div>
                       <h4 className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2 flex items-center gap-1">
-                        📝 内容块
+                        内容块
                       </h4>
                       <div className="space-y-2">
                         {fieldDependencies.map(dep => (
@@ -1080,7 +1102,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
                                 <span className="text-sm text-zinc-200">{dep.name}</span>
                                 <span className={`px-1.5 py-0.5 text-xs rounded ${
                                   (dep.content && dep.content.trim() !== "")
-                                    ? "bg-green-600/20 text-green-400" 
+                                    ? "bg-emerald-600/20 text-emerald-400" 
                                     : "bg-zinc-700 text-zinc-400"
                                 }`}>
                                   {(dep.content && dep.content.trim() !== "") ? "已完成" : "未完成"}
@@ -1126,7 +1148,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
           <div className="bg-surface-1 border border-surface-3 rounded-xl shadow-2xl max-w-md w-full mx-4">
             <div className="px-5 py-4 border-b border-surface-3">
               <h3 className="text-base font-semibold text-amber-400 flex items-center gap-2">
-                ⚠️ 上游内容变更提醒
+                上游内容变更提醒
               </h3>
             </div>
             <div className="p-5 space-y-3">

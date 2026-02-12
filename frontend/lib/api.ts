@@ -85,6 +85,7 @@ export interface ChatMessageRecord {
   metadata: {
     phase?: string;
     tool_used?: string;
+    tools_used?: string[];
     skill_used?: string;
     references?: string[];
     is_retry?: boolean;
@@ -689,6 +690,12 @@ export const blockAPI = {
   delete: (blockId: string) =>
     fetchAPI<{ message: string }>(`/api/blocks/${blockId}`, {
       method: "DELETE",
+    }),
+
+  // 深拷贝内容块（含所有子块）
+  duplicate: (blockId: string) =>
+    fetchAPI<ContentBlock>(`/api/blocks/${blockId}/duplicate`, {
+      method: "POST",
     }),
 
   // 移动内容块

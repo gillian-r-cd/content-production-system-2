@@ -11,7 +11,7 @@ import { fieldAPI, settingsAPI } from "@/lib/api";
 import {
   Check, Send, ChevronDown, ChevronUp, FileText, ArrowRight,
   Plus, Trash2, X, Save, PackagePlus,
-  Copy, ArrowUp, ArrowDown, Settings2, BookTemplate,
+  Copy, ArrowUp, ArrowDown, Settings2, BookTemplate, ShieldCheck,
 } from "lucide-react";
 
 // ============== Types ==============
@@ -135,7 +135,7 @@ function FieldEditor({
             />
           )}
           {field.need_review && (
-            <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/10 text-amber-400 rounded shrink-0">需确认</span>
+            <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/10 text-amber-400 rounded shrink-0 flex items-center gap-0.5"><ShieldCheck className="w-3 h-3" />需确认</span>
           )}
           <span className="text-[10px] text-zinc-600 shrink-0">{field.field_type}</span>
         </div>

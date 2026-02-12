@@ -29,6 +29,18 @@ export function SimulationPanel({
   const [expandedSimId, setExpandedSimId] = useState<string | null>(null);
   const [detailSimId, setDetailSimId] = useState<string | null>(null);
   const [runningSimIds, setRunningSimIds] = useState<Set<string>>(new Set());
+  
+  // Escape 键关闭弹窗
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (showCreateModal) setShowCreateModal(false);
+        else if (detailSimId) setDetailSimId(null);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [showCreateModal, detailSimId]);
 
   const loadData = useCallback(async (isPolling = false) => {
     try {

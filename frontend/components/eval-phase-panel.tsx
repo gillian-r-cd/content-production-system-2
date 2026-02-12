@@ -9,7 +9,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { blockAPI } from "@/lib/api";
 import type { Field, ContentBlock } from "@/lib/api";
 import { EvalTaskConfig, EvalReportPanel } from "./eval-field-editors";
-import { Settings, BarChart3, Loader2 } from "lucide-react";
+import { SlidersHorizontal, BarChart3, Loader2 } from "lucide-react";
 
 interface EvalPhasePanelProps {
   projectId: string | null;
@@ -115,7 +115,7 @@ export function EvalPhasePanel({ projectId, fields, onFieldsChange }: EvalPhaseP
                 : "bg-surface-2 text-zinc-400 hover:text-zinc-200 border border-transparent"
             }`}
           >
-            <Settings className="w-4 h-4" />
+            <SlidersHorizontal className="w-4 h-4" />
             评估配置
           </button>
           <button

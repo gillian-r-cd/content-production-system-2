@@ -14,9 +14,9 @@ import { evalAPI, blockAPI, graderAPI, settingsAPI, fieldAPI } from "@/lib/api";
 import { sendNotification } from "@/lib/utils";
 import type { ContentBlock, EvalConfig, LLMCall, GraderData } from "@/lib/api";
 import {
-  Users, Plus, Trash2, Play, Settings, ChevronDown, ChevronRight,
-  Eye, Save, RefreshCw, Sparkles, BarChart3, FileText, MessageSquare,
-  AlertTriangle, CheckCircle, XCircle, Clock, Zap, Download, Edit2,
+  Users, Plus, Trash2, Play, SlidersHorizontal, ChevronDown, ChevronRight,
+  Eye, Save, RefreshCw, BarChart3, FileText, MessageSquare,
+  AlertTriangle, CheckCircle, XCircle, Clock, Zap, Download, Pencil,
 } from "lucide-react";
 
 
@@ -218,7 +218,7 @@ export function EvalPersonaSetup({ block, projectId, onUpdate }: EvalFieldProps)
                   <button onClick={() => setEditingIdx(editingIdx === idx ? null : idx)}
                     className="p-2 rounded-lg text-zinc-400 hover:text-brand-400 hover:bg-surface-3 transition-colors"
                     title={editingIdx === idx ? "收起" : "编辑"}>
-                    {editingIdx === idx ? <ChevronDown className="w-4 h-4" /> : <Edit2 className="w-4 h-4" />}
+                    {editingIdx === idx ? <ChevronDown className="w-4 h-4" /> : <Pencil className="w-4 h-4" />}
                   </button>
                   <button onClick={() => removePersona(idx)}
                     className="p-2 rounded-lg text-zinc-400 hover:text-red-400 hover:bg-red-500/10 transition-colors"
@@ -555,7 +555,7 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold text-zinc-100 flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center">
-            <Settings className="w-4.5 h-4.5 text-purple-400" />
+            <SlidersHorizontal className="w-4.5 h-4.5 text-purple-400" />
           </div>
           评估试验配置
           <span className="text-sm font-normal text-zinc-500 ml-2">

@@ -13,6 +13,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import { settingsAPI } from "@/lib/api";
+import { Square } from "lucide-react";
 
 // 统一的可引用项（兼容 Field 和 ContentBlock）
 interface MentionItem {
@@ -940,7 +941,7 @@ export function AgentPanel({
                 className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg transition-colors text-white flex items-center gap-1.5"
                 title="停止生成"
               >
-                <svg className="w-4 h-4" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="3" width="10" height="10" rx="1" /></svg>
+                <Square className="w-4 h-4" />
                 停止
               </button>
             ) : (

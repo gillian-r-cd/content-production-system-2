@@ -13,19 +13,21 @@ import { sendNotification } from "@/lib/utils";
 import type { ContentBlock } from "@/lib/api";
 import { VersionHistoryButton } from "./version-history";
 import { 
-  Sparkles, 
+  Play,
+  Square,
+  MessageSquarePlus,
+  Workflow,
+  SlidersHorizontal,
+  ShieldCheck,
+  Zap,
+  Pencil,
   Save, 
-  Edit2, 
   Trash2,
-  Settings,
-  Link,
   RefreshCw,
   ChevronDown,
   ChevronUp,
   ChevronRight,
   X,
-  AlertTriangle,
-  CheckCircle2,
   Folder,
   FolderOpen,
   FileText,
@@ -68,6 +70,19 @@ export function ContentBlockCard({
   const [showPromptModal, setShowPromptModal] = useState(false);
   const [showConstraintsModal, setShowConstraintsModal] = useState(false);
   const [showDependencyModal, setShowDependencyModal] = useState(false);
+  
+  // Escape 键关闭弹窗
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (showPromptModal) setShowPromptModal(false);
+        else if (showConstraintsModal) setShowConstraintsModal(false);
+        else if (showDependencyModal) setShowDependencyModal(false);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [showPromptModal, showConstraintsModal, showDependencyModal]);
   
   // 编辑状态
   const [editedPrompt, setEditedPrompt] = useState(block.ai_prompt || "");
@@ -432,7 +447,7 @@ export function ContentBlockCard({
                   ? "bg-purple-600/20 text-purple-400"
                   : "bg-amber-600/20 text-amber-400"
               }`}>
-                {block.block_type === "phase" ? "子组" : "分组"}
+                子组
               </span>
               
               {/* 子节点数量 */}
@@ -451,7 +466,7 @@ export function ContentBlockCard({
               }`}>
                 {block.status === "completed" ? "已完成" :
                  block.status === "in_progress" ? "生成中" :
-                 block.status === "failed" ? "生成失败" : "待处理"}
+                 block.status === "failed" ? "失败" : "待处理"}
               </span>
             </div>
             
@@ -533,7 +548,7 @@ export function ContentBlockCard({
                 "bg-zinc-700 text-zinc-400"
               }`}>
                 {block.status === "completed" ? "已完成" :
-                 block.status === "in_progress" ? "进行中" :
+                 block.status === "in_progress" ? "生成中" :
                  block.status === "failed" ? "失败" : "待处理"}
               </span>
             </div>
@@ -620,7 +635,7 @@ export function ContentBlockCard({
               }`}>
                 {block.status === "completed" ? "已完成" :
                  block.status === "in_progress" ? "生成中" :
-                 block.status === "failed" ? "生成失败" : "待处理"}
+                 block.status === "failed" ? "失败" : "待处理"}
               </span>
           </div>
           
@@ -637,9 +652,9 @@ export function ContentBlockCard({
                   ? "text-brand-400 hover:bg-brand-600/20" 
                   : "text-red-400 hover:bg-red-600/20"
               }`}
-              title={block.ai_prompt ? "查看/编辑提示词" : "⚠️ 未配置提示词"}
+              title={block.ai_prompt ? "查看/编辑提示词" : "未配置提示词"}
             >
-              <Sparkles className="w-4 h-4" />
+              <MessageSquarePlus className="w-4 h-4" />
             </button>
             
             {/* 依赖状态 */}
@@ -657,7 +672,7 @@ export function ContentBlockCard({
                 ? `依赖: ${dependencyBlocks.map(d => d.name).join(", ")}` 
                 : "无依赖（点击配置）"}
             >
-              <Link className="w-4 h-4" />
+              <Workflow className="w-4 h-4" />
             </button>
             
             {/* 约束配置 */}
@@ -669,7 +684,7 @@ export function ContentBlockCard({
               className="p-1.5 text-zinc-500 hover:bg-surface-3 rounded transition-colors"
               title="约束配置"
             >
-              <Settings className="w-4 h-4" />
+              <SlidersHorizontal className="w-4 h-4" />
             </button>
             
             {/* 需要审核标记 */}
@@ -681,11 +696,11 @@ export function ContentBlockCard({
               className={`p-1.5 rounded transition-colors ${
                 block.need_review 
                   ? "text-amber-400 hover:bg-amber-600/20" 
-                  : "text-green-400 hover:bg-green-600/20"
+                  : "text-emerald-400 hover:bg-emerald-600/20"
               }`}
               title={block.need_review ? "需要人工确认（点击切换）" : "自动执行（点击切换）"}
             >
-              {block.need_review ? <AlertTriangle className="w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />}
+              {block.need_review ? <ShieldCheck className="w-4 h-4" /> : <Zap className="w-4 h-4" />}
             </button>
             
             {/* 生成按钮 */}
@@ -706,7 +721,7 @@ export function ContentBlockCard({
                     : block.status === "completed" ? "重新生成" : "生成内容"
                 }
               >
-                {block.status === "completed" ? <RefreshCw className="w-4 h-4" /> : <Sparkles className="w-4 h-4" />}
+                {block.status === "completed" ? <RefreshCw className="w-4 h-4" /> : <Play className="w-4 h-4" />}
               </button>
             )}
             
@@ -716,7 +731,7 @@ export function ContentBlockCard({
                 className="flex items-center gap-1 px-2 py-1 text-xs bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/30 rounded transition-colors"
                 title="停止生成"
               >
-                <svg className="w-3 h-3" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="3" width="10" height="10" rx="1" /></svg>
+                <Square className="w-3 h-3" />
                 停止
               </button>
             )}
@@ -753,7 +768,7 @@ export function ContentBlockCard({
           {/* 依赖数量 */}
           {dependencyBlocks.length > 0 && (
             <span className="flex items-center gap-1">
-              📎 依赖 {dependencyBlocks.length} 项
+              <Workflow className="w-3 h-3 inline" /> 依赖 {dependencyBlocks.length} 项
               {dependencyBlocks.some(d => !d.content || d.content.trim() === "") && (
                 <span className="text-red-400">（未完成）</span>
               )}
@@ -762,12 +777,12 @@ export function ContentBlockCard({
           
           {/* 约束概览 */}
           {block.constraints?.max_length && (
-            <span>📏 ≤{block.constraints.max_length}字</span>
+            <span>≤{block.constraints.max_length}字</span>
           )}
           
           {/* 需要审核 */}
           {block.need_review && (
-            <span className="text-amber-400">⚠️ 需确认</span>
+            <span className="text-amber-400 flex items-center gap-1"><ShieldCheck className="w-3 h-3" /> 需确认</span>
           )}
         </div>
       </div>
@@ -779,7 +794,7 @@ export function ContentBlockCard({
           {hasPreQuestions && (
             <div className="p-4 bg-amber-900/10 border-b border-amber-600/20">
               <div className="flex items-center justify-between mb-3">
-                <span className="text-amber-400 text-sm font-medium">📝 生成前请先回答以下问题</span>
+                <span className="text-amber-400 text-sm font-medium">生成前请先回答以下问题</span>
                 <div className="flex items-center gap-2">
                   {preAnswersSaved && (
                     <span className="text-xs text-green-400">✓ 已保存</span>
@@ -884,7 +899,7 @@ export function ContentBlockCard({
                         onClick={(e) => { e.stopPropagation(); setIsEditing(true); }}
                         className="flex items-center gap-1 px-2 py-1 text-xs bg-surface-3 text-zinc-400 hover:text-zinc-200 rounded"
                       >
-                        <Edit2 className="w-3 h-3" />
+                        <Pencil className="w-3 h-3" />
                         编辑
                       </button>
                     </div>
@@ -894,7 +909,7 @@ export function ContentBlockCard({
                   </div>
                 ) : (
                   <div className="flex flex-col items-center justify-center py-6 text-zinc-500 border-2 border-dashed border-surface-3 rounded-lg">
-                    <Edit2 className="w-6 h-6 mb-2 opacity-50" />
+                    <Pencil className="w-6 h-6 mb-2 opacity-50" />
                     <p className="text-sm">点击此处编辑内容</p>
                     <p className="text-xs mt-1">或使用「生成」按钮让 AI 生成</p>
                   </div>
@@ -1091,7 +1106,7 @@ export function ContentBlockCard({
                           )}
                           <span className={`px-1.5 py-0.5 text-xs rounded ${
                             (dep.content && dep.content.trim() !== "")
-                              ? "bg-green-600/20 text-green-400" 
+                              ? "bg-emerald-600/20 text-emerald-400" 
                               : "bg-zinc-700 text-zinc-400"
                           }`}>
                             {(dep.content && dep.content.trim() !== "") ? "已完成" : "未完成"}

@@ -462,8 +462,8 @@ export function ProgressPanel({
             <div
               className={cn(
                 "w-2 h-2 rounded-full flex-shrink-0",
-                status === "completed" && "bg-green-500",
-                status === "in_progress" && "bg-yellow-500",
+                status === "completed" && "bg-emerald-500",
+                status === "in_progress" && "bg-amber-500",
                 status === "pending" && "bg-zinc-600"
               )}
             />
@@ -525,8 +525,8 @@ export function ProgressPanel({
                   <div
                     className={cn(
                       "w-1.5 h-1.5 rounded-full flex-shrink-0",
-                      fieldStatus === "completed" && "bg-green-500",
-                      fieldStatus === "in_progress" && "bg-yellow-500",
+                      fieldStatus === "completed" && "bg-emerald-500",
+                      fieldStatus === "in_progress" && "bg-amber-500",
                       fieldStatus === "pending" && "bg-zinc-600"
                     )}
                   />
@@ -732,6 +732,13 @@ function AutonomySettingsModal({ project, onClose, onSave }: AutonomySettingsMod
   const [autonomy, setAutonomy] = useState<Record<string, boolean>>(
     project.agent_autonomy || {}
   );
+
+  // Escape 键关闭
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
 
   const allPhases = [
     { id: "intent", name: "意图分析", desc: "Agent自动提问并分析意图" },

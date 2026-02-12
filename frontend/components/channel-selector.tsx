@@ -4,9 +4,9 @@
 
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { fieldAPI, agentAPI } from "@/lib/api";
-import { Check, Plus, Trash2, GripVertical, Send, Edit2, X } from "lucide-react";
+import { Check, Plus, Trash2, GripVertical, Send, Pencil, X } from "lucide-react";
 
 // 渠道定义
 interface Channel {
@@ -64,6 +64,14 @@ export function ChannelSelector({
   const [editingChannel, setEditingChannel] = useState<string | null>(null);
   const [newChannelName, setNewChannelName] = useState("");
   const [showAddModal, setShowAddModal] = useState(false);
+  
+  // Escape 键关闭弹窗
+  useEffect(() => {
+    if (!showAddModal) return;
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") setShowAddModal(false); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [showAddModal]);
 
   const selectedChannels = channelsData.channels.filter(ch => ch.selected);
 
@@ -280,7 +288,7 @@ export function ChannelSelector({
                   }}
                   className="p-1 text-zinc-500 hover:text-zinc-300 rounded"
                 >
-                  <Edit2 className="w-3 h-3" />
+                  <Pencil className="w-3 h-3" />
                 </button>
                 <button
                   onClick={(e) => {

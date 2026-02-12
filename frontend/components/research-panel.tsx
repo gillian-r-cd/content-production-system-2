@@ -651,21 +651,21 @@ export function ResearchPanel({
             disabled={isRegenerating || isSaving}
             className="px-5 py-2.5 bg-amber-600/20 hover:bg-amber-600/30 disabled:bg-zinc-700 text-amber-400 border border-amber-500/30 rounded-lg text-sm font-medium transition-all"
           >
-            {isRegenerating ? "⏳ 重新生成中..." : "🔄 重新生成消费者调研"}
+            {isRegenerating ? "重新生成中..." : "重新生成消费者调研"}
           </button>
           <button
             onClick={handleSave}
             disabled={isSaving || isRegenerating}
             className="px-5 py-2.5 bg-surface-3 hover:bg-surface-4 disabled:bg-zinc-700 text-zinc-300 rounded-lg text-sm font-medium transition-all"
           >
-            {isSaving ? "⏳ 保存中..." : "💾 保存修改"}
+            {isSaving ? "保存中..." : "保存修改"}
           </button>
           <button
             onClick={handleSaveAndAdvance}
             disabled={isSaving || isRegenerating}
             className="px-6 py-2.5 bg-brand-600 hover:bg-brand-700 disabled:bg-zinc-700 text-white rounded-lg text-sm font-medium transition-all shadow-lg hover:shadow-brand-600/25"
           >
-            ✅ 确认，进入内涵设计
+            确认，进入内涵设计
           </button>
         </div>
       </div>

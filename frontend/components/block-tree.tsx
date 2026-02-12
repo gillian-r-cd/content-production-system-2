@@ -19,13 +19,12 @@ import {
   PlayCircle,
   BarChart3,
   MoreHorizontal,
-  Edit2,
+  Pencil,
   Copy,
   ArrowRight,
   Undo2,
   Package,
   X,
-  Layers,
 } from "lucide-react";
 import { ContentBlock, blockAPI, settingsAPI } from "@/lib/api";
 
@@ -123,6 +122,14 @@ function BlockNode({
   const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [templates, setTemplates] = useState<FieldTemplate[]>([]);
   const [templatesLoading, setTemplatesLoading] = useState(false);
+  
+  // Escape 键关闭弹窗
+  useEffect(() => {
+    if (!showTemplateModal) return;
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") setShowTemplateModal(false); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [showTemplateModal]);
   
   // 加载内容块模板
   const loadTemplates = async () => {
@@ -271,24 +278,12 @@ function BlockNode({
     }
   };
 
-  // 处理复制内容块
+  // 处理复制（深拷贝，含所有子块）
   const handleDuplicate = async () => {
     setIsLoading(true);
     setShowMenu(false);
     try {
-      await blockAPI.create({
-        project_id: block.project_id,
-        parent_id: block.parent_id,
-        name: `${block.name} (副本)`,
-        block_type: block.block_type,
-        content: block.content || "",
-        ai_prompt: block.ai_prompt || "",
-        constraints: block.constraints,
-        depends_on: block.depends_on || [],
-        special_handler: block.special_handler,
-        need_review: block.need_review,
-        order_index: (block.order_index ?? 0) + 1,
-      });
+      await blockAPI.duplicate(block.id);
       onBlocksChange?.();
     } catch (err) {
       console.error("复制失败:", err);
@@ -303,8 +298,7 @@ function BlockNode({
     setIsLoading(true);
     const nameMap: Record<string, string> = {
       field: "新内容块",
-      group: "新分组",
-      phase: "新子组",
+      group: "新子组",
     };
     try {
       await blockAPI.create({
@@ -458,7 +452,7 @@ function BlockNode({
                   }}
                   className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-surface-2"
                 >
-                  <Edit2 className="w-4 h-4" />
+                  <Pencil className="w-4 h-4" />
                   重命名
                 </button>
 
@@ -469,7 +463,7 @@ function BlockNode({
                       className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-surface-2"
                     >
                       <Plus className="w-4 h-4" />
-                      添加空白字段
+                      添加空白内容块
                     </button>
                     <button
                       onClick={openTemplateModal}
@@ -483,13 +477,6 @@ function BlockNode({
                       className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-surface-2"
                     >
                       <Folder className="w-4 h-4" />
-                      添加分组
-                    </button>
-                    <button
-                      onClick={() => handleAddChild("phase")}
-                      className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-surface-2"
-                    >
-                      <Layers className="w-4 h-4" />
                       添加子组
                     </button>
                   </>
@@ -510,7 +497,7 @@ function BlockNode({
                   className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-surface-2"
                 >
                   <Copy className="w-4 h-4" />
-                  复制内容块
+                  {block.block_type === "field" ? "复制" : "复制（含子项）"}
                 </button>
 
                 <hr className="my-1 border-surface-3" />

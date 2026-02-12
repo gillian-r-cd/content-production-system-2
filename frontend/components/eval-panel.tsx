@@ -120,7 +120,7 @@ export function EvalPanel({ projectId, className }: EvalPanelProps) {
                 : "bg-brand-500 text-white hover:bg-brand-600"
             )}
           >
-            {isRunning ? "⏳ 评估中..." : "🚀 运行完整评估"}
+            {isRunning ? "评估中..." : "运行完整评估"}
           </button>
         </div>
         {error && (
@@ -300,7 +300,7 @@ export function EvalPanel({ projectId, className }: EvalPanelProps) {
               disabled={isRunning}
               className="px-6 py-2.5 bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-50"
             >
-              {isRunning ? "⏳ 评估中..." : "🚀 开始评估"}
+              {isRunning ? "评估中..." : "开始评估"}
             </button>
           </div>
         )}
