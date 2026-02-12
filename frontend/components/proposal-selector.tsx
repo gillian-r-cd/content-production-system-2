@@ -1,6 +1,6 @@
 // frontend/components/proposal-selector.tsx
 // 功能: 内涵设计方案编辑器（全功能）
-// 支持: 编辑方案名称/描述、编辑/添加/删除/重排字段、从模板导入字段、
+// 支持: 编辑方案名称/描述、编辑/添加/删除/重排字段、从模板导入内容块、
 //       添加/删除自定义方案、确认后导入到内涵生产
 // 数据: 读写 ProjectField 的 content（JSON proposals 格式）
 
@@ -80,7 +80,7 @@ function cloneProposals(data: ProposalsData): ProposalsData {
 
 // ============== Sub-components ==============
 
-/** 单个字段的内联编辑器 */
+/** 单个内容块的内联编辑器 */
 function FieldEditor({
   field,
   allFields,
@@ -131,7 +131,7 @@ function FieldEditor({
               onChange={e => onUpdate({ ...field, name: e.target.value })}
               className="text-sm font-medium text-zinc-300 bg-transparent border-none outline-none flex-1 min-w-0 
                          focus:ring-1 focus:ring-brand-500/30 rounded px-1 -mx-1"
-              placeholder="字段名称"
+              placeholder="内容块名称"
             />
           )}
           {field.need_review && (
@@ -146,7 +146,7 @@ function FieldEditor({
             {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <Settings2 className="w-3.5 h-3.5" />}
           </button>
           {!readOnly && (
-            <button onClick={onDelete} className="p-1 text-zinc-600 hover:text-red-400 rounded opacity-0 group-hover:opacity-100 transition-opacity" title="删除字段">
+            <button onClick={onDelete} className="p-1 text-zinc-600 hover:text-red-400 rounded opacity-0 group-hover:opacity-100 transition-opacity" title="删除内容块">
               <Trash2 className="w-3.5 h-3.5" />
             </button>
           )}
@@ -166,7 +166,7 @@ function FieldEditor({
               rows={3}
               className="w-full text-sm text-zinc-300 bg-surface-1 border border-surface-3 rounded-lg p-2 resize-y
                          focus:outline-none focus:ring-1 focus:ring-brand-500/30 read-only:opacity-60"
-              placeholder="描述这个字段的生成要求..."
+              placeholder="描述这个内容块的生成要求..."
             />
           </div>
 
@@ -199,9 +199,9 @@ function FieldEditor({
             </label>
           </div>
 
-          {/* 依赖字段 */}
+          {/* 依赖内容块 */}
           <div>
-            <label className="text-xs text-zinc-500 mb-1 block">依赖字段（可多选）</label>
+            <label className="text-xs text-zinc-500 mb-1 block">依赖内容块（可多选）</label>
             <div className="flex flex-wrap gap-1.5">
               {allFields.filter(f => f.id !== field.id).map(other => {
                 // 依赖可能存的是 id 或 name，两种都兼容
@@ -220,7 +220,7 @@ function FieldEditor({
                         );
                         onUpdate({ ...field, depends_on: newDeps });
                       } else {
-                        // 添加（统一用 name，便于后续创建字段时引用）
+                        // 添加（统一用 name，便于后续创建内容块时引用）
                         onUpdate({ ...field, depends_on: [...(field.depends_on || []), other.name] });
                       }
                     }}
@@ -235,7 +235,7 @@ function FieldEditor({
                 );
               })}
               {allFields.filter(f => f.id !== field.id).length === 0 && (
-                <span className="text-xs text-zinc-600 italic">无其他字段可引用</span>
+                <span className="text-xs text-zinc-600 italic">无其他内容块可引用</span>
               )}
             </div>
           </div>
@@ -256,7 +256,7 @@ function FieldEditor({
   );
 }
 
-/** 从模板导入字段的下拉面板 */
+/** 从模板导入内容块的下拉面板 */
 function TemplateImporter({
   onImportFields,
   onClose,
@@ -309,7 +309,7 @@ function TemplateImporter({
   return (
     <div className="bg-surface-1 border border-surface-3 rounded-xl p-4 space-y-3 shadow-xl">
       <div className="flex items-center justify-between">
-        <h4 className="text-sm font-semibold text-zinc-200">从字段模板导入</h4>
+        <h4 className="text-sm font-semibold text-zinc-200">从内容块模板导入</h4>
         <button onClick={onClose} className="text-zinc-500 hover:text-zinc-300"><X className="w-4 h-4" /></button>
       </div>
 
@@ -329,15 +329,15 @@ function TemplateImporter({
           >
             <option value="">选择模板...</option>
             {templates.map(t => (
-              <option key={t.id} value={t.id}>{t.name} ({t.fields.length} 个字段)</option>
+              <option key={t.id} value={t.id}>{t.name} ({t.fields.length} 个内容块)</option>
             ))}
           </select>
 
-          {/* 字段勾选 */}
+          {/* 内容块勾选 */}
           {selectedTemplate && (
             <div className="space-y-1 max-h-48 overflow-y-auto">
               <div className="flex items-center justify-between mb-1">
-                <span className="text-xs text-zinc-500">选择要导入的字段</span>
+                <span className="text-xs text-zinc-500">选择要导入的内容块</span>
                 <button
                   onClick={() => {
                     if (selectedFieldNames.size === selectedTemplate.fields.length) {
@@ -376,7 +376,7 @@ function TemplateImporter({
             className="w-full py-2 bg-brand-600 hover:bg-brand-700 rounded-lg text-sm font-medium 
                        disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            导入 {selectedFieldNames.size} 个字段
+            导入 {selectedFieldNames.size} 个内容块
           </button>
         </>
       )}
@@ -555,9 +555,9 @@ export function ProposalSelector({
     }));
   };
 
-  // ============== 字段操作 ==============
+  // ============== 内容块操作 ==============
 
-  // 更新某方案的某字段
+  // 更新某方案的某内容块
   const updateField = (proposalId: string, fieldId: string, updated: ProposalField) => {
     updateData(prev => ({
       ...prev,
@@ -569,7 +569,7 @@ export function ProposalSelector({
     }));
   };
 
-  // 删除某方案的某字段
+  // 删除某方案的某内容块
   const deleteField = (proposalId: string, fieldId: string) => {
     updateData(prev => ({
       ...prev,
@@ -581,7 +581,7 @@ export function ProposalSelector({
     }));
   };
 
-  // 添加新空字段
+  // 添加新空内容块
   const addEmptyField = (proposalId: string) => {
     updateData(prev => ({
       ...prev,
@@ -593,7 +593,7 @@ export function ProposalSelector({
                 ...p.fields,
                 {
                   id: genId("field"),
-                  name: "新字段",
+                  name: "新内容块",
       field_type: "richtext",
                   ai_prompt: "",
       depends_on: [],
@@ -607,7 +607,7 @@ export function ProposalSelector({
     }));
     };
     
-  // 从模板导入字段到指定方案
+  // 从模板导入内容块到指定方案
   const importFieldsToProposal = (proposalId: string, importedFields: ProposalField[]) => {
     updateData(prev => ({
       ...prev,
@@ -629,7 +629,7 @@ export function ProposalSelector({
     }));
   };
 
-  // 上移/下移字段
+  // 上移/下移内容块
   const moveField = (proposalId: string, fieldId: string, direction: "up" | "down") => {
     updateData(prev => ({
         ...prev,
@@ -646,7 +646,7 @@ export function ProposalSelector({
     }));
   };
 
-  // ============== 确认并创建字段 ==============
+  // ============== 确认并创建内容块 ==============
 
   const handleConfirm = async () => {
     const proposal = data.proposals.find(p => p.id === selectedProposalId);
@@ -660,7 +660,7 @@ export function ProposalSelector({
       // 两轮创建：proposal 中 depends_on 可能存 field ID（LLM 生成）或 name（UI 编辑），需统一转为实际字段 ID
       const sortedFields = [...proposal.fields].sort((a, b) => a.order - b.order);
 
-      // 第一轮：创建所有字段（不带依赖），建立 proposalId/name → realId 映射
+      // 第一轮：创建所有内容块（不带依赖），建立 proposalId/name → realId 映射
       const proposalToRealId: Record<string, string> = {};
       const createdEntries: Array<{ fieldId: string; deps: string[] }> = [];
 
@@ -712,8 +712,8 @@ export function ProposalSelector({
       onFieldsCreated?.();
       onConfirm();
     } catch (err) {
-      console.error("创建字段失败:", err);
-      alert("创建字段失败: " + (err instanceof Error ? err.message : "未知错误"));
+      console.error("创建内容块失败:", err);
+      alert("创建内容块失败: " + (err instanceof Error ? err.message : "未知错误"));
     } finally {
       setIsCreatingFields(false);
     }
@@ -722,7 +722,7 @@ export function ProposalSelector({
   // ============== 重新选择方案 ==============
 
   const handleResetConfirm = async () => {
-    if (!confirm("重新选择方案将删除当前内涵生产阶段的所有字段，确定继续？")) return;
+    if (!confirm("重新选择方案将删除当前内涵生产组的所有内容块，确定继续？")) return;
 
     setIsResetting(true);
     try {
@@ -746,7 +746,7 @@ export function ProposalSelector({
       setIsConfirmed(false);
       setSelectedProposalId(null);
       setData(resetData);
-      onFieldsCreated?.(); // 通知父组件刷新字段列表
+      onFieldsCreated?.(); // 通知父组件刷新内容块列表
     } catch (err) {
       console.error("重置方案失败:", err);
       alert("重置失败: " + (err instanceof Error ? err.message : "未知错误"));
@@ -855,7 +855,7 @@ export function ProposalSelector({
                   )}
                   <div className="flex items-center gap-2 mt-1.5 text-xs text-zinc-500">
                     <FileText className="w-3 h-3" />
-                    <span>{sortedFields.length} 个字段</span>
+                    <span>{sortedFields.length} 个内容块</span>
                     {!isExpanded && sortedFields.length > 0 && (
                       <span className="text-zinc-600 truncate">· {sortedFields.map(f => f.name).join(" → ")}</span>
                     )}
@@ -886,13 +886,13 @@ export function ProposalSelector({
                     </div>
       </div>
 
-              {/* 展开：字段列表 + 操作 */}
+              {/* 展开：内容块列表 + 操作 */}
               {isExpanded && (
                 <div className="border-t border-surface-3">
-                  {/* 字段列表 */}
+                  {/* 内容块列表 */}
                   <div className="p-3 space-y-2">
                     {sortedFields.length === 0 && (
-                      <p className="text-sm text-zinc-600 italic text-center py-4">暂无字段，请添加</p>
+                      <p className="text-sm text-zinc-600 italic text-center py-4">暂无内容块，请添加</p>
                     )}
                     {sortedFields.map((field, fi) => (
                       <FieldEditor
@@ -910,7 +910,7 @@ export function ProposalSelector({
                 ))}
               </div>
 
-                  {/* 添加字段操作栏 */}
+                  {/* 添加内容块操作栏 */}
                   {!readOnly && (
                     <div className="border-t border-surface-3 px-3 py-2.5 flex items-center gap-2">
           <button
@@ -919,7 +919,7 @@ export function ProposalSelector({
                                    bg-surface-1 hover:bg-surface-3 rounded-lg border border-surface-3 transition-colors"
           >
                         <Plus className="w-3.5 h-3.5" />
-                        添加字段
+                        添加内容块
           </button>
           <button
                         onClick={() => setShowTemplateImporter(showTemplateImporter === proposal.id ? null : proposal.id)}
@@ -988,7 +988,7 @@ export function ProposalSelector({
           <div className="flex items-center gap-2">
             <div className="flex items-center gap-2 text-green-400">
               <Check className="w-5 h-5" />
-              <span>已确认方案，字段已导入内涵生产阶段</span>
+              <span>已确认方案，内容块已导入内涵生产组</span>
             </div>
             <button
               onClick={handleResetConfirm}
@@ -1006,7 +1006,7 @@ export function ProposalSelector({
               {selectedProposalId
                 ? `已选择「${data.proposals.find(p => p.id === selectedProposalId)?.name}」（${
                     data.proposals.find(p => p.id === selectedProposalId)?.fields.length || 0
-                  } 个字段）`
+                  } 个内容块）`
                 : "点击方案左侧圆圈选中，然后点击确认"}
             </p>
           <button

@@ -29,7 +29,7 @@ import {
 } from "lucide-react";
 import { ContentBlock, blockAPI, settingsAPI } from "@/lib/api";
 
-// 字段模板类型
+// 内容块模板类型
 interface FieldTemplate {
   id: string;
   name: string;
@@ -124,7 +124,7 @@ function BlockNode({
   const [templates, setTemplates] = useState<FieldTemplate[]>([]);
   const [templatesLoading, setTemplatesLoading] = useState(false);
   
-  // 加载字段模板
+  // 加载内容块模板
   const loadTemplates = async () => {
     setTemplatesLoading(true);
     try {
@@ -144,7 +144,7 @@ function BlockNode({
     loadTemplates();
   };
   
-  // 从模板添加字段
+  // 从模板添加内容块
   const handleAddFromTemplate = async (template: FieldTemplate) => {
     setIsLoading(true);
     try {
@@ -152,11 +152,11 @@ function BlockNode({
       const idMapping: Record<string, string> = {};
       const createdBlocks: string[] = [];
       
-      // 按顺序创建字段（保持依赖顺序）
+      // 按顺序创建内容块（保持依赖顺序）
       for (let i = 0; i < template.fields.length; i++) {
         const field = template.fields[i];
         
-        // 映射内部依赖：将模板中的字段索引转换为实际创建的块 ID
+        // 映射内部依赖：将模板中的内容块索引转换为实际创建的块 ID
         const mappedDependsOn = (field.depends_on || []).map((depName) => {
           // 查找已创建的块中是否有匹配的名称
           const depIndex = template.fields.findIndex((f, idx) => idx < i && f.name === depName);
@@ -271,7 +271,7 @@ function BlockNode({
     }
   };
 
-  // 处理复制字段
+  // 处理复制内容块
   const handleDuplicate = async () => {
     setIsLoading(true);
     setShowMenu(false);
@@ -302,9 +302,9 @@ function BlockNode({
   const handleAddChild = async (blockType: string) => {
     setIsLoading(true);
     const nameMap: Record<string, string> = {
-      field: "新字段",
+      field: "新内容块",
       group: "新分组",
-      phase: "新子阶段",
+      phase: "新子组",
     };
     try {
       await blockAPI.create({
@@ -490,7 +490,7 @@ function BlockNode({
                       className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-surface-2"
                     >
                       <Layers className="w-4 h-4" />
-                      添加子阶段
+                      添加子组
                     </button>
                   </>
                 )}
@@ -510,7 +510,7 @@ function BlockNode({
                   className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-surface-2"
                 >
                   <Copy className="w-4 h-4" />
-                  复制字段
+                  复制内容块
                 </button>
 
                 <hr className="my-1 border-surface-3" />
@@ -579,9 +579,9 @@ function BlockNode({
             {/* 弹窗头部 */}
             <div className="px-5 py-4 border-b border-surface-3 flex items-center justify-between">
               <div>
-                <h3 className="font-semibold text-zinc-100">从模板添加字段</h3>
+                <h3 className="font-semibold text-zinc-100">从模板添加内容块</h3>
                 <p className="text-xs text-zinc-500 mt-1">
-                  选择一个模板，将其中的字段添加到「{block.name}」下
+                  选择一个模板，将其中的内容块添加到「{block.name}」下
                 </p>
               </div>
               <button
@@ -601,8 +601,8 @@ function BlockNode({
               ) : templates.length === 0 ? (
                 <div className="text-center py-8 text-zinc-500">
                   <Package className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                  <p>暂无字段模板</p>
-                  <p className="text-xs mt-1">请在后台设置中创建字段模板</p>
+                  <p>暂无内容块模板</p>
+                  <p className="text-xs mt-1">请在后台设置中创建内容块模板</p>
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -623,7 +623,7 @@ function BlockNode({
                             </p>
                           )}
                           <div className="flex items-center gap-2 mt-2 text-xs text-zinc-500">
-                            <span>{template.fields?.length || 0} 个字段</span>
+                            <span>{template.fields?.length || 0} 个内容块</span>
                             {template.fields?.slice(0, 3).map((f, i) => (
                               <span key={i} className="px-1.5 py-0.5 bg-surface-3 rounded">
                                 {f.name}
@@ -755,7 +755,7 @@ export default function BlockTree({
     try {
       // 计算现有阶段数量，自动生成编号
       const phaseCount = blocks.filter(b => b.block_type === "phase").length;
-      const phaseName = `新阶段 ${phaseCount + 1}`;
+      const phaseName = `新组 ${phaseCount + 1}`;
       
       await blockAPI.create({
         project_id: projectId,
@@ -764,7 +764,7 @@ export default function BlockTree({
       });
       onBlocksChange?.();
     } catch (err) {
-      console.error("添加阶段失败:", err);
+      console.error("添加组失败:", err);
       alert("添加失败: " + (err instanceof Error ? err.message : "未知错误"));
     }
   };
@@ -780,7 +780,7 @@ export default function BlockTree({
             className="flex items-center gap-2 px-4 py-2 bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors"
           >
             <Plus className="w-4 h-4" />
-            添加阶段
+            添加组
           </button>
         )}
       </div>
@@ -832,7 +832,7 @@ export default function BlockTree({
           className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-500 hover:text-zinc-300 hover:bg-surface-2 rounded-lg transition-colors"
         >
           <Plus className="w-4 h-4" />
-          添加阶段
+          添加组
         </button>
       )}
     </div>

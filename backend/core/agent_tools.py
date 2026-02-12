@@ -109,7 +109,7 @@ def _json_err(message: str) -> str:
 # ============== 1. modify_field ==============
 
 @tool
-def modify_field(
+async def modify_field(
     field_name: str,
     instruction: str,
     reference_fields: Optional[List[str]] = None,
@@ -130,10 +130,7 @@ def modify_field(
         instruction: 用户的具体修改指令
         reference_fields: 需要参考的其他内容块名称列表
     """
-    import asyncio
-    return asyncio.get_event_loop().run_until_complete(
-        _modify_field_impl(field_name, instruction, reference_fields or [], config)
-    )
+    return await _modify_field_impl(field_name, instruction, reference_fields or [], config)
 
 
 async def _modify_field_impl(
@@ -197,7 +194,7 @@ async def _modify_field_impl(
 # ============== 2. generate_field_content ==============
 
 @tool
-def generate_field_content(
+async def generate_field_content(
     field_name: str,
     instruction: str = "",
     config: RunnableConfig = None,
@@ -216,10 +213,7 @@ def generate_field_content(
         field_name: 要生成内容的内容块名称
         instruction: 额外的生成指令或要求
     """
-    import asyncio
-    return asyncio.get_event_loop().run_until_complete(
-        _generate_field_impl(field_name, instruction, config)
-    )
+    return await _generate_field_impl(field_name, instruction, config)
 
 
 async def _generate_field_impl(
@@ -292,7 +286,7 @@ async def _generate_field_impl(
 # ============== 3. query_field ==============
 
 @tool
-def query_field(
+async def query_field(
     field_name: str,
     question: str,
     config: RunnableConfig = None,
@@ -309,10 +303,7 @@ def query_field(
         field_name: 要查询的内容块名称
         question: 用户的具体问题
     """
-    import asyncio
-    return asyncio.get_event_loop().run_until_complete(
-        _query_field_impl(field_name, question, config)
-    )
+    return await _query_field_impl(field_name, question, config)
 
 
 async def _query_field_impl(field_name: str, question: str, config: RunnableConfig) -> str:
@@ -550,7 +541,7 @@ def advance_to_phase(target_phase: str = "", config: RunnableConfig = None) -> s
 # ============== 8. run_research ==============
 
 @tool
-def run_research(
+async def run_research(
     query: str,
     research_type: str = "consumer",
     config: RunnableConfig = None,
@@ -569,10 +560,7 @@ def run_research(
         query: 调研主题或查询内容
         research_type: "consumer" 或 "generic"
     """
-    import asyncio
-    return asyncio.get_event_loop().run_until_complete(
-        _run_research_impl(query, research_type, config)
-    )
+    return await _run_research_impl(query, research_type, config)
 
 
 async def _run_research_impl(query: str, research_type: str, config: RunnableConfig) -> str:
@@ -623,7 +611,7 @@ async def _run_research_impl(query: str, research_type: str, config: RunnableCon
 # ============== 9. manage_persona ==============
 
 @tool
-def manage_persona(
+async def manage_persona(
     operation: str,
     persona_data: str = "",
     config: RunnableConfig = None,
@@ -634,10 +622,7 @@ def manage_persona(
         operation: list / create / generate / update / delete
         persona_data: 角色描述或数据（JSON 字符串，create/generate/update 时需要）
     """
-    import asyncio
-    return asyncio.get_event_loop().run_until_complete(
-        _manage_persona_impl(operation, persona_data, config)
-    )
+    return await _manage_persona_impl(operation, persona_data, config)
 
 
 async def _manage_persona_impl(operation: str, persona_data: str, config: RunnableConfig) -> str:
@@ -675,15 +660,12 @@ async def _manage_persona_impl(operation: str, persona_data: str, config: Runnab
 # ============== 10. run_evaluation ==============
 
 @tool
-def run_evaluation(config: RunnableConfig = None) -> str:
+async def run_evaluation(config: RunnableConfig = None) -> str:
     """对项目内容执行全面质量评估，生成评估报告。
 
     当用户说"评估一下"、"检查内容质量"时使用。
     """
-    import asyncio
-    return asyncio.get_event_loop().run_until_complete(
-        _run_evaluation_impl(config)
-    )
+    return await _run_evaluation_impl(config)
 
 
 async def _run_evaluation_impl(config: RunnableConfig) -> str:
@@ -740,7 +722,7 @@ async def _run_evaluation_impl(config: RunnableConfig) -> str:
 # ============== 11. generate_outline ==============
 
 @tool
-def generate_outline(topic: str = "", config: RunnableConfig = None) -> str:
+async def generate_outline(topic: str = "", config: RunnableConfig = None) -> str:
     """生成内容大纲/结构规划。帮助创作者规划内容的整体架构。
 
     典型场景：
@@ -750,10 +732,7 @@ def generate_outline(topic: str = "", config: RunnableConfig = None) -> str:
     Args:
         topic: 大纲主题（为空则基于项目意图自动规划）
     """
-    import asyncio
-    return asyncio.get_event_loop().run_until_complete(
-        _generate_outline_impl(topic, config)
-    )
+    return await _generate_outline_impl(topic, config)
 
 
 async def _generate_outline_impl(topic: str, config: RunnableConfig) -> str:
@@ -787,7 +766,7 @@ async def _generate_outline_impl(topic: str, config: RunnableConfig) -> str:
 # ============== 12. manage_skill ==============
 
 @tool
-def manage_skill(
+async def manage_skill(
     operation: str,
     skill_name: str = "",
     target_field: str = "",
@@ -804,10 +783,7 @@ def manage_skill(
         skill_name: 技能名称（apply 时必须）
         target_field: 要应用技能的内容块名称（apply 时必须）
     """
-    import asyncio
-    return asyncio.get_event_loop().run_until_complete(
-        _manage_skill_impl(operation, skill_name, target_field, config)
-    )
+    return await _manage_skill_impl(operation, skill_name, target_field, config)
 
 
 async def _manage_skill_impl(

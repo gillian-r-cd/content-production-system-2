@@ -70,7 +70,7 @@ export default function WorkspacePage() {
     requestNotificationPermission();
   }, []);
 
-  // 加载当前项目的字段 & 记住选中项目
+  // 加载当前项目的内容块 & 记住选中项目
   useEffect(() => {
     if (currentProject) {
       loadFields(currentProject.id);
@@ -129,7 +129,7 @@ export default function WorkspacePage() {
       // 保存到服务器
       await projectAPI.update(currentProject.id, { phase_order: newPhaseOrder });
     } catch (err) {
-      console.error("更新阶段顺序失败:", err);
+      console.error("更新组顺序失败:", err);
     }
   };
 
@@ -167,7 +167,7 @@ export default function WorkspacePage() {
         setFieldAffectedNames(result.affected_fields || null);
       }
     } catch (err) {
-      console.error("更新字段失败:", err);
+      console.error("更新内容块失败:", err);
     }
   };
 
@@ -248,7 +248,7 @@ export default function WorkspacePage() {
 
   const handleDeleteProject = async (projectId: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!confirm("确定删除此项目？此操作将删除项目的所有数据，包括字段和对话记录。")) return;
+    if (!confirm("确定删除此项目？此操作将删除项目的所有数据，包括内容块和对话记录。")) return;
     
     try {
       await projectAPI.delete(projectId);
@@ -293,7 +293,7 @@ export default function WorkspacePage() {
     if (selectedProjectIds.size === 0) return;
     
     const count = selectedProjectIds.size;
-    if (!confirm(`确定删除选中的 ${count} 个项目？此操作将删除所有选中项目的数据，包括字段和对话记录。`)) return;
+    if (!confirm(`确定删除选中的 ${count} 个项目？此操作将删除所有选中项目的数据，包括内容块和对话记录。`)) return;
     
     setIsDeleting(true);
     try {
@@ -357,7 +357,7 @@ export default function WorkspacePage() {
       const data = JSON.parse(text);
 
       if (!data.project) {
-        setError("无效的项目导出文件：缺少 project 字段");
+        setError("无效的项目导出文件：缺少 project 数据");
         return;
       }
 
@@ -369,7 +369,7 @@ export default function WorkspacePage() {
         setCurrentProject(result.project);
       }
       setShowProjectMenu(false);
-      alert(`✅ ${result.message}\n\n导入统计:\n• 内容块: ${result.stats.content_blocks}\n• 字段: ${result.stats.project_fields}\n• 对话记录: ${result.stats.chat_messages}\n• 版本历史: ${result.stats.content_versions}\n• 模拟记录: ${result.stats.simulation_records}\n• 评估运行: ${result.stats.eval_runs}\n• 生成日志: ${result.stats.generation_logs}`);
+      alert(`✅ ${result.message}\n\n导入统计:\n• 内容块: ${result.stats.content_blocks}\n• 内容块: ${result.stats.project_fields}\n• 对话记录: ${result.stats.chat_messages}\n• 版本历史: ${result.stats.content_versions}\n• 模拟记录: ${result.stats.simulation_records}\n• 评估运行: ${result.stats.eval_runs}\n• 生成日志: ${result.stats.generation_logs}`);
     } catch (err) {
       console.error("导入项目失败:", err);
       setError(err instanceof Error ? `导入失败: ${err.message}` : "导入项目失败");
@@ -623,8 +623,8 @@ export default function WorkspacePage() {
                   const updatedProject = await projectAPI.get(currentProject.id);
                   setCurrentProject(updatedProject);
                   await loadFields(currentProject.id);
-                  // ===== 关键修复：切换 selectedBlock 到新阶段的虚拟块 =====
-                  // 防止停留在旧阶段的选中状态导致视觉上"跳过"新阶段
+                  // ===== 关键修复：切换 selectedBlock 到新组的虚拟块 =====
+                  // 防止停留在旧阶段的选中状态导致视觉上"跳过"新组
                   const newPhase = updatedProject.current_phase;
                   setSelectedBlock({
                     id: `virtual_phase_${newPhase}`,
@@ -666,7 +666,7 @@ export default function WorkspacePage() {
               useFlexibleArchitecture={currentProject?.use_flexible_architecture || false}
               onSendMessage={handleSendMessage}
               onContentUpdate={async () => {
-                // Agent生成内容后，刷新字段、内容块和项目状态
+                // Agent生成内容后，刷新内容块、内容块和项目状态
                 if (currentProject) {
                   await loadFields(currentProject.id);
                   // 重新加载项目以获取最新的phase_status
@@ -715,7 +715,7 @@ export default function WorkspacePage() {
                 setSelectedBlock(block);
               }
             } else {
-              // 对于 ProjectField，找到对应的阶段并触发 phase click
+              // 对于 ProjectField，找到对应的组并触发 phase click
               const field = fields.find(f => f.id === fieldId);
               if (field && field.phase) {
                 handlePhaseClick(field.phase);
@@ -744,7 +744,7 @@ export default function WorkspacePage() {
               <p className="text-sm text-zinc-300">{fieldVersionWarning}</p>
               {fieldAffectedNames && fieldAffectedNames.length > 0 && (
                 <div className="bg-surface-2 rounded-lg p-3">
-                  <p className="text-xs text-zinc-400 mb-2">受影响的字段：</p>
+                  <p className="text-xs text-zinc-400 mb-2">受影响的内容块：</p>
                   <ul className="space-y-1">
                     {fieldAffectedNames.map((name, i) => (
                       <li key={i} className="text-sm text-amber-300 flex items-center gap-1.5">
@@ -756,7 +756,7 @@ export default function WorkspacePage() {
               )}
               <p className="text-xs text-zinc-500">
                 建议：您可以选择创建新版本来保留修改前的内容，
-                或关闭此提示并手动重新生成受影响的字段。
+                或关闭此提示并手动重新生成受影响的内容块。
               </p>
             </div>
             <div className="px-5 py-4 border-t border-surface-3 flex justify-end gap-3">

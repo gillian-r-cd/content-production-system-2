@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_org_id: str = ""
     openai_model: str = "gpt-5.1"
+    openai_mini_model: str = "gpt-4o-mini"
     openai_api_base: str = ""
 
     # Tavily Search API (DeepResearch)

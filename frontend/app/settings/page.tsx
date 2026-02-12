@@ -16,7 +16,7 @@ interface ImportExportButtonsProps {
   onExportAll: () => Promise<void>;
   onExportSingle?: (id: string) => Promise<void>;
   onImport: (data: any[]) => Promise<void>;
-  typeName: string;  // 如 "字段模板"
+  typeName: string;  // 如 "内容块模板"
 }
 
 function ImportExportButtons({ onExportAll, onImport, typeName }: ImportExportButtonsProps) {
@@ -172,7 +172,7 @@ export default function SettingsPage() {
   const tabs: { id: Tab; label: string; icon: string }[] = [
     { id: "prompts", label: "传统流程提示词", icon: "📝" },
     { id: "profiles", label: "创作者特质", icon: "👤" },
-    { id: "templates", label: "字段模板", icon: "📋" },
+    { id: "templates", label: "内容块模板", icon: "📋" },
     { id: "channels", label: "渠道管理", icon: "📢" },
     { id: "simulators", label: "模拟器", icon: "🎭" },
     { id: "graders", label: "评分器", icon: "⚖️" },
@@ -431,7 +431,7 @@ function SystemPromptsSection({ prompts, onRefresh }: { prompts: any[]; onRefres
         <div>
           <h2 className="text-xl font-semibold text-zinc-100">传统流程提示词</h2>
           <p className="text-sm text-zinc-500 mt-1">
-            传统流程中各阶段的提示词。此提示词将完整发送给 LLM，所见即所得。
+            传统流程中各组的提示词。此提示词将完整发送给 LLM，所见即所得。
           </p>
         </div>
         <ImportExportButtons
@@ -454,7 +454,7 @@ function SystemPromptsSection({ prompts, onRefresh }: { prompts: any[]; onRefres
                     className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200"
                   />
                 </FormField>
-                <FormField label="适用阶段">
+                <FormField label="适用组">
                   <select
                     value={editForm.phase || ""}
                     onChange={(e) => setEditForm({ ...editForm, phase: e.target.value })}
@@ -465,7 +465,7 @@ function SystemPromptsSection({ prompts, onRefresh }: { prompts: any[]; onRefres
                     ))}
                   </select>
                 </FormField>
-                <FormField label="提示词内容（完整版）" hint="此提示词将完整发送给 LLM，所见即所得。占位符：{creator_profile} = 创作者特质，{dependencies} = 依赖字段内容，{channel} = 目标渠道">
+                <FormField label="提示词内容（完整版）" hint="此提示词将完整发送给 LLM，所见即所得。占位符：{creator_profile} = 创作者特质，{dependencies} = 依赖内容块内容，{channel} = 目标渠道">
                   <textarea
                     value={editForm.content || ""}
                     onChange={(e) => setEditForm({ ...editForm, content: e.target.value })}
@@ -713,7 +713,7 @@ function ProfilesSection({ profiles, onRefresh }: { profiles: CreatorProfile[]; 
   );
 }
 
-// ============== 字段模板管理（可视化编辑器） ==============
+// ============== 内容块模板管理（可视化编辑器） ==============
 function TemplatesSection({ templates, onRefresh }: { templates: any[]; onRefresh: () => void }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<any>({});
@@ -838,18 +838,18 @@ function TemplatesSection({ templates, onRefresh }: { templates: any[]; onRefres
           </FormField>
         </div>
 
-        {/* 字段列表 */}
+        {/* 内容块列表 */}
         <div className="border-t border-surface-3 pt-4">
           <div className="flex justify-between items-center mb-4">
-            <h4 className="text-sm font-medium text-zinc-300">字段列表</h4>
+            <h4 className="text-sm font-medium text-zinc-300">内容块列表</h4>
             <button onClick={addField} className="px-3 py-1 text-sm bg-brand-600 hover:bg-brand-700 rounded-lg">
-              + 添加字段
+              + 添加内容块
             </button>
           </div>
 
           {(editForm.fields || []).length === 0 ? (
             <div className="text-center py-8 text-zinc-500 border border-dashed border-surface-3 rounded-lg">
-              还没有字段，点击「添加字段」开始
+              还没有内容块，点击「添加内容块」开始
             </div>
           ) : (
             <div className="space-y-4">
@@ -881,7 +881,7 @@ function TemplatesSection({ templates, onRefresh }: { templates: any[]; onRefres
                   </div>
 
                   <div className="grid grid-cols-2 gap-4 mb-3">
-                    <FormField label="字段名称">
+                    <FormField label="内容块名称">
                       <input
                         type="text"
                         value={field.name || ""}
@@ -890,7 +890,7 @@ function TemplatesSection({ templates, onRefresh }: { templates: any[]; onRefres
                         className="w-full px-3 py-2 bg-surface-2 border border-surface-3 rounded-lg text-zinc-200 text-sm"
                       />
                     </FormField>
-                    <FormField label="字段类型">
+                    <FormField label="内容块类型">
                       <select
                         value={field.type || "text"}
                         onChange={(e) => updateField(index, "type", e.target.value)}
@@ -904,7 +904,7 @@ function TemplatesSection({ templates, onRefresh }: { templates: any[]; onRefres
                     </FormField>
                   </div>
 
-                  <FormField label="AI 生成提示词" hint="指导 AI 如何生成这个字段的内容">
+                  <FormField label="AI 生成提示词" hint="指导 AI 如何生成这个内容块的内容">
                     <textarea
                       value={field.ai_prompt || ""}
                       onChange={(e) => updateField(index, "ai_prompt", e.target.value)}
@@ -926,7 +926,7 @@ function TemplatesSection({ templates, onRefresh }: { templates: any[]; onRefres
 
                   {index > 0 && (
                     <div className="mt-3">
-                      <FormField label="依赖字段" hint="选择这个字段依赖的其他字段（它们的内容会作为生成上下文）">
+                      <FormField label="依赖内容块" hint="选择这个内容块依赖的其他内容块（它们的内容会作为生成上下文）">
                         <div className="flex flex-wrap gap-2">
                           {editForm.fields.slice(0, index).map((f: any, i: number) => (
                             <label key={i} className="flex items-center gap-2 text-sm text-zinc-300">
@@ -942,7 +942,7 @@ function TemplatesSection({ templates, onRefresh }: { templates: any[]; onRefres
                                   }
                                 }}
                               />
-                              {f.name || `字段 ${i + 1}`}
+                              {f.name || `内容块 ${i + 1}`}
                             </label>
                           ))}
                         </div>
@@ -967,12 +967,12 @@ function TemplatesSection({ templates, onRefresh }: { templates: any[]; onRefres
     <div>
       <div className="flex justify-between items-center mb-6">
         <div>
-          <h2 className="text-xl font-semibold text-zinc-100">字段模板</h2>
-          <p className="text-sm text-zinc-500 mt-1">定义可复用的内容字段结构，创建项目时可以引用</p>
+          <h2 className="text-xl font-semibold text-zinc-100">内容块模板</h2>
+          <p className="text-sm text-zinc-500 mt-1">定义可复用的内容块结构，创建项目时可以引用</p>
         </div>
         <div className="flex items-center gap-3">
           <ImportExportButtons
-            typeName="字段模板"
+            typeName="内容块模板"
             onExportAll={handleExportAll}
             onImport={handleImport}
           />
@@ -1018,7 +1018,7 @@ function TemplatesSection({ templates, onRefresh }: { templates: any[]; onRefres
         ))}
         {templates.length === 0 && !isCreating && (
           <div className="text-center py-12 text-zinc-500">
-            还没有字段模板，点击上方「新建模板」创建一个
+            还没有内容块模板，点击上方「新建模板」创建一个
           </div>
         )}
       </div>
@@ -1804,10 +1804,10 @@ function AgentSettingsSection({ settings, onRefresh }: { settings: any; onRefres
     },
     { 
       id: "generate_field", 
-      name: "字段生成", 
+      name: "内容块生成", 
       icon: "✍️", 
-      desc: "根据上下文和依赖关系生成字段内容",
-      defaultPrompt: "你是一个专业的内容创作者。基于上下文和依赖字段，生成高质量的内容。\n遵循创作者特质、保持风格一致性。"
+      desc: "根据上下文和依赖关系生成内容块内容",
+      defaultPrompt: "你是一个专业的内容创作者。基于上下文和依赖内容块，生成高质量的内容。\n遵循创作者特质、保持风格一致性。"
     },
     { 
       id: "simulate_consumer", 
@@ -1827,15 +1827,15 @@ function AgentSettingsSection({ settings, onRefresh }: { settings: any; onRefres
       id: "architecture_writer", 
       name: "架构操作", 
       icon: "🏗️", 
-      desc: "添加/删除/移动阶段和字段，修改项目结构",
-      defaultPrompt: "你是项目架构师。根据用户的自然语言描述，识别需要进行的架构操作（添加阶段/字段、删除、移动），\n并调用相应的操作函数完成修改。"
+      desc: "添加/删除/移动组和内容块，修改项目结构",
+      defaultPrompt: "你是项目架构师。根据用户的自然语言描述，识别需要进行的架构操作（添加组/内容块、删除、移动），\n并调用相应的操作函数完成修改。"
     },
     { 
       id: "outline_generator", 
       name: "大纲生成", 
       icon: "📋", 
       desc: "基于项目上下文生成内容大纲",
-      defaultPrompt: "你是一个内容策划专家。基于项目意图和消费者调研结果，\n生成结构化的内容大纲，包括主题、章节、关键点和预计字段。"
+      defaultPrompt: "你是一个内容策划专家。基于项目意图和消费者调研结果，\n生成结构化的内容大纲，包括主题、章节、关键点和预计内容块。"
     },
     { 
       id: "persona_manager", 
@@ -2072,7 +2072,7 @@ function AgentSettingsSection({ settings, onRefresh }: { settings: any; onRefres
         <div className="p-5 bg-surface-2 border border-surface-3 rounded-xl">
           <h3 className="font-medium text-zinc-200 mb-4">🎛️ 默认自主权设置</h3>
           <p className="text-sm text-zinc-500 mb-4">
-            设置 Agent 在各阶段是否默认自主执行（每个项目可以单独覆盖）
+            设置 Agent 在各组是否默认自主执行（每个项目可以单独覆盖）
           </p>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {PHASES.map((phase) => (
@@ -2150,7 +2150,7 @@ function LogsSection({ logs, onRefresh }: { logs: any[]; onRefresh?: () => void 
           <thead>
             <tr className="border-b border-surface-3">
               <th className="text-left py-3 px-3 text-zinc-500">时间</th>
-              <th className="text-left py-3 px-3 text-zinc-500">阶段</th>
+              <th className="text-left py-3 px-3 text-zinc-500">组</th>
               <th className="text-left py-3 px-3 text-zinc-500">操作</th>
               <th className="text-left py-3 px-3 text-zinc-500">模型</th>
               <th className="text-right py-3 px-3 text-zinc-500">Tokens</th>

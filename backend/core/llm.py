@@ -68,4 +68,4 @@ def get_chat_model(
 llm = get_chat_model()
 
 # 轻量模型：用于摘要、分类等简单任务（成本更低）
-llm_mini = get_chat_model(model="gpt-4o-mini", temperature=0.3)
+llm_mini = get_chat_model(model=settings.openai_mini_model or "gpt-4o-mini", temperature=0.3)

@@ -132,7 +132,7 @@ export function ChannelSelector({
     }
   };
 
-  // 确认并创建字段
+  // 确认并创建内容块
   const handleConfirm = async () => {
     if (selectedChannels.length === 0) {
       alert("请至少选择一个渠道");
@@ -141,7 +141,7 @@ export function ChannelSelector({
 
     setIsCreatingFields(true);
     try {
-      // 为每个选中的渠道创建一个字段
+      // 为每个选中的渠道创建一个内容块
       for (const channel of selectedChannels) {
         await fieldAPI.create({
           project_id: projectId,
@@ -175,8 +175,8 @@ export function ChannelSelector({
       onFieldsCreated?.();
       onConfirm();
     } catch (err) {
-      console.error("创建字段失败:", err);
-      alert("创建字段失败");
+      console.error("创建内容块失败:", err);
+      alert("创建内容块失败");
     } finally {
       setIsCreatingFields(false);
     }
@@ -205,7 +205,7 @@ export function ChannelSelector({
         <div>
           <h2 className="text-lg font-semibold text-zinc-200">选择传播渠道</h2>
           <p className="text-sm text-zinc-500 mt-1">
-            {channelsData.summary || "选择要使用的渠道，确认后将进入外延生产阶段"}
+            {channelsData.summary || "选择要使用的渠道，确认后将进入外延生产组"}
           </p>
         </div>
         <div className="flex items-center gap-2 text-sm">

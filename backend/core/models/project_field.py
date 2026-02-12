@@ -89,6 +89,8 @@ class ProjectField(BaseModel):
     generation_log_id: Mapped[Optional[str]] = mapped_column(
         String(36), nullable=True
     )
+    # 内容摘要（digest_service 自动生成，用于内容块索引）
+    digest: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # 关联
     project: Mapped["Project"] = relationship(

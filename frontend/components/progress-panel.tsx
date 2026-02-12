@@ -202,7 +202,7 @@ export function ProgressPanel({
       fieldsByPhase[field.phase].push(field);
     }
     
-    // 为每个阶段创建虚拟的 ContentBlock
+    // 为每个组创建虚拟的 ContentBlock
     const virtualBlocks: ContentBlock[] = phaseOrder.map((phase, idx) => {
       const phaseFields = fieldsByPhase[phase] || [];
       
@@ -261,7 +261,7 @@ export function ProgressPanel({
   const handleMigrateToBlocks = async () => {
     if (!project?.id) return;
     
-    if (!confirm("确定要迁移到灵活架构吗？迁移后可以自由添加/删除/排序阶段和字段。")) {
+    if (!confirm("确定要迁移到灵活架构吗？迁移后可以自由添加/删除/排序组和内容块。")) {
       return;
     }
     
@@ -286,7 +286,7 @@ export function ProgressPanel({
         onBlocksChange?.(flattenBlocks(data.blocks));
       }
 
-      alert(`迁移成功！已创建 ${result.phases_created} 个阶段，迁移 ${result.fields_migrated} 个字段。\n\n请刷新页面以确保所有状态同步。`);
+      alert(`迁移成功！已创建 ${result.phases_created} 个组，迁移 ${result.fields_migrated} 个内容块。\n\n请刷新页面以确保所有状态同步。`);
     } catch (err) {
       console.error("迁移失败:", err);
       alert("迁移失败: " + (err instanceof Error ? err.message : "未知错误"));
@@ -379,14 +379,14 @@ export function ProgressPanel({
     handleDragEnd();
   };
 
-  // 获取阶段下的字段
+  // 获取阶段下的内容块
   const getPhaseFields = (phase: string): Field[] => {
     return fields.filter(f => f.phase === phase);
   };
   
   // 折叠状态
   const [expandedPhases, setExpandedPhases] = useState<Record<string, boolean>>(() => {
-    // 默认展开当前阶段
+    // 默认展开当前组
     const initial: Record<string, boolean> = {};
     if (project?.current_phase) {
       initial[project.current_phase] = true;
@@ -409,7 +409,7 @@ export function ProgressPanel({
     const isDragging = draggedPhase === phase;
     const isDragOver = dragOverPhase === phase;
     const phaseFields = getPhaseFields(phase);
-    const isExpanded = expandedPhases[phase] ?? isCurrent;  // 当前阶段默认展开
+    const isExpanded = expandedPhases[phase] ?? isCurrent;  // 当前组默认展开
     
     return (
       <div
@@ -440,7 +440,7 @@ export function ProgressPanel({
               )}>▶</span>
             </button>
           )}
-          {/* 无字段时占位 */}
+          {/* 无内容块时占位 */}
           {phaseFields.length === 0 && <span className="w-6" />}
           
           <button
@@ -487,7 +487,7 @@ export function ProgressPanel({
           </button>
         </div>
         
-        {/* 阶段下的字段列表 */}
+        {/* 阶段下的内容块列表 */}
         {isExpanded && phaseFields.length > 0 && (
           <div className="ml-6 mt-1 space-y-0.5">
             {phaseFields.map(field => {
@@ -530,7 +530,7 @@ export function ProgressPanel({
                       fieldStatus === "pending" && "bg-zinc-600"
                     )}
                   />
-                  {/* 字段名称 */}
+                  {/* 内容块名称 */}
                   <span className="flex-1 text-zinc-400 truncate">
                     {field.name}
                   </span>
@@ -638,7 +638,7 @@ export function ProgressPanel({
             <div className="text-center py-8">
               <p className="text-sm text-zinc-500 mb-3">尚未创建内容块</p>
               <p className="text-xs text-zinc-600">
-                可在此添加阶段，或切换到传统视图使用预设流程
+                可在此添加组，或切换到传统视图使用预设流程
               </p>
             </div>
           ) : null}
@@ -737,7 +737,7 @@ function AutonomySettingsModal({ project, onClose, onSave }: AutonomySettingsMod
     { id: "intent", name: "意图分析", desc: "Agent自动提问并分析意图" },
     { id: "research", name: "消费者调研", desc: "Agent自动调研用户画像" },
     { id: "design_inner", name: "内涵设计", desc: "Agent自动设计内容方案" },
-    { id: "produce_inner", name: "内涵生产", desc: "Agent自动生产各字段内容" },
+    { id: "produce_inner", name: "内涵生产", desc: "Agent自动生产各内容块内容" },
     { id: "design_outer", name: "外延设计", desc: "Agent自动设计传播方案" },
     { id: "produce_outer", name: "外延生产", desc: "Agent自动生产渠道内容" },
     { id: "evaluate", name: "评估", desc: "配置评估任务，执行多维度评估" },
@@ -761,7 +761,7 @@ function AutonomySettingsModal({ project, onClose, onSave }: AutonomySettingsMod
         <div className="px-4 py-3 border-b border-surface-3">
           <h3 className="font-medium text-zinc-200">Agent自主权设置</h3>
           <p className="text-xs text-zinc-500 mt-1">
-            设置各阶段Agent是否自动执行，不勾选 = 需要人工确认后才继续
+            设置各组Agent是否自动执行，不勾选 = 需要人工确认后才继续
           </p>
         </div>
 

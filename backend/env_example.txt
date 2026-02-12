@@ -11,6 +11,9 @@ OPENAI_ORG_ID=
 # 可选: 默认模型 (推荐gpt-4o)
 OPENAI_MODEL=gpt-5.1
 
+# 可选: 轻量模型 (用于摘要、分类等，降低成本)
+OPENAI_MINI_MODEL=gpt-4o-mini
+
 # 可选: API Base URL (如使用代理)
 OPENAI_API_BASE=
 

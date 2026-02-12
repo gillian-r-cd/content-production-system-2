@@ -851,7 +851,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
                     type="text"
                     value={aiPromptPurpose}
                     onChange={(e) => setAiPromptPurpose(e.target.value)}
-                    placeholder="简述字段目的，如：介绍产品核心卖点"
+                    placeholder="简述内容块目的，如：介绍产品核心卖点"
                     className="flex-1 px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-brand-500"
                     onKeyDown={(e) => {
                       if (e.key === "Enter" && aiPromptPurpose.trim() && !generatingPrompt) {
@@ -1057,7 +1057,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
                   {fieldDependencies.length > 0 && (
                     <div>
                       <h4 className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2 flex items-center gap-1">
-                        📝 内容字段
+                        📝 内容块
                       </h4>
                       <div className="space-y-2">
                         {fieldDependencies.map(dep => (
@@ -1145,7 +1145,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
               )}
               <p className="text-xs text-zinc-500">
                 建议：您可以选择创建新版本来保留修改前的内容，
-                或关闭此提示并手动重新生成受影响的字段。
+                或关闭此提示并手动重新生成受影响的内容块。
               </p>
             </div>
             <div className="px-5 py-4 border-t border-surface-3 flex justify-end gap-3">

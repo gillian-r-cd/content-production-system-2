@@ -134,6 +134,9 @@ class ContentBlock(BaseModel):
     need_review: Mapped[bool] = mapped_column(Boolean, default=True)
     is_collapsed: Mapped[bool] = mapped_column(Boolean, default=False)
     
+    # 内容摘要（digest_service 自动生成，用于内容块索引）
+    digest: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # 软删除：deleted_at 有值表示已删除
     deleted_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, nullable=True, default=None

@@ -203,7 +203,7 @@ export default function TemplateSelector({
               {isExpanded && (
                 <div className="px-4 pb-4 pt-2 border-t border-surface-3">
                   <div className="text-xs text-zinc-500 mb-2">
-                    包含 {template.phases.length} 个阶段
+                    包含 {template.phases.length} 个组
                   </div>
                   <div className="space-y-1">
                     {template.phases.map((phase, idx) => (
@@ -220,7 +220,7 @@ export default function TemplateSelector({
                         <span className="text-sm text-zinc-300">{phase.name}</span>
                         {phase.default_fields && phase.default_fields.length > 0 && (
                           <span className="text-xs text-zinc-600 ml-auto">
-                            {phase.default_fields.length} 个字段
+                            {phase.default_fields.length} 个内容块
                           </span>
                         )}
                       </div>

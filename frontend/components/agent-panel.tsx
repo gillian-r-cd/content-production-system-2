@@ -11,6 +11,7 @@ import { agentAPI, parseReferences, API_BASE } from "@/lib/api";
 import type { Field, ChatMessageRecord, ContentBlock } from "@/lib/api";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeRaw from "rehype-raw";
 import { settingsAPI } from "@/lib/api";
 
 // 统一的可引用项（兼容 Field 和 ContentBlock）
@@ -32,27 +33,39 @@ interface AgentPanelProps {
   isLoading?: boolean;
 }
 
-// 工具名称映射
+// 工具名称映射（匹配后端 AGENT_TOOLS 的 tool.name）
 const TOOL_NAMES: Record<string, string> = {
+  modify_field: "修改内容块",
+  generate_field_content: "生成内容块",
+  query_field: "查询内容块",
+  read_field: "读取内容块",
+  update_field: "覆写内容块",
+  manage_architecture: "架构操作",
+  advance_to_phase: "推进组",
+  run_research: "深度调研",
+  manage_persona: "人物管理",
+  run_evaluation: "内容评估",
+  generate_outline: "大纲生成",
+  manage_skill: "技能管理",
+  // 旧名称兼容
   deep_research: "深度调研",
-  generate_field: "生成字段",
-  simulate_consumer: "消费者模拟",
+  generate_field: "生成内容块",
   evaluate_content: "内容评估",
-  architecture_writer: "架构操作",
-  outline_generator: "大纲生成",
-  persona_manager: "人物管理",
-  skill_manager: "技能管理",
 };
 
 const TOOL_DESCS: Record<string, string> = {
-  deep_research: "使用DeepResearch进行网络调研",
-  generate_field: "根据上下文生成指定字段内容",
-  simulate_consumer: "模拟消费者体验内容",
-  evaluate_content: "评估内容质量",
-  architecture_writer: "添加/删除/移动阶段和字段",
-  outline_generator: "基于上下文生成内容大纲",
-  persona_manager: "创建、编辑、选择消费者画像",
-  skill_manager: "管理和应用可复用的AI技能",
+  modify_field: "修改指定内容块的已有内容",
+  generate_field_content: "为指定内容块生成新内容",
+  query_field: "查询内容块状态信息",
+  read_field: "读取内容块完整原始内容",
+  update_field: "直接用给定内容完整覆写内容块",
+  manage_architecture: "添加/删除/移动组和内容块",
+  advance_to_phase: "推进项目到下一组",
+  run_research: "使用DeepResearch进行网络调研",
+  manage_persona: "创建、编辑、选择消费者画像",
+  run_evaluation: "对项目内容执行全面质量评估",
+  generate_outline: "基于上下文生成内容大纲",
+  manage_skill: "管理和应用可复用的AI技能",
 };
 
 export function AgentPanel({
@@ -211,10 +224,10 @@ export function AgentPanel({
         console.error("加载工具列表失败:", err);
         // 使用默认工具列表
         setAvailableTools([
-          { id: "deep_research", name: "深度调研", desc: "使用DeepResearch进行网络调研" },
-          { id: "generate_field", name: "生成字段", desc: "根据上下文生成指定字段内容" },
-          { id: "simulate_consumer", name: "消费者模拟", desc: "模拟消费者体验内容" },
-          { id: "evaluate_content", name: "内容评估", desc: "评估内容质量" },
+          { id: "run_research", name: "深度调研", desc: "使用DeepResearch进行网络调研" },
+          { id: "generate_field_content", name: "生成内容块", desc: "根据上下文生成指定内容块" },
+          { id: "run_evaluation", name: "内容评估", desc: "对项目内容执行全面评估" },
+          { id: "manage_architecture", name: "架构操作", desc: "添加/删除/移动组和内容块" },
         ]);
       }
     };
@@ -331,7 +344,7 @@ export function AgentPanel({
     // 提取 @ 引用的字段名（传入已知字段名以支持含空格的名称）
     const knownNames = mentionItems.map((item) => item.name);
     const references = parseReferences(userMessage, knownNames);
-    console.log("[AgentPanel] 发送消息，引用字段:", references);
+    console.log("[AgentPanel] 发送消息，引用内容块:", references);
     
     setInput("");
     setSending(true);
@@ -396,9 +409,10 @@ export function AgentPanel({
       let currentRoute = "";  // 跟踪当前路由
       
       // 产出类型路由（内容应显示在中间区，聊天区只显示简短确认）
-      // 后端使用的阶段名称：intent, research, design_inner 等
+      // 后端使用的阶段名称（兼容旧 route 事件）
       const PRODUCE_ROUTES = ["intent", "research", "design_inner", "produce_inner", 
-                               "design_outer", "produce_outer", "simulate", "evaluate"];
+                               "design_outer", "produce_outer", "evaluate",
+                               "generate_field", "modify"];
 
       while (true) {
         const { done, value } = await reader.read();
@@ -414,7 +428,7 @@ export function AgentPanel({
               const data = JSON.parse(line.slice(6));
               
               if (data.type === "route") {
-                // 记录路由类型
+                // 记录路由类型（后端兼容事件，首个 tool 触发）
                 currentRoute = data.target;
                 console.log("[AgentPanel] Route:", currentRoute);
                 
@@ -426,12 +440,12 @@ export function AgentPanel({
                   "produce_inner": "📝 正在生产内涵内容...",
                   "design_outer": "🎨 正在设计外延方案...",
                   "produce_outer": "🖼️ 正在生产外延内容...",
-                  "simulate": "🎭 正在运行消费者模拟...",
                   "evaluate": "📋 正在执行评估...",
-                  "generate_field": "⚙️ 正在生成字段内容...",
+                  "generate_field": "⚙️ 正在生成内容块...",
                   "modify": "✏️ 正在修改内容...",
                   "generic_research": "🔍 正在进行深度调研...",
-                  "advance_phase": "⏭️ 正在推进阶段...",
+                  "advance_phase": "⏭️ 正在推进组...",
+                  "query": "🔎 正在查询内容块...",
                   "chat": "💬 正在思考...",
                 };
                 const statusText = routeStatusNames[currentRoute] || `⏳ 正在处理 [${currentRoute}]...`;
@@ -440,22 +454,40 @@ export function AgentPanel({
                     m.id === tempAiMsg.id ? { ...m, content: statusText } : m
                   )
                 );
+              } else if (data.type === "tool_start") {
+                // 工具开始执行（LangGraph 新事件）
+                const toolName = TOOL_NAMES[data.tool] || data.tool;
+                console.log("[AgentPanel] Tool start:", data.tool);
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === tempAiMsg.id
+                      ? { ...m, content: `🔧 正在使用 ${toolName}...` }
+                      : m
+                  )
+                );
+              } else if (data.type === "tool_end") {
+                // 工具完成（LangGraph 新事件）
+                console.log("[AgentPanel] Tool end:", data.tool, "field_updated:", data.field_updated);
+                if (data.field_updated && onContentUpdate) {
+                  // 工具更新了内容块，刷新中间面板
+                  onContentUpdate();
+                }
+              } else if (data.type === "modify_confirm_needed") {
+                // 修改确认（需要用户确认的修改）
+                console.log("[AgentPanel] Modify confirm needed:", data.target_field);
+                const summary = data.summary || "修改建议已生成";
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === tempAiMsg.id
+                      ? { ...m, content: `✏️ **${data.target_field}** 修改方案：\n\n${summary}\n\n请在左侧工作台查看并确认修改。` }
+                      : m
+                  )
+                );
               } else if (data.type === "token") {
-                // 逐 token 更新
+                // 逐 token 更新（LLM 思考/回复内容）
                 fullContent += data.content;
                 
                 // 只有非产出模式才实时显示内容
-                if (!PRODUCE_ROUTES.includes(currentRoute)) {
-                  setMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === tempAiMsg.id ? { ...m, content: fullContent } : m
-                    )
-                  );
-                }
-              } else if (data.type === "content") {
-                // 一次性内容（非流式场景）
-                fullContent = data.content;
-                
                 if (!PRODUCE_ROUTES.includes(currentRoute)) {
                   setMessages((prev) =>
                     prev.map((m) =>
@@ -643,7 +675,8 @@ export function AgentPanel({
       let currentRoute = "";
 
       const PRODUCE_ROUTES = ["intent", "research", "design_inner", "produce_inner", 
-                               "design_outer", "produce_outer", "simulate", "evaluate"];
+                               "design_outer", "produce_outer", "evaluate",
+                               "generate_field", "modify"];
 
       while (true) {
         const { done, value } = await reader.read();
@@ -669,23 +702,34 @@ export function AgentPanel({
                 const routeStatusNames: Record<string, string> = {
                   "intent": "🔍 正在分析意图...",
                   "research": "📊 正在进行消费者调研...",
-                  "generate_field": "⚙️ 正在生成字段内容...",
+                  "generate_field": "⚙️ 正在生成内容块...",
                   "modify": "✏️ 正在修改内容...",
+                  "evaluate": "📋 正在执行评估...",
+                  "advance_phase": "⏭️ 正在推进组...",
                   "chat": "💬 正在思考...",
                 };
                 const statusText = routeStatusNames[currentRoute] || `⏳ 正在处理...`;
                 setMessages(prev =>
                   prev.map(m => m.id === tempAiMsg.id ? { ...m, content: statusText } : m)
                 );
+              } else if (data.type === "tool_start") {
+                const toolName = TOOL_NAMES[data.tool] || data.tool;
+                setMessages(prev =>
+                  prev.map(m => m.id === tempAiMsg.id ? { ...m, content: `🔧 正在使用 ${toolName}...` } : m)
+                );
+              } else if (data.type === "tool_end") {
+                if (data.field_updated && onContentUpdate) {
+                  onContentUpdate();
+                }
+              } else if (data.type === "modify_confirm_needed") {
+                const summary = data.summary || "修改建议已生成";
+                setMessages(prev =>
+                  prev.map(m => m.id === tempAiMsg.id
+                    ? { ...m, content: `✏️ **${data.target_field}** 修改方案：\n\n${summary}\n\n请在左侧工作台查看并确认修改。` }
+                    : m)
+                );
               } else if (data.type === "token") {
                 fullContent += data.content;
-                if (!PRODUCE_ROUTES.includes(currentRoute)) {
-                  setMessages(prev =>
-                    prev.map(m => m.id === tempAiMsg.id ? { ...m, content: fullContent } : m)
-                  );
-                }
-              } else if (data.type === "content") {
-                fullContent = data.content;
                 if (!PRODUCE_ROUTES.includes(currentRoute)) {
                   setMessages(prev =>
                     prev.map(m => m.id === tempAiMsg.id ? { ...m, content: fullContent } : m)
@@ -822,7 +866,7 @@ export function AgentPanel({
           {showMentions && filteredMentionItems.length > 0 && (
             <div className="absolute bottom-full left-0 right-0 mb-1 bg-surface-2 border border-surface-3 rounded-lg shadow-xl max-h-48 overflow-y-auto z-10">
               <div className="p-2 text-xs text-zinc-500 border-b border-surface-3">
-                选择要引用的字段（{filteredMentionItems.length} 个有内容的字段）
+                选择要引用的内容块（{filteredMentionItems.length} 个可用）
               </div>
               {filteredMentionItems.map((item, idx) => (
                 <button
@@ -865,7 +909,7 @@ export function AgentPanel({
               value={input}
               onChange={handleInputChange}
               onKeyDown={handleKeyDown}
-              placeholder={projectId ? `输入消息... 使用 @ 引用字段${mentionItems.length > 0 ? ` (${mentionItems.length}个可用)` : ""}` : "请先选择项目"}
+              placeholder={projectId ? `输入消息... 使用 @ 引用内容块${mentionItems.length > 0 ? ` (${mentionItems.length}个可用)` : ""}` : "请先选择项目"}
               disabled={!projectId || sending}
               rows={1}
               className="flex-1 px-4 py-2 bg-surface-2 border border-surface-3 rounded-lg text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:opacity-50 resize-none overflow-hidden"
@@ -955,7 +999,11 @@ function MessageBubble({
     return (
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeRaw]}
         components={{
+          // 修订标记样式（<del>/<ins> 由 edit_engine 生成）
+          del: ({ children }) => <del className="bg-red-900/30 text-red-300 line-through">{children}</del>,
+          ins: ({ children }) => <ins className="bg-green-900/30 text-green-300 no-underline">{children}</ins>,
           // 自定义各种 Markdown 元素的样式
           p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
           h1: ({ children }) => <h1 className="text-lg font-bold mb-2">{children}</h1>,
@@ -1036,9 +1084,15 @@ function MessageBubble({
               {message.is_edited && (
                 <span className="text-xs opacity-50 ml-1">(已编辑)</span>
               )}
-              {message.metadata?.tool_used && (
+              {message.metadata?.tools_used && Array.isArray(message.metadata.tools_used) && message.metadata.tools_used.length > 0 && (
                 <span className="text-xs opacity-70 block mt-1">
-                  🔧 {message.metadata.tool_used}
+                  🔧 {message.metadata.tools_used.map((t: string) => TOOL_NAMES[t] || t).join(", ")}
+                </span>
+              )}
+              {/* 旧格式兼容 */}
+              {message.metadata?.tool_used && !message.metadata?.tools_used && (
+                <span className="text-xs opacity-70 block mt-1">
+                  🔧 {TOOL_NAMES[message.metadata.tool_used] || message.metadata.tool_used}
                 </span>
               )}
             </>

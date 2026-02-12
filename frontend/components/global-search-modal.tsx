@@ -98,7 +98,7 @@ export function GlobalSearchModal({
     }
   };
 
-  // 替换某个字段/块中的所有匹配
+  // 替换某个内容块/块中的所有匹配
   const handleReplaceInItem = async (result: SearchResult) => {
     setIsReplacing(true);
     try {
@@ -128,7 +128,7 @@ export function GlobalSearchModal({
         caseSensitive,
       });
       setToast({
-        message: `已替换 ${data.replaced_count} 处（涉及 ${data.affected_items.length} 个字段）`,
+        message: `已替换 ${data.replaced_count} 处（涉及 ${data.affected_items.length} 个内容块）`,
         type: "success",
       });
       await doSearch(searchQuery);
@@ -243,7 +243,7 @@ export function GlobalSearchModal({
             <div className="mt-2 text-xs text-zinc-500">
               {isSearching
                 ? "正在搜索..."
-                : `找到 ${totalMatches} 个匹配，分布在 ${results.length} 个字段中`}
+                : `找到 ${totalMatches} 个匹配，分布在 ${results.length} 个内容块中`}
             </div>
           )}
         </div>
@@ -273,7 +273,7 @@ export function GlobalSearchModal({
                         ? "bg-blue-900/50 text-blue-400"
                         : "bg-purple-900/50 text-purple-400"
                     }`}>
-                      {result.type === "field" ? "字段" : "内容块"}
+                      {result.type === "field" ? "内容块" : "内容块"}
                     </span>
                     <span className="text-sm text-zinc-200 truncate font-medium">{result.name}</span>
                     {result.phase && (
@@ -290,7 +290,7 @@ export function GlobalSearchModal({
                         }}
                         disabled={isReplacing}
                         className="px-2 py-0.5 text-xs bg-orange-600/80 hover:bg-orange-600 text-white rounded disabled:opacity-50"
-                        title={`替换此字段中的所有匹配`}
+                        title={`替换此内容块中的所有匹配`}
                       >
                         替换全部
                       </button>
@@ -301,7 +301,7 @@ export function GlobalSearchModal({
                         onNavigateToField?.(result.id, result.type);
                       }}
                       className="px-2 py-0.5 text-xs bg-brand-600/80 hover:bg-brand-600 text-white rounded"
-                      title="定位到此字段"
+                      title="定位到此内容块"
                     >
                       定位
                     </button>

@@ -53,7 +53,7 @@ interface SimulatorData {
 
 interface TrialConfig {
   name: string;
-  target_block_ids: string[];       // 核心：要评估的字段 ID
+  target_block_ids: string[];       // 核心：要评估的内容块 ID
   target_block_names: string[];     // 显示用
   simulator_type: string;           // 保留向后兼容
   simulator_id?: string;            // 新: 关联后台配置的模拟器
@@ -351,7 +351,7 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
       setGraders(graderList);
       // 过滤掉"体验式"模拟器
       setSimulators((simList || []).filter((s: SimulatorData) => s.interaction_type !== "experience"));
-      // 提取所有 field 类型的内容块作为可选字段
+      // 提取所有 field 类型的内容块作为可选内容块
       const fields: {id: string; name: string}[] = [];
       const _flatten = (blocks: any[]) => {
         for (const b of blocks) {
@@ -410,12 +410,12 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
     setExpandedTrial(trials.length);
   };
 
-  // 全回归：每个模拟器 × 全部内容字段 创建试验
+  // 全回归：每个模拟器 × 全部内容块 创建试验
   const addFullRegression = () => {
     const newTrials: TrialConfig[] = [];
     let order = trials.length;
 
-    // 获取所有内容字段
+    // 获取所有内容块
     const targetFields = projectBlocks.length > 0 ? projectBlocks : [{ id: "all", name: "全部内容" }];
     const fieldIds = targetFields.map(f => f.id);
     const fieldNames = targetFields.map(f => f.name);
@@ -619,7 +619,7 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
                     <div className="flex items-center gap-2 mt-1 flex-wrap">
                       {/* 目标字段数 */}
                       <span className="text-xs px-2 py-0.5 rounded-md bg-blue-500/15 text-blue-400 border border-blue-500/30">
-                        📄 {targetCount > 0 ? `${targetCount} 个字段` : "未选字段"}
+                        📄 {targetCount > 0 ? `${targetCount} 个内容块` : "未选内容块"}
                       </span>
                       {/* 模拟器名称 */}
                       <span className={`text-xs px-2 py-0.5 rounded-md border ${style.color}`}>
@@ -700,7 +700,7 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
                           })}
                         </div>
                       ) : (
-                        <p className="text-sm text-zinc-500">项目中暂无内容字段。请先在内容面板中创建字段。</p>
+                        <p className="text-sm text-zinc-500">项目中暂无内容块。请先在内容面板中创建内容块。</p>
                       )}
                     </div>
 
@@ -1113,7 +1113,7 @@ export function EvalReportPanel({ block, projectId, onUpdate }: EvalFieldProps) 
           <RefreshCw className="w-4 h-4 animate-spin flex-shrink-0" />
           <div>
             <p>正在并行执行所有试验...</p>
-            <p className="text-emerald-400/60 text-xs mt-1">可以自由浏览其他字段，回来后状态会自动恢复。</p>
+            <p className="text-emerald-400/60 text-xs mt-1">可以自由浏览其他内容块，回来后状态会自动恢复。</p>
           </div>
         </div>
       )}

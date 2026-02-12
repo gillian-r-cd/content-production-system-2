@@ -23,7 +23,7 @@ import { FileText, Folder, Settings, ChevronRight } from "lucide-react";
 interface ContentPanelProps {
   projectId: string | null;
   currentPhase: string;
-  phaseStatus?: Record<string, string>;  // 各阶段状态
+  phaseStatus?: Record<string, string>;  // 各组状态
   fields: Field[];
   selectedBlock?: ContentBlock | null;  // 树形视图选中的内容块
   allBlocks?: ContentBlock[];  // 所有内容块（用于依赖选择）
@@ -55,7 +55,7 @@ export function ContentPanel({
   const phaseFields = fields.filter((f) => f.phase === currentPhase);
   const completedFieldIds = useMemo(() => new Set(fields.filter(f => f.status === "completed").map(f => f.id)), [fields]);
 
-  // 加载字段模板
+  // 加载内容块模板
   useEffect(() => {
     import("@/lib/api").then(({ settingsAPI }) => {
       settingsAPI.listFieldTemplates().then(setFieldTemplates).catch(console.error);
@@ -69,7 +69,7 @@ export function ContentPanel({
       await fieldAPI.create({
         project_id: projectId,
         phase: currentPhase,
-        name: `新字段 ${phaseFields.length + 1}`,
+        name: `新内容块 ${phaseFields.length + 1}`,
         field_type: "richtext",
         content: "",
         status: "pending",
@@ -79,18 +79,18 @@ export function ContentPanel({
       });
       onFieldsChange?.();
     } catch (err) {
-      console.error("添加字段失败:", err);
-      alert("添加字段失败: " + (err instanceof Error ? err.message : "未知错误"));
+      console.error("添加内容块失败:", err);
+      alert("添加内容块失败: " + (err instanceof Error ? err.message : "未知错误"));
     }
   };
 
-  // 从模板添加字段
+  // 从模板添加内容块
   const handleAddFromTemplate = async (template: any) => {
     if (!projectId) return;
     try {
       const templateFields = template.fields || [];
       
-      // 获取现有字段名以处理重复
+      // 获取现有内容块名以处理重复
       const existingNames = phaseFields.map(f => f.name);
       
       // 生成唯一名称的辅助函数
@@ -108,7 +108,7 @@ export function ContentPanel({
         return uniqueName;
       };
       
-      // 第一轮：创建所有字段，记录 name -> id 映射
+      // 第一轮：创建所有内容块，记录 name -> id 映射
       const nameToIdMap: Record<string, string> = {};
       const createdFields: any[] = [];
       
@@ -130,7 +130,7 @@ export function ContentPanel({
         createdFields.push({ field: newField, templateField: tf });
       }
       
-      // 第二轮：更新依赖关系（将模板中的字段名转换为实际的字段 ID）
+      // 第二轮：更新依赖关系（将模板中的内容块名转换为实际的内容块 ID）
       for (const { field, templateField } of createdFields) {
         const templateDeps = templateField.depends_on || [];
         if (templateDeps.length > 0) {
@@ -154,12 +154,12 @@ export function ContentPanel({
     }
   };
 
-  // 自动触发生成：检查是否有字段可以自动生成
+  // 自动触发生成：检查是否有内容块可以自动生成
   // 使用 ref 守卫防止 stale closure 导致并发启动
   const checkAndAutoGenerate = useCallback(async () => {
     if (autoGenRef.current) return; // 已有自动生成在进行中
 
-    // 找到可以自动生成的字段：pending、need_review=false、依赖已满足
+    // 找到可以自动生成的内容块：pending、need_review=false、依赖已满足
     const candidate = phaseFields.find(field => {
       if (field.status !== "pending") return false;
       if (field.need_review !== false) return false;
@@ -193,7 +193,7 @@ export function ContentPanel({
         }
       }
 
-      // 生成完成，刷新字段列表
+      // 生成完成，刷新内容块列表
       onFieldsChange?.();
       sendNotification("自动生成完成", `「${candidate.name}」已自动生成完毕`);
     } catch (err) {
@@ -203,21 +203,21 @@ export function ContentPanel({
     }
   }, [phaseFields, completedFieldIds, onFieldsChange]);
 
-  // 当字段列表变化时，延迟检查是否有字段可以自动生成（防止黑屏 / 无限循环）
+  // 当内容块列表变化时，延迟检查是否有内容块可以自动生成（防止黑屏 / 无限循环）
   useEffect(() => {
     if (currentPhase !== "produce_inner" || phaseFields.length === 0) return;
     const timer = setTimeout(() => checkAndAutoGenerate(), 500);
     return () => clearTimeout(timer);
   }, [fields, currentPhase, checkAndAutoGenerate]);
   
-  // 判断当前阶段是否可以进入下一阶段
+  // 判断当前组是否可以进入下一组
   const phaseHasContent = phaseFields.length > 0 && phaseFields.some(f => f.status === "completed");
   const currentPhaseIndex = PROJECT_PHASES.indexOf(currentPhase);
   const isLastPhase = currentPhaseIndex === PROJECT_PHASES.length - 1;
   const nextPhase = isLastPhase ? null : PROJECT_PHASES[currentPhaseIndex + 1];
   
   // 内涵设计阶段不再使用特殊的方案格式检测
-  // 改为与其他阶段一致的字段列表视图
+  // 改为与其他组一致的内容块列表视图
 
   // 消费者调研阶段：检查是否是JSON格式
   const researchField = phaseFields.find(
@@ -236,7 +236,7 @@ export function ContentPanel({
     }
   }, [currentPhase, researchField?.content]);
   
-  // 确认进入下一阶段
+  // 确认进入下一组
   const handleAdvancePhase = async () => {
     if (!projectId || !nextPhase) return;
     
@@ -245,8 +245,8 @@ export function ContentPanel({
       await agentAPI.advance(projectId);
       onPhaseAdvance?.();
     } catch (err) {
-      console.error("进入下一阶段失败:", err);
-      alert("进入下一阶段失败: " + (err instanceof Error ? err.message : "未知错误"));
+      console.error("进入下一组失败:", err);
+      alert("进入下一组失败: " + (err instanceof Error ? err.message : "未知错误"));
     } finally {
       setIsAdvancing(false);
     }
@@ -316,7 +316,7 @@ export function ContentPanel({
           const parsed = JSON.parse(researchContent);
           // 只要是有效 JSON 且包含调研相关字段，就用 ResearchPanel
           if (parsed && typeof parsed === "object" && (parsed.summary || parsed.consumer_profile || parsed.personas || parsed.pain_points)) {
-            // 确保 ResearchPanel 需要的字段存在（补全缺失字段）
+            // 确保 ResearchPanel 需要的内容块存在（补全缺失字段）
             const normalized = {
               summary: parsed.summary || "",
               consumer_profile: parsed.consumer_profile || {},
@@ -376,9 +376,9 @@ export function ContentPanel({
       
       // 生成描述文字
       const parts = [];
-      if (phaseCount > 0) parts.push(`${phaseCount} 个子阶段`);
+      if (phaseCount > 0) parts.push(`${phaseCount} 个子组`);
       if (groupCount > 0) parts.push(`${groupCount} 个分组`);
-      if (fieldCount > 0) parts.push(`${fieldCount} 个字段`);
+      if (fieldCount > 0) parts.push(`${fieldCount} 个内容块`);
       if (otherCount > 0) parts.push(`${otherCount} 个其他`);
       const description = parts.join("、") || "暂无内容";
       
@@ -391,7 +391,7 @@ export function ContentPanel({
                   ? "bg-purple-600/20 text-purple-400"
                   : "bg-amber-600/20 text-amber-400"
               }`}>
-                {selectedBlock.block_type === "phase" ? "阶段" : "分组"}
+                {selectedBlock.block_type === "phase" ? "组" : "分组"}
               </span>
               <h1 className="text-xl font-bold text-zinc-100">{selectedBlock.name}</h1>
             </div>
@@ -418,18 +418,18 @@ export function ContentPanel({
       );
     }
     
-    // 如果是没有子块的阶段（空阶段或虚拟阶段）
+    // 如果是没有子块的组（空阶段或虚拟阶段）
     if (!isVirtualBlock && (!selectedBlock.children || selectedBlock.children.length === 0)) {
       return (
         <div className="h-full flex flex-col items-center justify-center text-zinc-500">
           <p className="text-lg mb-2">{selectedBlock.name}</p>
-          <p className="text-sm">该阶段暂无字段，请在左侧添加</p>
+          <p className="text-sm">该组暂无内容块，请在左侧添加</p>
         </div>
       );
     }
     
     if (selectedPhase) {
-      // 获取该阶段的所有字段（虚拟块模式）
+      // 获取该组的所有内容块（虚拟块模式）
       const phaseFields = fields.filter(f => f.phase === selectedPhase);
       
       // ===== 特殊阶段处理 =====
@@ -531,7 +531,7 @@ export function ContentPanel({
         }
       }
       
-      // 外延生产阶段 - 显示渠道字段列表（使用 FieldCard 提供完整编辑功能）
+      // 外延生产阶段 - 显示渠道内容块列表（使用 FieldCard 提供完整编辑功能）
       if (selectedPhase === "produce_outer" && phaseFields.length > 0) {
         return (
           <div className="h-full flex flex-col">
@@ -554,7 +554,7 @@ export function ContentPanel({
                 ))}
               </div>
 
-              {/* 确认进入下一阶段按钮 */}
+              {/* 确认进入下一组按钮 */}
               {phaseHasContent && nextPhase && (() => {
                 const isPhaseCompleted = phaseStatus[currentPhase] === "completed";
                 return (
@@ -562,10 +562,10 @@ export function ContentPanel({
                     <div className="flex items-center justify-between">
                       <div>
                         <p className="text-zinc-400 text-sm">
-                          {isPhaseCompleted ? "✅ 当前阶段已确认" : "当前阶段内容已完成"}
+                          {isPhaseCompleted ? "✅ 当前组已确认" : "当前组内容已完成"}
                         </p>
                         <p className="text-zinc-500 text-xs mt-1">
-                          下一阶段：{PHASE_NAMES[nextPhase] || nextPhase}
+                          下一组：{PHASE_NAMES[nextPhase] || nextPhase}
                         </p>
                       </div>
                       {isPhaseCompleted ? (
@@ -587,7 +587,7 @@ export function ContentPanel({
                               <span className="animate-spin">⏳</span> 处理中...
                             </span>
                           ) : (
-                            <span>✅ 确认，进入下一阶段</span>
+                            <span>✅ 确认，进入下一组</span>
                           )}
                         </button>
                       )}
@@ -611,7 +611,7 @@ export function ContentPanel({
         );
       }
       
-      // 内涵生产阶段 - 显示字段列表（使用 FieldCard 提供完整编辑功能）
+      // 内涵生产阶段 - 显示内容块列表（使用 FieldCard 提供完整编辑功能）
       if (selectedPhase === "produce_inner" && phaseFields.length > 0) {
         return (
           <div className="h-full flex flex-col">
@@ -620,7 +620,7 @@ export function ContentPanel({
                 {PHASE_NAMES[selectedPhase] || selectedPhase}
               </h1>
               <p className="text-zinc-500 text-sm mt-1">
-                共 {phaseFields.length} 个字段 - 可展开编辑所有设置
+                共 {phaseFields.length} 个内容块 - 可展开编辑所有设置
               </p>
             </div>
             <div className="flex-1 overflow-y-auto p-4">
@@ -636,7 +636,7 @@ export function ContentPanel({
                 ))}
               </div>
 
-              {/* 确认进入下一阶段按钮 */}
+              {/* 确认进入下一组按钮 */}
               {phaseHasContent && nextPhase && (() => {
                 const isPhaseCompleted = phaseStatus[currentPhase] === "completed";
                 return (
@@ -644,10 +644,10 @@ export function ContentPanel({
                     <div className="flex items-center justify-between">
                       <div>
                         <p className="text-zinc-400 text-sm">
-                          {isPhaseCompleted ? "✅ 当前阶段已确认" : "当前阶段内容已完成"}
+                          {isPhaseCompleted ? "✅ 当前组已确认" : "当前组内容已完成"}
                         </p>
                         <p className="text-zinc-500 text-xs mt-1">
-                          下一阶段：{PHASE_NAMES[nextPhase] || nextPhase}
+                          下一组：{PHASE_NAMES[nextPhase] || nextPhase}
                         </p>
                       </div>
                       {isPhaseCompleted ? (
@@ -669,7 +669,7 @@ export function ContentPanel({
                               <span className="animate-spin">⏳</span> 处理中...
                             </span>
                           ) : (
-                            <span>✅ 确认，进入下一阶段</span>
+                            <span>✅ 确认，进入下一组</span>
                           )}
                         </button>
                       )}
@@ -682,7 +682,7 @@ export function ContentPanel({
         );
       }
       
-      // 其他阶段 - 显示阶段概览（使用 FieldCard 提供完整编辑功能）
+      // 其他组 - 显示阶段概览（使用 FieldCard 提供完整编辑功能）
       return (
         <div className="h-full flex flex-col overflow-hidden">
           <div className="p-6 pb-0">
@@ -690,7 +690,7 @@ export function ContentPanel({
               {PHASE_NAMES[selectedPhase] || selectedPhase}
             </h1>
             <p className="text-zinc-500 mb-4">
-              共有 {phaseFields.length} 个字段 - 点击字段可编辑
+              共有 {phaseFields.length} 个内容块 - 点击字段可编辑
             </p>
           </div>
           <div className="flex-1 overflow-y-auto px-6 pb-6">
@@ -707,7 +707,7 @@ export function ContentPanel({
                 ))}
               </div>
             ) : (
-              <p className="text-zinc-500">该阶段暂无内容字段</p>
+              <p className="text-zinc-500">该组暂无内容块</p>
             )}
           </div>
         </div>
@@ -715,7 +715,7 @@ export function ContentPanel({
     }
   }
   
-  // 处理字段块点击
+  // 处理内容块块点击
   if (selectedBlock && selectedBlock.block_type === "field") {
     // ===== 检查 special_handler：显示对应的特殊界面 =====
     const handler = selectedBlock.special_handler as string | null | undefined;
@@ -910,7 +910,7 @@ export function ContentPanel({
         <div className="text-6xl mb-4">🌲</div>
         <h2 className="text-xl font-bold text-zinc-200 mb-2">树形架构模式</h2>
         <p className="text-zinc-400 max-w-md">
-          请在左侧树形结构中选择一个阶段或字段来查看和编辑内容。
+          请在左侧树形结构中选择一个组或字段来查看和编辑内容。
         </p>
         <p className="text-zinc-500 text-sm mt-4">
           传统视图已锁定，所有操作通过树形结构进行。
@@ -1017,7 +1017,7 @@ export function ContentPanel({
     }
   }
 
-  // 构建字段ID到字段名称的映射（用于显示依赖）
+  // 构建字段ID到内容块名称的映射（用于显示依赖）
   const fieldNameMap = Object.fromEntries(fields.map(f => [f.id, f.name]));
   
   // 滚动到指定字段
@@ -1028,11 +1028,11 @@ export function ContentPanel({
 
   return (
     <div className="h-full flex">
-      {/* 内涵生产阶段：左侧字段目录 */}
+      {/* 内涵生产阶段：左侧内容块目录 */}
       {currentPhase === "produce_inner" && phaseFields.length > 0 && (
         <div className="w-56 shrink-0 border-r border-surface-3 p-4 overflow-auto">
           <h3 className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-3">
-            字段目录
+            内容块目录
           </h3>
           <div className="space-y-1">
             {phaseFields.map((field, index) => {
@@ -1069,13 +1069,13 @@ export function ContentPanel({
             })}
           </div>
           
-          {/* 添加字段按钮 */}
+          {/* 添加内容块按钮 */}
           <div className="mt-4 space-y-2">
             <button
               onClick={() => handleAddEmptyField()}
               className="w-full py-2 text-xs bg-brand-600 hover:bg-brand-700 text-white rounded-lg transition-colors"
             >
-              + 添加字段
+              + 添加内容块
             </button>
             <button
               onClick={() => setShowFieldTemplateModal(true)}
@@ -1117,7 +1117,7 @@ export function ContentPanel({
           </p>
         </div>
 
-        {/* 字段列表 */}
+        {/* 内容块列表 */}
         {phaseFields.length > 0 ? (
           <div className="space-y-6">
             {phaseFields.map((field) => (
@@ -1133,14 +1133,14 @@ export function ContentPanel({
           </div>
         ) : (
           <div className="text-center py-12 text-zinc-500">
-            <p>当前阶段暂无内容</p>
+            <p>当前组暂无内容</p>
             <p className="text-sm mt-2">
               在右侧与 AI Agent 对话开始生产内容
             </p>
           </div>
         )}
       
-      {/* 确认进入下一阶段按钮 */}
+      {/* 确认进入下一组按钮 */}
       {phaseHasContent && nextPhase && (() => {
         const isPhaseCompleted = phaseStatus[currentPhase] === "completed";
         
@@ -1149,10 +1149,10 @@ export function ContentPanel({
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-zinc-400 text-sm">
-                  {isPhaseCompleted ? "✅ 当前阶段已确认" : "当前阶段内容已完成"}
+                  {isPhaseCompleted ? "✅ 当前组已确认" : "当前组内容已完成"}
                 </p>
                 <p className="text-zinc-500 text-xs mt-1">
-                  下一阶段：{PHASE_NAMES[nextPhase] || nextPhase}
+                  下一组：{PHASE_NAMES[nextPhase] || nextPhase}
                 </p>
               </div>
               {isPhaseCompleted ? (
@@ -1174,7 +1174,7 @@ export function ContentPanel({
                       <span className="animate-spin">⏳</span> 处理中...
                     </span>
                   ) : (
-                    <span>✅ 确认，进入下一阶段</span>
+                    <span>✅ 确认，进入下一组</span>
                   )}
                 </button>
               )}
@@ -1184,14 +1184,14 @@ export function ContentPanel({
       })()}
       </div>
 
-      {/* 字段模板选择弹窗 */}
+      {/* 内容块模板选择弹窗 */}
       {showFieldTemplateModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <div className="bg-surface-2 rounded-xl border border-surface-3 w-full max-w-lg max-h-[80vh] overflow-hidden">
             <div className="px-4 py-3 border-b border-surface-3">
-              <h3 className="font-medium text-zinc-200">从模板添加字段</h3>
+              <h3 className="font-medium text-zinc-200">从模板添加内容块</h3>
               <p className="text-xs text-zinc-500 mt-1">
-                选择一个模板添加到当前阶段
+                选择一个模板添加到当前组
               </p>
             </div>
 
@@ -1206,13 +1206,13 @@ export function ContentPanel({
                     <div className="font-medium text-zinc-200">{template.name}</div>
                     <div className="text-xs text-zinc-500 mt-1">{template.description}</div>
                     <div className="text-xs text-zinc-600 mt-2">
-                      📦 {template.fields?.length || 0} 个字段
+                      📦 {template.fields?.length || 0} 个内容块
                     </div>
                   </button>
                 ))
               ) : (
                 <p className="text-zinc-500 text-center py-8">
-                  暂无字段模板，请在后台设置中添加
+                  暂无内容块模板，请在后台设置中添加
                 </p>
               )}
             </div>
@@ -1293,7 +1293,7 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
     setContent(field.content);
   }, [field.content]);
 
-  // 获取依赖字段信息
+  // 获取依赖内容块信息
   const dependsOnIds = field.dependencies?.depends_on || [];
   const dependencyFields = allFields.filter((f) => dependsOnIds.includes(f.id));
   const unmetDependencies = dependencyFields.filter((f) => f.status !== "completed");
@@ -1309,7 +1309,7 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
     requestNotificationPermission();
     
     if (!canGenerate) {
-      alert(`请先完成依赖字段: ${unmetDependencies.map(f => f.name).join(", ")}`);
+      alert(`请先完成依赖内容块: ${unmetDependencies.map(f => f.name).join(", ")}`);
       return;
     }
     
@@ -1434,7 +1434,7 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
   };
 
   const handleDelete = async () => {
-    if (!confirm(`确定要删除字段「${field.name}」吗？此操作不可撤销。`)) return;
+    if (!confirm(`确定要删除内容块「${field.name}」吗？此操作不可撤销。`)) return;
     try {
       await fieldAPI.delete(field.id);
       onFieldsChange?.();
@@ -1574,7 +1574,7 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
             <button
               onClick={handleDelete}
               className="px-3 py-1 text-sm bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/30 rounded-lg transition-colors"
-              title="删除此字段"
+              title="删除此内容块"
             >
               🗑️
             </button>
@@ -1742,7 +1742,7 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
         <div className="mx-4 mb-2 p-3 bg-amber-900/20 border border-amber-500/30 rounded-lg">
           <div className="flex items-center gap-2 text-sm text-amber-400">
             <span>📝</span>
-            <span>此字段有 {field.pre_questions.length} 个预设问题需要回答</span>
+            <span>此内容块有 {field.pre_questions.length} 个预设问题需要回答</span>
           </div>
           <ul className="mt-2 space-y-1 text-xs text-zinc-400">
             {field.pre_questions.slice(0, 3).map((q: string, i: number) => (
@@ -1801,7 +1801,7 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
                 >{field.content}</ReactMarkdown>
               ) : hasPreQuestions && !showPreQuestions ? (
                 <p className="text-zinc-500 italic">
-                  此字段有预设问题需要回答，点击"生成"按钮开始
+                  此内容块有预设问题需要回答，点击"生成"按钮开始
                 </p>
               ) : (
                 <p className="text-zinc-500 italic">暂无内容，点击"生成"按钮开始</p>
@@ -1856,10 +1856,10 @@ function DependencyModal({ field, allFields, onClose, onSave }: DependencyModalP
     evaluate: "评估",
   };
 
-  // 可选的依赖字段（排除自己）
+  // 可选的依赖内容块（排除自己）
   const availableFields = allFields.filter((f) => f.id !== field.id);
 
-  // 按阶段分组（全局字段在前）
+  // 按阶段分组（全局内容块在前）
   const globalPhases = ["intent", "research"];
   const globalFields = availableFields.filter((f) => globalPhases.includes(f.phase));
   const currentPhaseFields = availableFields.filter((f) => f.phase === field.phase);
@@ -1923,22 +1923,22 @@ function DependencyModal({ field, allFields, onClose, onSave }: DependencyModalP
         <div className="px-4 py-3 border-b border-surface-3">
           <h3 className="font-medium text-zinc-200">设置依赖关系</h3>
           <p className="text-xs text-zinc-500 mt-1">
-            选择生成"{field.name}"前需要先完成的字段
+            选择生成"{field.name}"前需要先完成的内容块
           </p>
         </div>
 
         <div className="p-4 max-h-[50vh] overflow-y-auto space-y-4">
-          {/* 全局字段（意图分析、消费者调研） */}
-          {renderFieldGroup(globalFields, "全局字段（可引用项目上游阶段）", true)}
+          {/* 全局内容块（意图分析、消费者调研） */}
+          {renderFieldGroup(globalFields, "全局内容块（可引用项目上游组）", true)}
           
-          {/* 当前阶段字段 */}
-          {renderFieldGroup(currentPhaseFields, `当前阶段（${phaseNameMap[field.phase] || field.phase}）`)}
+          {/* 当前组字段 */}
+          {renderFieldGroup(currentPhaseFields, `当前组（${phaseNameMap[field.phase] || field.phase}）`)}
           
-          {/* 其他阶段字段 */}
-          {renderFieldGroup(otherFields, "其他阶段")}
+          {/* 其他组字段 */}
+          {renderFieldGroup(otherFields, "其他组")}
           
           {availableFields.length === 0 && (
-            <p className="text-zinc-500 text-center py-4">暂无可选的依赖字段</p>
+            <p className="text-zinc-500 text-center py-4">暂无可选的依赖内容块</p>
           )}
         </div>
 
@@ -2024,7 +2024,7 @@ function ConstraintsModal({ field, onClose, onSave }: ConstraintsModalProps) {
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
       <div className="bg-surface-2 rounded-xl border border-surface-3 w-full max-w-lg max-h-[80vh] overflow-hidden">
         <div className="px-4 py-3 border-b border-surface-3">
-          <h3 className="font-medium text-zinc-200">字段生成配置</h3>
+          <h3 className="font-medium text-zinc-200">内容块生成配置</h3>
           <p className="text-xs text-zinc-500 mt-1">
             设置「{field.name}」的生成提示词和约束
           </p>
@@ -2044,7 +2044,7 @@ function ConstraintsModal({ field, onClose, onSave }: ConstraintsModalProps) {
               className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-brand-500 resize-none"
             />
             <p className="text-xs text-zinc-500 mt-1.5">
-              告诉 AI 这个字段应该生成什么内容。越具体越好！
+              告诉 AI 这个内容块应该生成什么内容。越具体越好！
             </p>
 
             {/* 🤖 用 AI 生成提示词 */}
@@ -2057,7 +2057,7 @@ function ConstraintsModal({ field, onClose, onSave }: ConstraintsModalProps) {
                   type="text"
                   value={aiPromptPurpose}
                   onChange={(e) => setAiPromptPurpose(e.target.value)}
-                  placeholder="简述字段目的，如：介绍产品核心卖点"
+                  placeholder="简述内容块目的，如：介绍产品核心卖点"
                   className="flex-1 px-2.5 py-1.5 bg-surface-1 border border-surface-3 rounded text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-brand-500"
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && aiPromptPurpose.trim() && !generatingPrompt) {

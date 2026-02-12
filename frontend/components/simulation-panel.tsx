@@ -945,7 +945,7 @@ function CreateSimulationModal({
   const [selectedFieldIds, setSelectedFieldIds] = useState<string[]>([]);
   const [creating, setCreating] = useState(false);
 
-  // 可选的字段（已完成的内涵/外延字段）
+  // 可选的内容块（已完成的内涵/外延字段）
   const completedFields = fields.filter(
     (f) => f.status === "completed" && 
     ["produce_inner", "produce_outer"].includes(f.phase)
@@ -1133,7 +1133,7 @@ function CreateSimulationModal({
                 ))}
               </div>
             ) : (
-              <div className="text-sm text-zinc-500">暂无已完成的内容字段</div>
+              <div className="text-sm text-zinc-500">暂无已完成的内容块</div>
             )}
           </div>
         </div>

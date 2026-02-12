@@ -40,7 +40,7 @@ interface ContentBlockCardProps {
   allBlocks?: ContentBlock[];  // 用于依赖选择
   isVirtual?: boolean;  // 是否是虚拟块（来自 ProjectField）
   onUpdate?: () => void;
-  onSelect?: () => void;  // 点击选中此块（用于进入子阶段/分组）
+  onSelect?: () => void;  // 点击选中此块（用于进入子组/分组）
 }
 
 export function ContentBlockCard({ 
@@ -432,7 +432,7 @@ export function ContentBlockCard({
                   ? "bg-purple-600/20 text-purple-400"
                   : "bg-amber-600/20 text-amber-400"
               }`}>
-                {block.block_type === "phase" ? "子阶段" : "分组"}
+                {block.block_type === "phase" ? "子组" : "分组"}
               </span>
               
               {/* 子节点数量 */}
@@ -496,8 +496,8 @@ export function ContentBlockCard({
   
   if (isSpecialField) {
     const specialLabels: Record<string, { icon: string; title: string; desc: string }> = {
-      "intent_analysis": { icon: "💬", title: "意图分析", desc: "由 Agent 通过对话完成，请点击进入字段查看" },
-      "intent": { icon: "💬", title: "意图分析", desc: "由 Agent 通过对话完成，请点击进入字段查看" },
+      "intent_analysis": { icon: "💬", title: "意图分析", desc: "由 Agent 通过对话完成，请点击进入内容块查看" },
+      "intent": { icon: "💬", title: "意图分析", desc: "由 Agent 通过对话完成，请点击进入内容块查看" },
       "consumer_research": { icon: "🔍", title: "消费者调研", desc: "包含 DeepResearch 调研结果和消费者画像" },
       "research": { icon: "🔍", title: "消费者调研", desc: "包含 DeepResearch 调研结果和消费者画像" },
       "consumer_simulation": { icon: "🎭", title: "消费者模拟", desc: "模拟消费者体验和反馈" },
@@ -510,7 +510,7 @@ export function ContentBlockCard({
       "eval_seller": { icon: "💰", title: "内容销售测试", desc: "模拟销售对话测试内容转化能力" },
       "eval_diagnoser": { icon: "🔍", title: "综合诊断", desc: "跨角色诊断分析，需先完成其他评估" },
     };
-    const info = specialLabels[specialHandler] || { icon: "⚡", title: specialHandler, desc: "特殊处理字段" };
+    const info = specialLabels[specialHandler] || { icon: "⚡", title: specialHandler, desc: "特殊处理内容块" };
     
     return (
       <div className="bg-surface-2 border border-surface-3 rounded-lg overflow-hidden">
@@ -576,7 +576,7 @@ export function ContentBlockCard({
               {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
             </button>
             
-            {/* 字段图标 */}
+            {/* 内容块图标 */}
             <FileText className="w-4 h-4 text-blue-400 flex-shrink-0" />
             
             {/* 名称（可编辑） */}

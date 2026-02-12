@@ -122,7 +122,7 @@ export function CreateProjectModal({
     try {
       // 1. 创建项目
       // 如果使用新架构，传递 use_flexible_architecture=true
-      // 如果没有选择模板（从零开始），后端会创建空的阶段结构
+      // 如果没有选择模板（从零开始），后端会创建空的组结构
       const project = await projectAPI.create({
         name: name.trim(),
         creator_profile_id: creatorProfileId,
@@ -335,7 +335,7 @@ export function CreateProjectModal({
                             </span>
                           </div>
                           <p className="text-xs text-zinc-500 mt-0.5">
-                            创建空白项目，自由添加阶段和字段
+                            创建空白项目，自由添加组和字段
                           </p>
                         </div>
                       </div>
@@ -380,7 +380,7 @@ export function CreateProjectModal({
                                 )}
                               </div>
                               <p className="text-xs text-zinc-500 truncate mt-0.5">
-                                {template.phases.length} 个阶段
+                                {template.phases.length} 个组
                               </p>
                             </div>
                             
