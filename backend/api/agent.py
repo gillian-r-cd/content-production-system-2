@@ -612,45 +612,71 @@ async def stream_chat(
             # 1. 返回用户消息真实 ID
             yield sse_event({"type": "user_saved", "message_id": saved_user_msg_id})
 
-            full_content = ""
+            full_content = ""           # agent 节点的 LLM 输出（显示在聊天气泡）
             current_tool = None
             tools_used = []
             is_producing = False
-            first_tool_sent = False  # 用于向前端发 route 事件（兼容）
+            first_tool_sent = False     # 用于向前端发 route 事件（兼容）
+            tool_chars = 0              # 工具内 LLM 输出的字符数（用于进度显示）
+            event_count = 0             # 事件计数（调试用）
+
+            logger.info("[stream] 开始 astream_events, project=%s, phase=%s",
+                        request.project_id, current_phase)
 
             async for event in agent_graph.astream_events(
                 input_state, config=config, version="v2"
             ):
                 kind = event["event"]
+                event_count += 1
 
-                # ---- Token 级流式（agent 节点的 LLM 输出） ----
+                # ---- Token 级流式 ----
                 if kind == "on_chat_model_stream":
-                    # 只转发 agent 节点的 LLM stream，工具内部 LLM 不转发
-                    tags = event.get("tags", [])
-                    name = event.get("name", "")
-                    # astream_events 中 agent 节点的 LLM 调用 name 通常是模型名
-                    # 通过 parent 节点判断
                     metadata = event.get("metadata", {})
                     langgraph_node = metadata.get("langgraph_node", "")
+                    chunk = event["data"].get("chunk")
+
+                    if not chunk or not hasattr(chunk, "content"):
+                        continue
+
+                    content_piece = chunk.content
+                    if not content_piece:
+                        continue
 
                     if langgraph_node == "agent":
-                        chunk = event["data"]["chunk"]
-                        if hasattr(chunk, "content") and chunk.content:
-                            full_content += chunk.content
+                        # Agent 节点的 LLM 输出 → 流式发给前端聊天气泡
+                        full_content += content_piece
+                        yield sse_event({
+                            "type": "token",
+                            "content": content_piece,
+                        })
+                    elif current_tool:
+                        # 工具内部 LLM 输出 → 发送进度事件
+                        tool_chars += len(content_piece)
+                        # 每 200 字发一次进度（避免事件过多）
+                        if tool_chars % 200 < len(content_piece) or tool_chars < 50:
                             yield sse_event({
-                                "type": "token",
-                                "content": chunk.content,
+                                "type": "tool_progress",
+                                "tool": current_tool,
+                                "chars": tool_chars,
                             })
+                    else:
+                        # 未知来源（防御性）：仍然作为 token 发送
+                        full_content += content_piece
+                        yield sse_event({
+                            "type": "token",
+                            "content": content_piece,
+                        })
 
                 # ---- 工具开始 ----
                 elif kind == "on_tool_start":
                     tool_name = event["name"]
                     current_tool = tool_name
+                    tool_chars = 0  # 重置工具字符计数
                     tools_used.append(tool_name)
+                    logger.info("[stream] tool_start: %s", tool_name)
 
                     # 向前端发送 route 事件（兼容旧前端）
                     if not first_tool_sent:
-                        # 映射工具名到旧 route 名称
                         route_map = {
                             "run_research": "research",
                             "modify_field": "modify",
@@ -685,7 +711,10 @@ async def stream_chat(
                     if field_updated:
                         is_producing = True
 
-                    # modify_field 特殊处理
+                    logger.info("[stream] tool_end: %s, output=%d chars, field_updated=%s",
+                                current_tool, len(output_str), field_updated)
+
+                    # modify_field 特殊处理：解析 JSON 输出
                     if current_tool == "modify_field":
                         try:
                             result = json.loads(output_str)
@@ -702,6 +731,13 @@ async def stream_chat(
                                     "tool": current_tool,
                                     "output": result.get("summary", ""),
                                     "field_updated": True,
+                                })
+                            else:
+                                yield sse_event({
+                                    "type": "tool_end",
+                                    "tool": current_tool,
+                                    "output": result.get("summary", output_str[:500]),
+                                    "field_updated": field_updated,
                                 })
                         except (json.JSONDecodeError, TypeError):
                             yield sse_event({
@@ -721,6 +757,33 @@ async def stream_chat(
                     current_tool = None
 
             # ---- 图执行完毕 ----
+            logger.info("[stream] 图执行完毕, events=%d, full_content=%d chars, tools=%s",
+                        event_count, len(full_content), tools_used)
+
+            # 如果没有从 on_chat_model_stream 收到任何 token（回退机制）：
+            # 从最终 state 中提取 AI 消息内容
+            if not full_content:
+                try:
+                    final_state = await agent_graph.aget_state(config)
+                    if final_state and final_state.values:
+                        msgs = final_state.values.get("messages", [])
+                        # 取最后一条 AIMessage（非 ToolMessage）
+                        for m in reversed(msgs):
+                            if isinstance(m, AIMessage) and not m.tool_calls and m.content:
+                                full_content = m.content
+                                logger.warning(
+                                    "[stream] 回退：从 state 中提取 AI 内容, %d chars",
+                                    len(full_content),
+                                )
+                                # 一次性发送给前端
+                                yield sse_event({
+                                    "type": "token",
+                                    "content": full_content,
+                                })
+                                break
+                except Exception as fallback_err:
+                    logger.warning("[stream] 回退提取失败: %s", fallback_err)
+
             # 保存 assistant 最终回复到 ChatMessage DB
             agent_msg = ChatMessage(
                 id=generate_uuid(),
@@ -746,7 +809,7 @@ async def stream_chat(
         except Exception as e:
             import traceback
             tb = traceback.format_exc()
-            logger.error(f"[stream] EXCEPTION: {e}\n{tb}")
+            logger.error("[stream] EXCEPTION: %s\n%s", e, tb)
             yield sse_event({
                 "type": "error",
                 "error": str(e),
@@ -770,11 +833,11 @@ async def _handle_cocreation_stream(request, db, project, user_msg_id):
     """
     共创模式流式输出。
     不走 Agent Graph，直接用 llm.astream() 进行纯角色扮演对话。
-    （完整实现在 M6+ 阶段，当前为基础版本）
     """
     from core.llm import llm
     from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
+    logger.info("[cocreation] 开始, project=%s", request.project_id)
     yield sse_event({"type": "user_saved", "message_id": user_msg_id})
 
     try:
@@ -800,10 +863,15 @@ async def _handle_cocreation_stream(request, db, project, user_msg_id):
 
         # 流式输出
         full_content = ""
+        token_count = 0
         async for chunk in llm.astream(messages):
             if chunk.content:
                 full_content += chunk.content
+                token_count += 1
                 yield sse_event({"type": "token", "content": chunk.content})
+
+        logger.info("[cocreation] 完成, tokens=%d, content=%d chars",
+                     token_count, len(full_content))
 
         # 保存回复
         agent_msg = ChatMessage(

@@ -171,16 +171,18 @@ async def _modify_field_impl(
 
 请直接输出修改后的完整内容，不要添加任何解释或前缀。"""
 
+        # ⚠️ 传 config 给 LLM 调用，确保 astream_events 能捕获工具内 LLM 的流式 token
         response = await llm.ainvoke([
             SystemMessage(content=system_prompt),
             HumanMessage(content=f"请按要求修改「{field_name}」的内容。"),
-        ])
+        ], config=config)
 
         new_content = response.content
         _save_version(db, entity.id, current_content, "agent")
         entity.content = new_content
         db.commit()
 
+        logger.info(f"[modify_field] 已修改「{field_name}」, {len(new_content)} 字")
         return _json_ok(field_name, "applied", f"已修改「{field_name}」")
 
     except Exception as e:
@@ -261,10 +263,11 @@ async def _generate_field_impl(
         sections.append("请直接输出内容，不要添加前缀或解释。")
         system_prompt = "\n\n".join(sections)
 
+        # ⚠️ 传 config 给 LLM 调用，确保 astream_events 能捕获工具内 LLM 的流式 token
         response = await llm.ainvoke([
             SystemMessage(content=system_prompt),
             HumanMessage(content=f"请生成「{field_name}」的内容。"),
-        ])
+        ], config=config)
 
         new_content = response.content
         if entity.content and entity.content.strip():
@@ -273,6 +276,7 @@ async def _generate_field_impl(
         entity.status = "completed"
         db.commit()
 
+        logger.info(f"[generate_field_content] 已生成「{field_name}」, {len(new_content)} 字")
         return _json_ok(field_name, "generated", f"✅ 已生成「{field_name}」的内容")
 
     except Exception as e:
@@ -321,10 +325,11 @@ async def _query_field_impl(field_name: str, question: str, config: RunnableConf
         if not content.strip():
             return f"内容块「{field_name}」为空，还没有生成内容。"
 
+        # ⚠️ 传 config 给 LLM 调用
         response = await llm.ainvoke([
             SystemMessage(content=f"你是内容分析助手。以下是内容块「{field_name}」的内容：\n\n{content[:4000]}"),
             HumanMessage(content=question),
-        ])
+        ], config=config)
         return response.content
     except Exception as e:
         return f"查询失败: {e}"

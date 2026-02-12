@@ -34,6 +34,7 @@ from langgraph.prebuilt import ToolNode
 from langchain_core.messages import (
     BaseMessage, HumanMessage, AIMessage, SystemMessage, ToolMessage,
 )
+from langchain_core.runnables import RunnableConfig
 
 from core.llm import llm
 from core.agent_tools import AGENT_TOOLS
@@ -218,6 +219,12 @@ def build_system_prompt(state: AgentState) -> str:
 - 内容块已有内容 → **modify_field**
 - 不确定时，先用 read_field 查看内容块是否为空
 
+## 保存对话输出到内容块
+当用户说「把上面的内容保存到XX」「写到XX里」「保存到XX」时：
+1. 从你之前的对话回复中提取相关内容
+2. 使用 update_field(field_name="XX", content=提取的内容) 保存
+3. 告诉用户已保存
+
 ## 什么时候不调用工具（直接回复）
 - 用户打招呼：「你好」「hi」
 - 用户问你的能力：「你能做什么？」「你是谁？」
@@ -242,7 +249,7 @@ modify_field 工具可能返回需要用户确认的修改计划：
 
 # ============== 节点函数 ==============
 
-async def agent_node(state: AgentState) -> dict:
+async def agent_node(state: AgentState, config: RunnableConfig) -> dict:
     """
     Agent 决策节点。
 
@@ -250,8 +257,14 @@ async def agent_node(state: AgentState) -> dict:
     1. 构建 system prompt（每次重新生成，反映最新项目状态）
     2. trim_messages 裁剪历史（防止 context window 溢出）
     3. bind_tools 的 LLM 自主决定：直接回复 or 调用工具
+
+    注意：config 参数由 LangGraph 自动注入，包含 astream_events 的
+    callback manager。必须传给 LLM 调用，否则 on_chat_model_stream
+    事件不会被触发，导致前端无法流式显示。
     """
     from langchain_core.messages import trim_messages
+
+    logger.debug("[agent_node] 开始执行, messages=%d", len(state["messages"]))
 
     system_prompt = build_system_prompt(state)
 
@@ -266,12 +279,22 @@ async def agent_node(state: AgentState) -> dict:
         allow_partial=False,     # 不截断单条消息
     )
 
+    logger.debug("[agent_node] trimmed messages=%d (from %d)", len(trimmed), len(state["messages"]))
+
     # 将 system prompt 作为第一条消息注入
     messages_with_system = [SystemMessage(content=system_prompt)] + trimmed
 
     # LLM 调用（bind_tools 让 LLM 自动决定是否调用工具）
+    # ⚠️ 必须传 config，否则 astream_events 的 callback 链断裂，无法流式输出
     llm_with_tools = llm.bind_tools(AGENT_TOOLS)
-    response = await llm_with_tools.ainvoke(messages_with_system)
+    response = await llm_with_tools.ainvoke(messages_with_system, config=config)
+
+    has_tool_calls = hasattr(response, "tool_calls") and response.tool_calls
+    logger.debug(
+        "[agent_node] LLM 返回: content=%d chars, tool_calls=%s",
+        len(response.content) if response.content else 0,
+        [tc["name"] for tc in response.tool_calls] if has_tool_calls else "none",
+    )
 
     return {"messages": [response]}
 

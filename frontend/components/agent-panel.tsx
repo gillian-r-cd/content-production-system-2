@@ -465,6 +465,17 @@ export function AgentPanel({
                       : m
                   )
                 );
+              } else if (data.type === "tool_progress") {
+                // 工具内部 LLM 生成进度
+                const toolName = TOOL_NAMES[data.tool] || data.tool;
+                const chars = data.chars || 0;
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === tempAiMsg.id
+                      ? { ...m, content: `🔧 ${toolName} 生成中... (${chars} 字)` }
+                      : m
+                  )
+                );
               } else if (data.type === "tool_end") {
                 // 工具完成（LangGraph 新事件）
                 console.log("[AgentPanel] Tool end:", data.tool, "field_updated:", data.field_updated);
@@ -716,6 +727,14 @@ export function AgentPanel({
                 const toolName = TOOL_NAMES[data.tool] || data.tool;
                 setMessages(prev =>
                   prev.map(m => m.id === tempAiMsg.id ? { ...m, content: `🔧 正在使用 ${toolName}...` } : m)
+                );
+              } else if (data.type === "tool_progress") {
+                const toolName = TOOL_NAMES[data.tool] || data.tool;
+                const chars = data.chars || 0;
+                setMessages(prev =>
+                  prev.map(m => m.id === tempAiMsg.id
+                    ? { ...m, content: `🔧 ${toolName} 生成中... (${chars} 字)` }
+                    : m)
                 );
               } else if (data.type === "tool_end") {
                 if (data.field_updated && onContentUpdate) {

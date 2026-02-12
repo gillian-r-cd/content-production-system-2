@@ -10,6 +10,7 @@ Content Production System - Backend Entry Point
 
 import sys
 import os
+import logging
 
 # ===== 关键：Windows 下强制 UTF-8 输出，防止中文 print 导致后台任务崩溃 =====
 if sys.platform == "win32":
@@ -22,6 +23,31 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from core.config import settings
+
+
+# ===== 日志配置 =====
+def _setup_logging():
+    """配置应用日志，确保 agent/orchestrator/agent_tools 日志可见"""
+    log_level = logging.DEBUG if settings.debug else logging.INFO
+    fmt = "%(asctime)s %(levelname)-5s [%(name)s] %(message)s"
+    datefmt = "%H:%M:%S"
+
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter(fmt, datefmt=datefmt))
+
+    # 为关键模块设置日志级别
+    for name in ("agent", "orchestrator", "agent_tools"):
+        lg = logging.getLogger(name)
+        lg.setLevel(log_level)
+        if not lg.handlers:
+            lg.addHandler(handler)
+        lg.propagate = False  # 避免重复输出
+
+    # root logger 保持 INFO（避免 SQLAlchemy 等噪音）
+    logging.basicConfig(level=logging.INFO, format=fmt, datefmt=datefmt)
+
+
+_setup_logging()
 
 
 def create_app() -> FastAPI:
