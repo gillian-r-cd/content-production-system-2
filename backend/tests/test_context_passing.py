@@ -201,9 +201,8 @@ class TestPreAnswersInjection:
         
         full_prompt = prompt_engine.get_field_generation_prompt(field, context)
         
-        # 不应该有"用户补充信息"部分
-        # 但字段生成提示应该存在
-        assert "Test Field" not in full_prompt or field.ai_prompt == ""
+        # 空预回答不应该有"用户补充信息"部分
+        assert "用户补充信息" not in full_prompt
 
 
 class TestFieldAIPromptInjection:
@@ -235,7 +234,6 @@ class TestFieldAIPromptInjection:
         project = Project(
             id=generate_uuid(),
             name="Test Project",
-            golden_context={"intent": "Create marketing campaign"},
         )
         
         dep_field = ProjectField(
@@ -263,8 +261,7 @@ class TestFieldAIPromptInjection:
         
         full_prompt = prompt_engine.get_field_generation_prompt(target_field, context)
         
-        # 验证两者都被注入
-        assert "Create marketing campaign" in full_prompt or context.golden_context.intent
+        # 验证依赖和AI指令都被注入
         assert "friendly and professional" in context.field_context
         assert "engaging social media content" in full_prompt
 
@@ -357,38 +354,27 @@ class TestGoldenContextCompleteness:
         assert "professional" in context
         assert "concise" in context
     
-    def test_golden_context_all_parts(self, db_session):
-        """测试Golden Context包含所有部分"""
+    def test_golden_context_with_creator(self, db_session):
+        """测试Golden Context包含创作者特质"""
         gc = GoldenContext(
             creator_profile="Expert Writer with 10 years experience",
-            intent="Create comprehensive AI training course",
-            consumer_personas="Software developers aged 25-40",
         )
         
         prompt = gc.to_prompt()
         
-        # 验证所有部分存在
+        # 验证创作者特质存在
         assert "创作者特质" in prompt
         assert "Expert Writer" in prompt
-        assert "项目意图" in prompt
-        assert "AI training course" in prompt
-        assert "目标用户" in prompt
-        assert "Software developers" in prompt
     
-    def test_partial_golden_context(self, db_session):
-        """测试部分Golden Context正确处理"""
-        gc = GoldenContext(
-            intent="Create course",
-            # 没有creator_profile和consumer_personas
-        )
+    def test_empty_golden_context(self, db_session):
+        """测试空Golden Context正确处理"""
+        gc = GoldenContext()
         
         prompt = gc.to_prompt()
         
-        assert "项目意图" in prompt
-        assert "Create course" in prompt
-        # 不应该有空的部分
-        assert "创作者特质" not in prompt
-        assert "目标用户" not in prompt
+        # 空GoldenContext应该返回空字符串
+        assert prompt == ""
+        assert gc.is_empty()
 
 
 class TestPromptContextStructure:
@@ -398,7 +384,6 @@ class TestPromptContextStructure:
         """测试提示词各部分有分隔"""
         gc = GoldenContext(
             creator_profile="Test Profile",
-            intent="Test Intent",
         )
         
         ctx = PromptContext(
@@ -417,7 +402,6 @@ class TestPromptContextStructure:
         """测试提示词各部分顺序正确"""
         gc = GoldenContext(
             creator_profile="CREATOR_MARKER",
-            intent="INTENT_MARKER",
         )
         
         ctx = PromptContext(
@@ -430,7 +414,6 @@ class TestPromptContextStructure:
         
         # Golden Context应该在前
         creator_pos = system_prompt.find("CREATOR_MARKER")
-        intent_pos = system_prompt.find("INTENT_MARKER")
         phase_pos = system_prompt.find("PHASE_MARKER")
         field_pos = system_prompt.find("FIELD_MARKER")
         

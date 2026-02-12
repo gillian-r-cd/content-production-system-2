@@ -451,8 +451,7 @@ class TestPhaseOrderManagement:
         assert project.phase_order[0] == "intent"
         assert project.phase_order[1] == "research"
         
-        # simulate和evaluate固定在后
-        assert project.phase_order[-2] == "simulate"
+        # evaluate固定在最后（simulate已合并进evaluate）
         assert project.phase_order[-1] == "evaluate"
     
     def test_middle_four_reorderable(self, db_session):
@@ -466,7 +465,6 @@ class TestPhaseOrderManagement:
             "design_inner",
             "produce_inner",
             # 固定
-            "simulate",
             "evaluate",
         ]
         
@@ -490,48 +488,61 @@ class TestPhaseOrderManagement:
 class TestGoldenContextPropagation:
     """Golden Context传递测试"""
     
-    def test_intent_to_all_phases(self, db_session):
-        """意图传递到所有阶段"""
+    def test_creator_profile_to_all_phases(self, db_session):
+        """创作者特质传递到所有阶段"""
+        from core.prompt_engine import prompt_engine
+        from core.models import CreatorProfile
+        
+        profile = CreatorProfile(
+            id=generate_uuid(),
+            name="AI医疗专家",
+            traits={"tone": "专业"},
+        )
+        db_session.add(profile)
+        db_session.commit()
+        
         project = Project(
             id=generate_uuid(),
             name="Test Project",
-            golden_context={
-                "intent": "Build AI diagnostic tool for doctors",
-                "consumer_personas": "Clinical doctors aged 35-50",
-            },
         )
         db_session.add(project)
         db_session.commit()
         
-        from core.prompt_engine import prompt_engine
+        gc = prompt_engine.build_golden_context(project, creator_profile=profile)
         
         for phase in ["design_inner", "produce_inner", "design_outer", "produce_outer"]:
             context = prompt_engine.build_prompt_context(
                 project=project,
                 phase=phase,
+                golden_context=gc,
             )
             
-            # Golden Context应该在每个阶段可用
-            assert context.golden_context.intent == "Build AI diagnostic tool for doctors"
+            # 创作者特质应该在每个阶段可用
+            assert "AI医疗专家" in context.golden_context.creator_profile
     
-    def test_research_personas_available(self, db_session):
-        """调研人物画像可用"""
+    def test_golden_context_build(self, db_session):
+        """Golden Context构建"""
+        from core.prompt_engine import prompt_engine
+        from core.models import CreatorProfile
+        
+        profile = CreatorProfile(
+            id=generate_uuid(),
+            name="Medical Professional",
+            traits={"tone": "professional"},
+        )
+        db_session.add(profile)
+        db_session.commit()
+        
         project = Project(
             id=generate_uuid(),
             name="Test Project",
-            golden_context={
-                "intent": "Test intent",
-                "consumer_personas": "Target: Medical professionals aged 30-50",
-            },
         )
         db_session.add(project)
         db_session.commit()
         
-        from core.prompt_engine import prompt_engine
+        gc = prompt_engine.build_golden_context(project, creator_profile=profile)
         
-        gc = prompt_engine.build_golden_context(project)
-        
-        assert "Medical professionals" in gc.consumer_personas
+        assert "Medical Professional" in gc.creator_profile
 
 
 if __name__ == "__main__":

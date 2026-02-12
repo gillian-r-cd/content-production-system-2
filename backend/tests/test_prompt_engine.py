@@ -143,7 +143,7 @@ class TestPromptEngine:
             "intent", "research", 
             "design_inner", "produce_inner",
             "design_outer", "produce_outer",
-            "simulate", "evaluate"
+            "evaluate"
         ]
         
         for phase in phases:
@@ -191,8 +191,8 @@ class TestPromptEngine:
         
         prompt = engine.get_field_generation_prompt(field, context)
         
-        assert "字段生成指导" in prompt
-        assert "请生成一段测试内容" in prompt
+        assert "测试字段" in prompt  # 字段名称应出现
+        assert "请生成一段测试内容" in prompt  # AI提示词应出现
         assert "用户补充信息" in prompt
         assert "答案1" in prompt
 

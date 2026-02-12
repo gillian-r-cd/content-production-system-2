@@ -97,7 +97,7 @@ class TestFullProductionFlow:
         # 验证关联
         assert project.creator_profile_id == profile.id
         assert project.current_phase == "intent"
-        assert len(project.phase_order) == 8
+        assert len(project.phase_order) == 7
     
     def test_intent_analysis_phase(self, db_session):
         """测试意图分析阶段"""
@@ -642,10 +642,8 @@ class TestContextPropagationEndToEnd:
         
         system_prompt = context.to_system_prompt()
         
-        # 验证所有上下文元素存在
+        # 验证上下文元素存在（GoldenContext 只包含 creator_profile）
         assert "Medical AI Expert" in gc.creator_profile
-        assert "AI training" in gc.intent
-        assert "Medical professionals" in gc.consumer_personas
         assert "Introduction" in context.field_context
         assert "Welcome to AI in Medicine" in context.field_context
 

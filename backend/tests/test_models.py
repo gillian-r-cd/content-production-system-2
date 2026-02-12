@@ -91,7 +91,7 @@ class TestProject:
         assert project.id is not None
         assert project.version == 1
         assert project.current_phase == "intent"
-        assert len(project.phase_order) == 8
+        assert len(project.phase_order) == 7
     
     def test_phase_navigation(self, db_session):
         project = Project(name="测试项目")

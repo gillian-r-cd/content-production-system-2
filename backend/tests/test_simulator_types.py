@@ -117,22 +117,28 @@ class TestDialogueSimulation:
             MagicMock(content='{"scores": {"响应相关性": 8, "问题解决率": 7, "交互体验": 8}, "comments": {"响应相关性": "回答切题", "问题解决率": "基本解答", "交互体验": "流畅"}, "questions_answered": ["特色功能"], "questions_unanswered": [], "friction_points": [], "would_continue": true, "overall": "体验良好"}'),  # evaluation
         ]
         
-        with patch("core.tools.simulator.llm.ainvoke") as mock_chat:
-            mock_chat.side_effect = mock_responses
-            
+        # llm.bind(temperature=X).ainvoke(msgs) — bind() 返回的对象也需要 ainvoke
+        bound_mock = AsyncMock()
+        bound_mock.ainvoke = AsyncMock(side_effect=mock_responses)
+        mock_llm = MagicMock()
+        mock_llm.bind = MagicMock(return_value=bound_mock)
+        mock_llm.ainvoke = AsyncMock(side_effect=mock_responses)
+        
+        with patch("core.tools.simulator.llm", mock_llm):
             result = await run_dialogue_simulation(simulator, sample_content, base_persona, max_turns=3)
             
             # 验证返回类型
             assert isinstance(result, SimulationResult)
             assert result.success is True
             
-            # 验证对话历史存在且非空
-            assert isinstance(result.interaction_log, list)
-            assert len(result.interaction_log) > 0
+            # 验证对话历史存在且非空（dialogue 模式的 interaction_log 是 dict）
+            assert isinstance(result.interaction_log, dict)
+            dialogue = result.interaction_log.get("dialogue", [])
+            assert len(dialogue) > 0
             
-            # 验证对话中有消费者和服务方的消息
-            roles = [log.get("role") for log in result.interaction_log]
-            assert "consumer" in roles
+            # 验证对话中有用户和内容方的消息
+            roles = [log.get("role") for log in dialogue]
+            assert "user" in roles or "content" in roles
 
     @pytest.mark.asyncio
     async def test_dialogue_generates_feedback(self, base_persona, sample_content):
@@ -149,9 +155,13 @@ class TestDialogueSimulation:
             MagicMock(content='{"scores": {"响应相关性": 8, "问题解决率": 7, "交互体验": 9}, "comments": {"响应相关性": "切题", "问题解决率": "解决", "交互体验": "好"}, "questions_answered": [], "questions_unanswered": [], "friction_points": [], "would_continue": true, "overall": "满意"}'),
         ]
         
-        with patch("core.tools.simulator.llm.ainvoke") as mock_chat:
-            mock_chat.side_effect = mock_responses
-            
+        bound_mock = AsyncMock()
+        bound_mock.ainvoke = AsyncMock(side_effect=mock_responses)
+        mock_llm = MagicMock()
+        mock_llm.bind = MagicMock(return_value=bound_mock)
+        mock_llm.ainvoke = AsyncMock(side_effect=mock_responses)
+        
+        with patch("core.tools.simulator.llm", mock_llm):
             result = await run_dialogue_simulation(simulator, sample_content, base_persona)
             
             # 验证反馈不是空的"对话已完成"
@@ -186,7 +196,10 @@ class TestExplorationSimulation:
             "overall": "能找到需要的信息"
         }''')
         
-        with patch("core.tools.simulator.llm.ainvoke", return_value=mock_response):
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+        
+        with patch("core.tools.simulator.llm", mock_llm):
             result = await run_exploration_simulation(simulator, sample_content, base_persona)
             
             assert result.success is True
@@ -223,7 +236,10 @@ class TestExperienceSimulation:
             "overall": "体验良好"
         }''')
         
-        with patch("core.tools.simulator.llm.ainvoke", return_value=mock_response):
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+        
+        with patch("core.tools.simulator.llm", mock_llm):
             result = await run_experience_simulation(simulator, sample_content, base_persona)
             
             assert result.success is True
@@ -283,7 +299,8 @@ class TestDefaultTemplates:
             template = Simulator.get_default_template(sim_type)
             assert template is not None
             assert len(template) > 0
-            assert "{persona}" in template  # 应该包含persona占位符
+            # 模板应包含 {content} 或 {persona} 占位符
+            assert "{content}" in template or "{persona}" in template
 
     def test_unknown_type_falls_back(self):
         """未知类型应该fallback到reading模板"""

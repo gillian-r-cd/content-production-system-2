@@ -187,29 +187,26 @@ class TestIntentTypes:
 
 
 class TestIntentRouting:
-    """意图路由测试"""
+    """意图路由测试 — LangGraph 架构下通过工具名称验证"""
     
     def test_route_targets_are_valid(self):
-        """测试所有路由目标都有对应的处理节点"""
-        from core.orchestrator import ROUTE_OPTIONS
+        """新架构: 所有路由通过 AGENT_TOOLS 的工具名称"""
+        from core.agent_tools import AGENT_TOOLS
         
-        valid_routes = [
-            "advance_phase",
-            "generate",
-            "modify",
-            "research",
-            "simulate",
-            "evaluate",
-            "query",
-            "chat",
-        ]
-        
-        # 验证所有定义的路由选项
-        for route in valid_routes:
-            assert route in str(ROUTE_OPTIONS)
+        tool_names = {t.name for t in AGENT_TOOLS}
+        # 旧路由目标映射到新工具名称
+        expected_tools = {
+            "advance_to_phase",    # 旧 advance_phase
+            "generate_field_content",  # 旧 generate
+            "modify_field",        # 旧 modify
+            "run_research",        # 旧 research
+            "run_evaluation",      # 旧 evaluate (含 simulate)
+            "query_field",         # 旧 query
+        }
+        assert expected_tools.issubset(tool_names)
     
     def test_phase_nodes_exist(self):
-        """测试所有阶段节点都存在"""
+        """测试所有阶段定义存在"""
         from core.models import PROJECT_PHASES
         
         expected_phases = [
@@ -219,7 +216,6 @@ class TestIntentRouting:
             "produce_inner",
             "design_outer",
             "produce_outer",
-            "simulate",
             "evaluate",
         ]
         
@@ -227,114 +223,72 @@ class TestIntentRouting:
 
 
 class TestStateTransition:
-    """状态转换测试"""
+    """状态转换测试 — LangGraph AgentState"""
     
-    def test_content_production_state_structure(self):
-        """测试ContentProductionState结构完整"""
-        from core.orchestrator import ContentProductionState
+    def test_agent_state_structure(self):
+        """测试 AgentState 结构完整 (4 字段)"""
+        from core.orchestrator import AgentState
         
-        # 验证TypedDict包含所有必要字段
         required_fields = [
+            "messages",
             "project_id",
             "current_phase",
-            "phase_order",
-            "phase_status",
-            "autonomy_settings",
-            "golden_context",
-            "fields",
-            "messages",
-            "user_input",
-            "agent_output",
-            "waiting_for_human",
-            "route_target",
-            "use_deep_research",
-            "error",
+            "creator_profile",
         ]
         
-        # TypedDict的__annotations__包含所有字段
-        annotations = ContentProductionState.__annotations__
+        annotations = AgentState.__annotations__
         for field in required_fields:
             assert field in annotations, f"Missing field: {field}"
+        assert len(annotations) == 4
     
     def test_initial_state_defaults(self):
         """测试初始状态默认值"""
         from core.models import PROJECT_PHASES
         
-        # 模拟初始状态
-        initial_state = {
-            "project_id": "test-123",
-            "current_phase": "intent",
-            "phase_order": PROJECT_PHASES.copy(),
-            "phase_status": {p: "pending" for p in PROJECT_PHASES},
-            "autonomy_settings": {p: True for p in PROJECT_PHASES},
-            "golden_context": {},
-            "fields": {},
-            "messages": [],
-            "user_input": "",
-            "agent_output": "",
-            "waiting_for_human": False,
-            "route_target": "",
-            "use_deep_research": True,
-            "error": None,
-        }
-        
-        assert initial_state["current_phase"] == "intent"
-        assert initial_state["waiting_for_human"] == False
-        assert len(initial_state["phase_order"]) == 8
+        assert len(PROJECT_PHASES) == 7
+        assert PROJECT_PHASES[0] == "intent"
+        assert PROJECT_PHASES[-1] == "evaluate"
 
 
-class TestGoldenContextIntegration:
-    """Golden Context集成测试"""
+class TestBuildSystemPrompt:
+    """build_system_prompt 测试"""
     
-    def test_golden_context_to_prompt(self):
-        """测试Golden Context转换为提示词"""
-        from core.prompt_engine import GoldenContext
+    def test_system_prompt_contains_tools(self):
+        """system prompt 应包含工具能力描述"""
+        from core.orchestrator import build_system_prompt, AgentState
         
-        gc = GoldenContext(
-            creator_profile="Professional Consultant",
-            intent="Build AI diagnostic system",
-            consumer_personas="Clinical doctors aged 35-50",
+        state = AgentState(
+            messages=[], project_id="test",
+            current_phase="intent", creator_profile="专业顾问",
         )
+        prompt = build_system_prompt(state)
         
-        prompt = gc.to_prompt()
-        
-        assert "Professional Consultant" in prompt
-        assert "AI diagnostic system" in prompt
-        assert "Clinical doctors" in prompt
+        assert "工具" in prompt or "tool" in prompt.lower()
+        assert len(prompt) > 500
     
-    def test_golden_context_empty_check(self):
-        """测试空Golden Context检测"""
-        from core.prompt_engine import GoldenContext
+    def test_system_prompt_includes_creator(self):
+        """system prompt 应包含创作者信息"""
+        from core.orchestrator import build_system_prompt, AgentState
         
-        empty_gc = GoldenContext()
-        assert empty_gc.is_empty() == True
+        state = AgentState(
+            messages=[], project_id="test",
+            current_phase="intent", creator_profile="资深内容专家",
+        )
+        prompt = build_system_prompt(state)
         
-        filled_gc = GoldenContext(intent="Test")
-        assert filled_gc.is_empty() == False
+        assert "资深内容专家" in prompt
     
-    def test_prompt_context_full_construction(self):
-        """测试完整PromptContext构建"""
-        from core.prompt_engine import PromptContext, GoldenContext
+    def test_system_prompt_includes_phase(self):
+        """system prompt 应包含当前阶段"""
+        from core.orchestrator import build_system_prompt, AgentState
         
-        gc = GoldenContext(
-            creator_profile="Test Profile",
-            intent="Test Intent",
+        state = AgentState(
+            messages=[], project_id="test",
+            current_phase="research", creator_profile="",
         )
+        prompt = build_system_prompt(state)
         
-        ctx = PromptContext(
-            golden_context=gc,
-            phase_context="Phase specific context",
-            field_context="Field A content",
-            custom_context="Custom instructions",
-        )
-        
-        system_prompt = ctx.to_system_prompt()
-        
-        assert "Test Profile" in system_prompt
-        assert "Test Intent" in system_prompt
-        assert "Phase specific context" in system_prompt
-        assert "Field A content" in system_prompt
-        assert "Custom instructions" in system_prompt
+        assert "research" in prompt
 
 
 if __name__ == "__main__":
