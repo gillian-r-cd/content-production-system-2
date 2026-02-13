@@ -69,7 +69,11 @@ def _save_version_before_overwrite(
 def _resolve_references(
     db: Session, project_id: str, references: list[str],
 ) -> dict[str, str]:
-    """统一的 @ 引用解析：ProjectField → ContentBlock → 方案JSON"""
+    """统一的 @ 引用解析：ProjectField → ContentBlock → 方案JSON
+
+    返回 {name: 完整上下文文本}，包含内容和配置信息（ai_prompt等），
+    确保 Agent 能充分了解引用块的全貌。
+    """
     if not references:
         return {}
 
@@ -81,7 +85,7 @@ def _resolve_references(
         ProjectField.name.in_(references),
     ).all()
     for f in ref_fields:
-        result[f.name] = f.content or ""
+        result[f.name] = _build_ref_context(f)
 
     # 2. ContentBlock
     missing = [r for r in references if r not in result]
@@ -92,7 +96,7 @@ def _resolve_references(
             ContentBlock.deleted_at == None,  # noqa: E711
         ).all()
         for b in ref_blocks:
-            result[b.name] = b.content or ""
+            result[b.name] = _build_ref_context(b)
 
     # 3. 方案引用
     import re
@@ -118,6 +122,32 @@ def _resolve_references(
                 pass
 
     return result
+
+
+def _build_ref_context(entity) -> str:
+    """将内容块/字段构建为 Agent 可理解的完整上下文。
+
+    包含内容正文、AI 提示词和状态信息，确保即使内容为空时
+    Agent 也能了解该块的配置和用途。
+    """
+    parts = []
+    content = getattr(entity, "content", "") or ""
+    ai_prompt = getattr(entity, "ai_prompt", "") or ""
+    status = getattr(entity, "status", "") or ""
+
+    if content.strip():
+        parts.append(content)
+    else:
+        parts.append("（此内容块尚无正文内容）")
+
+    if ai_prompt.strip():
+        # 截取 AI 提示词的前 1000 字，避免过长
+        parts.append(f"\n[该内容块的 AI 提示词配置]\n{ai_prompt[:1000]}")
+
+    if status:
+        parts.append(f"\n[状态: {status}]")
+
+    return "\n".join(parts)
 
 
 def _load_seed_history(db: Session, project_id: str, limit: int = 30):

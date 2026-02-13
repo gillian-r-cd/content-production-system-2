@@ -25,6 +25,7 @@ from core.models import (
     BlockHistory,
     Project,
     PhaseTemplate,
+    FieldTemplate,
     generate_uuid,
     BLOCK_TYPES,
     BLOCK_STATUS,
@@ -1279,14 +1280,16 @@ def apply_template_to_project(
     template_id: str,
     db: Session = Depends(get_db),
 ):
-    """将阶段模板应用到项目"""
+    """
+    将模板应用到项目。
+    
+    优先查找 PhaseTemplate（有完整的组→内容块层级结构）。
+    若未找到，降级查找 FieldTemplate（扁平字段列表），
+    自动创建一个默认组并将字段放入其中。
+    """
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
-    
-    template = db.query(PhaseTemplate).filter(PhaseTemplate.id == template_id).first()
-    if not template:
-        raise HTTPException(status_code=404, detail="模板不存在")
     
     # 检查项目是否已有内容块
     existing = db.query(ContentBlock).filter(
@@ -1299,8 +1302,21 @@ def apply_template_to_project(
             detail="项目已有内容块，请先清空或创建新项目"
         )
     
-    # 应用模板
-    blocks_to_create = template.apply_to_project(project_id)
+    # 优先查找 PhaseTemplate
+    template = db.query(PhaseTemplate).filter(PhaseTemplate.id == template_id).first()
+    template_name = ""
+    
+    if template:
+        blocks_to_create = template.apply_to_project(project_id)
+        template_name = template.name
+    else:
+        # 降级查找 FieldTemplate（扁平字段列表 → 生成一个默认组 + 字段块）
+        field_template = db.query(FieldTemplate).filter(FieldTemplate.id == template_id).first()
+        if not field_template:
+            raise HTTPException(status_code=404, detail="模板不存在")
+        
+        template_name = field_template.name
+        blocks_to_create = _field_template_to_blocks(field_template, project_id)
     
     # 第一遍：创建所有块，记录 name→id 映射
     name_to_id = {}
@@ -1331,9 +1347,55 @@ def apply_template_to_project(
     db.commit()
     
     return {
-        "message": f"已应用模板「{template.name}」",
+        "message": f"已应用模板「{template_name}」",
         "blocks_created": len(blocks_to_create),
     }
+
+
+def _field_template_to_blocks(field_template: "FieldTemplate", project_id: str) -> list:
+    """
+    将扁平的 FieldTemplate 转换为 ContentBlock 创建参数列表。
+    自动创建一个以模板名命名的组，字段作为子块。
+    """
+    blocks = []
+    phase_id = generate_uuid()
+    
+    # 创建一个默认组
+    blocks.append({
+        "id": phase_id,
+        "project_id": project_id,
+        "parent_id": None,
+        "name": field_template.name,
+        "block_type": "phase",
+        "depth": 0,
+        "order_index": 0,
+        "status": "pending",
+    })
+    
+    # 创建字段块
+    for idx, field in enumerate(field_template.fields or []):
+        template_content = field.get("content", "")
+        blocks.append({
+            "id": generate_uuid(),
+            "project_id": project_id,
+            "parent_id": phase_id,
+            "name": field.get("name", f"内容块 {idx + 1}"),
+            "block_type": field.get("type", "field"),
+            "depth": 1,
+            "order_index": idx,
+            "ai_prompt": field.get("ai_prompt", ""),
+            "content": template_content,
+            "pre_questions": field.get("pre_questions", []),
+            "depends_on": field.get("depends_on", []),
+            "constraints": field.get("constraints", {}),
+            "need_review": field.get("need_review", False),
+            "status": (
+                ("in_progress" if field.get("need_review", False) else "completed")
+                if template_content else "pending"
+            ),
+        })
+    
+    return blocks
 
 
 @router.post("/project/{project_id}/migrate")

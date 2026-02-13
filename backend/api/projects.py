@@ -606,9 +606,10 @@ def export_project(
         if cp:
             creator_profile_data = _ser(cp)
 
-    # ContentBlocks
+    # ContentBlocks（排除已软删除的）
     blocks = db.query(ContentBlock).filter(
         ContentBlock.project_id == project_id,
+        ContentBlock.deleted_at == None,  # noqa: E711 — 不导出已软删除的块
     ).order_by(ContentBlock.order_index).all()
     blocks_data = [_ser(b) for b in blocks]
 
@@ -806,11 +807,16 @@ def import_project(
         db.add(new_project)
 
         # ============ 3. ContentBlocks ============
-        for b in data.get("content_blocks", []):
+        # 过滤掉已软删除的块（安全兜底：正常导出已排除，但旧版导出文件可能包含）
+        active_blocks = [
+            b for b in data.get("content_blocks", [])
+            if not b.get("deleted_at")
+        ]
+        for b in active_blocks:
             old_id = b.get("id", "")
             _new_id(old_id)  # 预先注册所有 block ID
 
-        for b in data.get("content_blocks", []):
+        for b in active_blocks:
             old_id = b.get("id", "")
             new_block = ContentBlock(
                 id=id_map[old_id],
@@ -1040,7 +1046,7 @@ def import_project(
             "message": f"项目「{new_project.name}」导入成功",
             "project": _project_to_response(new_project),
             "stats": {
-                "content_blocks": len(data.get("content_blocks", [])),
+                "content_blocks": len(active_blocks),
                 "project_fields": len(data.get("project_fields", [])),
                 "chat_messages": len(data.get("chat_messages", [])),
                 "content_versions": len(data.get("content_versions", [])),

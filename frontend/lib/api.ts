@@ -628,6 +628,11 @@ export interface PhaseTemplate {
       name: string;
       block_type: string;
       ai_prompt?: string;
+      content?: string;
+      pre_questions?: string[];
+      depends_on?: string[];
+      constraints?: Record<string, any>;
+      need_review?: boolean;
     }>;
   }>;
   is_default: boolean;

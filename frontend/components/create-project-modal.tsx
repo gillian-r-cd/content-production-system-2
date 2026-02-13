@@ -8,6 +8,18 @@
 import { useState, useEffect } from "react";
 import { settingsAPI, projectAPI, blockAPI, phaseTemplateAPI } from "@/lib/api";
 import type { CreatorProfile, Project, PhaseTemplate } from "@/lib/api";
+
+// 统一模板项（同时展示 PhaseTemplate 和 FieldTemplate）
+interface TemplateItem {
+  id: string;
+  name: string;
+  description: string;
+  source: "phase" | "field"; // 区分来源
+  phases: PhaseTemplate["phases"];
+  is_default: boolean;
+  fieldCount: number;
+  contentCount: number; // 有预置内容的字段数
+}
 import { ChevronLeft, ChevronRight, Check, Folder, Lightbulb, Users, PlayCircle, BarChart3 } from "lucide-react";
 
 interface CreateProjectModalProps {
@@ -48,8 +60,8 @@ export function CreateProjectModal({
   const [useDeepResearch, setUseDeepResearch] = useState(true);
   const [creatorProfiles, setCreatorProfiles] = useState<CreatorProfile[]>([]);
   
-  // 模板选择
-  const [templates, setTemplates] = useState<PhaseTemplate[]>([]);
+  // 模板选择（统一展示 PhaseTemplate + FieldTemplate）
+  const [templates, setTemplates] = useState<TemplateItem[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
   const [expandedTemplateId, setExpandedTemplateId] = useState<string | null>(null);
   const [useNewArchitecture, setUseNewArchitecture] = useState(false); // 是否使用新架构
@@ -84,15 +96,71 @@ export function CreateProjectModal({
   
   const loadTemplates = async () => {
     try {
-      const data = await phaseTemplateAPI.list();
-      setTemplates(data);
+      // 同时加载 PhaseTemplate 和 FieldTemplate，统一展示
+      const [phaseData, fieldData] = await Promise.all([
+        phaseTemplateAPI.list().catch(() => [] as PhaseTemplate[]),
+        settingsAPI.listFieldTemplates().catch(() => [] as any[]),
+      ]);
+
+      const items: TemplateItem[] = [];
+
+      // PhaseTemplate → TemplateItem
+      for (const pt of phaseData) {
+        const fieldCount = pt.phases.reduce((sum, p) => sum + (p.default_fields || []).length, 0);
+        const contentCount = pt.phases.reduce(
+          (sum, p) => sum + (p.default_fields || []).filter((f) => f.content).length,
+          0
+        );
+        items.push({
+          id: pt.id,
+          name: pt.name,
+          description: pt.description,
+          source: "phase",
+          phases: pt.phases,
+          is_default: pt.is_default,
+          fieldCount,
+          contentCount,
+        });
+      }
+
+      // FieldTemplate → TemplateItem（只有 PhaseTemplate 中不存在同名模板时才显示）
+      const phaseNames = new Set(phaseData.map((p) => p.name));
+      for (const ft of fieldData) {
+        if (phaseNames.has(ft.name)) continue; // 避免重复
+        const fields = ft.fields || [];
+        items.push({
+          id: ft.id,
+          name: ft.name,
+          description: ft.description || ft.category || "",
+          source: "field",
+          phases: [
+            {
+              name: ft.name,
+              block_type: "phase",
+              special_handler: null,
+              order_index: 0,
+              default_fields: fields.map((f: any) => ({
+                name: f.name,
+                block_type: f.type || "field",
+                ai_prompt: f.ai_prompt,
+                content: f.content,
+              })),
+            },
+          ],
+          is_default: false,
+          fieldCount: fields.length,
+          contentCount: fields.filter((f: any) => f.content).length,
+        });
+      }
+
+      setTemplates(items);
+
       // 默认选中默认模板（如果有）
-      const defaultTemplate = data.find((t) => t.is_default);
+      const defaultTemplate = items.find((t) => t.is_default);
       if (defaultTemplate) {
         setSelectedTemplateId(defaultTemplate.id);
         setExpandedTemplateId(defaultTemplate.id);
       } else {
-        // 没有默认模板时，默认选择"从零开始"
         setSelectedTemplateId(null);
       }
     } catch (err) {
@@ -388,7 +456,15 @@ export function CreateProjectModal({
                                 )}
                               </div>
                               <p className="text-xs text-zinc-500 truncate mt-0.5">
-                                {template.phases.length} 个组
+                                {template.phases.length} 个组 · {template.fieldCount} 个内容块
+                                {template.contentCount > 0 && (
+                                  <span className="text-emerald-400/80 ml-1">
+                                    ({template.contentCount} 个有预置内容)
+                                  </span>
+                                )}
+                                {template.source === "field" && (
+                                  <span className="text-amber-400/80 ml-1">(内容块模板)</span>
+                                )}
                               </p>
                             </div>
                             

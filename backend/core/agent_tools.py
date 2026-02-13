@@ -20,9 +20,9 @@ Agent 工具定义
 
 import json
 import logging
-from typing import Optional, List
+from typing import Optional, List, Annotated
 
-from langchain_core.tools import tool
+from langchain_core.tools import tool, InjectedToolArg
 from langchain_core.runnables import RunnableConfig
 
 logger = logging.getLogger("agent_tools")
@@ -125,7 +125,7 @@ async def modify_field(
     field_name: str,
     instruction: str,
     reference_fields: Optional[List[str]] = None,
-    config: RunnableConfig = None,
+    *, config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
     """修改指定内容块的已有内容。当用户要求修改、调整、重写、优化某个内容块的文本时使用。
 
@@ -219,7 +219,7 @@ async def _modify_field_impl(
 async def generate_field_content(
     field_name: str,
     instruction: str = "",
-    config: RunnableConfig = None,
+    *, config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
     """为指定内容块生成内容（从零开始或全部重写）。
 
@@ -261,15 +261,18 @@ async def _generate_field_impl(
 
         ai_prompt = getattr(entity, "ai_prompt", "") or ""
 
-        # 收集依赖
+        # 收集依赖内容（depends_on 是 block ID 列表）
         deps_ctx = ""
-        deps = getattr(entity, "dependencies", None) or {}
-        if isinstance(deps, dict):
-            for dep_name in deps.get("depends_on", []):
-                dep_entity, _ = _find_block_or_field(db, project_id, dep_name)
-                if dep_entity and dep_entity.content:
-                    dep_label = getattr(dep_entity, "name", dep_name)
-                    deps_ctx += f"\n### {dep_label}\n{dep_entity.content[:2000]}"
+        depends_on = getattr(entity, "depends_on", None) or []
+        if depends_on and isinstance(depends_on, list):
+            from core.models.content_block import ContentBlock as CB
+            for dep_id in depends_on:
+                dep_block = db.query(CB).filter(
+                    CB.id == dep_id,
+                    CB.deleted_at == None,  # noqa: E711
+                ).first()
+                if dep_block and dep_block.content:
+                    deps_ctx += f"\n### {dep_block.name}\n{dep_block.content[:2000]}"
 
         sections = [f"你是一个专业的内容创作助手。请为「{field_name}」生成高质量的内容。"]
         if creator_ctx:
@@ -320,7 +323,7 @@ async def _generate_field_impl(
 async def query_field(
     field_name: str,
     question: str,
-    config: RunnableConfig = None,
+    config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
     """查询内容块并回答相关问题。当用户想了解、分析、总结某个内容块时使用。
 
@@ -367,7 +370,7 @@ async def _query_field_impl(field_name: str, question: str, config: RunnableConf
 # ============== 4. read_field ==============
 
 @tool
-def read_field(field_name: str, config: RunnableConfig = None) -> str:
+def read_field(field_name: str, config: Annotated[RunnableConfig, InjectedToolArg]) -> str:
     """读取指定内容块的完整原始内容并返回。
 
     典型场景：在修改前先读取当前内容、用户说"看看场景库"。
@@ -390,7 +393,7 @@ def read_field(field_name: str, config: RunnableConfig = None) -> str:
 # ============== 5. update_field ==============
 
 @tool
-def update_field(field_name: str, content: str, config: RunnableConfig = None) -> str:
+def update_field(field_name: str, content: str, config: Annotated[RunnableConfig, InjectedToolArg]) -> str:
     """直接用给定内容完整覆写指定内容块。仅当用户提供了完整的新内容要求直接替换时使用。
 
     ⚠️ 这会直接覆盖全部内容，没有预览和确认流程。
@@ -429,7 +432,7 @@ def manage_architecture(
     operation: str,
     target: str,
     details: str = "",
-    config: RunnableConfig = None,
+    *, config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
     """管理项目结构：添加/删除/移动内容块或组。当用户要求改变项目的结构时使用。
 
@@ -497,7 +500,7 @@ def manage_architecture(
 # ============== 7. advance_to_phase ==============
 
 @tool
-def advance_to_phase(target_phase: str = "", config: RunnableConfig = None) -> str:
+def advance_to_phase(target_phase: str = "", *, config: Annotated[RunnableConfig, InjectedToolArg]) -> str:
     """推进项目到下一组或跳转到指定组。
 
     当用户说"继续"、"下一步"、"进入XX阶段"时使用。
@@ -576,7 +579,7 @@ def advance_to_phase(target_phase: str = "", config: RunnableConfig = None) -> s
 async def run_research(
     query: str,
     research_type: str = "consumer",
-    config: RunnableConfig = None,
+    *, config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
     """执行调研。
 
@@ -668,7 +671,7 @@ async def _run_research_impl(query: str, research_type: str, config: RunnableCon
 async def manage_persona(
     operation: str,
     persona_data: str = "",
-    config: RunnableConfig = None,
+    *, config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
     """管理消费者画像/角色。
 
@@ -717,7 +720,7 @@ async def _manage_persona_impl(operation: str, persona_data: str, config: Runnab
 async def run_evaluation(
     field_names: Optional[List[str]] = None,
     grader_name: Optional[str] = None,
-    config: RunnableConfig = None,
+    *, config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
     """对项目内容执行质量评估，生成评估报告。
 
@@ -802,7 +805,7 @@ async def _run_evaluation_impl(
 # ============== 11. generate_outline ==============
 
 @tool
-async def generate_outline(topic: str = "", config: RunnableConfig = None) -> str:
+async def generate_outline(topic: str = "", *, config: Annotated[RunnableConfig, InjectedToolArg]) -> str:
     """生成内容大纲/结构规划。帮助创作者规划内容的整体架构。
 
     典型场景：
@@ -850,7 +853,7 @@ async def manage_skill(
     operation: str,
     skill_name: str = "",
     target_field: str = "",
-    config: RunnableConfig = None,
+    *, config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
     """管理和使用写作技能/风格。查看可用技能、用特定风格重写内容。
 
