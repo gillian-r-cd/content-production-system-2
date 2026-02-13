@@ -287,10 +287,10 @@ def get_personas_from_research(project_id: str, db: Session = Depends(get_db)):
                         background_parts.append(basic_info["gender"])
                     if basic_info.get("city"):
                         background_parts.append(basic_info["city"])
-                    if basic_info.get("position"):
-                        background_parts.append(basic_info["position"])
-                    if basic_info.get("industry"):
-                        background_parts.append(basic_info["industry"])
+                    if basic_info.get("occupation"):
+                        background_parts.append(basic_info["occupation"])
+                    if basic_info.get("income_level"):
+                        background_parts.append(basic_info["income_level"])
                     
                     background = " | ".join(background_parts) if background_parts else "来自消费者调研"
                     

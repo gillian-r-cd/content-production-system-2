@@ -12,6 +12,8 @@ from core.tools.deep_research import (
     quick_research,
     ResearchReport,
     ConsumerPersona,
+    PersonaBasicInfo,
+    ConsumerProfileInfo,
 )
 
 from core.tools.field_generator import (
@@ -114,6 +116,8 @@ __all__ = [
     "quick_research",
     "ResearchReport",
     "ConsumerPersona",
+    "PersonaBasicInfo",
+    "ConsumerProfileInfo",
     
     # Field Generator
     "generate_field",

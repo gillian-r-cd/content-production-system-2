@@ -572,6 +572,7 @@ async def _run_research_impl(query: str, research_type: str, config: RunnableCon
     from core.tools.deep_research import deep_research, quick_research
     from core.tools.architecture_reader import get_intent_and_research
     from core.models import Project, ProjectField
+    from core.models.content_block import ContentBlock
 
     project_id = _get_project_id(config)
     db = _get_db()
@@ -591,7 +592,24 @@ async def _run_research_impl(query: str, research_type: str, config: RunnableCon
                 intent=intent,
             )
 
-        # 保存调研结果到 research 阶段
+        report_json = report.model_dump_json(indent=2, ensure_ascii=False)
+        saved = False
+
+        # 1. 尝试保存到 ContentBlock（灵活架构）
+        research_block = db.query(ContentBlock).filter(
+            ContentBlock.project_id == project_id,
+            ContentBlock.name.in_(["消费者调研", "消费者调研报告"]),
+            ContentBlock.deleted_at == None,  # noqa: E711
+        ).first()
+        if research_block:
+            if research_block.content:
+                _save_version(db, research_block.id, research_block.content, "agent")
+            research_block.content = report_json
+            research_block.status = "completed"
+            db.flush()
+            saved = True
+
+        # 2. 尝试保存到 ProjectField（传统架构）
         research_field = db.query(ProjectField).filter(
             ProjectField.project_id == project_id,
             ProjectField.phase == "research",
@@ -599,8 +617,12 @@ async def _run_research_impl(query: str, research_type: str, config: RunnableCon
         if research_field:
             if research_field.content:
                 _save_version(db, research_field.id, research_field.content, "agent")
-            research_field.content = report.model_dump_json(indent=2, ensure_ascii=False)
+            research_field.content = report_json
             research_field.status = "completed"
+            db.flush()
+            saved = True
+
+        if saved:
             db.commit()
 
         summary = report.summary[:500] if hasattr(report, "summary") else str(report)[:500]
@@ -608,7 +630,7 @@ async def _run_research_impl(query: str, research_type: str, config: RunnableCon
 
     except Exception as e:
         logger.error(f"run_research error: {e}", exc_info=True)
-        return f"调研失败: {e}"
+        return f"❌ 调研执行失败（工具错误）: {e}"
     finally:
         db.close()
 

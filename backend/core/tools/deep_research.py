@@ -1,7 +1,7 @@
 # backend/core/tools/deep_research.py
 # 功能: DeepResearch工具，基于 Tavily Search API 的深度调研
 # 主要函数: deep_research(), quick_research(), search_tavily()
-# 数据结构: ResearchReport, ConsumerPersona
+# 数据结构: ResearchReport, ConsumerPersona, PersonaBasicInfo, ConsumerProfileInfo
 
 """
 DeepResearch 工具
@@ -29,20 +29,37 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from core.llm import llm
 
 
+class PersonaBasicInfo(BaseModel):
+    """用户小传的基本信息（显式字段，兼容 OpenAI Structured Outputs）"""
+    age: str = Field(default="", description="年龄或年龄段")
+    gender: str = Field(default="", description="性别")
+    city: str = Field(default="", description="所在城市")
+    occupation: str = Field(default="", description="职业")
+    income_level: str = Field(default="", description="收入水平")
+
+
 class ConsumerPersona(BaseModel):
     """用户小传"""
     id: str = Field(default="", description="唯一标识")
     name: str = Field(description="人物名称")
-    basic_info: dict = Field(default_factory=dict, description="基本信息（年龄、职位、行业等）")
+    basic_info: PersonaBasicInfo = Field(default_factory=PersonaBasicInfo, description="基本信息")
     background: str = Field(description="背景简介")
     pain_points: List[str] = Field(description="核心痛点")
     selected: bool = Field(default=True, description="是否选中用于Simulator")
 
 
+class ConsumerProfileInfo(BaseModel):
+    """消费者画像（显式字段，兼容 OpenAI Structured Outputs）"""
+    age_range: str = Field(default="", description="年龄范围")
+    occupation: str = Field(default="", description="典型职业")
+    characteristics: List[str] = Field(default_factory=list, description="人群特征")
+    behaviors: List[str] = Field(default_factory=list, description="消费行为")
+
+
 class ResearchReport(BaseModel):
     """调研报告"""
     summary: str = Field(description="总体概述")
-    consumer_profile: dict = Field(description="消费者画像")
+    consumer_profile: ConsumerProfileInfo = Field(default_factory=ConsumerProfileInfo, description="消费者画像")
     pain_points: List[str] = Field(description="核心痛点列表")
     value_propositions: List[str] = Field(description="价值主张列表")
     personas: List[ConsumerPersona] = Field(description="典型用户小传")

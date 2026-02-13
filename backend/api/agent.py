@@ -459,10 +459,10 @@ async def call_tool(
     db.add(user_msg)
 
     try:
-        # 直接调用工具函数
+        # ainvoke 统一处理 sync/async 工具
         config = {"configurable": {"project_id": request.project_id}}
-        output = await asyncio.to_thread(
-            tool_fn.invoke, {**request.parameters, "config": config}
+        output = await tool_fn.ainvoke(
+            {**request.parameters}, config=config
         )
     except Exception as e:
         import traceback
@@ -605,6 +605,7 @@ async def stream_chat(
     # ---- 产出类工具集（执行后前端需刷新左侧面板） ----
     produce_tools = PRODUCE_TOOLS | {
         "manage_architecture", "advance_to_phase", "execute_prompt_update",
+        "run_research",
     }
 
     async def event_generator():
