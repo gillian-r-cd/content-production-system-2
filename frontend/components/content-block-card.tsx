@@ -86,6 +86,7 @@ export function ContentBlockCard({
   
   // 编辑状态
   const [editedPrompt, setEditedPrompt] = useState(block.ai_prompt || "");
+  const [savedPrompt, setSavedPrompt] = useState(block.ai_prompt || ""); // 本地追踪已保存的提示词
   const [editedConstraints, setEditedConstraints] = useState(block.constraints || {});
   const [selectedDependencies, setSelectedDependencies] = useState<string[]>(block.depends_on || []);
   
@@ -152,6 +153,7 @@ export function ContentBlockCard({
     }
     setEditedName(block.name);
     setEditedPrompt(block.ai_prompt || "");
+    setSavedPrompt(block.ai_prompt || "");
     setEditedConstraints(block.constraints || {});
     setSelectedDependencies(block.depends_on || []);
     setPreAnswers(block.pre_answers || {});
@@ -212,6 +214,7 @@ export function ContentBlockCard({
       } else {
         await blockAPI.update(block.id, { ai_prompt: editedPrompt });
       }
+      setSavedPrompt(editedPrompt); // 乐观更新本地状态，立即反映到 UI
       setShowPromptModal(false);
       onUpdate?.();
     } catch (err) {
@@ -266,8 +269,8 @@ export function ContentBlockCard({
     );
   };
 
-  // 检查依赖是否满足（只要有内容就满足，不需要状态是 completed）
-  const unmetDependencies = dependencyBlocks.filter(d => !d.content || !d.content.trim());
+  // 检查依赖是否满足：必须有内容且 status=completed（need_review 的块必须经过确认）
+  const unmetDependencies = dependencyBlocks.filter(d => !d.content || !d.content.trim() || d.status !== "completed");
   const canGenerate = unmetDependencies.length === 0;
 
   // 生成内容（使用流式 API）
@@ -648,11 +651,11 @@ export function ContentBlockCard({
                 setShowPromptModal(true);
               }}
               className={`p-1.5 rounded transition-colors ${
-                block.ai_prompt 
+                savedPrompt 
                   ? "text-brand-400 hover:bg-brand-600/20" 
                   : "text-red-400 hover:bg-red-600/20"
               }`}
-              title={block.ai_prompt ? "查看/编辑提示词" : "未配置提示词"}
+              title={savedPrompt ? "查看/编辑提示词" : "未配置提示词"}
             >
               <MessageSquarePlus className="w-4 h-4" />
             </button>
@@ -769,7 +772,7 @@ export function ContentBlockCard({
           {dependencyBlocks.length > 0 && (
             <span className="flex items-center gap-1">
               <Workflow className="w-3 h-3 inline" /> 依赖 {dependencyBlocks.length} 项
-              {dependencyBlocks.some(d => !d.content || d.content.trim() === "") && (
+              {dependencyBlocks.some(d => d.status !== "completed") && (
                 <span className="text-red-400">（未完成）</span>
               )}
             </span>
@@ -1105,11 +1108,13 @@ export function ContentBlockCard({
                             </span>
                           )}
                           <span className={`px-1.5 py-0.5 text-xs rounded ${
-                            (dep.content && dep.content.trim() !== "")
-                              ? "bg-emerald-600/20 text-emerald-400" 
+                            dep.status === "completed"
+                              ? "bg-emerald-600/20 text-emerald-400"
+                              : (dep.content && dep.content.trim() !== "")
+                              ? "bg-amber-600/20 text-amber-400"
                               : "bg-zinc-700 text-zinc-400"
                           }`}>
-                            {(dep.content && dep.content.trim() !== "") ? "已完成" : "未完成"}
+                            {dep.status === "completed" ? "已完成" : (dep.content && dep.content.trim() !== "") ? "待确认" : "未完成"}
                           </span>
                         </div>
                       </div>

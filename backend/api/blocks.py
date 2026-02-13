@@ -113,7 +113,7 @@ class BlockCreate(BaseModel):
     constraints: Optional[Dict] = None
     depends_on: List[str] = Field(default_factory=list)
     special_handler: Optional[str] = None
-    need_review: bool = True
+    need_review: bool = False
     order_index: Optional[int] = None
     pre_questions: List[str] = Field(default_factory=list)  # 生成前提问
 
@@ -370,6 +370,7 @@ def check_auto_triggers(
     
     eligible_ids = []
     for block in all_blocks:
+        # need_review=True 的块需要人工确认，不自动触发
         if block.need_review:
             continue
         # 只触发 pending 和 failed 的块；in_progress 的块说明正在生成中，不重复触发
@@ -380,10 +381,15 @@ def check_auto_triggers(
         deps = block.depends_on or []
         if not deps:
             continue
+        # 核心改动：依赖检查同时要求「有内容」且「status=completed」
+        # 这样 need_review=True 的依赖块必须经过人工确认才算 ready
         all_deps_ready = True
         for dep_id in deps:
             dep = blocks_by_id.get(dep_id)
             if not dep or not dep.content or not dep.content.strip():
+                all_deps_ready = False
+                break
+            if dep.status != "completed":
                 all_deps_ready = False
                 break
         if not all_deps_ready:
@@ -1296,9 +1302,31 @@ def apply_template_to_project(
     # 应用模板
     blocks_to_create = template.apply_to_project(project_id)
     
+    # 第一遍：创建所有块，记录 name→id 映射
+    name_to_id = {}
+    created_blocks = []
     for block_data in blocks_to_create:
+        # 暂存 depends_on（可能是名称列表），创建时先设为空
+        raw_depends = block_data.pop("depends_on", [])
         block = ContentBlock(**block_data)
+        block._raw_depends = raw_depends  # 临时属性
         db.add(block)
+        created_blocks.append(block)
+        name_to_id[block.name] = block.id
+    
+    db.flush()  # 确保所有块都有 ID
+    
+    # 第二遍：将 depends_on 的名称解析为 ID
+    for block in created_blocks:
+        raw = getattr(block, "_raw_depends", [])
+        if raw:
+            resolved = []
+            for dep_name in raw:
+                dep_id = name_to_id.get(dep_name)
+                if dep_id:
+                    resolved.append(dep_id)
+                # 如果名称找不到，忽略（不阻塞创建）
+            block.depends_on = resolved
     
     db.commit()
     
@@ -1423,7 +1451,7 @@ def migrate_project_to_blocks(
             ai_prompt=field.ai_prompt or "",
             constraints=field.constraints or {},
             depends_on=[],  # 稍后更新
-            need_review=getattr(field, 'need_review', True),
+            need_review=getattr(field, 'need_review', False),
         )
         db.add(field_block)
     

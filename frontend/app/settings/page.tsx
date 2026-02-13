@@ -782,7 +782,7 @@ function TemplatesSection({ templates, onRefresh }: { templates: any[]; onRefres
   const addField = () => {
     setEditForm({
       ...editForm,
-      fields: [...(editForm.fields || []), { name: "", type: "richtext", ai_prompt: "", pre_questions: [], depends_on: [] }],
+      fields: [...(editForm.fields || []), { name: "", type: "richtext", ai_prompt: "", content: "", pre_questions: [], depends_on: [] }],
     });
   };
 
@@ -913,6 +913,18 @@ function TemplatesSection({ templates, onRefresh }: { templates: any[]; onRefres
                       className="w-full px-3 py-2 bg-surface-2 border border-surface-3 rounded-lg text-zinc-200 text-sm"
                     />
                   </FormField>
+
+                  <div className="mt-3">
+                    <FormField label="预置内容" hint="模板自带的初始内容（可选，应用模板时将自动填入编辑区）">
+                      <textarea
+                        value={field.content || ""}
+                        onChange={(e) => updateField(index, "content", e.target.value)}
+                        placeholder="在此输入模板自带的初始内容，如固定前置说明、框架模板等..."
+                        rows={3}
+                        className="w-full px-3 py-2 bg-surface-2 border border-surface-3 rounded-lg text-zinc-200 text-sm"
+                      />
+                    </FormField>
+                  </div>
 
                   <div className="mt-3">
                     <FormField label="生成前提问" hint="生成前需要用户回答的问题（可选）">

@@ -105,7 +105,12 @@ def get_agent_settings(db: Session = Depends(get_db)):
         settings = AgentSettings(
             id=generate_uuid(),
             name="default",
-            tools=["deep_research", "generate_field", "simulate_consumer", "evaluate_content"],
+            tools=[
+                "modify_field", "generate_field_content", "query_field",
+                "read_field", "update_field", "manage_architecture",
+                "advance_to_phase", "run_research", "manage_persona",
+                "run_evaluation", "generate_outline", "manage_skill",
+            ],
             skills=[],
             autonomy_defaults={
                 "intent": True,

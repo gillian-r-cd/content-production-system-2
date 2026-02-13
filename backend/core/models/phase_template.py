@@ -150,6 +150,7 @@ class PhaseTemplate(BaseModel):
             
             # 创建默认字段
             for idx, field in enumerate(phase.get("default_fields", [])):
+                template_content = field.get("content", "")
                 field_block = {
                     "id": generate_uuid(),
                     "project_id": project_id,
@@ -159,7 +160,16 @@ class PhaseTemplate(BaseModel):
                     "depth": 1,
                     "order_index": idx,
                     "ai_prompt": field.get("ai_prompt", ""),
-                    "status": "pending",
+                    "content": template_content,
+                    "pre_questions": field.get("pre_questions", []),
+                    "depends_on": field.get("depends_on", []),
+                    "constraints": field.get("constraints", {}),
+                    "need_review": field.get("need_review", False),
+                    # 有预置内容：need_review=True → in_progress(待确认)，否则 completed
+                    "status": (
+                        ("in_progress" if field.get("need_review", False) else "completed")
+                        if template_content else "pending"
+                    ),
                 }
                 blocks_to_create.append(field_block)
         

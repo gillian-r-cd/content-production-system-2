@@ -395,7 +395,7 @@ def add_field(
             dependencies={"depends_on": depends_on or []},
             constraints=constraints or {},
             status="pending",
-            need_review=True,
+            need_review=False,
         )
         db.add(new_field)
         

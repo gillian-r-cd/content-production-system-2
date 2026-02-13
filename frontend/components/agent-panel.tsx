@@ -84,6 +84,7 @@ export function AgentPanel({
   const [sending, setSending] = useState(false);
   const [showMentions, setShowMentions] = useState(false);
   const [showTools, setShowTools] = useState(false);
+  const [chatMode, setChatMode] = useState<"assistant" | "cocreation">("assistant");
   const [mentionFilter, setMentionFilter] = useState("");
   const [mentionIndex, setMentionIndex] = useState(0);
   const [cursorPosition, setCursorPosition] = useState(0);
@@ -212,23 +213,42 @@ export function AgentPanel({
 
   // 加载工具列表（从后台 Agent 设置）
   useEffect(() => {
+    // 旧工具名 → 新工具名映射（兼容已保存的旧配置）
+    const TOOL_ID_MIGRATION: Record<string, string> = {
+      deep_research: "run_research",
+      generate_field: "generate_field_content",
+      simulate_consumer: "run_evaluation",  // simulate 已合入评估
+      evaluate_content: "run_evaluation",
+    };
+
     const loadTools = async () => {
       try {
         const settings = await settingsAPI.getAgentSettings();
-        const tools = (settings.tools || []).map((toolId: string) => ({
-          id: toolId,
-          name: TOOL_NAMES[toolId] || toolId,
-          desc: TOOL_DESCS[toolId] || "工具",
-        }));
+        const seen = new Set<string>();
+        const tools = (settings.tools || [])
+          .map((rawId: string) => TOOL_ID_MIGRATION[rawId] || rawId)  // 迁移旧名称
+          .filter((id: string) => { if (seen.has(id)) return false; seen.add(id); return true; })  // 去重
+          .map((toolId: string) => ({
+            id: toolId,
+            name: TOOL_NAMES[toolId] || toolId,
+            desc: TOOL_DESCS[toolId] || "工具",
+          }));
         setAvailableTools(tools);
       } catch (err) {
         console.error("加载工具列表失败:", err);
-        // 使用默认工具列表
         setAvailableTools([
-          { id: "run_research", name: "深度调研", desc: "使用DeepResearch进行网络调研" },
-          { id: "generate_field_content", name: "生成内容块", desc: "根据上下文生成指定内容块" },
-          { id: "run_evaluation", name: "内容评估", desc: "对项目内容执行全面评估" },
+          { id: "modify_field", name: "修改内容块", desc: "修改指定内容块的已有内容" },
+          { id: "generate_field_content", name: "生成内容块", desc: "为指定内容块生成新内容" },
+          { id: "query_field", name: "查询内容块", desc: "查询内容块状态信息" },
+          { id: "read_field", name: "读取内容块", desc: "读取内容块完整原始内容" },
+          { id: "update_field", name: "覆写内容块", desc: "直接用给定内容完整覆写内容块" },
           { id: "manage_architecture", name: "架构操作", desc: "添加/删除/移动组和内容块" },
+          { id: "advance_to_phase", name: "推进组", desc: "推进项目到下一组" },
+          { id: "run_research", name: "深度调研", desc: "使用DeepResearch进行网络调研" },
+          { id: "manage_persona", name: "人物管理", desc: "创建、编辑、选择消费者画像" },
+          { id: "run_evaluation", name: "内容评估", desc: "对项目内容执行全面质量评估" },
+          { id: "generate_outline", name: "大纲生成", desc: "基于上下文生成内容大纲" },
+          { id: "manage_skill", name: "技能管理", desc: "管理和应用可复用的AI技能" },
         ]);
       }
     };
@@ -335,12 +355,13 @@ export function AgentPanel({
     }
   };
 
-  const handleSend = async () => {
-    if (!input.trim() || !projectId || sending) return;
+  const handleSend = async (overrideMessage?: string) => {
+    const messageToSend = overrideMessage || input.trim();
+    if (!messageToSend || !projectId || sending) return;
     // 首次发送时请求通知权限（需在用户交互中触发）
     requestNotificationPermission();
 
-    const userMessage = input.trim();
+    const userMessage = messageToSend;
     
     // 提取 @ 引用的字段名（传入已知字段名以支持含空格的名称）
     const knownNames = mentionItems.map((item) => item.name);
@@ -393,6 +414,7 @@ export function AgentPanel({
           message: userMessage,
           references,
           current_phase: currentPhase || undefined,
+          mode: chatMode,
         }),
         signal: abortController.signal,
       });
@@ -481,9 +503,18 @@ export function AgentPanel({
                 // 工具完成（LangGraph 新事件）
                 console.log("[AgentPanel] Tool end:", data.tool, "field_updated:", data.field_updated);
                 if (data.field_updated && onContentUpdate) {
-                  // 工具更新了内容块，刷新中间面板
                   onContentUpdate();
                 }
+                // 更新 AI 气泡：显示工具完成摘要（不再停留在"正在使用XXX"）
+                const toolName = TOOL_NAMES[data.tool] || data.tool;
+                const summary = data.output ? data.output.slice(0, 200) : "";
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === tempAiMsg.id
+                      ? { ...m, content: `✅ ${toolName} 完成。${summary ? "\n" + summary : ""}` }
+                      : m
+                  )
+                );
               } else if (data.type === "modify_confirm_needed") {
                 // 修改确认（需要用户确认的修改）
                 console.log("[AgentPanel] Modify confirm needed:", data.target_field);
@@ -521,30 +552,21 @@ export function AgentPanel({
                 const actualRoute = data.route || currentRoute;
                 const isProducing = data.is_producing || PRODUCE_ROUTES.includes(actualRoute);
                 
-                if (isProducing) {
-                  // 产出模式：使用后端发来的 display_content
-                  // 防御：过滤掉"已生成【】"等空名称情况
-                  let displayContent = fullContent || "";
-                  if (!displayContent || displayContent.includes("已生成【】") || displayContent.includes("已生成 []")) {
-                    displayContent = "✅ 内容已生成，请在左侧工作台查看和编辑。";
-                  }
-                  setMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === tempAiMsg.id
-                        ? { ...m, id: data.message_id, content: displayContent }
-                        : m
-                    )
-                  );
-                  sendNotification("内容生成完成", "内容已生成完毕，点击查看");
-                } else {
-                  // 对话模式：保持完整内容
-                  setMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === tempAiMsg.id ? { ...m, id: data.message_id } : m
-                    )
-                  );
-                  sendNotification("Agent 回复完成", "Agent 已完成回复，点击查看");
-                }
+                setMessages((prev) =>
+                  prev.map((m) => {
+                    if (m.id !== tempAiMsg.id) return m;
+                    // 优先用流式累积的 fullContent；如果为空，保留气泡中已有的内容（如工具完成摘要）
+                    let finalContent = fullContent || m.content || "";
+                    if (isProducing && (!finalContent || finalContent.includes("已生成【】"))) {
+                      finalContent = "✅ 内容已生成，请在左侧工作台查看和编辑。";
+                    }
+                    return { ...m, id: data.message_id, content: finalContent };
+                  })
+                );
+                sendNotification(
+                  isProducing ? "内容生成完成" : "Agent 回复完成",
+                  isProducing ? "内容已生成完毕，点击查看" : "Agent 已完成回复，点击查看"
+                );
               } else if (data.type === "error") {
                 console.error("Stream error:", data.error);
                 setMessages((prev) =>
@@ -673,6 +695,7 @@ export function AgentPanel({
           message: editedContent,
           references,
           current_phase: currentPhase || undefined,
+          mode: chatMode,
         }),
       });
 
@@ -741,6 +764,11 @@ export function AgentPanel({
                 if (data.field_updated && onContentUpdate) {
                   onContentUpdate();
                 }
+                const tn = TOOL_NAMES[data.tool] || data.tool;
+                const sm = data.output ? data.output.slice(0, 200) : "";
+                setMessages(prev =>
+                  prev.map(m => m.id === tempAiMsg.id ? { ...m, content: `✅ ${tn} 完成。${sm ? "\n" + sm : ""}` } : m)
+                );
               } else if (data.type === "modify_confirm_needed") {
                 const summary = data.summary || "修改建议已生成";
                 setMessages(prev =>
@@ -759,16 +787,14 @@ export function AgentPanel({
                 const actualRoute = data.route || currentRoute;
                 const isProducing = data.is_producing || PRODUCE_ROUTES.includes(actualRoute);
                 
-                if (isProducing) {
-                  const displayContent = fullContent || "✅ 内容已生成，请在左侧工作台查看和编辑。";
-                  setMessages(prev =>
-                    prev.map(m => m.id === tempAiMsg.id ? { ...m, id: data.message_id, content: displayContent } : m)
-                  );
-                } else {
-                  setMessages(prev =>
-                    prev.map(m => m.id === tempAiMsg.id ? { ...m, id: data.message_id } : m)
-                  );
-                }
+                setMessages(prev =>
+                  prev.map(m => {
+                    if (m.id !== tempAiMsg.id) return m;
+                    let fc = fullContent || m.content || "";
+                    if (isProducing && !fc) fc = "✅ 内容已生成，请在左侧工作台查看和编辑。";
+                    return { ...m, id: data.message_id, content: fc };
+                  })
+                );
               }
             } catch (e) {}
           }
@@ -800,20 +826,27 @@ export function AgentPanel({
   const handleToolCall = async (toolId: string) => {
     if (!projectId) return;
     setShowTools(false);
-    setSending(true);
 
-    try {
-      await agentAPI.callTool(projectId, toolId, {});
-      await loadHistory();
-      // 工具可能生成了内容，刷新中间面板
-      if (onContentUpdate) {
-        onContentUpdate();
-      }
-    } catch (err) {
-      console.error("Tool调用失败:", err);
-    } finally {
-      setSending(false);
-    }
+    // 把工具 ID 翻译为自然语言指令，通过 Agent 流式对话发送
+    // 这样 Agent 有上下文、有流式进度，比直接调 /tool 好得多
+    const TOOL_INSTRUCTIONS: Record<string, string> = {
+      modify_field: "请帮我修改内容块。",
+      generate_field_content: "请帮我生成当前内容块的内容。",
+      query_field: "请查询当前内容块的状态。",
+      read_field: "请读取当前内容块的内容。",
+      update_field: "请帮我覆写内容块。",
+      manage_architecture: "请帮我管理项目结构。",
+      advance_to_phase: "请推进到下一个组。",
+      run_research: "请帮我进行深度调研。",
+      manage_persona: "请列出当前项目的消费者画像。",
+      run_evaluation: "请对当前项目内容进行全面质量评估。",
+      generate_outline: "请帮我生成内容大纲。",
+      manage_skill: "请列出可用的AI技能。",
+    };
+
+    const instruction = TOOL_INSTRUCTIONS[toolId] || `请执行工具：${TOOL_NAMES[toolId] || toolId}`;
+    // 直接调用 handleSend 并传入指令（不依赖 input state，避免异步竞态）
+    await handleSend(instruction);
   };
 
   return (
@@ -946,7 +979,7 @@ export function AgentPanel({
               </button>
             ) : (
               <button
-                onClick={handleSend}
+                onClick={() => handleSend()}
                 disabled={!projectId || !input.trim()}
                 className="px-4 py-2 bg-brand-600 hover:bg-brand-700 disabled:bg-surface-3 disabled:cursor-not-allowed rounded-lg transition-colors"
               >
@@ -956,8 +989,33 @@ export function AgentPanel({
           </div>
         </div>
 
-        {/* 快捷操作 */}
-        <div className="flex gap-2 mt-2 flex-wrap">
+        {/* 模式切换 + 快捷操作 */}
+        <div className="flex gap-2 mt-2 flex-wrap items-center">
+          {/* 模式切换 */}
+          <div className="flex bg-surface-2 rounded-md border border-surface-3 overflow-hidden mr-2">
+            <button
+              onClick={() => setChatMode("assistant")}
+              className={cn(
+                "px-2 py-1 text-xs transition-colors",
+                chatMode === "assistant"
+                  ? "bg-brand-600 text-white"
+                  : "text-zinc-400 hover:text-zinc-200 hover:bg-surface-3"
+              )}
+            >
+              🤖 助手
+            </button>
+            <button
+              onClick={() => setChatMode("cocreation")}
+              className={cn(
+                "px-2 py-1 text-xs transition-colors",
+                chatMode === "cocreation"
+                  ? "bg-brand-600 text-white"
+                  : "text-zinc-400 hover:text-zinc-200 hover:bg-surface-3"
+              )}
+            >
+              💡 共创
+            </button>
+          </div>
           <QuickAction label="继续" onClick={() => setInput("继续")} disabled={!projectId || sending} />
           <QuickAction label="开始调研" onClick={() => setInput("开始消费者调研")} disabled={!projectId || sending} />
           <QuickAction label="评估" onClick={() => setInput("评估当前内容")} disabled={!projectId || sending} />

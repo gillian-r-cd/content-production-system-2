@@ -8,7 +8,7 @@
 import { useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { blockAPI, fieldAPI, runAutoTriggerChain } from "@/lib/api";
+import { blockAPI, fieldAPI, projectAPI, runAutoTriggerChain } from "@/lib/api";
 import { sendNotification } from "@/lib/utils";
 import type { ContentBlock } from "@/lib/api";
 import { getEvalFieldEditor } from "./eval-field-editors";
@@ -33,6 +33,109 @@ import {
   Copy,
   Check
 } from "lucide-react";
+
+// ===== 版本警告弹窗组件（含保存新版本功能） =====
+function VersionWarningDialog({
+  projectId,
+  warning,
+  affectedBlocks,
+  onClose,
+  onVersionCreated,
+}: {
+  projectId: string;
+  warning: string;
+  affectedBlocks: string[] | null;
+  onClose: () => void;
+  onVersionCreated: () => void;
+}) {
+  const [versionNote, setVersionNote] = useState(
+    `变更前快照 — ${new Date().toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}`
+  );
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const handleSaveVersion = async () => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      await projectAPI.createVersion(projectId, versionNote || "上游变更前快照");
+      setSaved(true);
+      sendNotification("已成功创建新版本快照", "success");
+      // 短暂显示成功状态后关闭
+      setTimeout(() => onVersionCreated(), 800);
+    } catch (err) {
+      alert("创建版本失败: " + (err instanceof Error ? err.message : "未知错误"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+      <div className="bg-surface-1 border border-surface-3 rounded-xl shadow-2xl max-w-md w-full mx-4">
+        <div className="px-5 py-4 border-b border-surface-3">
+          <h3 className="text-base font-semibold text-amber-400 flex items-center gap-2">
+            上游内容变更提醒
+          </h3>
+        </div>
+        <div className="p-5 space-y-3">
+          <p className="text-sm text-zinc-300">{warning}</p>
+          {affectedBlocks && affectedBlocks.length > 0 && (
+            <div className="bg-surface-2 rounded-lg p-3">
+              <p className="text-xs text-zinc-400 mb-2">受影响的内容：</p>
+              <ul className="space-y-1">
+                {affectedBlocks.map((name, i) => (
+                  <li key={i} className="text-sm text-amber-300 flex items-center gap-1.5">
+                    <span className="text-amber-400">•</span> {name}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* 保存新版本输入区 */}
+          {!saved && (
+            <div className="space-y-2 pt-2">
+              <label className="text-xs text-zinc-400">版本备注（可选）</label>
+              <input
+                type="text"
+                value={versionNote}
+                onChange={(e) => setVersionNote(e.target.value)}
+                placeholder="如：修改某内容块前的快照"
+                className="w-full px-3 py-2 bg-surface-2 border border-surface-3 rounded-lg text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-brand-500"
+              />
+            </div>
+          )}
+
+          {saved && (
+            <div className="flex items-center gap-2 text-sm text-green-400 bg-green-900/20 rounded-lg px-3 py-2">
+              <Check className="w-4 h-4" />
+              版本已保存
+            </div>
+          )}
+        </div>
+        <div className="px-5 py-4 border-t border-surface-3 flex justify-end gap-3">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-200 bg-surface-2 hover:bg-surface-3 rounded-lg transition-colors"
+          >
+            {saved ? "关闭" : "不保存，关闭"}
+          </button>
+          {!saved && (
+            <button
+              onClick={handleSaveVersion}
+              disabled={saving}
+              className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-700 text-white rounded-lg transition-colors disabled:opacity-50"
+            >
+              {saving ? "保存中..." : "保存新版本"}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 interface ContentBlockEditorProps {
   block: ContentBlock;
@@ -60,6 +163,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
   
   // 编辑状态
   const [editedPrompt, setEditedPrompt] = useState(block.ai_prompt || "");
+  const [savedPrompt, setSavedPrompt] = useState(block.ai_prompt || ""); // 本地追踪已保存的提示词
   const [editedConstraints, setEditedConstraints] = useState(block.constraints || {});
   const [selectedDependencies, setSelectedDependencies] = useState<string[]>(block.depends_on || []);
   const [aiPromptPurpose, setAiPromptPurpose] = useState("");
@@ -118,6 +222,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
     }
     setEditedName(block.name);
     setEditedPrompt(block.ai_prompt || "");
+    setSavedPrompt(block.ai_prompt || "");
     setEditedConstraints(block.constraints || {});
     setSelectedDependencies(block.depends_on || []);
     setPreAnswers(block.pre_answers || {});
@@ -289,6 +394,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
       } else {
         await blockAPI.update(block.id, { ai_prompt: editedPrompt });
       }
+      setSavedPrompt(editedPrompt); // 乐观更新本地状态，立即反映到 UI
       setShowPromptModal(false);
       onUpdate?.();
     } catch (err) {
@@ -349,8 +455,8 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
     .map(id => allBlocks.find(b => b.id === id))
     .filter(Boolean) as ContentBlock[];
 
-  // 检查依赖是否满足（只要有内容就满足，不需要状态是 completed）
-  const unmetDependencies = dependencyBlocks.filter(d => !d.content || !d.content.trim());
+  // 检查依赖是否满足：必须有内容且 status=completed（need_review 的块必须经过确认）
+  const unmetDependencies = dependencyBlocks.filter(d => !d.content || !d.content.trim() || d.status !== "completed");
   const canGenerate = unmetDependencies.length === 0;
 
   // 生成内容（使用流式 API）
@@ -582,6 +688,8 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
                   try {
                     await blockAPI.confirm(block.id);
                     onUpdate?.();
+                    // 确认后触发下游自动生成链
+                    runAutoTriggerChain(projectId, () => onUpdate?.()).catch(console.error);
                   } catch (err) {
                     console.error("确认失败:", err);
                     alert("确认失败: " + (err instanceof Error ? err.message : "未知错误"));
@@ -634,13 +742,13 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
           <button
             onClick={() => setShowPromptModal(true)}
             className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-colors ${
-              block.ai_prompt 
+              savedPrompt 
                 ? "border-brand-500/30 bg-brand-600/10 text-brand-400 hover:bg-brand-600/20"
                 : "border-red-500/30 bg-red-600/10 text-red-400 hover:bg-red-600/20"
             }`}
           >
             <MessageSquarePlus className="w-3.5 h-3.5" />
-            {block.ai_prompt ? "已配置提示词" : "未配置提示词"}
+            {savedPrompt ? "已配置提示词" : "未配置提示词"}
           </button>
           
           {/* 约束配置 */}
@@ -1061,11 +1169,13 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
                                    dep.special_handler === "evaluate" ? "评估结果" : dep.special_handler}
                                 </span>
                                 <span className={`px-1.5 py-0.5 text-xs rounded ${
-                                  (dep.content && dep.content.trim() !== "")
-                                    ? "bg-emerald-600/20 text-emerald-400" 
+                                  dep.status === "completed"
+                                    ? "bg-emerald-600/20 text-emerald-400"
+                                    : (dep.content && dep.content.trim() !== "")
+                                    ? "bg-amber-600/20 text-amber-400"
                                     : "bg-zinc-700 text-zinc-400"
                                 }`}>
-                                  {(dep.content && dep.content.trim() !== "") ? "已完成" : "未完成"}
+                                  {dep.status === "completed" ? "已完成" : (dep.content && dep.content.trim() !== "") ? "待确认" : "未完成"}
                                 </span>
                               </div>
                             </div>
@@ -1101,11 +1211,13 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
                               <div className="flex items-center gap-2">
                                 <span className="text-sm text-zinc-200">{dep.name}</span>
                                 <span className={`px-1.5 py-0.5 text-xs rounded ${
-                                  (dep.content && dep.content.trim() !== "")
-                                    ? "bg-emerald-600/20 text-emerald-400" 
+                                  dep.status === "completed"
+                                    ? "bg-emerald-600/20 text-emerald-400"
+                                    : (dep.content && dep.content.trim() !== "")
+                                    ? "bg-amber-600/20 text-amber-400"
                                     : "bg-zinc-700 text-zinc-400"
                                 }`}>
-                                  {(dep.content && dep.content.trim() !== "") ? "已完成" : "未完成"}
+                                  {dep.status === "completed" ? "已完成" : (dep.content && dep.content.trim() !== "") ? "待确认" : "未完成"}
                                 </span>
                               </div>
                             </div>
@@ -1144,43 +1256,17 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
 
       {/* ===== 版本警告弹窗 ===== */}
       {versionWarning && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-surface-1 border border-surface-3 rounded-xl shadow-2xl max-w-md w-full mx-4">
-            <div className="px-5 py-4 border-b border-surface-3">
-              <h3 className="text-base font-semibold text-amber-400 flex items-center gap-2">
-                上游内容变更提醒
-              </h3>
-            </div>
-            <div className="p-5 space-y-3">
-              <p className="text-sm text-zinc-300">{versionWarning}</p>
-              {affectedBlocks && affectedBlocks.length > 0 && (
-                <div className="bg-surface-2 rounded-lg p-3">
-                  <p className="text-xs text-zinc-400 mb-2">受影响的内容：</p>
-                  <ul className="space-y-1">
-                    {affectedBlocks.map((name, i) => (
-                      <li key={i} className="text-sm text-amber-300 flex items-center gap-1.5">
-                        <span className="text-amber-400">•</span> {name}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              <p className="text-xs text-zinc-500">
-                建议：您可以选择创建新版本来保留修改前的内容，
-                或关闭此提示并手动重新生成受影响的内容块。
-              </p>
-            </div>
-            <div className="px-5 py-4 border-t border-surface-3 flex justify-end gap-3">
-              <button
-                onClick={() => { setVersionWarning(null); setAffectedBlocks(null); }}
-                className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-200 bg-surface-2 hover:bg-surface-3 rounded-lg transition-colors"
-              >
-                知道了，稍后处理
-              </button>
-              {/* Future: Can add a "Create New Version" button that calls the version API */}
-            </div>
-          </div>
-        </div>
+        <VersionWarningDialog
+          projectId={projectId}
+          warning={versionWarning}
+          affectedBlocks={affectedBlocks}
+          onClose={() => { setVersionWarning(null); setAffectedBlocks(null); }}
+          onVersionCreated={() => {
+            setVersionWarning(null);
+            setAffectedBlocks(null);
+            onUpdate?.();
+          }}
+        />
       )}
     </div>
   );

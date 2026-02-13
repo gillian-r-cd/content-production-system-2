@@ -566,13 +566,21 @@ async def stream_chat(
                 f"{request.message}\n\n---\n以下是用户引用的内容块：\n{ref_text}"
             )
 
-    # Checkpointer 配置
+    # Checkpointer 配置 + LLM 日志回调
+    from core.llm_logger import GenerationLogCallback
+
     thread_id = f"{request.project_id}:assistant"
+    llm_log_cb = GenerationLogCallback(
+        project_id=request.project_id,
+        phase=current_phase,
+        operation="agent_stream",
+    )
     config = {
         "configurable": {
             "thread_id": thread_id,
             "project_id": request.project_id,
-        }
+        },
+        "callbacks": [llm_log_cb],
     }
 
     # Bootstrap：首次请求或服务器重启后从 DB 加载种子历史
@@ -608,7 +616,11 @@ async def stream_chat(
         "run_research",
     }
 
+    _stream_start_time = time.time()
+
     async def event_generator():
+        from core.llm import llm
+
         try:
             # 1. 返回用户消息真实 ID
             yield sse_event({"type": "user_saved", "message_id": saved_user_msg_id})
@@ -798,6 +810,35 @@ async def stream_chat(
                 },
             )
             db.add(agent_msg)
+
+            # ---- 创建 GenerationLog（调试日志页面数据来源） ----
+            try:
+                duration_ms = int((time.time() - _stream_start_time) * 1000)
+                op_name = f"agent_stream_{tools_used[0]}" if tools_used else "agent_stream_chat"
+                tokens_in_est = len(request.message) // 4
+                tokens_out_est = len(full_content) // 4
+                gen_log = GenerationLog(
+                    id=generate_uuid(),
+                    project_id=request.project_id,
+                    field_id=None,
+                    phase=current_phase,
+                    operation=op_name,
+                    model=getattr(llm, "model_name", "gpt-4o"),
+                    tokens_in=tokens_in_est,
+                    tokens_out=tokens_out_est,
+                    duration_ms=duration_ms,
+                    prompt_input=request.message[:2000],
+                    prompt_output=full_content[:2000],
+                    cost=GenerationLog.calculate_cost(
+                        getattr(llm, "model_name", "gpt-4o"),
+                        tokens_in_est, tokens_out_est
+                    ),
+                    status="success",
+                )
+                db.add(gen_log)
+            except Exception as log_err:
+                logger.warning("[stream] GenerationLog 保存失败(可忽略): %s", log_err)
+
             db.commit()
 
             yield sse_event({
@@ -836,10 +877,18 @@ async def _handle_cocreation_stream(request, db, project, user_msg_id):
     不走 Agent Graph，直接用 llm.astream() 进行纯角色扮演对话。
     """
     from core.llm import llm
+    from core.llm_logger import GenerationLogCallback
     from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
     logger.info("[cocreation] 开始, project=%s", request.project_id)
     yield sse_event({"type": "user_saved", "message_id": user_msg_id})
+
+    # 日志回调：cocreation 的 LLM 调用也会被记录到 GenerationLog
+    cocreation_log_cb = GenerationLogCallback(
+        project_id=request.project_id,
+        phase=project.current_phase,
+        operation="cocreation_stream",
+    )
 
     try:
         # 加载共创对话历史
@@ -850,7 +899,8 @@ async def _handle_cocreation_stream(request, db, project, user_msg_id):
 
         # 构建消息
         messages = [
-            SystemMessage(content="你是一个创意共创伙伴。与创作者进行头脑风暴，帮助发展想法。"),
+            SystemMessage(content="你是一个创意共创伙伴。与创作者进行头脑风暴，帮助发展想法。"
+                          "\n\n**输出格式要求**：必须使用完整的标点符号，用完整句子回复。"),
         ]
         for m in history:
             meta = m.message_metadata or {}
@@ -862,10 +912,10 @@ async def _handle_cocreation_stream(request, db, project, user_msg_id):
                 messages.append(AIMessage(content=m.content))
         messages.append(HumanMessage(content=request.message))
 
-        # 流式输出
+        # 流式输出（config 中注入日志回调）
         full_content = ""
         token_count = 0
-        async for chunk in llm.astream(messages):
+        async for chunk in llm.astream(messages, config={"callbacks": [cocreation_log_cb]}):
             if chunk.content:
                 full_content += chunk.content
                 token_count += 1

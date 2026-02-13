@@ -106,6 +106,18 @@ def _json_err(message: str) -> str:
     return json.dumps({"status": "error", "message": message}, ensure_ascii=False)
 
 
+def _set_content_status(entity) -> None:
+    """根据 need_review 设置内容块状态。
+    
+    - need_review=True → in_progress（等待用户确认）
+    - need_review=False → completed（自动完成）
+    """
+    if hasattr(entity, "need_review") and entity.need_review:
+        entity.status = "in_progress"
+    else:
+        entity.status = "completed"
+
+
 # ============== 1. modify_field ==============
 
 @tool
@@ -178,8 +190,16 @@ async def _modify_field_impl(
         ], config=config)
 
         new_content = response.content
+
+        # 截断检测：如果 finish_reason == "length"，说明输出被截断，不保存
+        finish_reason = (response.response_metadata or {}).get("finish_reason", "stop")
+        if finish_reason == "length":
+            logger.warning(f"[modify_field] 输出被截断（finish_reason=length），不保存，内容 {len(new_content)} 字")
+            return _json_err(f"修改内容被截断（{len(new_content)} 字），内容过长。建议拆分内容块或使用更简洁的指令。")
+
         _save_version(db, entity.id, current_content, "agent")
         entity.content = new_content
+        _set_content_status(entity)
         db.commit()
 
         logger.info(f"[modify_field] 已修改「{field_name}」, {len(new_content)} 字")
@@ -270,10 +290,17 @@ async def _generate_field_impl(
         ], config=config)
 
         new_content = response.content
+
+        # 截断检测
+        finish_reason = (response.response_metadata or {}).get("finish_reason", "stop")
+        if finish_reason == "length":
+            logger.warning(f"[generate_field_content] 输出被截断, {len(new_content)} 字")
+            return _json_err(f"生成内容被截断（{len(new_content)} 字），内容过长。建议拆分内容块。")
+
         if entity.content and entity.content.strip():
             _save_version(db, entity.id, entity.content, "agent")
         entity.content = new_content
-        entity.status = "completed"
+        _set_content_status(entity)
         db.commit()
 
         logger.info(f"[generate_field_content] 已生成「{field_name}」, {len(new_content)} 字")
@@ -384,7 +411,7 @@ def update_field(field_name: str, content: str, config: RunnableConfig = None) -
         if entity.content and entity.content.strip():
             _save_version(db, entity.id, entity.content, "agent")
         entity.content = content
-        entity.status = "completed"
+        _set_content_status(entity)
         db.commit()
 
         return _json_ok(field_name, "updated", f"✅ 已更新「{field_name}」")
@@ -605,7 +632,7 @@ async def _run_research_impl(query: str, research_type: str, config: RunnableCon
             if research_block.content:
                 _save_version(db, research_block.id, research_block.content, "agent")
             research_block.content = report_json
-            research_block.status = "completed"
+            _set_content_status(research_block)
             db.flush()
             saved = True
 
@@ -618,7 +645,7 @@ async def _run_research_impl(query: str, research_type: str, config: RunnableCon
             if research_field.content:
                 _save_version(db, research_field.id, research_field.content, "agent")
             research_field.content = report_json
-            research_field.status = "completed"
+            _set_content_status(research_field)
             db.flush()
             saved = True
 
@@ -687,15 +714,33 @@ async def _manage_persona_impl(operation: str, persona_data: str, config: Runnab
 # ============== 10. run_evaluation ==============
 
 @tool
-async def run_evaluation(config: RunnableConfig = None) -> str:
-    """对项目内容执行全面质量评估，生成评估报告。
+async def run_evaluation(
+    field_names: Optional[List[str]] = None,
+    grader_name: Optional[str] = None,
+    config: RunnableConfig = None,
+) -> str:
+    """对项目内容执行质量评估，生成评估报告。
 
-    当用户说"评估一下"、"检查内容质量"时使用。
+    当用户说「评估一下」「检查内容质量」「评价XX内容块」时使用。
+
+    典型场景：
+    - 「评估一下」→ run_evaluation()（全量评估）
+    - 「评价一下场景库」→ run_evaluation(field_names=["场景库"])
+    - 「用原创性 grader 评价场景库」→ run_evaluation(field_names=["场景库"], grader_name="原创性")
+    - 「评估所有内涵设计的内容」→ run_evaluation(field_names=["主题表达", "价值主张", ...])
+
+    参数：
+    - field_names: 要评估的内容块名称列表。为空时评估全部有内容的内容块。
+    - grader_name: 指定使用的评估维度/Grader 名称。为空时使用全部评估维度。
     """
-    return await _run_evaluation_impl(config)
+    return await _run_evaluation_impl(field_names or [], grader_name, config)
 
 
-async def _run_evaluation_impl(config: RunnableConfig) -> str:
+async def _run_evaluation_impl(
+    target_field_names: List[str],
+    grader_name: Optional[str],
+    config: RunnableConfig,
+) -> str:
     from core.tools.eval_engine import run_eval
     from core.tools.architecture_reader import get_intent_and_research
     from core.models import Project, ContentBlock
@@ -705,7 +750,7 @@ async def _run_evaluation_impl(config: RunnableConfig) -> str:
     try:
         project = db.query(Project).filter(Project.id == project_id).first()
         if not project:
-            return "项目不存在"
+            return "项目不存在。"
 
         # 获取上下文
         deps = get_intent_and_research(project_id)
@@ -720,11 +765,17 @@ async def _run_evaluation_impl(config: RunnableConfig) -> str:
             ContentBlock.content != None,  # noqa: E711
             ContentBlock.deleted_at == None,  # noqa: E711
         ).all()
+
+        # 按名称筛选（如果指定了 field_names）
+        if target_field_names:
+            blocks = [b for b in blocks if b.name in target_field_names]
+
         content = "\n\n".join(f"## {b.name}\n{b.content}" for b in blocks if b.content)
         field_names = [b.name for b in blocks if b.content]
 
         if not content.strip():
-            return "项目还没有生成任何内容，无法评估。"
+            target_desc = "、".join(target_field_names) if target_field_names else "项目"
+            return f"{target_desc}还没有生成任何内容，无法评估。"
 
         # 运行评估
         trial_results, diagnosis = await run_eval(
@@ -736,8 +787,10 @@ async def _run_evaluation_impl(config: RunnableConfig) -> str:
 
         # 返回摘要
         overall = diagnosis.get("overall_score", 0)
-        summary = diagnosis.get("summary", "评估完成")
-        return f"✅ 评估完成。综合评分: {overall}/10\n{summary}"
+        summary = diagnosis.get("summary", "评估完成。")
+        target_desc = "、".join(target_field_names) if target_field_names else "全部内容"
+        grader_desc = f"（{grader_name}维度）" if grader_name else ""
+        return f"✅ {target_desc}{grader_desc}评估完成。综合评分: {overall}/10\n{summary}"
 
     except Exception as e:
         logger.error(f"run_evaluation error: {e}", exc_info=True)

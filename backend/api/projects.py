@@ -179,16 +179,48 @@ def delete_project(
     project_id: str,
     db: Session = Depends(get_db),
 ):
-    """删除项目（包括所有关联数据）"""
+    """
+    删除项目（包括所有关联数据）
+
+    按依赖顺序删除：先删子表/关联表，再删主表。
+    """
     from core.models import ProjectField, ContentBlock, BlockHistory
     from core.models.chat_history import ChatMessage
     from core.models.generation_log import GenerationLog
     from core.models.simulation_record import SimulationRecord
     from core.models.evaluation import EvaluationReport
+    from core.models.eval_run import EvalRun
+    from core.models.eval_task import EvalTask
+    from core.models.eval_trial import EvalTrial
+    from core.models.content_version import ContentVersion
     
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    
+    # 收集所有 block/field ID，用于清理 ContentVersion
+    block_ids = [b.id for b in db.query(ContentBlock.id).filter(
+        ContentBlock.project_id == project_id
+    ).all()]
+    field_ids = [f.id for f in db.query(ProjectField.id).filter(
+        ProjectField.project_id == project_id
+    ).all()]
+    all_versioned_ids = block_ids + field_ids
+    
+    # 删除 ContentVersion（通过 block_id 关联 block 和 field）
+    if all_versioned_ids:
+        db.query(ContentVersion).filter(
+            ContentVersion.block_id.in_(all_versioned_ids)
+        ).delete(synchronize_session=False)
+    
+    # 删除 EvalTrial + EvalTask（通过 EvalRun 关联项目）
+    run_ids = [r.id for r in db.query(EvalRun.id).filter(
+        EvalRun.project_id == project_id
+    ).all()]
+    if run_ids:
+        db.query(EvalTrial).filter(EvalTrial.eval_run_id.in_(run_ids)).delete(synchronize_session=False)
+        db.query(EvalTask).filter(EvalTask.eval_run_id.in_(run_ids)).delete(synchronize_session=False)
+    db.query(EvalRun).filter(EvalRun.project_id == project_id).delete()
     
     # 删除关联的生成日志
     db.query(GenerationLog).filter(GenerationLog.project_id == project_id).delete()
@@ -229,10 +261,12 @@ def duplicate_project(
     复制内容包括：
     - 项目本身（新名称加 "(副本)" 后缀）
     - 所有字段 (ProjectField)
+    - 所有内容块 (ContentBlock) — 灵活架构的核心数据
     - 所有对话记录 (ChatMessage)
     """
     from core.models import ProjectField
     from core.models.chat_history import ChatMessage
+    from core.models.content_block import ContentBlock
     
     # 获取原项目
     old_project = db.query(Project).filter(Project.id == project_id).first()
@@ -258,12 +292,11 @@ def duplicate_project(
     db.add(new_project)
     db.flush()  # 获取新项目ID
     
-    # 复制所有字段
+    # ---- 复制所有字段 (ProjectField) ----
     old_fields = db.query(ProjectField).filter(
         ProjectField.project_id == old_project.id
     ).all()
     
-    # 创建字段ID映射（旧ID -> 新ID）用于更新依赖关系
     field_id_mapping = {}
     new_fields = []
     
@@ -285,8 +318,9 @@ def duplicate_project(
             pre_answers=old_field.pre_answers.copy() if old_field.pre_answers else {},
             dependencies=old_field.dependencies.copy() if old_field.dependencies else {"depends_on": [], "dependency_type": "all"},
             constraints=old_field.constraints.copy() if hasattr(old_field, 'constraints') and old_field.constraints else None,
-            need_review=old_field.need_review if hasattr(old_field, 'need_review') else True,
+            need_review=old_field.need_review if hasattr(old_field, 'need_review') else False,
             order=old_field.order if hasattr(old_field, 'order') else 0,
+            digest=old_field.digest if hasattr(old_field, 'digest') else None,
         )
         new_fields.append(new_field)
     
@@ -301,7 +335,49 @@ def duplicate_project(
             }
         db.add(new_field)
     
-    # 复制对话记录
+    # ---- 复制所有内容块 (ContentBlock) — 灵活架构的核心 ----
+    old_blocks = db.query(ContentBlock).filter(
+        ContentBlock.project_id == old_project.id,
+        ContentBlock.deleted_at == None,  # noqa: E711 — 跳过已软删除的
+    ).order_by(ContentBlock.depth, ContentBlock.order_index).all()
+    
+    block_id_mapping = {}
+    
+    # 第一遍：分配新 ID
+    for old_block in old_blocks:
+        block_id_mapping[old_block.id] = generate_uuid()
+    
+    # 第二遍：创建副本（parent_id / depends_on 用映射后的 ID）
+    for old_block in old_blocks:
+        new_block_id = block_id_mapping[old_block.id]
+        new_parent_id = block_id_mapping.get(old_block.parent_id) if old_block.parent_id else None
+        new_depends_on = [
+            block_id_mapping.get(dep, dep) for dep in (old_block.depends_on or [])
+        ]
+        
+        new_block = ContentBlock(
+            id=new_block_id,
+            project_id=new_project.id,
+            parent_id=new_parent_id,
+            name=old_block.name,
+            block_type=old_block.block_type,
+            depth=old_block.depth,
+            order_index=old_block.order_index,
+            content=old_block.content or "",
+            status=old_block.status,
+            ai_prompt=old_block.ai_prompt or "",
+            constraints=old_block.constraints.copy() if old_block.constraints else {},
+            pre_questions=old_block.pre_questions.copy() if old_block.pre_questions else [],
+            pre_answers=old_block.pre_answers.copy() if old_block.pre_answers else {},
+            depends_on=new_depends_on,
+            special_handler=old_block.special_handler,
+            need_review=old_block.need_review,
+            is_collapsed=old_block.is_collapsed,
+            digest=old_block.digest,
+        )
+        db.add(new_block)
+    
+    # ---- 复制对话记录 ----
     old_messages = db.query(ChatMessage).filter(
         ChatMessage.project_id == old_project.id
     ).order_by(ChatMessage.created_at).all()
@@ -335,7 +411,17 @@ def create_new_version(
     request: NewVersionRequest,
     db: Session = Depends(get_db),
 ):
-    """创建项目新版本"""
+    """
+    创建项目新版本
+
+    复制内容包括：
+    - 项目本身（版本号 +1）
+    - 所有字段 (ProjectField)
+    - 所有内容块 (ContentBlock) — 灵活架构的核心数据
+    """
+    from core.models import ProjectField
+    from core.models.content_block import ContentBlock
+
     old_project = db.query(Project).filter(Project.id == project_id).first()
     if not old_project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -354,19 +440,17 @@ def create_new_version(
         agent_autonomy=old_project.agent_autonomy.copy() if old_project.agent_autonomy else {},
         golden_context=old_project.golden_context.copy() if old_project.golden_context else {},
         use_deep_research=old_project.use_deep_research,
+        use_flexible_architecture=old_project.use_flexible_architecture if hasattr(old_project, 'use_flexible_architecture') else False,
     )
     
     db.add(new_project)
-    db.commit()
-    db.refresh(new_project)
+    db.flush()
     
-    # 复制所有字段到新版本
-    from core.models import ProjectField
+    # ---- 复制所有字段 (ProjectField) ----
     old_fields = db.query(ProjectField).filter(
         ProjectField.project_id == old_project.id
     ).all()
     
-    # 创建字段ID映射（旧ID -> 新ID）用于更新依赖关系
     field_id_mapping = {}
     new_fields = []
     
@@ -387,6 +471,10 @@ def create_new_version(
             pre_questions=old_field.pre_questions.copy() if old_field.pre_questions else [],
             pre_answers=old_field.pre_answers.copy() if old_field.pre_answers else {},
             dependencies=old_field.dependencies.copy() if old_field.dependencies else {"depends_on": [], "dependency_type": "all"},
+            constraints=old_field.constraints.copy() if hasattr(old_field, 'constraints') and old_field.constraints else None,
+            need_review=old_field.need_review if hasattr(old_field, 'need_review') else False,
+            order=old_field.order if hasattr(old_field, 'order') else 0,
+            digest=old_field.digest if hasattr(old_field, 'digest') else None,
         )
         new_fields.append(new_field)
     
@@ -400,8 +488,48 @@ def create_new_version(
                 "depends_on": new_deps,
             }
         db.add(new_field)
+
+    # ---- 复制所有内容块 (ContentBlock) — 灵活架构的核心 ----
+    old_blocks = db.query(ContentBlock).filter(
+        ContentBlock.project_id == old_project.id,
+        ContentBlock.deleted_at == None,  # noqa: E711
+    ).order_by(ContentBlock.depth, ContentBlock.order_index).all()
+
+    block_id_mapping = {}
+    for old_block in old_blocks:
+        block_id_mapping[old_block.id] = generate_uuid()
+
+    for old_block in old_blocks:
+        new_block_id = block_id_mapping[old_block.id]
+        new_parent_id = block_id_mapping.get(old_block.parent_id) if old_block.parent_id else None
+        new_depends_on = [
+            block_id_mapping.get(dep, dep) for dep in (old_block.depends_on or [])
+        ]
+
+        new_block = ContentBlock(
+            id=new_block_id,
+            project_id=new_project.id,
+            parent_id=new_parent_id,
+            name=old_block.name,
+            block_type=old_block.block_type,
+            depth=old_block.depth,
+            order_index=old_block.order_index,
+            content=old_block.content or "",
+            status=old_block.status,
+            ai_prompt=old_block.ai_prompt or "",
+            constraints=old_block.constraints.copy() if old_block.constraints else {},
+            pre_questions=old_block.pre_questions.copy() if old_block.pre_questions else [],
+            pre_answers=old_block.pre_answers.copy() if old_block.pre_answers else {},
+            depends_on=new_depends_on,
+            special_handler=old_block.special_handler,
+            need_review=old_block.need_review,
+            is_collapsed=old_block.is_collapsed,
+            digest=old_block.digest,
+        )
+        db.add(new_block)
     
     db.commit()
+    db.refresh(new_project)
     
     return _project_to_response(new_project)
 
@@ -700,8 +828,9 @@ def import_project(
                 pre_answers=b.get("pre_answers", {}),
                 depends_on=_map_list(b.get("depends_on", [])),
                 special_handler=b.get("special_handler"),
-                need_review=b.get("need_review", True),
+                need_review=b.get("need_review", False),
                 is_collapsed=b.get("is_collapsed", False),
+                digest=b.get("digest"),
             )
             db.add(new_block)
 
@@ -731,7 +860,9 @@ def import_project(
                 pre_answers=f.get("pre_answers", {}),
                 dependencies=new_deps,
                 constraints=f.get("constraints", {}),
-                need_review=f.get("need_review", True),
+                need_review=f.get("need_review", False),
+                order=f.get("order", 0),
+                digest=f.get("digest"),
             )
             db.add(new_field)
 

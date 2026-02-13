@@ -131,7 +131,7 @@ class ContentBlock(BaseModel):
     )
     
     # 控制
-    need_review: Mapped[bool] = mapped_column(Boolean, default=True)
+    need_review: Mapped[bool] = mapped_column(Boolean, default=False)
     is_collapsed: Mapped[bool] = mapped_column(Boolean, default=False)
     
     # 内容摘要（digest_service 自动生成，用于内容块索引）

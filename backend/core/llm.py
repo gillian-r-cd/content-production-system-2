@@ -58,6 +58,7 @@ def get_chat_model(
         temperature=temperature,
         streaming=streaming,
         timeout=120.0,
+        max_tokens=16384,  # 显式设置最大输出 token，防止长内容截断
         **kwargs,
     )
 

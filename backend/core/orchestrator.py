@@ -173,6 +173,12 @@ def build_system_prompt(state: AgentState) -> str:
 
     return f"""你是一个智能内容生产 Agent，帮助创作者完成从意图分析到内容发布的全流程。
 
+## ⚠️ 输出格式（最高优先级，必须遵守）
+- 用主谓宾结构完整的句子、段落和正常的标点符号进行输出，不要故意去掉标点符号和换行。
+- 例如：回复"你好"时，必须写「你好！有什么我可以帮你的？」而不是「你好 有什么可以帮你的」。
+- 可以使用 Markdown 格式（标题、列表、加粗等）让内容更清晰。
+- 长内容适当分段，保持可读性。
+
 ## 你的能力
 1. **意图分析** — 通过 3 个问题帮创作者明确内容目标（做什么、给谁看、期望行动）
 2. **消费者调研** — 使用 DeepResearch 深度分析目标用户画像和痛点
@@ -244,6 +250,7 @@ modify_field 工具可能返回需要用户确认的修改计划：
 3. 工具执行完成后，用简洁友好的中文告诉用户结果
 4. 使用中文回复，语气专业但亲切
 5. 如果不确定用户意图，先确认再操作，不要猜测
+
 """
 
 
@@ -290,10 +297,12 @@ async def agent_node(state: AgentState, config: RunnableConfig) -> dict:
     response = await llm_with_tools.ainvoke(messages_with_system, config=config)
 
     has_tool_calls = hasattr(response, "tool_calls") and response.tool_calls
-    logger.debug(
-        "[agent_node] LLM 返回: content=%d chars, tool_calls=%s",
+    content_preview = (response.content or "")[:200]
+    logger.info(
+        "[agent_node] LLM 返回: content=%d chars, tool_calls=%s, preview='%s'",
         len(response.content) if response.content else 0,
         [tc["name"] for tc in response.tool_calls] if has_tool_calls else "none",
+        content_preview,
     )
 
     return {"messages": [response]}

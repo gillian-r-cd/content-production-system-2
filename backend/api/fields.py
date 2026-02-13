@@ -67,7 +67,7 @@ class FieldCreate(BaseModel):
     pre_questions: List[str] = []
     dependencies: dict = {"depends_on": [], "dependency_type": "all"}
     constraints: Optional[dict] = None  # 字段生产约束
-    need_review: bool = True  # 是否需要人工确认
+    need_review: bool = False  # 是否需要人工确认（默认不需要，关键节点可开启）
     template_id: Optional[str] = None
 
 
@@ -97,7 +97,7 @@ class FieldResponse(BaseModel):
     pre_answers: dict
     dependencies: dict
     constraints: Optional[dict] = None  # 字段生产约束
-    need_review: bool = True  # 是否需要人工确认
+    need_review: bool = False  # 是否需要人工确认（默认不需要）
     template_id: Optional[str]
     created_at: str
     updated_at: str
@@ -142,12 +142,21 @@ def create_field(
             FieldTemplate.id == field.template_id
         ).first()
         if template:
-            # 从模板获取字段配置
+            # 从模板获取字段配置（包括预置内容）
             for t_field in template.fields:
                 if t_field.get("name") == field.name:
                     field.ai_prompt = field.ai_prompt or t_field.get("ai_prompt", "")
                     field.pre_questions = field.pre_questions or t_field.get("pre_questions", [])
+                    # 预置内容：仅在字段自身没有内容时才从模板填充
+                    if not field.content and t_field.get("content"):
+                        field.content = t_field["content"]
                     break
+    
+    # 自动推断状态：如果有预置内容且未显式指定状态，标为 completed
+    effective_content = field.content if field.content else ""
+    effective_status = field.status
+    if effective_content.strip() and effective_status == "pending":
+        effective_status = "completed" if not field.need_review else "in_progress"
     
     db_field = ProjectField(
         id=generate_uuid(),
@@ -156,11 +165,11 @@ def create_field(
         phase=field.phase,
         name=field.name,
         field_type=field.field_type,
-        content=field.content if field.content else "",
+        content=effective_content,
         ai_prompt=field.ai_prompt,
         pre_questions=field.pre_questions,
         dependencies=field.dependencies,
-        status=field.status,
+        status=effective_status,
         # 添加约束和确认配置
         constraints=field.constraints if field.constraints else {
             "max_length": None,
@@ -653,7 +662,7 @@ def _field_to_response(
         pre_answers=field.pre_answers or {},
         dependencies=field.dependencies or {"depends_on": [], "dependency_type": "all"},
         constraints=field.constraints if hasattr(field, 'constraints') else None,
-        need_review=field.need_review if hasattr(field, 'need_review') else True,
+        need_review=field.need_review if hasattr(field, 'need_review') else False,
         template_id=field.template_id,
         created_at=field.created_at.isoformat() if field.created_at else "",
         updated_at=field.updated_at.isoformat() if field.updated_at else "",

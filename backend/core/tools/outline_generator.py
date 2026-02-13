@@ -312,7 +312,7 @@ async def apply_outline_to_project(
                 ai_prompt=node.ai_prompt,
                 dependencies={"depends_on": node.depends_on},
                 status="pending",
-                need_review=True,
+                need_review=False,
             )
             db.add(field)
             created_fields.append(field.name)
