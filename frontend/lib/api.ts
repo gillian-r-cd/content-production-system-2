@@ -318,6 +318,8 @@ export const agentAPI = {
     message: string,
     currentPhase?: string
   ): AsyncGenerator<{ node?: string; content?: string; done?: boolean; error?: string }> {
+    const { readSSEStream } = await import("@/lib/sse");
+
     const response = await fetch(`${API_BASE}/api/agent/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -328,29 +330,7 @@ export const agentAPI = {
       }),
     });
 
-    const reader = response.body?.getReader();
-    const decoder = new TextDecoder();
-
-    if (!reader) return;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      const text = decoder.decode(value);
-      const lines = text.split("\n");
-
-      for (const line of lines) {
-        if (line.startsWith("data: ")) {
-          try {
-            const data = JSON.parse(line.slice(6));
-            yield data;
-          } catch {
-            // Ignore parse errors
-          }
-        }
-      }
-    }
+    yield* readSSEStream(response);
   },
 
   // 获取对话历史
@@ -861,6 +841,8 @@ async function _runAutoTriggerChainInner(
 
 /** 生成单个块并读完 SSE 流，返回是否成功 */
 async function _generateSingleBlock(blockId: string): Promise<boolean> {
+  const { readSSEStream } = await import("@/lib/sse");
+
   console.log(`[AUTO-CHAIN] Generating block ${blockId}...`);
   const resp = await blockAPI.generateStream(blockId);
 
@@ -869,32 +851,11 @@ async function _generateSingleBlock(blockId: string): Promise<boolean> {
     return false;
   }
 
-  // 读取 SSE 流直到完成
-  const reader = resp.body?.getReader();
-  const decoder = new TextDecoder();
   let success = false;
-  if (reader) {
-    let done = false;
-    while (!done) {
-      const { value, done: streamDone } = await reader.read();
-      done = streamDone;
-      if (value) {
-        const text = decoder.decode(value, { stream: true });
-        const lines = text.split("\n");
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            try {
-              const data = JSON.parse(line.substring(6));
-              if (data.done) {
-                console.log(`[AUTO-CHAIN] Block ${blockId} completed`);
-                success = true;
-              }
-            } catch {
-              // chunk, not JSON
-            }
-          }
-        }
-      }
+  for await (const data of readSSEStream(resp)) {
+    if (data.done) {
+      console.log(`[AUTO-CHAIN] Block ${blockId} completed`);
+      success = true;
     }
   }
   return success;

@@ -21,7 +21,9 @@ from dataclasses import dataclass, field, asdict
 from sqlalchemy.orm import Session
 
 from core.database import get_db
-from core.models import Project, ProjectField
+from core.models import Project
+from core.models.content_block import ContentBlock
+from core.phase_config import PHASE_DISPLAY_NAMES
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from core.llm import llm
@@ -284,56 +286,72 @@ async def apply_outline_to_project(
     if target_phase not in project.phase_order:
         return {"success": False, "error": f"阶段 {target_phase} 不存在"}
     
-    created_fields = []
+    # 找到目标阶段的 ContentBlock 作为父级
+    display_name = PHASE_DISPLAY_NAMES.get(target_phase, target_phase)
+    parent_phase_block = db.query(ContentBlock).filter(
+        ContentBlock.project_id == project_id,
+        ContentBlock.block_type == "phase",
+        ContentBlock.parent_id == None,  # noqa: E711
+        ContentBlock.name.in_([display_name, target_phase]),
+        ContentBlock.deleted_at == None,  # noqa: E711
+    ).first()
     
-    def create_fields_from_nodes(
+    parent_id = parent_phase_block.id if parent_phase_block else None
+    
+    created_blocks = []
+    
+    def create_blocks_from_nodes(
         nodes: List[OutlineNode], 
+        current_parent_id: str = None,
         parent_names: List[str] = None,
-        order_start: int = 0
+        depth: int = 1,
+        order_start: int = 0,
     ) -> int:
-        """递归创建字段"""
-        nonlocal created_fields
+        """递归创建 ContentBlock"""
+        nonlocal created_blocks
         order = order_start
         
         for node in nodes:
-            # 构建字段名称（带层级前缀）
+            # 构建名称（带层级前缀）
             if parent_names:
                 full_name = f"{'.'.join(parent_names)}.{node.name}"
             else:
                 full_name = node.name
             
-            # 创建 ProjectField
-            field = ProjectField(
+            block = ContentBlock(
                 id=str(uuid.uuid4()),
                 project_id=project_id,
-                phase=target_phase,
+                parent_id=current_parent_id,
                 name=full_name,
-                field_type="text",
-                ai_prompt=node.ai_prompt,
-                dependencies={"depends_on": node.depends_on},
+                block_type="field",
+                depth=depth,
+                order_index=order,
                 status="pending",
-                need_review=False,
+                ai_prompt=node.ai_prompt,
+                depends_on=node.depends_on,
             )
-            db.add(field)
-            created_fields.append(field.name)
+            db.add(block)
+            created_blocks.append(block.name)
             
             order += 1
             
             # 递归处理子节点
             if node.children:
-                new_parent = (parent_names or []) + [node.name]
-                order = create_fields_from_nodes(node.children, new_parent, order)
+                new_parent_names = (parent_names or []) + [node.name]
+                order = create_blocks_from_nodes(
+                    node.children, block.id, new_parent_names, depth + 1, order
+                )
         
         return order
     
     try:
-        create_fields_from_nodes(outline.nodes)
+        create_blocks_from_nodes(outline.nodes, parent_id)
         db.commit()
         
         return {
             "success": True,
-            "message": f"已创建 {len(created_fields)} 个字段",
-            "fields": created_fields,
+            "message": f"已创建 {len(created_blocks)} 个内容块",
+            "fields": created_blocks,
         }
         
     except Exception as e:

@@ -6,7 +6,7 @@
 #   1. LLM 通过 bind_tools 自动选择工具（不再手动 if/elif 路由）
 #   2. State 只保留 4 个字段（messages + 3 个上下文）
 #   3. 所有 DB 操作在 @tool 函数内完成，不通过 State 传递
-#   4. Checkpointer 跨请求保持对话状态（ToolMessage 等）
+#   4. Checkpointer (SqliteSaver) 跨请求/跨重启保持对话状态（含 ToolMessage）
 #   5. trim_messages 管理 context window，防止超限
 
 """
@@ -273,6 +273,16 @@ async def agent_node(state: AgentState, config: RunnableConfig) -> dict:
 
     logger.debug("[agent_node] 开始执行, messages=%d", len(state["messages"]))
 
+    # 工具执行后使 field_index 缓存失效（工具可能修改了内容块）
+    if state["messages"] and isinstance(state["messages"][-1], ToolMessage):
+        try:
+            from core.digest_service import invalidate_field_index_cache
+            project_id = state.get("project_id", "")
+            if project_id:
+                invalidate_field_index_cache(project_id)
+        except ImportError:
+            pass
+
     system_prompt = build_system_prompt(state)
 
     # Token 预算管理：保留最近消息，裁剪过早历史
@@ -332,13 +342,11 @@ def create_agent_graph():
             │
             └──(无tool_calls)──→ END
 
-    Checkpointer 使对话状态在请求间自动累积。
-    当前使用 MemorySaver（内存，重启后丢失）。
-    生产升级（一行切换）：
-        from langgraph.checkpoint.sqlite import SqliteSaver
-        checkpointer = SqliteSaver.from_conn_string("agent_checkpoints.db")
+    Checkpointer 使对话状态在请求间（含服务重启后）自动累积。
+    使用 SqliteSaver 持久化到 data/agent_checkpoints.db。
     """
-    from langgraph.checkpoint.memory import MemorySaver
+    import sqlite3
+    import os
 
     graph = StateGraph(AgentState)
 
@@ -358,8 +366,15 @@ def create_agent_graph():
     # tools 执行完后回到 agent（让 LLM 看到工具结果，决定下一步）
     graph.add_edge("tools", "agent")
 
-    # Checkpointer
-    checkpointer = MemorySaver()
+    # Checkpointer — SqliteSaver 持久化（重启后对话状态含 ToolMessage 全部恢复）
+    from langgraph.checkpoint.sqlite import SqliteSaver
+
+    db_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+    os.makedirs(db_dir, exist_ok=True)
+    db_path = os.path.join(db_dir, "agent_checkpoints.db")
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    checkpointer = SqliteSaver(conn)
+    checkpointer.setup()
 
     return graph.compile(checkpointer=checkpointer)
 

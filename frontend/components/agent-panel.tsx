@@ -29,7 +29,6 @@ interface AgentPanelProps {
   fields?: Field[];
   allBlocks?: ContentBlock[];  // 灵活架构的内容块
   useFlexibleArchitecture?: boolean;
-  onSendMessage?: (message: string) => Promise<string>;
   onContentUpdate?: () => void;  // 当Agent生成内容后刷新
   isLoading?: boolean;
 }
@@ -75,7 +74,6 @@ export function AgentPanel({
   fields = [],
   allBlocks = [],
   useFlexibleArchitecture = false,
-  onSendMessage,
   onContentUpdate,
   isLoading = false,
 }: AgentPanelProps) {

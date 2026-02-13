@@ -203,17 +203,11 @@ class TestAgentAPI:
         assert payload["type"] == "token"
         assert payload["content"] == "hello"
     
-    def test_load_seed_history(self):
-        """_load_seed_history 应该返回列表"""
-        from api.agent import _load_seed_history
-        from core.database import get_db
-        db = next(get_db())
-        try:
-            result = _load_seed_history(db, "nonexistent-project-id")
-            assert isinstance(result, list)
-            assert len(result) == 0  # 不存在的项目应该返回空列表
-        finally:
-            db.close()
+    def test_checkpointer_is_sqlite(self):
+        """Checkpointer 应该是 SqliteSaver（持久化）"""
+        from core.orchestrator import agent_graph
+        from langgraph.checkpoint.sqlite import SqliteSaver
+        assert isinstance(agent_graph.checkpointer, SqliteSaver)
 
 
 # ============== Test 5: 编辑引擎 ==============

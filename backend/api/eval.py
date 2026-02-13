@@ -1350,16 +1350,14 @@ async def _handle_legacy_eval(block, project, handler, db):
 # ============== Helpers ==============
 
 def _collect_content(project_id, block_ids, db, exclude_eval=False):
-    """收集项目的已完成内容"""
-    from core.models import ProjectField
-    
+    """收集项目的已完成内容（P0-1: 统一使用 ContentBlock）"""
     all_content = []
     field_names = []
     
     query = db.query(ContentBlock).filter(
         ContentBlock.project_id == project_id,
         ContentBlock.block_type == "field",
-        ContentBlock.deleted_at == None,
+        ContentBlock.deleted_at == None,  # noqa: E711
     )
     
     if block_ids:
@@ -1367,7 +1365,7 @@ def _collect_content(project_id, block_ids, db, exclude_eval=False):
     
     if exclude_eval:
         query = query.filter(
-            (ContentBlock.special_handler == None) | 
+            (ContentBlock.special_handler == None) |  # noqa: E711
             (~ContentBlock.special_handler.like("eval_%"))
         )
     
@@ -1377,16 +1375,6 @@ def _collect_content(project_id, block_ids, db, exclude_eval=False):
         if block.content and block.content.strip():
             all_content.append(f"## {block.name}\n{block.content}")
             field_names.append(block.name)
-    
-    if not block_ids:
-        pfields = db.query(ProjectField).filter(
-            ProjectField.project_id == project_id,
-            ProjectField.status == "completed",
-        ).all()
-        for pf in pfields:
-            if pf.content and pf.content.strip():
-                all_content.append(f"## {pf.name}\n{pf.content}")
-                field_names.append(pf.name)
     
     return "\n\n---\n\n".join(all_content), field_names
 
@@ -1403,24 +1391,31 @@ def _get_creator_profile(project, db) -> str:
 
 
 def _get_project_intent(project, db) -> str:
-    from core.models import ProjectField
-    
+    """获取项目意图（P0-1: 统一使用 ContentBlock）"""
+    # 按名称查找
     intent_block = db.query(ContentBlock).filter(
         ContentBlock.project_id == project.id,
         ContentBlock.name.in_(["意图分析", "项目意图", "Intent"]),
-        ContentBlock.deleted_at == None,
+        ContentBlock.deleted_at == None,  # noqa: E711
     ).first()
     
     if intent_block and intent_block.content:
         return intent_block.content
     
-    intent_field = db.query(ProjectField).filter(
-        ProjectField.project_id == project.id,
-        ProjectField.phase == "intent",
+    # 按 special_handler 查找 intent 阶段，再取其子字段
+    intent_phase = db.query(ContentBlock).filter(
+        ContentBlock.project_id == project.id,
+        ContentBlock.special_handler == "intent",
+        ContentBlock.deleted_at == None,  # noqa: E711
     ).first()
-    
-    if intent_field and intent_field.content:
-        return intent_field.content
+    if intent_phase:
+        children = db.query(ContentBlock).filter(
+            ContentBlock.parent_id == intent_phase.id,
+            ContentBlock.deleted_at == None,  # noqa: E711
+        ).all()
+        parts = [f"**{c.name}**: {c.content}" for c in children if c.content]
+        if parts:
+            return "\n".join(parts)
     
     return project.name or ""
 
@@ -1486,19 +1481,7 @@ def _get_project_personas_from_research(project_id: str, db) -> list:
     if personas:
         return personas
     
-    # 4. 从传统流程的 ProjectField（phase="research"）中提取
-    from core.models import ProjectField
-    research_fields = db.query(ProjectField).filter(
-        ProjectField.project_id == project_id,
-        ProjectField.phase == "research",
-    ).all()
-    for rf in research_fields:
-        if not rf.content:
-            continue
-        extracted = _extract_personas_from_text(rf.content)
-        personas.extend(extracted)
-    if personas:
-        return personas
+    # 4. ProjectField 路径已移除（P0-1 统一到 ContentBlock）
     
     # 5. 从 SimulationRecord 备选
     from core.models import SimulationRecord

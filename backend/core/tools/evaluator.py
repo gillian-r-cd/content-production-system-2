@@ -18,7 +18,6 @@ from core.llm import llm, get_chat_model
 from core.config import settings
 from core.models import (
     Project,
-    ProjectField,
     EvaluationTemplate,
     SimulationRecord,
 )
@@ -167,7 +166,7 @@ async def generate_suggestions(
 async def evaluate_project(
     template: EvaluationTemplate,
     project: Project,
-    fields: List[ProjectField],
+    fields: List,  # ContentBlock 或 ProjectField（鸭子类型：需要 .name 和 .content）
     simulation_records: List[SimulationRecord],
     project_context: str,
 ) -> EvaluationResult:

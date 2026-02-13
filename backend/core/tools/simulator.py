@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 from core.llm import llm
-from core.models import Simulator, SimulationRecord, ProjectField
+from core.models import Simulator, SimulationRecord
 
 
 @dataclass

@@ -17,10 +17,10 @@ from core.database import get_db
 from core.models import (
     SimulationRecord,
     Simulator,
-    ProjectField,
     Project,
     generate_uuid,
 )
+from core.models.content_block import ContentBlock
 
 
 router = APIRouter()
@@ -149,9 +149,10 @@ async def run_simulation_task(simulation_id: str, db: Session = Depends(get_db))
     if not simulator:
         raise HTTPException(status_code=404, detail="Simulator not found")
     
-    # 获取要模拟的内容
-    target_fields = db.query(ProjectField).filter(
-        ProjectField.id.in_(record.target_field_ids)
+    # 获取要模拟的内容（P0-1: 统一使用 ContentBlock）
+    target_fields = db.query(ContentBlock).filter(
+        ContentBlock.id.in_(record.target_field_ids),
+        ContentBlock.deleted_at == None,  # noqa: E711
     ).all()
     
     if not target_fields:
@@ -248,19 +249,18 @@ def get_personas_from_research(project_id: str, db: Session = Depends(get_db)):
     """
     import json
     
-    # 获取消费者调研阶段的字段
-    research_fields = (
-        db.query(ProjectField)
-        .filter(
-            ProjectField.project_id == project_id,
-            ProjectField.phase == "research",
-        )
-        .all()
-    )
+    # 获取消费者调研相关的 ContentBlock（P0-1: 统一使用 ContentBlock）
+    research_blocks = db.query(ContentBlock).filter(
+        ContentBlock.project_id == project_id,
+        ContentBlock.deleted_at == None,  # noqa: E711
+    ).filter(
+        (ContentBlock.special_handler == "research") |
+        (ContentBlock.name.in_(["消费者调研", "消费者调研报告"]))
+    ).all()
     
     personas = []
     
-    for field in research_fields:
+    for field in research_blocks:
         content = field.content or ""
         if not content.strip():
             continue

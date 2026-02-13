@@ -34,37 +34,9 @@ from core.prompt_engine import PromptEngine, GoldenContext
 
 
 def _save_content_version(block: ContentBlock, source: str, db: Session, source_detail: str = None):
-    """
-    保存内容块当前内容为一个历史版本
-    仅在 block 已有非空内容时保存（空内容不值得保存版本）
-    
-    Args:
-        block: 内容块
-        source: 版本来源（manual/ai_generate/ai_regenerate/agent）
-        db: 数据库会话
-        source_detail: 来源补充说明
-    """
-    if not block.content or not block.content.strip():
-        return  # 空内容不保存版本
-    
-    # 查询当前最大版本号
-    max_version = db.query(ContentVersion.version_number).filter(
-        ContentVersion.block_id == block.id
-    ).order_by(ContentVersion.version_number.desc()).first()
-    
-    next_version = (max_version[0] + 1) if max_version else 1
-    
-    version = ContentVersion(
-        id=generate_uuid(),
-        block_id=block.id,
-        version_number=next_version,
-        content=block.content,
-        source=source,
-        source_detail=source_detail,
-    )
-    db.add(version)
-    db.flush()  # 立即写入以获得 ID，但不 commit（让调用者控制事务）
-    logger.info(f"[版本] 保存 {block.name} v{next_version} ({source})")
+    """保存内容块当前内容为一个历史版本 — 代理到 version_service"""
+    from core.version_service import save_content_version
+    save_content_version(db, block.id, block.content, source, source_detail)
 
 router = APIRouter(prefix="/api/blocks", tags=["content-blocks"])
 

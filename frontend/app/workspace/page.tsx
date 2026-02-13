@@ -171,32 +171,6 @@ export default function WorkspacePage() {
     }
   };
 
-  const handleSendMessage = async (message: string): Promise<string> => {
-    if (!currentProject) {
-      throw new Error("请先选择项目");
-    }
-
-    const response = await agentAPI.chat(
-      currentProject.id,
-      message,
-      { currentPhase: currentProject.current_phase }
-    );
-
-    // 完整更新项目状态（phase_status + current_phase）
-    if (response.phase_status || response.phase) {
-      setCurrentProject({
-        ...currentProject,
-        phase_status: response.phase_status || currentProject.phase_status,
-        current_phase: response.phase || currentProject.current_phase,
-      });
-    }
-
-    // 重新加载字段
-    loadFields(currentProject.id);
-
-    return response.message;
-  };
-
   const handleBlockSelect = (block: ContentBlock) => {
     setSelectedBlock(block);
     console.log("选中内容块:", block.name, block.block_type);
@@ -664,7 +638,6 @@ export default function WorkspacePage() {
               fields={fields}
               allBlocks={allBlocks}
               useFlexibleArchitecture={currentProject?.use_flexible_architecture || false}
-              onSendMessage={handleSendMessage}
               onContentUpdate={async () => {
                 // Agent生成内容后，刷新内容块、内容块和项目状态
                 if (currentProject) {

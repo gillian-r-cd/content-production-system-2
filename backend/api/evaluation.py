@@ -16,12 +16,12 @@ from sqlalchemy.orm import Session
 from core.database import get_db
 from core.models import (
     Project,
-    ProjectField,
     EvaluationTemplate,
     EvaluationReport,
     SimulationRecord,
     generate_uuid,
 )
+from core.models.content_block import ContentBlock
 from core.tools import evaluate_project
 from core.prompt_engine import prompt_engine
 
@@ -241,10 +241,12 @@ async def run_evaluation(
             db.add(template)
             db.commit()
     
-    # 获取项目字段
-    fields = db.query(ProjectField).filter(
-        ProjectField.project_id == project_id,
-        ProjectField.status == "completed",
+    # 获取项目字段（P0-1: 统一使用 ContentBlock）
+    fields = db.query(ContentBlock).filter(
+        ContentBlock.project_id == project_id,
+        ContentBlock.block_type == "field",
+        ContentBlock.status == "completed",
+        ContentBlock.deleted_at == None,  # noqa: E711
     ).all()
     
     # 获取模拟记录

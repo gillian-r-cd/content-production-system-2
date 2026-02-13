@@ -21,8 +21,9 @@ import uuid
 from sqlalchemy.orm import Session
 
 from core.database import get_db
-from core.models import Project, ProjectField
+from core.models import Project
 from core.models.content_block import ContentBlock
+from core.phase_config import PHASE_DISPLAY_NAMES
 
 
 class ArchitectureOperation(str, Enum):
@@ -104,21 +105,18 @@ def add_phase(
         new_status[phase_name] = "pending"
         project.phase_status = new_status
         
-        # 如果是灵活架构，同时创建 ContentBlock
-        block_id = None
-        if project.use_flexible_architecture:
-            block = ContentBlock(
-                id=str(uuid.uuid4()),
-                project_id=project_id,
-                parent_id=None,
-                name=display_name,
-                block_type="phase",
-                depth=0,
-                order_index=position if position else len(new_order) - 1,
-                status="pending",
-            )
-            db.add(block)
-            block_id = block.id
+        # 创建阶段对应的 ContentBlock
+        block = ContentBlock(
+            id=str(uuid.uuid4()),
+            project_id=project_id,
+            parent_id=None,
+            name=display_name,
+            block_type="phase",
+            depth=0,
+            order_index=position if position else len(new_order) - 1,
+            status="pending",
+        )
+        db.add(block)
         
         db.commit()
         
@@ -126,7 +124,7 @@ def add_phase(
             success=True,
             message=f"已添加阶段「{display_name}」",
             operation="add_phase",
-            affected_ids=[block_id] if block_id else []
+            affected_ids=[block.id]
         )
         
     except Exception as e:
@@ -176,36 +174,31 @@ def remove_phase(
                 error="Phase not found"
             )
         
-        # 删除该阶段下的所有字段
-        deleted_field_ids = []
-        fields = db.query(ProjectField).filter(
-            ProjectField.project_id == project_id,
-            ProjectField.phase == phase_name
-        ).all()
-        for f in fields:
-            deleted_field_ids.append(f.id)
-            db.delete(f)
+        # 删除该阶段对应的 ContentBlock 及其子块
+        deleted_ids = []
+        display_name = PHASE_DISPLAY_NAMES.get(phase_name, phase_name)
         
-        # 如果是灵活架构，删除对应的 ContentBlock
-        if project.use_flexible_architecture:
-            # 找到该阶段的 block
-            phase_block = db.query(ContentBlock).filter(
-                ContentBlock.project_id == project_id,
-                ContentBlock.block_type == "phase",
-                ContentBlock.parent_id == None,
+        phase_blocks = db.query(ContentBlock).filter(
+            ContentBlock.project_id == project_id,
+            ContentBlock.block_type == "phase",
+            ContentBlock.parent_id == None,  # noqa: E711
+            ContentBlock.name.in_([display_name, phase_name]),
+            ContentBlock.deleted_at == None,  # noqa: E711
+        ).all()
+        
+        child_count = 0
+        for block in phase_blocks:
+            # 软删除子块
+            children = db.query(ContentBlock).filter(
+                ContentBlock.parent_id == block.id,
+                ContentBlock.deleted_at == None,  # noqa: E711
             ).all()
-            
-            # 通过名称匹配（需要显示名称映射）
-            from core.tools.architecture_reader import PHASE_DISPLAY_NAMES
-            display_name = PHASE_DISPLAY_NAMES.get(phase_name, phase_name)
-            
-            for block in phase_block:
-                if block.name == display_name or block.name == phase_name:
-                    # 删除子块
-                    for child in block.children:
-                        db.delete(child)
-                    db.delete(block)
-                    deleted_field_ids.append(block.id)
+            for child in children:
+                child_count += 1
+                deleted_ids.append(child.id)
+                db.delete(child)
+            deleted_ids.append(block.id)
+            db.delete(block)
         
         # 更新 phase_order
         new_order = [p for p in project.phase_order if p != phase_name]
@@ -225,9 +218,9 @@ def remove_phase(
         
         return OperationResult(
             success=True,
-            message=f"已删除阶段「{phase_name}」及其 {len(fields)} 个字段",
+            message=f"已删除阶段「{phase_name}」及其 {child_count} 个内容块",
             operation="remove_phase",
-            affected_ids=deleted_field_ids
+            affected_ids=deleted_ids
         )
         
     except Exception as e:
@@ -290,20 +283,18 @@ def reorder_phases(
         
         project.phase_order = new_order
         
-        # 如果是灵活架构，更新 ContentBlock 的 order_index
-        if project.use_flexible_architecture:
-            from core.tools.architecture_reader import PHASE_DISPLAY_NAMES
-            
-            for idx, phase_name in enumerate(new_order):
-                display_name = PHASE_DISPLAY_NAMES.get(phase_name, phase_name)
-                block = db.query(ContentBlock).filter(
-                    ContentBlock.project_id == project_id,
-                    ContentBlock.block_type == "phase",
-                    ContentBlock.parent_id == None,
-                    ContentBlock.name.in_([display_name, phase_name])
-                ).first()
-                if block:
-                    block.order_index = idx
+        # 同步更新 ContentBlock 的 order_index
+        for idx, phase_name in enumerate(new_order):
+            display_name = PHASE_DISPLAY_NAMES.get(phase_name, phase_name)
+            block = db.query(ContentBlock).filter(
+                ContentBlock.project_id == project_id,
+                ContentBlock.block_type == "phase",
+                ContentBlock.parent_id == None,  # noqa: E711
+                ContentBlock.name.in_([display_name, phase_name]),
+                ContentBlock.deleted_at == None,  # noqa: E711
+            ).first()
+            if block:
+                block.order_index = idx
         
         db.commit()
         
@@ -370,10 +361,12 @@ def add_field(
                 error="Phase not found"
             )
         
-        # 检查字段是否已存在
-        existing = db.query(ProjectField).filter(
-            ProjectField.project_id == project_id,
-            ProjectField.name == name
+        # 检查字段是否已存在（在 ContentBlock 中查找）
+        existing = db.query(ContentBlock).filter(
+            ContentBlock.project_id == project_id,
+            ContentBlock.name == name,
+            ContentBlock.block_type == "field",
+            ContentBlock.deleted_at == None,  # noqa: E711
         ).first()
         if existing:
             return OperationResult(
@@ -383,57 +376,41 @@ def add_field(
                 error="Field already exists"
             )
         
-        # 创建 ProjectField
-        field_id = str(uuid.uuid4())
-        new_field = ProjectField(
-            id=field_id,
-            project_id=project_id,
-            phase=phase,
-            name=name,
-            field_type="text",
-            ai_prompt=ai_prompt,
-            dependencies={"depends_on": depends_on or []},
-            constraints=constraints or {},
-            status="pending",
-            need_review=False,
-        )
-        db.add(new_field)
+        # 找到父阶段 ContentBlock
+        display_name = PHASE_DISPLAY_NAMES.get(phase, phase)
+        parent_block = db.query(ContentBlock).filter(
+            ContentBlock.project_id == project_id,
+            ContentBlock.block_type == "phase",
+            ContentBlock.parent_id == None,  # noqa: E711
+            ContentBlock.name.in_([display_name, phase]),
+            ContentBlock.deleted_at == None,  # noqa: E711
+        ).first()
         
-        # 如果是灵活架构，同时创建 ContentBlock
-        block_id = None
-        if project.use_flexible_architecture:
-            from core.tools.architecture_reader import PHASE_DISPLAY_NAMES
-            display_name = PHASE_DISPLAY_NAMES.get(phase, phase)
-            
-            # 找到父阶段 block
-            parent_block = db.query(ContentBlock).filter(
-                ContentBlock.project_id == project_id,
-                ContentBlock.block_type == "phase",
-                ContentBlock.parent_id == None,
-                ContentBlock.name.in_([display_name, phase])
-            ).first()
-            
-            if parent_block:
-                # 获取当前最大 order_index
-                max_order = db.query(ContentBlock).filter(
-                    ContentBlock.parent_id == parent_block.id
-                ).count()
-                
-                block = ContentBlock(
-                    id=str(uuid.uuid4()),
-                    project_id=project_id,
-                    parent_id=parent_block.id,
-                    name=name,
-                    block_type="field",
-                    depth=1,
-                    order_index=max_order,
-                    status="pending",
-                    ai_prompt=ai_prompt,
-                    depends_on=depends_on or [],
-                    constraints=constraints or {},
-                )
-                db.add(block)
-                block_id = block.id
+        parent_id = parent_block.id if parent_block else None
+        
+        # 获取当前最大 order_index
+        max_order = 0
+        if parent_id:
+            max_order = db.query(ContentBlock).filter(
+                ContentBlock.parent_id == parent_id,
+                ContentBlock.deleted_at == None,  # noqa: E711
+            ).count()
+        
+        # 创建 ContentBlock
+        block = ContentBlock(
+            id=str(uuid.uuid4()),
+            project_id=project_id,
+            parent_id=parent_id,
+            name=name,
+            block_type="field",
+            depth=1,
+            order_index=max_order,
+            status="pending",
+            ai_prompt=ai_prompt,
+            depends_on=depends_on or [],
+            constraints=constraints or {},
+        )
+        db.add(block)
         
         db.commit()
         
@@ -441,7 +418,7 @@ def add_field(
             success=True,
             message=f"已在「{phase}」阶段添加字段「{name}」",
             operation="add_field",
-            affected_ids=[field_id, block_id] if block_id else [field_id]
+            affected_ids=[block.id]
         )
         
     except Exception as e:
@@ -483,13 +460,15 @@ def remove_field(
                 error="Project not found"
             )
         
-        # 查找字段
-        field = db.query(ProjectField).filter(
-            ProjectField.project_id == project_id,
-            ProjectField.name == field_name
+        # 查找 ContentBlock 字段
+        block = db.query(ContentBlock).filter(
+            ContentBlock.project_id == project_id,
+            ContentBlock.name == field_name,
+            ContentBlock.block_type == "field",
+            ContentBlock.deleted_at == None,  # noqa: E711
         ).first()
         
-        if not field:
+        if not block:
             return OperationResult(
                 success=False,
                 message=f"字段「{field_name}」不存在",
@@ -497,18 +476,8 @@ def remove_field(
                 error="Field not found"
             )
         
-        field_id = field.id
-        db.delete(field)
-        
-        # 如果是灵活架构，同时删除 ContentBlock
-        if project.use_flexible_architecture:
-            block = db.query(ContentBlock).filter(
-                ContentBlock.project_id == project_id,
-                ContentBlock.name == field_name,
-                ContentBlock.block_type == "field"
-            ).first()
-            if block:
-                db.delete(block)
+        block_id = block.id
+        db.delete(block)
         
         db.commit()
         
@@ -516,7 +485,7 @@ def remove_field(
             success=True,
             message=f"已删除字段「{field_name}」",
             operation="remove_field",
-            affected_ids=[field_id]
+            affected_ids=[block_id]
         )
         
     except Exception as e:
@@ -560,12 +529,15 @@ def update_field(
                 error="Project not found"
             )
         
-        field = db.query(ProjectField).filter(
-            ProjectField.project_id == project_id,
-            ProjectField.name == field_name
+        # 查找 ContentBlock 字段
+        block = db.query(ContentBlock).filter(
+            ContentBlock.project_id == project_id,
+            ContentBlock.name == field_name,
+            ContentBlock.block_type == "field",
+            ContentBlock.deleted_at == None,  # noqa: E711
         ).first()
         
-        if not field:
+        if not block:
             return OperationResult(
                 success=False,
                 message=f"字段「{field_name}」不存在",
@@ -573,47 +545,26 @@ def update_field(
                 error="Field not found"
             )
         
-        # 更新字段属性
+        # 更新 ContentBlock 属性
         updated_attrs = []
         if "name" in updates and updates["name"]:
-            field.name = updates["name"]
+            block.name = updates["name"]
             updated_attrs.append("名称")
         if "ai_prompt" in updates:
-            field.ai_prompt = updates["ai_prompt"]
+            block.ai_prompt = updates["ai_prompt"]
             updated_attrs.append("AI提示词")
         if "depends_on" in updates:
-            field.dependencies = {"depends_on": updates["depends_on"]}
+            block.depends_on = updates["depends_on"]
             updated_attrs.append("依赖")
         if "constraints" in updates:
-            field.constraints = updates["constraints"]
+            block.constraints = updates["constraints"]
             updated_attrs.append("约束")
         if "content" in updates:
-            field.content = updates["content"]
+            block.content = updates["content"]
             updated_attrs.append("内容")
         if "status" in updates:
-            field.status = updates["status"]
+            block.status = updates["status"]
             updated_attrs.append("状态")
-        
-        # 如果是灵活架构，同步更新 ContentBlock
-        if project.use_flexible_architecture:
-            block = db.query(ContentBlock).filter(
-                ContentBlock.project_id == project_id,
-                ContentBlock.name == field_name,
-                ContentBlock.block_type == "field"
-            ).first()
-            if block:
-                if "name" in updates and updates["name"]:
-                    block.name = updates["name"]
-                if "ai_prompt" in updates:
-                    block.ai_prompt = updates["ai_prompt"]
-                if "depends_on" in updates:
-                    block.depends_on = updates["depends_on"]
-                if "constraints" in updates:
-                    block.constraints = updates["constraints"]
-                if "content" in updates:
-                    block.content = updates["content"]
-                if "status" in updates:
-                    block.status = updates["status"]
         
         db.commit()
         
@@ -621,7 +572,7 @@ def update_field(
             success=True,
             message=f"已更新字段「{field_name}」的 {', '.join(updated_attrs)}",
             operation="update_field",
-            affected_ids=[field.id]
+            affected_ids=[block.id]
         )
         
     except Exception as e:
@@ -673,12 +624,15 @@ def move_field(
                 error="Target phase not found"
             )
         
-        field = db.query(ProjectField).filter(
-            ProjectField.project_id == project_id,
-            ProjectField.name == field_name
+        # 查找 ContentBlock 字段
+        block = db.query(ContentBlock).filter(
+            ContentBlock.project_id == project_id,
+            ContentBlock.name == field_name,
+            ContentBlock.block_type == "field",
+            ContentBlock.deleted_at == None,  # noqa: E711
         ).first()
         
-        if not field:
+        if not block:
             return OperationResult(
                 success=False,
                 message=f"字段「{field_name}」不存在",
@@ -686,36 +640,38 @@ def move_field(
                 error="Field not found"
             )
         
-        old_phase = field.phase
-        field.phase = target_phase
+        # 记录旧阶段（从父 block 推断）
+        old_phase = "unknown"
+        if block.parent_id:
+            old_parent = db.query(ContentBlock).filter_by(id=block.parent_id).first()
+            if old_parent:
+                old_phase = old_parent.name
         
-        # 如果是灵活架构，移动 ContentBlock
-        if project.use_flexible_architecture:
-            from core.tools.architecture_reader import PHASE_DISPLAY_NAMES
-            
-            block = db.query(ContentBlock).filter(
-                ContentBlock.project_id == project_id,
-                ContentBlock.name == field_name,
-                ContentBlock.block_type == "field"
-            ).first()
-            
-            if block:
-                # 找到目标阶段的 block
-                target_display = PHASE_DISPLAY_NAMES.get(target_phase, target_phase)
-                target_block = db.query(ContentBlock).filter(
-                    ContentBlock.project_id == project_id,
-                    ContentBlock.block_type == "phase",
-                    ContentBlock.parent_id == None,
-                    ContentBlock.name.in_([target_display, target_phase])
-                ).first()
-                
-                if target_block:
-                    block.parent_id = target_block.id
-                    # 更新 order_index
-                    max_order = db.query(ContentBlock).filter(
-                        ContentBlock.parent_id == target_block.id
-                    ).count()
-                    block.order_index = max_order
+        # 找到目标阶段的 ContentBlock
+        target_display = PHASE_DISPLAY_NAMES.get(target_phase, target_phase)
+        target_block = db.query(ContentBlock).filter(
+            ContentBlock.project_id == project_id,
+            ContentBlock.block_type == "phase",
+            ContentBlock.parent_id == None,  # noqa: E711
+            ContentBlock.name.in_([target_display, target_phase]),
+            ContentBlock.deleted_at == None,  # noqa: E711
+        ).first()
+        
+        if not target_block:
+            return OperationResult(
+                success=False,
+                message=f"目标阶段「{target_phase}」的内容块不存在",
+                operation="move_field",
+                error="Target phase block not found"
+            )
+        
+        block.parent_id = target_block.id
+        # 更新 order_index
+        max_order = db.query(ContentBlock).filter(
+            ContentBlock.parent_id == target_block.id,
+            ContentBlock.deleted_at == None,  # noqa: E711
+        ).count()
+        block.order_index = max_order
         
         db.commit()
         
@@ -723,7 +679,7 @@ def move_field(
             success=True,
             message=f"已将字段「{field_name}」从「{old_phase}」移动到「{target_phase}」",
             operation="move_field",
-            affected_ids=[field.id]
+            affected_ids=[block.id]
         )
         
     except Exception as e:

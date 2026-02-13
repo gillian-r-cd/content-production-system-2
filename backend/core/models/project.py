@@ -15,6 +15,7 @@ from sqlalchemy import String, Text, Integer, JSON, ForeignKey, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.models.base import BaseModel
+from core.phase_config import PHASE_ORDER, PHASE_STATUS_LABELS
 
 if TYPE_CHECKING:
     from core.models.creator_profile import CreatorProfile
@@ -25,23 +26,9 @@ if TYPE_CHECKING:
     from core.models.content_block import ContentBlock
 
 
-# 项目阶段定义（simulate 已合并到 evaluate）
-PROJECT_PHASES = [
-    "intent",        # 意图分析
-    "research",      # 消费者调研
-    "design_inner",  # 内涵设计
-    "produce_inner", # 内涵生产
-    "design_outer",  # 外延设计
-    "produce_outer", # 外延生产
-    "evaluate",      # 评估（含消费者模拟 + 评分）
-]
-
-# 阶段状态
-PHASE_STATUS = {
-    "pending": "未开始",
-    "in_progress": "进行中",
-    "completed": "已完成",
-}
+# 向后兼容别名（外部 import 不需要改）
+PROJECT_PHASES = PHASE_ORDER
+PHASE_STATUS = PHASE_STATUS_LABELS
 
 
 class Project(BaseModel):

@@ -22,7 +22,7 @@ from enum import Enum
 from sqlalchemy.orm import Session
 
 from core.database import get_db
-from core.models import Project, ProjectField
+from core.models import Project
 from core.models.content_block import ContentBlock
 from langchain_core.messages import SystemMessage, HumanMessage
 
@@ -89,11 +89,21 @@ class PersonaResult:
     error: Optional[str] = None
 
 
-def _get_research_field(project_id: str, db: Session) -> Optional[ProjectField]:
-    """获取消费者调研报告字段"""
-    return db.query(ProjectField).filter(
-        ProjectField.project_id == project_id,
-        ProjectField.name == "消费者调研报告"
+def _get_research_field(project_id: str, db: Session) -> Optional[ContentBlock]:
+    """获取消费者调研报告（P0-1: 统一使用 ContentBlock）"""
+    # 优先按名称查找
+    block = db.query(ContentBlock).filter(
+        ContentBlock.project_id == project_id,
+        ContentBlock.name.in_(["消费者调研报告", "消费者调研"]),
+        ContentBlock.deleted_at == None,  # noqa: E711
+    ).first()
+    if block:
+        return block
+    # 按 special_handler 兜底
+    return db.query(ContentBlock).filter(
+        ContentBlock.project_id == project_id,
+        ContentBlock.special_handler == "research",
+        ContentBlock.deleted_at == None,  # noqa: E711
     ).first()
 
 
@@ -125,8 +135,8 @@ def _parse_personas(content: str) -> List[Persona]:
         return []
 
 
-def _save_personas(field: ProjectField, personas: List[Persona], db: Session):
-    """保存人物列表到调研报告"""
+def _save_personas(field, personas: List[Persona], db: Session):
+    """保存人物列表到调研报告（接受 ContentBlock 或任何有 .content 的实体）"""
     try:
         data = json.loads(field.content or "{}")
         data["personas"] = [p.to_dict() for p in personas]

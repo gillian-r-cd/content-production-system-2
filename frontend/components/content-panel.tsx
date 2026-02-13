@@ -9,7 +9,8 @@ import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { PHASE_NAMES, PROJECT_PHASES, sendNotification, requestNotificationPermission } from "@/lib/utils";
-import { fieldAPI, agentAPI, blockAPI } from "@/lib/api";
+import { fieldAPI, agentAPI, blockAPI, API_BASE } from "@/lib/api";
+import { readSSEStream } from "@/lib/sse";
 import type { Field, ContentBlock } from "@/lib/api";
 import { VersionHistoryButton } from "./version-history";
 import { ContentBlockEditor } from "./content-block-editor";
@@ -188,7 +189,7 @@ export function ContentPanel({
 
     try {
       // 调用流式生成 API（后端会设 status="generating"）
-      const response = await fetch(`http://localhost:8000/api/fields/${candidate.id}/generate/stream`, {
+      const response = await fetch(`${API_BASE}/api/fields/${candidate.id}/generate/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pre_answers: candidate.pre_answers || {} }),
@@ -197,14 +198,8 @@ export function ContentPanel({
       // 立刻刷新一次，让 FieldCard 看到 status="generating"
       onFieldsChange?.();
 
-      // 读完整个 stream
-      const reader = response.body?.getReader();
-      if (reader) {
-        while (true) {
-          const { done } = await reader.read();
-          if (done) break;
-        }
-      }
+      // 读完整个 stream（drain）
+      for await (const _ of readSSEStream(response)) { /* drain */ }
 
       // 生成完成，刷新内容块列表
       onFieldsChange?.();
@@ -1353,7 +1348,7 @@ function FieldCard({ field, allFields, onUpdate, onFieldsChange }: FieldCardProp
 
     try {
       // 使用流式生成，传递预回答
-      const response = await fetch(`http://localhost:8000/api/fields/${field.id}/generate/stream`, {
+      const response = await fetch(`${API_BASE}/api/fields/${field.id}/generate/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pre_answers: preAnswers }),

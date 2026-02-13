@@ -9,6 +9,7 @@ import { useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { blockAPI, fieldAPI, projectAPI, runAutoTriggerChain } from "@/lib/api";
+import { useBlockGeneration } from "@/lib/hooks/useBlockGeneration";
 import { sendNotification } from "@/lib/utils";
 import type { ContentBlock } from "@/lib/api";
 import { getEvalFieldEditor } from "./eval-field-editors";
@@ -147,15 +148,11 @@ interface ContentBlockEditorProps {
 
 export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual = false, onUpdate }: ContentBlockEditorProps) {
   // 判断是否使用 Field API（虚拟块需要更新 ProjectField 表）
-  const useFieldAPI = isVirtual || block.parent_id?.startsWith("virtual_");
+  const useFieldAPI = isVirtual || !!block.parent_id?.startsWith("virtual_");
   const [isEditing, setIsEditing] = useState(false);
   const [isEditingName, setIsEditingName] = useState(false);
   const [editedName, setEditedName] = useState(block.name);
   const [editedContent, setEditedContent] = useState(block.content || "");
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [generatingContent, setGeneratingContent] = useState("");
-  const generatingBlockIdRef = useRef<string | null>(null); // 正在生成的block ID
-  const abortControllerRef = useRef<AbortController | null>(null); // 用于停止生成
   const [showPromptModal, setShowPromptModal] = useState(false);
   const [showConstraintsModal, setShowConstraintsModal] = useState(false);
   const [showDependencyModal, setShowDependencyModal] = useState(false);
@@ -184,6 +181,23 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
   const [preAnswers, setPreAnswers] = useState<Record<string, string>>(block.pre_answers || {});
   const hasPreQuestions = (block.pre_questions?.length || 0) > 0;
   const [preQuestionsExpanded, setPreQuestionsExpanded] = useState(false);
+
+  // ---- 生成逻辑（通过 Hook 统一管理） ----
+  const {
+    isGenerating, generatingContent, canGenerate, unmetDependencies,
+    handleGenerate: _handleGenerate, handleStop: handleStopGeneration,
+  } = useBlockGeneration({
+    block, projectId, allBlocks, useFieldAPI,
+    preAnswers, hasPreQuestions,
+    onUpdate,
+    onContentReady: (content) => setEditedContent(content),
+  });
+
+  const handleGenerate = async () => {
+    // Editor 特有：退出编辑模式以显示流式内容
+    setIsEditing(false);
+    await _handleGenerate();
+  };
   
   // 可选的依赖（排除自己和自己的子节点）
   // 允许选择：1. 所有 field 类型  2. 有特殊处理器的 phase 类型（如消费者调研、意图分析）
@@ -210,15 +224,10 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
   );
   
   useEffect(() => {
-    const isSameBlockGenerating = generatingBlockIdRef.current === block.id;
-    // 生成中不要重置内容状态（会覆盖流式输出）
-    if (!isSameBlockGenerating) {
+    // 生成中不要重置内容（会覆盖流式输出）
+    // Hook 内部 isGenerating 已自动按 block.id 过滤，不在生成此块时为 false
+    if (!isGenerating) {
       setEditedContent(block.content || "");
-      // 切换到其他块时，清除生成显示状态（生成仍在后台继续）
-      if (generatingBlockIdRef.current && generatingBlockIdRef.current !== block.id) {
-        setGeneratingContent("");
-        setIsGenerating(false);
-      }
     }
     setEditedName(block.name);
     setEditedPrompt(block.ai_prompt || "");
@@ -226,7 +235,8 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
     setEditedConstraints(block.constraints || {});
     setSelectedDependencies(block.depends_on || []);
     setPreAnswers(block.pre_answers || {});
-  }, [block]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [block.id, block.content, block.name, block.ai_prompt, block.depends_on, block.pre_answers]);
   
   // ===== 关键修复 1：挂载或切换 block 时，从 API 获取最新状态 =====
   // 解决：用户导航到其他块再回来时，本地缓存的 block 数据可能是旧的
@@ -450,129 +460,10 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
     );
   };
 
-  // 获取依赖的内容块详情
+  // 依赖块详情（UI 中显示依赖名称用）
   const dependencyBlocks = selectedDependencies
     .map(id => allBlocks.find(b => b.id === id))
     .filter(Boolean) as ContentBlock[];
-
-  // 检查依赖是否满足：必须有内容且 status=completed（need_review 的块必须经过确认）
-  const unmetDependencies = dependencyBlocks.filter(d => !d.content || !d.content.trim() || d.status !== "completed");
-  const canGenerate = unmetDependencies.length === 0;
-
-  // 生成内容（使用流式 API）
-  const handleGenerate = async () => {
-    // 前端检查依赖（只要依赖有内容就可以生成）
-    if (!canGenerate) {
-      alert(`以下依赖内容为空:\n${unmetDependencies.map(d => `• ${d.name}`).join("\n")}`);
-      return;
-    }
-    
-    // 先保存预提问答案
-    if (hasPreQuestions && Object.keys(preAnswers).length > 0) {
-      await handleSavePreAnswers();
-    }
-    
-    const currentBlockId = block.id;
-    generatingBlockIdRef.current = currentBlockId;
-    const abortController = new AbortController();
-    abortControllerRef.current = abortController;
-    setIsGenerating(true);
-    setGeneratingContent("");
-    setIsEditing(false); // 退出编辑模式以显示流式内容
-    
-    try {
-      if (useFieldAPI) {
-        // 虚拟块使用 Field API 生成，传递预提问答案
-        const result = await fieldAPI.generate(block.id, preAnswers);
-        if (generatingBlockIdRef.current === currentBlockId) {
-          setEditedContent(result.content);
-        }
-        onUpdate?.();
-      } else {
-        // 使用流式生成（预提问答案已保存到后端）
-        const response = await blockAPI.generateStream(block.id, abortController.signal);
-        if (!response.ok) {
-          const error = await response.json().catch(() => ({ detail: "生成失败" }));
-          throw new Error(error.detail || `HTTP ${response.status}`);
-        }
-        
-        const reader = response.body?.getReader();
-        if (!reader) throw new Error("无法获取响应流");
-        
-        const decoder = new TextDecoder();
-        let accumulatedContent = "";
-        
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          
-          const chunk = decoder.decode(value, { stream: true });
-          const lines = chunk.split("\n");
-          
-          for (const line of lines) {
-            if (line.startsWith("data: ")) {
-              try {
-                const data = JSON.parse(line.slice(6));
-                if (data.chunk) {
-                  accumulatedContent += data.chunk;
-                  // 只有当前编辑器还在看这个block时才更新UI
-                  if (generatingBlockIdRef.current === currentBlockId) {
-                    setGeneratingContent(accumulatedContent);
-                  }
-                }
-                if (data.done) {
-                  if (generatingBlockIdRef.current === currentBlockId) {
-                    setEditedContent(data.content || accumulatedContent);
-                  }
-                  onUpdate?.();
-                  
-                  // 浏览器通知
-                  sendNotification("内容生成完成", `「${block.name}」已生成完毕，点击查看`);
-                  
-                  // 前端驱动自动触发链
-                  if (projectId) {
-                    runAutoTriggerChain(projectId, () => onUpdate?.()).catch(console.error);
-                  }
-                }
-                if (data.error) {
-                  throw new Error(data.error);
-                }
-              } catch (parseErr) {
-                // 忽略解析错误
-              }
-            }
-          }
-        }
-      }
-    } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") {
-        console.log("[BlockEditor] 用户停止了生成");
-        // 保留已生成的部分内容
-        onUpdate?.();
-      } else {
-        console.error("生成失败:", err);
-        if (generatingBlockIdRef.current === currentBlockId) {
-          alert("生成失败: " + (err instanceof Error ? err.message : "未知错误"));
-        }
-      }
-    } finally {
-      // 只有当前block还是正在生成的block时才重置状态
-      if (generatingBlockIdRef.current === currentBlockId) {
-        setIsGenerating(false);
-        setGeneratingContent("");
-        generatingBlockIdRef.current = null;
-        abortControllerRef.current = null;
-      }
-    }
-  };
-
-  // 停止生成
-  const handleStopGeneration = () => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-    }
-  };
 
   // 删除内容块
   const handleDelete = async () => {

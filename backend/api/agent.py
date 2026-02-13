@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db
 from core.models import (
-    Project, ProjectField, ChatMessage, GenerationLog,
+    Project, ChatMessage, GenerationLog,
     ContentVersion, generate_uuid,
 )
 from core.models.content_block import ContentBlock
@@ -43,72 +43,53 @@ def _save_version_before_overwrite(
     db: Session, entity_id: str, old_content: str,
     source: str, source_detail: str = None,
 ):
-    """Agent 覆写前保存旧内容为版本"""
-    if not old_content or not old_content.strip():
-        return
-    try:
-        max_ver = db.query(ContentVersion.version_number).filter(
-            ContentVersion.block_id == entity_id
-        ).order_by(ContentVersion.version_number.desc()).first()
-        next_ver = (max_ver[0] + 1) if max_ver else 1
-        ver = ContentVersion(
-            id=generate_uuid(),
-            block_id=entity_id,
-            version_number=next_ver,
-            content=old_content,
-            source=source,
-            source_detail=source_detail,
-        )
-        db.add(ver)
-        db.flush()
-    except Exception as e:
-        logger.warning(f"[版本] 保存失败(可忽略): {e}")
-        db.rollback()
+    """Agent 覆写前保存旧内容为版本 — 代理到 version_service"""
+    from core.version_service import save_content_version
+    save_content_version(db, entity_id, old_content, source, source_detail)
 
 
 def _resolve_references(
     db: Session, project_id: str, references: list[str],
 ) -> dict[str, str]:
-    """统一的 @ 引用解析：ProjectField → ContentBlock → 方案JSON
+    """统一的 @ 引用解析：ContentBlock → 方案JSON
 
     返回 {name: 完整上下文文本}，包含内容和配置信息（ai_prompt等），
     确保 Agent 能充分了解引用块的全貌。
+    P0-1: 统一使用 ContentBlock，已移除 ProjectField 查询。
     """
     if not references:
         return {}
 
     result = {}
 
-    # 1. ProjectField
-    ref_fields = db.query(ProjectField).filter(
-        ProjectField.project_id == project_id,
-        ProjectField.name.in_(references),
+    # 1. ContentBlock
+    ref_blocks = db.query(ContentBlock).filter(
+        ContentBlock.project_id == project_id,
+        ContentBlock.name.in_(references),
+        ContentBlock.deleted_at == None,  # noqa: E711
     ).all()
-    for f in ref_fields:
-        result[f.name] = _build_ref_context(f)
+    for b in ref_blocks:
+        result[b.name] = _build_ref_context(b)
 
-    # 2. ContentBlock
-    missing = [r for r in references if r not in result]
-    if missing:
-        ref_blocks = db.query(ContentBlock).filter(
-            ContentBlock.project_id == project_id,
-            ContentBlock.name.in_(missing),
-            ContentBlock.deleted_at == None,  # noqa: E711
-        ).all()
-        for b in ref_blocks:
-            result[b.name] = _build_ref_context(b)
-
-    # 3. 方案引用
+    # 2. 方案引用（从 design_inner 阶段块中解析 JSON proposals）
     import re
     proposal_refs = [r for r in references if r not in result and r.startswith("方案")]
     if proposal_refs:
-        design_field = db.query(ProjectField).filter(
-            ProjectField.project_id == project_id,
-            ProjectField.phase == "design_inner",
+        design_block = db.query(ContentBlock).filter(
+            ContentBlock.project_id == project_id,
+            ContentBlock.special_handler == "design_inner",
+            ContentBlock.deleted_at == None,  # noqa: E711
         ).first()
-        if design_field and design_field.content:
+        # 也尝试按名称查找
+        if not design_block:
+            design_block = db.query(ContentBlock).filter(
+                ContentBlock.project_id == project_id,
+                ContentBlock.name.in_(["内涵设计", "design_inner"]),
+                ContentBlock.deleted_at == None,  # noqa: E711
+            ).first()
+        if design_block and design_block.content:
             try:
-                data = json.loads(design_field.content)
+                data = json.loads(design_block.content)
                 proposals = data.get("proposals", [])
                 if isinstance(proposals, list):
                     for ref_name in proposal_refs:
@@ -150,29 +131,8 @@ def _build_ref_context(entity) -> str:
     return "\n".join(parts)
 
 
-def _load_seed_history(db: Session, project_id: str, limit: int = 30):
-    """
-    从 ChatMessage DB 加载历史（Checkpointer Bootstrap 用）。
-    仅在 Checkpointer 无 checkpoint 时调用（首次请求或服务器重启后）。
-    """
-    from langchain_core.messages import HumanMessage, AIMessage
-
-    msgs = db.query(ChatMessage).filter(
-        ChatMessage.project_id == project_id,
-    ).order_by(ChatMessage.created_at.desc()).limit(limit).all()
-
-    msgs.reverse()  # 时间正序
-    result = []
-    for m in msgs:
-        meta = m.message_metadata or {}
-        mode = meta.get("mode", "assistant")
-        if mode != "assistant":
-            continue  # 只加载助手模式消息
-        if m.role == "user":
-            result.append(HumanMessage(content=m.content))
-        elif m.role == "assistant":
-            result.append(AIMessage(content=m.content))
-    return result
+# _load_seed_history 已删除 — Checkpointer 改为 SqliteSaver 持久化后不再需要
+# 服务重启后 LangGraph 自动从 data/agent_checkpoints.db 恢复完整对话状态
 
 
 def sse_event(data: dict) -> str:
@@ -180,19 +140,7 @@ def sse_event(data: dict) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def _get_phase_field_name(phase: str) -> str:
-    """获取阶段对应的显示名"""
-    names = {
-        "intent": "意图分析",
-        "research": "消费者调研",
-        "design_inner": "内涵设计",
-        "produce_inner": "内涵生产",
-        "design_outer": "外延设计",
-        "produce_outer": "外延生产",
-        "simulate": "消费者模拟",
-        "evaluate": "评估",
-    }
-    return names.get(phase, phase)
+# _get_phase_field_name 已删除 — 阶段名称映射统一到 core/phase_service.PHASE_DISPLAY_NAMES
 
 
 def _to_message_response(m: ChatMessage):
@@ -285,14 +233,15 @@ def get_chat_history(
     return [_to_message_response(m) for m in messages]
 
 
-@router.post("/chat", response_model=ChatResponseExtended)
+@router.post("/chat", response_model=ChatResponseExtended, deprecated=True)
 async def chat(
     request: ChatRequest,
     db: Session = Depends(get_db),
 ):
     """
-    与 Agent 对话（非流式）。
-    使用 content_agent.run() 内部走 LangGraph graph.ainvoke()。
+    ⚠️ DEPRECATED: 请使用 /stream (SSE) 端点。
+    非流式对话，使用 content_agent.run()（向后兼容包装）。
+    前端已不再调用此端点。计划在清理 content_agent 时一并移除。
     """
     project = db.query(Project).filter(Project.id == request.project_id).first()
     if not project:
@@ -613,20 +562,8 @@ async def stream_chat(
         "callbacks": [llm_log_cb],
     }
 
-    # Bootstrap：首次请求或服务器重启后从 DB 加载种子历史
-    try:
-        existing = await agent_graph.aget_state(config)
-        has_checkpoint = (
-            existing and existing.values and existing.values.get("messages")
-        )
-    except Exception:
-        has_checkpoint = False
-
-    if not has_checkpoint:
-        db_history = _load_seed_history(db, request.project_id)
-        input_messages = db_history + [HumanMessage(content=augmented_message)]
-    else:
-        input_messages = [HumanMessage(content=augmented_message)]
+    # SqliteSaver 持久化后不再需要 Bootstrap — checkpoint 跨重启自动恢复
+    input_messages = [HumanMessage(content=augmented_message)]
 
     # 构建 AgentState
     creator_profile_str = ""
@@ -988,53 +925,30 @@ async def advance_phase(
     db: Session = Depends(get_db),
 ):
     """推进到下一阶段（用户点击确认按钮后调用）"""
+    from core.phase_service import advance_phase as do_advance
+
     project = db.query(Project).filter(Project.id == request.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    phase_order = project.phase_order or []
-    if not phase_order:
+    result = do_advance(project)
+    if not result.success:
         return ChatResponseExtended(
-            message_id="", message="项目未定义阶段顺序",
+            message_id="", message=result.error,
             phase=project.current_phase, phase_status=project.phase_status or {},
             waiting_for_human=False,
         )
 
-    try:
-        current_idx = phase_order.index(project.current_phase)
-    except ValueError:
-        return ChatResponseExtended(
-            message_id="", message="无法确定当前阶段",
-            phase=project.current_phase, phase_status=project.phase_status or {},
-            waiting_for_human=False,
-        )
-
-    if current_idx >= len(phase_order) - 1:
-        return ChatResponseExtended(
-            message_id="", message="已经是最后一个阶段了",
-            phase=project.current_phase, phase_status=project.phase_status or {},
-            waiting_for_human=False,
-        )
-
-    prev_phase = project.current_phase
-    next_phase = phase_order[current_idx + 1]
-
-    ps = dict(project.phase_status or {})
-    ps[prev_phase] = "completed"
-    ps[next_phase] = "in_progress"
-    project.phase_status = ps
-    project.current_phase = next_phase
     db.commit()
 
-    display_name = _get_phase_field_name(next_phase)
-    msg_content = f"✅ 已进入【{display_name}】阶段。"
+    msg_content = f"✅ 已进入【{result.display_name}】阶段。"
 
     enter_msg = ChatMessage(
         id=generate_uuid(),
         project_id=request.project_id,
         role="assistant",
         content=msg_content,
-        message_metadata={"phase": next_phase},
+        message_metadata={"phase": result.next_phase},
     )
     db.add(enter_msg)
     db.commit()
@@ -1043,7 +957,7 @@ async def advance_phase(
     return ChatResponseExtended(
         message_id=enter_msg.id,
         message=msg_content,
-        phase=next_phase,
+        phase=result.next_phase,
         phase_status=project.phase_status or {},
         waiting_for_human=False,
         project_updated=True,

@@ -45,12 +45,11 @@ def _get_db():
 
 def _find_block_or_field(db, project_id: str, name: str):
     """
-    根据名称查找 ContentBlock 或 ProjectField。
-    优先查 ContentBlock（灵活架构），再查 ProjectField（传统架构）。
-    返回 (entity, entity_type) 或 (None, None)
+    根据名称查找 ContentBlock。
+    返回 (entity, "block") 或 (None, None)。
+    注：ProjectField 查询已移除（P0-1 统一到 ContentBlock 单一模型）。
     """
     from core.models.content_block import ContentBlock
-    from core.models import ProjectField
 
     block = db.query(ContentBlock).filter(
         ContentBlock.project_id == project_id,
@@ -60,37 +59,13 @@ def _find_block_or_field(db, project_id: str, name: str):
     if block:
         return block, "block"
 
-    field = db.query(ProjectField).filter(
-        ProjectField.project_id == project_id,
-        ProjectField.name == name,
-    ).first()
-    if field:
-        return field, "field"
-
     return None, None
 
 
 def _save_version(db, entity_id: str, old_content: str, source: str):
-    """保存内容版本快照（覆写前调用）"""
-    if not old_content or not old_content.strip():
-        return
-    try:
-        from core.models import ContentVersion, generate_uuid
-        max_ver = db.query(ContentVersion.version_number).filter(
-            ContentVersion.block_id == entity_id
-        ).order_by(ContentVersion.version_number.desc()).first()
-        next_ver = (max_ver[0] + 1) if max_ver else 1
-        ver = ContentVersion(
-            id=generate_uuid(),
-            block_id=entity_id,
-            version_number=next_ver,
-            content=old_content,
-            source=source,
-        )
-        db.add(ver)
-        db.flush()
-    except Exception as e:
-        logger.warning(f"版本保存失败(可忽略): {e}")
+    """保存内容版本快照（覆写前调用）— 代理到 version_service"""
+    from core.version_service import save_content_version
+    save_content_version(db, entity_id, old_content, source)
 
 
 def _json_ok(target_field: str, status: str, summary: str, **extra) -> str:
@@ -513,6 +488,7 @@ def advance_to_phase(target_phase: str = "", *, config: Annotated[RunnableConfig
         target_phase: 目标组名称（如 "research"、"design_inner"）。为空表示自动下一组。
     """
     from core.models import Project
+    from core.phase_service import advance_phase
 
     project_id = _get_project_id(config)
     db = _get_db()
@@ -521,50 +497,12 @@ def advance_to_phase(target_phase: str = "", *, config: Annotated[RunnableConfig
         if not project:
             return "项目不存在"
 
-        phase_order = project.phase_order or []
-        if not phase_order:
-            return "项目未定义组顺序"
+        result = advance_phase(project, target_phase)
+        if not result.success:
+            return result.error
 
-        # 中文→代码映射
-        PHASE_ALIAS = {
-            "意图分析": "intent", "调研": "research", "消费者调研": "research",
-            "内涵设计": "design_inner", "内涵生产": "produce_inner",
-            "外延设计": "design_outer", "外延生产": "produce_outer",
-            "评估": "evaluate",
-        }
-
-        if target_phase:
-            resolved = PHASE_ALIAS.get(target_phase.strip(), target_phase.strip())
-            if resolved not in phase_order:
-                return f"找不到组「{target_phase}」，可选: {', '.join(phase_order)}"
-            prev = project.current_phase
-            ps = dict(project.phase_status or {})
-            if prev:
-                ps[prev] = "completed"
-            ps[resolved] = "in_progress"
-            project.phase_status = ps
-            project.current_phase = resolved
-            db.commit()
-            return f"✅ 已进入组【{resolved}】"
-
-        # 自动下一组
-        try:
-            idx = phase_order.index(project.current_phase)
-        except ValueError:
-            return f"无法确定当前组位置 (current_phase={project.current_phase})"
-
-        if idx >= len(phase_order) - 1:
-            return "已经是最后一个组了"
-
-        prev = project.current_phase
-        next_p = phase_order[idx + 1]
-        ps = dict(project.phase_status or {})
-        ps[prev] = "completed"
-        ps[next_p] = "in_progress"
-        project.phase_status = ps
-        project.current_phase = next_p
         db.commit()
-        return f"✅ 已进入下一组【{next_p}】"
+        return f"✅ 已进入组【{result.next_phase}】"
 
     except Exception as e:
         db.rollback()
@@ -601,7 +539,7 @@ async def run_research(
 async def _run_research_impl(query: str, research_type: str, config: RunnableConfig) -> str:
     from core.tools.deep_research import deep_research, quick_research
     from core.tools.architecture_reader import get_intent_and_research
-    from core.models import Project, ProjectField
+    from core.models import Project
     from core.models.content_block import ContentBlock
 
     project_id = _get_project_id(config)
@@ -639,18 +577,7 @@ async def _run_research_impl(query: str, research_type: str, config: RunnableCon
             db.flush()
             saved = True
 
-        # 2. 尝试保存到 ProjectField（传统架构）
-        research_field = db.query(ProjectField).filter(
-            ProjectField.project_id == project_id,
-            ProjectField.phase == "research",
-        ).first()
-        if research_field:
-            if research_field.content:
-                _save_version(db, research_field.id, research_field.content, "agent")
-            research_field.content = report_json
-            _set_content_status(research_field)
-            db.flush()
-            saved = True
+        # NOTE: ProjectField 保存路径已移除（P0-1 统一到 ContentBlock）
 
         if saved:
             db.commit()

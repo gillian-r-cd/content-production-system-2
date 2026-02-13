@@ -9,7 +9,7 @@ import { useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { blockAPI, fieldAPI, runAutoTriggerChain } from "@/lib/api";
-import { sendNotification } from "@/lib/utils";
+import { useBlockGeneration } from "@/lib/hooks/useBlockGeneration";
 import type { ContentBlock } from "@/lib/api";
 import { VersionHistoryButton } from "./version-history";
 import { 
@@ -54,17 +54,13 @@ export function ContentBlockCard({
   onSelect 
 }: ContentBlockCardProps) {
   // 判断是否使用 Field API（虚拟块需要更新 ProjectField 表）
-  const useFieldAPI = isVirtual || block.parent_id?.startsWith("virtual_");
+  const useFieldAPI = isVirtual || !!block.parent_id?.startsWith("virtual_");
   
   const [isExpanded, setIsExpanded] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [isEditingName, setIsEditingName] = useState(false);
   const [editedName, setEditedName] = useState(block.name);
   const [editedContent, setEditedContent] = useState(block.content || "");
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [generatingContent, setGeneratingContent] = useState("");
-  const generatingRef = useRef(false); // 防止切换时丢失生成状态
-  const abortControllerRef = useRef<AbortController | null>(null); // 用于停止生成
   
   // 模态框状态
   const [showPromptModal, setShowPromptModal] = useState(false);
@@ -95,6 +91,34 @@ export function ContentBlockCard({
   const [isSavingPreAnswers, setIsSavingPreAnswers] = useState(false);
   const [preAnswersSaved, setPreAnswersSaved] = useState(false);
   const hasPreQuestions = (block.pre_questions?.length || 0) > 0;
+
+  // ---- 生成逻辑（通过 Hook 统一管理） ----
+  const {
+    isGenerating, generatingContent, canGenerate, unmetDependencies,
+    handleGenerate: _handleGenerate, handleStop: _handleStop,
+  } = useBlockGeneration({
+    block, projectId, allBlocks, useFieldAPI,
+    preAnswers, hasPreQuestions,
+    onUpdate,
+    onContentReady: (content) => setEditedContent(content),
+  });
+
+  const handleGenerate = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!canGenerate) {
+      alert(`以下依赖内容为空:\n${unmetDependencies.map(d => `• ${d.name}`).join("\n")}`);
+      return;
+    }
+    setIsExpanded(true); // Card 特有：自动展开显示生成内容
+    setIsEditing(false);
+    await _handleGenerate();
+  };
+
+  const handleStopGeneration = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    _handleStop();
+  };
+
   const [copied, setCopied] = useState(false);
   
   const handleCopyContent = (e: React.MouseEvent) => {
@@ -148,7 +172,7 @@ export function ContentBlockCard({
   
   useEffect(() => {
     // 生成中不要重置内容（会覆盖流式输出）
-    if (!generatingRef.current) {
+    if (!isGenerating) {
       setEditedContent(block.content || "");
     }
     setEditedName(block.name);
@@ -269,116 +293,7 @@ export function ContentBlockCard({
     );
   };
 
-  // 检查依赖是否满足：必须有内容且 status=completed（need_review 的块必须经过确认）
-  const unmetDependencies = dependencyBlocks.filter(d => !d.content || !d.content.trim() || d.status !== "completed");
-  const canGenerate = unmetDependencies.length === 0;
-
-  // 生成内容（使用流式 API）
-  const handleGenerate = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    
-    // 前端检查依赖（只要依赖有内容就可以生成）
-    if (!canGenerate) {
-      alert(`以下依赖内容为空:\n${unmetDependencies.map(d => `• ${d.name}`).join("\n")}`);
-      return;
-    }
-    
-    setIsGenerating(true);
-    setGeneratingContent("");
-    generatingRef.current = true;
-    const abortController = new AbortController();
-    abortControllerRef.current = abortController;
-    setIsExpanded(true); // 自动展开显示生成内容
-    setIsEditing(false); // 退出编辑模式以显示流式内容
-    
-    try {
-      // 先保存预提问答案（确保生成时能读到最新答案）
-      if (hasPreQuestions && Object.keys(preAnswers).length > 0) {
-        if (useFieldAPI) {
-          await fieldAPI.update(block.id, { pre_answers: preAnswers } as any);
-        } else {
-          await blockAPI.update(block.id, { pre_answers: preAnswers });
-        }
-      }
-      
-      if (useFieldAPI) {
-        await fieldAPI.generate(block.id, preAnswers);
-        onUpdate?.();
-      } else {
-        // 使用流式生成
-        const response = await blockAPI.generateStream(block.id, abortController.signal);
-        if (!response.ok) {
-          const error = await response.json().catch(() => ({ detail: "生成失败" }));
-          throw new Error(error.detail || `HTTP ${response.status}`);
-        }
-        
-        const reader = response.body?.getReader();
-        if (!reader) throw new Error("无法获取响应流");
-        
-        const decoder = new TextDecoder();
-        let accumulatedContent = "";
-        
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          
-          const chunk = decoder.decode(value, { stream: true });
-          const lines = chunk.split("\n");
-          
-          for (const line of lines) {
-            if (line.startsWith("data: ")) {
-              try {
-                const data = JSON.parse(line.slice(6));
-                if (data.chunk) {
-                  accumulatedContent += data.chunk;
-                  setGeneratingContent(accumulatedContent);
-                }
-                if (data.done) {
-                  setEditedContent(data.content || accumulatedContent);
-                  onUpdate?.();
-                  
-                  // 浏览器通知
-                  sendNotification("内容生成完成", `「${block.name}」已生成完毕，点击查看`);
-                  
-                  // 前端驱动自动触发链：生成完成后检查并触发下游块
-                  if (projectId) {
-                    runAutoTriggerChain(projectId, () => onUpdate?.()).catch(console.error);
-                  }
-                }
-                if (data.error) {
-                  throw new Error(data.error);
-                }
-              } catch {
-                // 忽略解析错误
-              }
-            }
-          }
-        }
-      }
-    } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") {
-        console.log("[BlockCard] 用户停止了生成");
-        onUpdate?.();
-      } else {
-        console.error("生成失败:", err);
-        alert("生成失败: " + (err instanceof Error ? err.message : "未知错误"));
-      }
-    } finally {
-      setIsGenerating(false);
-      setGeneratingContent("");
-      generatingRef.current = false;
-      abortControllerRef.current = null;
-    }
-  };
-
-  // 停止生成
-  const handleStopGeneration = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-    }
-  };
+  // （canGenerate / unmetDependencies / handleGenerate / handleStopGeneration 由 useBlockGeneration Hook 提供）
 
   // 删除内容块
   const handleDelete = async (e: React.MouseEvent) => {

@@ -8,7 +8,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { cn, PHASE_NAMES, PHASE_STATUS } from "@/lib/utils";
+import { cn, PHASE_NAMES, PHASE_STATUS, PHASE_SPECIAL_HANDLERS, FIXED_TOP_PHASES, DRAGGABLE_PHASES, FIXED_BOTTOM_PHASES } from "@/lib/utils";
 import type { Project, ContentBlock, Field } from "@/lib/api";
 import { blockAPI, runAutoTriggerChain } from "@/lib/api";
 import BlockTree from "./block-tree";
@@ -29,17 +29,8 @@ function flattenBlocks(blocks: ContentBlock[]): ContentBlock[] {
   return result;
 }
 
-// 阶段到特殊处理器的映射
-const PHASE_SPECIAL_HANDLERS: Record<string, string> = {
-  intent: "intent",
-  research: "research",
-  evaluate: "evaluate",
-};
-
-// 固定阶段定义
-const FIXED_TOP_PHASES = ["intent", "research"];
-const DRAGGABLE_PHASES = ["design_inner", "produce_inner", "design_outer", "produce_outer"];
-const FIXED_BOTTOM_PHASES = ["evaluate"];
+// PHASE_SPECIAL_HANDLERS, FIXED_TOP_PHASES, DRAGGABLE_PHASES, FIXED_BOTTOM_PHASES
+// 均从 @/lib/utils 导入（统一来源: backend/core/phase_config.py）
 
 type ViewMode = "classic" | "tree";
 
