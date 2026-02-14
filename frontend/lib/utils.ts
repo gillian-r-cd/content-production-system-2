@@ -44,10 +44,10 @@ export interface PhaseDefinition {
 export const PHASE_DEFINITIONS: PhaseDefinition[] = [
   { code: "intent",        displayName: "意图分析",   specialHandler: "intent",   position: "top" },
   { code: "research",      displayName: "消费者调研", specialHandler: "research",  position: "top" },
-  { code: "design_inner",  displayName: "内涵设计",   specialHandler: null,        position: "middle" },
-  { code: "produce_inner", displayName: "内涵生产",   specialHandler: null,        position: "middle" },
-  { code: "design_outer",  displayName: "外延设计",   specialHandler: null,        position: "middle" },
-  { code: "produce_outer", displayName: "外延生产",   specialHandler: null,        position: "middle" },
+  { code: "design_inner",  displayName: "内涵设计",   specialHandler: null,             position: "middle" },
+  { code: "produce_inner", displayName: "内涵生产",   specialHandler: "produce_inner",  position: "middle" },
+  { code: "design_outer",  displayName: "外延设计",   specialHandler: null,             position: "middle" },
+  { code: "produce_outer", displayName: "外延生产",   specialHandler: "produce_outer",  position: "middle" },
   { code: "evaluate",      displayName: "评估",       specialHandler: "evaluate",  position: "bottom" },
 ];
 
@@ -178,7 +178,7 @@ export function sendNotification(title: string, body: string, onClick?: () => vo
       try {
         const notification = new Notification(title, {
           body,
-          icon: "/favicon.ico",
+          icon: "/icon.svg",
           tag: `gen-${Date.now()}`,
           silent: false,
         });

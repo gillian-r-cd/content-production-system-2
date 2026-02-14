@@ -16,10 +16,10 @@ from typing import Dict, List
 PHASE_DEFINITIONS: List[Dict] = [
     {"code": "intent",        "display_name": "意图分析",   "special_handler": "intent",   "position": "top"},
     {"code": "research",      "display_name": "消费者调研", "special_handler": "research",  "position": "top"},
-    {"code": "design_inner",  "display_name": "内涵设计",   "special_handler": None,        "position": "middle"},
-    {"code": "produce_inner", "display_name": "内涵生产",   "special_handler": None,        "position": "middle"},
-    {"code": "design_outer",  "display_name": "外延设计",   "special_handler": None,        "position": "middle"},
-    {"code": "produce_outer", "display_name": "外延生产",   "special_handler": None,        "position": "middle"},
+    {"code": "design_inner",  "display_name": "内涵设计",   "special_handler": None,            "position": "middle"},
+    {"code": "produce_inner", "display_name": "内涵生产",   "special_handler": "produce_inner", "position": "middle"},
+    {"code": "design_outer",  "display_name": "外延设计",   "special_handler": None,            "position": "middle"},
+    {"code": "produce_outer", "display_name": "外延生产",   "special_handler": "produce_outer", "position": "middle"},
     {"code": "evaluate",      "display_name": "评估",       "special_handler": "evaluate",  "position": "bottom"},
 ]
 

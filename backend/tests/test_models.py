@@ -21,8 +21,6 @@ from core.models import (
     Channel,
     Simulator,
     SimulationRecord,
-    EvaluationTemplate,
-    EvaluationReport,
     GenerationLog,
 )
 
@@ -213,26 +211,6 @@ class TestGenerationLog:
         cost = GenerationLog.calculate_cost("gpt-4o", 1000, 500)
         expected = (1000 / 1_000_000) * 2.50 + (500 / 1_000_000) * 10.00
         assert abs(cost - expected) < 0.0001
-
-
-class TestEvaluationTemplate:
-    """测试评估模板模型"""
-    
-    def test_validate_weights(self, db_session):
-        template = EvaluationTemplate(
-            name="测试模板",
-            sections=[
-                {"id": "a", "weight": 0.5},
-                {"id": "b", "weight": 0.3},
-            ]
-        )
-        
-        errors = template.validate()
-        assert len(errors) > 0  # 权重总和不为1
-        
-        template.sections.append({"id": "c", "weight": 0.2})
-        errors = template.validate()
-        assert len(errors) == 0
 
 
 if __name__ == "__main__":

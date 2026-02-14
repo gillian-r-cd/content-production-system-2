@@ -16,8 +16,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 from core.llm import llm
 from core.prompt_engine import prompt_engine, PromptContext
-# P0-1: 鸭子类型 — 函数接受任何有 .id/.name/.content/.ai_prompt 的对象
-# 同时兼容 ProjectField（deprecated api/fields.py）和 ContentBlock
+# 鸭子类型 — 函数接受任何有 .id/.name/.content/.ai_prompt 的对象（实际只传 ContentBlock）
 
 
 @dataclass
@@ -30,7 +29,7 @@ class FieldGenerationResult:
 
 
 async def generate_field(
-    field,  # ProjectField 或 ContentBlock（鸭子类型）
+    field,  # ContentBlock（鸭子类型：需要 .id/.name/.content/.ai_prompt）
     context: PromptContext,
     temperature: float = 0.7,
 ) -> FieldGenerationResult:
@@ -73,7 +72,7 @@ async def generate_field(
 
 
 async def generate_field_stream(
-    field,  # ProjectField 或 ContentBlock
+    field,  # ContentBlock（鸭子类型）
     context: PromptContext,
     temperature: float = 0.7,
 ) -> AsyncGenerator[str, None]:
@@ -101,7 +100,7 @@ async def generate_field_stream(
 
 
 async def generate_fields_parallel(
-    fields: List,  # ProjectField 或 ContentBlock
+    fields: List,  # ContentBlock（鸭子类型：需要 .id/.name/.content/.ai_prompt）
     context: PromptContext,
     temperature: float = 0.7,
 ) -> List[FieldGenerationResult]:

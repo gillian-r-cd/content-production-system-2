@@ -37,6 +37,7 @@ interface FieldTemplate {
     name: string;
     type: string;
     ai_prompt: string;
+    content?: string;          // 预置内容（模板自带的初始内容）
     depends_on?: string[];
     need_review?: boolean;
     constraints?: any;
@@ -173,17 +174,19 @@ function BlockNode({
           return depName; // 保留外部依赖
         }).filter(Boolean);
         
+        const templateContent = field.content || "";
         const createdBlock = await blockAPI.create({
           project_id: block.project_id,
           parent_id: block.id,
           name: field.name,
           block_type: "field",
+          content: templateContent,              // 传递预置内容！
           ai_prompt: field.ai_prompt || "",
           depends_on: mappedDependsOn,
           need_review: field.need_review !== undefined ? field.need_review : true,
           constraints: field.constraints || {},
           special_handler: field.special_handler || null,
-          pre_questions: field.pre_questions || [],  // 传递生成前提问！
+          pre_questions: field.pre_questions || [],  // 传递生成前提问
         });
         
         createdBlocks.push(createdBlock.id);

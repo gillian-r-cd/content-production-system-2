@@ -4,7 +4,7 @@
 # 主要导出: agent_graph, AgentState, build_system_prompt
 # 设计原则:
 #   1. LLM 通过 bind_tools 自动选择工具（不再手动 if/elif 路由）
-#   2. State 只保留 4 个字段（messages + 3 个上下文）
+#   2. State 保留 7 个字段（messages + 3 上下文 + 3 模式/记忆）
 #   3. 所有 DB 操作在 @tool 函数内完成，不通过 State 传递
 #   4. Checkpointer (SqliteSaver) 跨请求/跨重启保持对话状态（含 ToolMessage）
 #   5. trim_messages 管理 context window，防止超限
@@ -49,13 +49,18 @@ logger = logging.getLogger("orchestrator")
 
 class AgentState(TypedDict):
     """
-    Agent 状态（精简版）。
+    Agent 状态。
 
-    只保留 LangGraph 运转必需的字段：
+    核心字段：
     - messages: 对话历史（LangGraph 核心，包含 Human/AI/Tool Messages）
     - project_id: 项目 ID（传递给工具，通过 configurable）
     - current_phase: 当前组（注入到 system prompt）
     - creator_profile: 创作者画像（注入到 system prompt）
+
+    模式与记忆字段（Memory & Mode System）：
+    - mode: 当前模式名（如 "critic", "strategist"），默认 "assistant"
+    - mode_prompt: 当前模式的 system_prompt（身份段），替换 build_system_prompt 的开头
+    - memory_context: 全量 MemoryItem 拼接文本（记忆层，M2 阶段启用）
 
     设计原则：
     - DB 操作在 @tool 函数内完成，不通过 State 传递
@@ -66,6 +71,9 @@ class AgentState(TypedDict):
     project_id: str
     current_phase: str
     creator_profile: str
+    mode: str               # 当前模式名（如 "assistant", "critic", "strategist"）
+    mode_prompt: str         # 当前模式的 system_prompt（身份段）
+    memory_context: str      # 全量 MemoryItem 拼接（记忆层，M2 启用）
 
 
 # ============== System Prompt 构建 ==============
@@ -80,10 +88,16 @@ def build_system_prompt(state: AgentState) -> str:
     - 取代原硬编码规则（@ 引用路由、意图阶段检测）
     - 与 @tool docstrings 互补：
       system prompt 提供上下文和规则，docstrings 提供工具级说明
+
+    模式系统：
+    - mode_prompt 有值时替换身份段（开头），否则使用默认身份
+    - memory_context 有值时注入「项目记忆」段落
     """
     creator_profile = state.get("creator_profile", "")
     current_phase = state.get("current_phase", "intent")
     project_id = state.get("project_id", "")
+    mode_prompt = state.get("mode_prompt", "")
+    memory_context = state.get("memory_context", "")
 
     # ---- 动态段落 1: 内容块索引 ----
     field_index_section = ""
@@ -147,7 +161,23 @@ def build_system_prompt(state: AgentState) -> str:
 - **如果用户说"继续"/"下一步"且意图分析已保存，调用 advance_to_phase 进入下一组**
 """
 
-    return f"""你是一个智能内容生产 Agent，帮助创作者完成从意图分析到内容发布的全流程。
+    # ---- 身份段：来自模式配置 ----
+    if mode_prompt:
+        identity = mode_prompt
+    else:
+        identity = "你是一个智能内容生产 Agent，帮助创作者完成从意图分析到内容发布的全流程。"
+
+    # ---- 记忆段：全量注入（M2 启用后生效） ----
+    memory_section = ""
+    if memory_context:
+        memory_section = f"""
+## 项目记忆
+以下是跨模式、跨阶段积累的关键信息。做任何操作时请参考这些约束和偏好，无需复述。
+
+{memory_context}
+"""
+
+    return f"""{identity}
 
 ## ⚠️ 输出格式（最高优先级，必须遵守）
 - 用主谓宾结构完整的句子、段落和正常的标点符号进行输出，不要故意去掉标点符号和换行。
@@ -172,6 +202,7 @@ def build_system_prompt(state: AgentState) -> str:
 当前组: {current_phase}
 {phase_context}
 {field_index_section}
+{memory_section}
 {intent_guide}
 
 ## @ 引用约定
@@ -321,7 +352,7 @@ def create_agent_graph():
     Checkpointer 使对话状态在请求间（含服务重启后）自动累积。
     使用 SqliteSaver 持久化到 data/agent_checkpoints.db。
     """
-    import sqlite3
+
     import os
 
     graph = StateGraph(AgentState)
@@ -342,21 +373,71 @@ def create_agent_graph():
     # tools 执行完后回到 agent（让 LLM 看到工具结果，决定下一步）
     graph.add_edge("tools", "agent")
 
-    # Checkpointer — SqliteSaver 持久化（重启后对话状态含 ToolMessage 全部恢复）
-    from langgraph.checkpoint.sqlite import SqliteSaver
+    # 返回未编译的 graph builder（checkpointer 在异步上下文中延迟绑定）
+    return graph
+
+
+# ---- 延迟编译的 Agent Graph（支持 AsyncSqliteSaver） ----
+_graph_builder = create_agent_graph()
+_compiled_graph = None
+_async_checkpointer = None
+
+
+async def get_agent_graph():
+    """
+    获取编译后的 Agent Graph（带 AsyncSqliteSaver checkpointer）。
+    首次调用时异步初始化 checkpointer 并编译；后续直接返回缓存实例。
+    """
+    global _compiled_graph, _async_checkpointer
+
+    if _compiled_graph is not None:
+        return _compiled_graph
+
+    import os
+    import aiosqlite
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
     db_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
     os.makedirs(db_dir, exist_ok=True)
     db_path = os.path.join(db_dir, "agent_checkpoints.db")
-    conn = sqlite3.connect(db_path, check_same_thread=False)
-    checkpointer = SqliteSaver(conn)
-    checkpointer.setup()
 
-    return graph.compile(checkpointer=checkpointer)
+    conn = await aiosqlite.connect(db_path)
+    _async_checkpointer = AsyncSqliteSaver(conn)
+
+    # 手动建表（兼容 aiosqlite 0.22 没有 is_alive 方法）
+    async with conn.executescript("""
+        PRAGMA journal_mode=WAL;
+        CREATE TABLE IF NOT EXISTS checkpoints (
+            thread_id TEXT NOT NULL,
+            checkpoint_ns TEXT NOT NULL DEFAULT '',
+            checkpoint_id TEXT NOT NULL,
+            parent_checkpoint_id TEXT,
+            type TEXT,
+            checkpoint BLOB,
+            metadata BLOB,
+            PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
+        );
+        CREATE TABLE IF NOT EXISTS writes (
+            thread_id TEXT NOT NULL,
+            checkpoint_ns TEXT NOT NULL DEFAULT '',
+            checkpoint_id TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            idx INTEGER NOT NULL,
+            channel TEXT NOT NULL,
+            type TEXT,
+            value BLOB,
+            PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx)
+        );
+    """):
+        await conn.commit()
+    _async_checkpointer.is_setup = True
+
+    _compiled_graph = _graph_builder.compile(checkpointer=_async_checkpointer)
+    return _compiled_graph
 
 
-# 全局实例
-agent_graph = create_agent_graph()
+# 兼容性别名（旧代码可能直接引用 agent_graph）
+agent_graph = None  # 已废弃，请使用 await get_agent_graph()
 
 
 # P3-1: ContentProductionAgent、content_agent、ContentProductionState 已删除

@@ -24,7 +24,7 @@ from typing import Optional, Dict, List, Tuple
 from core.models import (
     Project, 
     CreatorProfile, 
-    ProjectField,
+    ContentBlock,
     Channel,
 )
 
@@ -388,7 +388,7 @@ class PromptEngine:
         project: Project,
         phase: str,
         golden_context: Optional[GoldenContext] = None,
-        dependent_fields: Optional[list[ProjectField]] = None,
+        dependent_fields: Optional[list[ContentBlock]] = None,
         channel: Optional[Channel] = None,
         custom_prompt: str = "",
         db=None,
@@ -433,8 +433,8 @@ class PromptEngine:
     def parse_references(
         self,
         text: str,
-        fields_by_name: Dict[str, ProjectField],
-    ) -> Tuple[str, List[ProjectField]]:
+        fields_by_name: Dict[str, ContentBlock],
+    ) -> Tuple[str, List[ContentBlock]]:
         """
         解析@引用语法，支持含空格的字段名
         
@@ -444,7 +444,7 @@ class PromptEngine:
         
         Args:
             text: 包含@引用的文本
-            fields_by_name: {字段名: ProjectField} 映射
+            fields_by_name: {字段名: ContentBlock} 映射
         
         Returns:
             (替换后的文本, 引用的字段列表)
@@ -525,7 +525,7 @@ class PromptEngine:
     
     def get_field_generation_prompt(
         self,
-        field: ProjectField,
+        field: ContentBlock,
         context: PromptContext,
     ) -> str:
         """

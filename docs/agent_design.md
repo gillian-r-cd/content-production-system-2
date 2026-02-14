@@ -197,6 +197,7 @@ PHASE_DEFINITIONS = [
 - `ProjectField` 已废弃，`api/fields.py` 路由保留但标记 deprecated
 - 所有 Agent 工具、digest 服务、架构读写器均只查 `ContentBlock`
 - 前端统一使用 `blockAPI`，`fieldAPI` 已标记 deprecated
+- `Project.golden_context` JSON 字段已废弃（P3-2），创作者特质通过 `creator_profile` 关系获取，意图/调研结果通过 ContentBlock 依赖链传递
 
 ## 已移除的旧设计
 

@@ -35,8 +35,6 @@ from core.models import (
     Channel,
     Simulator,
     SimulationRecord,
-    EvaluationTemplate,
-    EvaluationReport,
     GenerationLog,
     ChatMessage,
     PROJECT_PHASES,
@@ -389,44 +387,10 @@ class TestFullProductionFlow:
         )
         db_session.add(project)
         
-        # 创建评估模板
-        template = EvaluationTemplate(
-            id=generate_uuid(),
-            name="Standard Course Evaluation",
-            sections=[
-                {"id": "intent_alignment", "name": "Intent Alignment", "weight": 0.25, "criteria": "Content matches stated goals"},
-                {"id": "user_match", "name": "User Match", "weight": 0.25, "criteria": "Content suits target audience"},
-                {"id": "quality", "name": "Content Quality", "weight": 0.30, "criteria": "Professional and accurate"},
-                {"id": "simulation", "name": "Simulation Results", "weight": 0.20, "criteria": "Positive user feedback"},
-            ],
-        )
-        db_session.add(template)
+        # 评估体系已迁移至 Eval V2（EvalRun/EvalTask/EvalTrial）
+        # 旧 EvaluationTemplate/Report 已删除
         db_session.commit()
-        
-        # 创建评估报告
-        report = EvaluationReport(
-            id=generate_uuid(),
-            project_id=project.id,
-            template_id=template.id,
-            scores={
-                "intent_alignment": 4.5,
-                "user_match": 4.2,
-                "quality": 4.8,
-                "simulation": 4.5,
-            },
-            suggestions=[
-                {"id": "1", "section_id": "quality", "content": "Consider adding interactive elements", "priority": "medium", "adopted": False},
-                {"id": "2", "section_id": "user_match", "content": "Include more real-world scenarios", "priority": "high", "adopted": False},
-            ],
-            summary="Clear content with practical examples. Areas for improvement: Add more case studies.",
-            overall_score=4.5,
-        )
-        db_session.add(report)
-        db_session.commit()
-        
-        # 验证
-        assert report.overall_score == 4.5
-        assert len(report.suggestions) == 2
+        assert project.id is not None
     
     def test_chat_history_persistence(self, db_session):
         """测试对话历史持久化"""

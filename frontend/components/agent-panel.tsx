@@ -7,8 +7,8 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { cn, PHASE_NAMES, sendNotification, requestNotificationPermission } from "@/lib/utils";
-import { agentAPI, parseReferences, API_BASE } from "@/lib/api";
-import type { ChatMessageRecord, ContentBlock } from "@/lib/api";
+import { agentAPI, parseReferences, API_BASE, modesAPI } from "@/lib/api";
+import type { ChatMessageRecord, ContentBlock, AgentModeInfo } from "@/lib/api";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
@@ -78,7 +78,8 @@ export function AgentPanel({
   const [sending, setSending] = useState(false);
   const [showMentions, setShowMentions] = useState(false);
   const [showTools, setShowTools] = useState(false);
-  const [chatMode, setChatMode] = useState<"assistant" | "cocreation">("assistant");
+  const [chatMode, setChatMode] = useState<string>("assistant");
+  const [availableModes, setAvailableModes] = useState<AgentModeInfo[]>([]);
   const [mentionFilter, setMentionFilter] = useState("");
   const [mentionIndex, setMentionIndex] = useState(0);
   const [cursorPosition, setCursorPosition] = useState(0);
@@ -86,6 +87,20 @@ export function AgentPanel({
   const [editContent, setEditContent] = useState("");
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
   const [availableTools, setAvailableTools] = useState<{ id: string; name: string; desc: string }[]>([]);
+
+  // 加载可用 Agent 模式
+  useEffect(() => {
+    modesAPI.list().then((modes: AgentModeInfo[]) => {
+      setAvailableModes(modes);
+      // 如果当前模式不在列表中，重置为第一个
+      if (modes.length > 0 && !modes.find((m: AgentModeInfo) => m.name === chatMode)) {
+        setChatMode(modes[0].name);
+      }
+    }).catch(() => {
+      console.error("Failed to load agent modes");
+      // Fallback: 保持默认 assistant 模式
+    });
+  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -172,7 +187,6 @@ export function AgentPanel({
     const TOOL_ID_MIGRATION: Record<string, string> = {
       deep_research: "run_research",
       generate_field: "generate_field_content",
-      simulate_consumer: "run_evaluation",  // simulate 已合入评估
       evaluate_content: "run_evaluation",
     };
 
@@ -946,30 +960,31 @@ export function AgentPanel({
 
         {/* 模式切换 + 快捷操作 */}
         <div className="flex gap-2 mt-2 flex-wrap items-center">
-          {/* 模式切换 */}
+          {/* 模式切换 - 动态加载 */}
           <div className="flex bg-surface-2 rounded-md border border-surface-3 overflow-hidden mr-2">
-            <button
-              onClick={() => setChatMode("assistant")}
-              className={cn(
-                "px-2 py-1 text-xs transition-colors",
-                chatMode === "assistant"
-                  ? "bg-brand-600 text-white"
-                  : "text-zinc-400 hover:text-zinc-200 hover:bg-surface-3"
-              )}
-            >
-              🤖 助手
-            </button>
-            <button
-              onClick={() => setChatMode("cocreation")}
-              className={cn(
-                "px-2 py-1 text-xs transition-colors",
-                chatMode === "cocreation"
-                  ? "bg-brand-600 text-white"
-                  : "text-zinc-400 hover:text-zinc-200 hover:bg-surface-3"
-              )}
-            >
-              💡 共创
-            </button>
+            {availableModes.length > 0 ? (
+              availableModes.map((mode) => (
+                <button
+                  key={mode.name}
+                  onClick={() => setChatMode(mode.name)}
+                  title={mode.description}
+                  className={cn(
+                    "px-2 py-1 text-xs transition-colors whitespace-nowrap",
+                    chatMode === mode.name
+                      ? "bg-brand-600 text-white"
+                      : "text-zinc-400 hover:text-zinc-200 hover:bg-surface-3"
+                  )}
+                >
+                  {mode.icon} {mode.display_name}
+                </button>
+              ))
+            ) : (
+              <button
+                className="px-2 py-1 text-xs bg-brand-600 text-white"
+              >
+                🛠️ 助手
+              </button>
+            )}
           </div>
           <QuickAction label="继续" onClick={() => setInput("继续")} disabled={!projectId || sending} />
           <QuickAction label="开始调研" onClick={() => setInput("开始消费者调研")} disabled={!projectId || sending} />

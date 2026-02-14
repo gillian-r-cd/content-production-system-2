@@ -17,7 +17,8 @@ export interface Project {
   phase_order: string[];
   phase_status: Record<string, string>;
   agent_autonomy: Record<string, boolean>;
-  golden_context: Record<string, string>;
+  /** @deprecated P3-2: 已废弃 */
+  golden_context?: Record<string, string>;
   use_deep_research: boolean;
   use_flexible_architecture?: boolean;  // [已废弃] 统一为 true
   created_at: string;
@@ -318,7 +319,8 @@ export const agentAPI = {
   stream: async function* (
     projectId: string,
     message: string,
-    currentPhase?: string
+    currentPhase?: string,
+    mode?: string
   ): AsyncGenerator<{ node?: string; content?: string; done?: boolean; error?: string }> {
     const { readSSEStream } = await import("@/lib/sse");
 
@@ -329,6 +331,7 @@ export const agentAPI = {
         project_id: projectId,
         message,
         current_phase: currentPhase,
+        mode: mode || "assistant",
       }),
     });
 
@@ -1122,6 +1125,43 @@ export const versionAPI = {
     }),
 };
 
+
+// ============== Agent Mode Types & API ==============
+
+export interface AgentModeInfo {
+  id: string;
+  name: string;
+  display_name: string;
+  description: string;
+  system_prompt: string;
+  icon: string;
+  is_system: boolean;
+  sort_order: number;
+}
+
+export const modesAPI = {
+  list: () => fetchAPI<AgentModeInfo[]>("/api/modes/"),
+  get: (id: string) => fetchAPI<AgentModeInfo>(`/api/modes/${id}`),
+  create: (data: {
+    name: string;
+    display_name: string;
+    description: string;
+    system_prompt: string;
+    icon: string;
+    sort_order?: number;
+  }) =>
+    fetchAPI<AgentModeInfo>("/api/modes/", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  update: (id: string, data: Partial<AgentModeInfo>) =>
+    fetchAPI<AgentModeInfo>(`/api/modes/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+  delete: (id: string) =>
+    fetchAPI<{ message: string }>(`/api/modes/${id}`, { method: "DELETE" }),
+};
 
 // ============== Utilities ==============
 

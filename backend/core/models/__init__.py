@@ -15,7 +15,6 @@ from core.models.project_field import ProjectField, FIELD_STATUS
 from core.models.channel import Channel
 from core.models.simulator import Simulator, INTERACTION_TYPES
 from core.models.simulation_record import SimulationRecord
-from core.models.evaluation import EvaluationTemplate, EvaluationReport
 from core.models.generation_log import GenerationLog
 from core.models.system_prompt import SystemPrompt
 from core.models.agent_settings import AgentSettings
@@ -28,6 +27,7 @@ from core.models.eval_run import EvalRun, EVAL_ROLES, EVAL_RUN_STATUS
 from core.models.eval_task import EvalTask, SIMULATOR_TYPES, INTERACTION_MODES, GRADER_TYPES, EVAL_TASK_STATUS
 from core.models.eval_trial import EvalTrial, EVAL_TRIAL_STATUS
 from core.models.grader import Grader, GRADER_TYPE_CHOICES, PRESET_GRADERS
+from core.models.agent_mode import AgentMode
 
 __all__ = [
     # 基础
@@ -60,11 +60,7 @@ __all__ = [
     "INTERACTION_TYPES",
     "SimulationRecord",
     
-    # 评估（旧）
-    "EvaluationTemplate",
-    "EvaluationReport",
-    
-    # 评估（新 Eval 体系）
+    # 评估（Eval V2 体系）
     "EvalRun",
     "EVAL_ROLES",
     "EVAL_RUN_STATUS",
@@ -101,4 +97,7 @@ __all__ = [
     # 内容版本历史（重新生成/Agent修改保留旧版本）
     "ContentVersion",
     "VERSION_SOURCES",
+    
+    # Agent 模式
+    "AgentMode",
 ]

@@ -823,8 +823,7 @@ async def run_evaluation(request: RunEvalRequest, db: Session = Depends(get_db))
 async def generate_eval_for_block(block_id: str, db: Session = Depends(get_db)):
     """
     为 ContentBlock 字段生成评估
-    处理新版 special_handler: eval_persona_setup / eval_task_config / eval_execution / eval_grader_report / eval_diagnosis
-    也兼容旧版: eval_coach / eval_editor / eval_expert / eval_consumer / eval_seller / eval_diagnoser
+    支持 special_handler: eval_persona_setup / eval_task_config / eval_report
     """
     block = db.query(ContentBlock).filter(
         ContentBlock.id == block_id, ContentBlock.deleted_at == None,
@@ -840,22 +839,14 @@ async def generate_eval_for_block(block_id: str, db: Session = Depends(get_db)):
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
-    # 新版 handlers
     if handler == "eval_persona_setup":
         return await _handle_persona_setup(block, project, db)
     elif handler == "eval_task_config":
         return await _handle_task_config(block, project, db)
-    elif handler in ("eval_report", "eval_execution", "eval_grader_report", "eval_diagnosis"):
-        # 统一到 eval_report 处理：执行 + 评分 + 诊断 一次完成
+    elif handler == "eval_report":
         return await _handle_eval_report(block, project, db)
-    elif handler == "eval_container":
-        block.content = "请分别点击各评估字段进行评估。"
-        block.status = "completed"
-        db.commit()
-        return {"message": "容器字段已更新", "content": block.content}
     else:
-        # 旧版 eval_coach / eval_editor / etc.
-        return await _handle_legacy_eval(block, project, handler, db)
+        raise HTTPException(status_code=400, detail=f"未知的评估 handler: {handler}")
 
 
 async def _handle_persona_setup(block, project, db):
@@ -1273,80 +1264,6 @@ async def _handle_eval_report(block, project, db):
         raise HTTPException(status_code=500, detail=f"评估执行失败: {str(e)}")
 
 
-async def _handle_legacy_eval(block, project, handler, db):
-    """处理旧版 eval_coach/editor/expert/consumer/seller/diagnoser"""
-    content, field_names = _collect_content(project.id, None, db, exclude_eval=True)
-    if not content:
-        raise HTTPException(status_code=400, detail="没有可评估的内容")
-    
-    creator_profile = _get_creator_profile(project, db)
-    intent = _get_project_intent(project, db)
-    personas = _get_project_personas_from_research(project.id, db)
-    
-    block.status = "in_progress"
-    db.commit()
-    
-    role = handler.replace("eval_", "")
-    
-    if role == "diagnoser":
-        # 收集同级 eval 字段结果
-        trial_results = []
-        sibling_blocks = db.query(ContentBlock).filter(
-            ContentBlock.project_id == project.id,
-            ContentBlock.special_handler.like("eval_%"),
-            ContentBlock.special_handler.notin_(["eval_container", "eval_diagnoser",
-                "eval_persona_setup", "eval_task_config", "eval_report",
-                "eval_execution", "eval_grader_report", "eval_diagnosis"]),
-            ContentBlock.status == "completed",
-            ContentBlock.deleted_at == None,
-        ).all()
-        
-        for sb in sibling_blocks:
-            if sb.content:
-                trial_results.append(TrialResult(
-                    role=sb.special_handler.replace("eval_", ""),
-                    interaction_mode="review",
-                    result={"summary": sb.content[:500]},
-                    overall_score=_extract_score_from_content(sb.content),
-                    success=True,
-                ))
-        
-        if not trial_results:
-            raise HTTPException(status_code=400, detail="请先完成其他评估角色的评估")
-        
-        diagnosis, _ = await run_diagnoser(trial_results, intent=intent)
-        block.content = format_diagnosis_markdown(diagnosis)
-        block.status = "completed"
-        db.commit()
-        return {"message": "综合诊断完成", "content": block.content}
-    
-    # 其他角色
-    try:
-        persona = personas[0] if personas else {"name": "典型用户", "background": "目标读者"}
-        
-        tr = await run_task_trial(
-            simulator_type=role,
-            interaction_mode="dialogue" if role in ("consumer", "seller") else "review",
-            content=content,
-            creator_profile=creator_profile,
-            intent=intent,
-            persona=persona if role in ("consumer", "seller") else None,
-            grader_config={"type": "combined" if role in ("consumer", "seller") else "content"},
-            content_field_names=field_names,
-        )
-        
-        block.content = format_trial_result_markdown(tr)
-        block.status = "completed" if tr.success else "failed"
-        db.commit()
-        
-        return {"message": f"评估完成", "content": block.content, "score": tr.overall_score}
-        
-    except Exception as e:
-        block.status = "failed"
-        db.commit()
-        raise HTTPException(status_code=500, detail=f"评估失败: {str(e)}")
-
-
 # ============== Helpers ==============
 
 def _collect_content(project_id, block_ids, db, exclude_eval=False):
@@ -1557,14 +1474,6 @@ def _find_sibling_by_handler(block, handler: str, db) -> ContentBlock:
         ContentBlock.special_handler == handler,
         ContentBlock.deleted_at == None,
     ).first()
-
-
-def _extract_score_from_content(content: str) -> float:
-    import re
-    match = re.search(r'(\d+(?:\.\d+)?)/10', content)
-    if match:
-        return float(match.group(1))
-    return 5.0
 
 
 def _to_run_response(r: EvalRun) -> EvalRunResponse:

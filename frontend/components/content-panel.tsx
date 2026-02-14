@@ -80,7 +80,7 @@ export function ContentPanel({
     const selectedPhase = selectedBlock.special_handler;
     
     // ===== 意图分析阶段特殊处理 =====
-    if (selectedBlock.special_handler === "intent" || selectedPhase === "intent") {
+    if (selectedPhase === "intent") {
       const intentContent = selectedBlock.content?.trim();
       if (intentContent) {
         return (
@@ -108,7 +108,7 @@ export function ContentPanel({
     }
     
     // ===== 消费者调研阶段特殊处理 =====
-    if (selectedBlock.special_handler === "research" || selectedPhase === "research") {
+    if (selectedPhase === "research") {
       const researchContent = selectedBlock.content?.trim();
       if (researchContent) {
         try {
@@ -160,7 +160,7 @@ export function ContentPanel({
     }
     
     // ===== 评估阶段特殊处理 =====
-    if (selectedBlock.special_handler === "evaluate" || selectedPhase === "evaluate") {
+    if (selectedPhase === "evaluate") {
       return (
         <EvalPhasePanel
           projectId={projectId}

@@ -18,7 +18,7 @@ from core.models.base import BaseModel
 DEFAULT_PHASE_TEMPLATE = {
     "id": "default_content_production",
     "name": "标准内容生产流程",
-    "description": "适用于大多数内容生产场景的完整流程，包含意图分析、消费者调研、内涵设计与生产、外延设计与生产、消费者模拟和评估。",
+    "description": "适用于大多数内容生产场景的完整流程，包含意图分析、消费者调研、内涵设计与生产、外延设计与生产和评估。",
     "phases": [
         {
             "name": "意图分析",
@@ -56,7 +56,7 @@ DEFAULT_PHASE_TEMPLATE = {
         {
             "name": "内涵生产",
             "block_type": "phase",
-            "special_handler": None,
+            "special_handler": "produce_inner",
             "order_index": 3,
             "default_fields": []  # 从内涵设计继承
         },
@@ -70,22 +70,15 @@ DEFAULT_PHASE_TEMPLATE = {
         {
             "name": "外延生产",
             "block_type": "phase",
-            "special_handler": None,
+            "special_handler": "produce_outer",
             "order_index": 5,
-            "default_fields": []
-        },
-        {
-            "name": "消费者模拟",
-            "block_type": "phase",
-            "special_handler": "simulate",
-            "order_index": 6,
             "default_fields": []
         },
         {
             "name": "评估",
             "block_type": "phase",
             "special_handler": "evaluate",
-            "order_index": 7,
+            "order_index": 6,
             "default_fields": []
         },
     ]

@@ -1,11 +1,7 @@
 // frontend/app/page.tsx
-// 功能: 首页，重定向到内容生产界面
-
-import { redirect } from "next/navigation";
+// 功能: 首页入口，提供工作台和后台设置的导航
 
 export default function Home() {
-  // TODO: 实现项目选择页面
-  // 暂时显示欢迎信息
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-24">
       <div className="text-center">

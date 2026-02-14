@@ -43,23 +43,18 @@ def _get_db():
     return next(get_db())
 
 
-def _find_block_or_field(db, project_id: str, name: str):
+def _find_block(db, project_id: str, name: str):
     """
     根据名称查找 ContentBlock。
-    返回 (entity, "block") 或 (None, None)。
-    注：ProjectField 查询已移除（P0-1 统一到 ContentBlock 单一模型）。
+    返回 ContentBlock 或 None。
     """
     from core.models.content_block import ContentBlock
 
-    block = db.query(ContentBlock).filter(
+    return db.query(ContentBlock).filter(
         ContentBlock.project_id == project_id,
         ContentBlock.name == name,
         ContentBlock.deleted_at == None,  # noqa: E711
     ).first()
-    if block:
-        return block, "block"
-
-    return None, None
 
 
 def _save_version(db, entity_id: str, old_content: str, source: str):
@@ -132,7 +127,7 @@ async def _modify_field_impl(
     project_id = _get_project_id(config)
     db = _get_db()
     try:
-        entity, etype = _find_block_or_field(db, project_id, field_name)
+        entity = _find_block(db, project_id, field_name)
         if not entity:
             return _json_err(f"找不到内容块「{field_name}」")
 
@@ -143,7 +138,7 @@ async def _modify_field_impl(
         # 读取参考内容
         ref_ctx = ""
         for ref_name in reference_fields:
-            ref_entity, _ = _find_block_or_field(db, project_id, ref_name)
+            ref_entity = _find_block(db, project_id, ref_name)
             if ref_entity and ref_entity.content:
                 ref_ctx += f"\n\n### 参考内容块「{ref_name}」\n{ref_entity.content[:2000]}"
 
@@ -225,7 +220,7 @@ async def _generate_field_impl(
     project_id = _get_project_id(config)
     db = _get_db()
     try:
-        entity, etype = _find_block_or_field(db, project_id, field_name)
+        entity = _find_block(db, project_id, field_name)
         if not entity:
             return _json_err(f"找不到内容块「{field_name}」")
 
@@ -322,7 +317,7 @@ async def _query_field_impl(field_name: str, question: str, config: RunnableConf
     project_id = _get_project_id(config)
     db = _get_db()
     try:
-        entity, _ = _find_block_or_field(db, project_id, field_name)
+        entity = _find_block(db, project_id, field_name)
         if not entity:
             return f"找不到内容块「{field_name}」"
 
@@ -356,7 +351,7 @@ def read_field(field_name: str, config: Annotated[RunnableConfig, InjectedToolAr
     project_id = _get_project_id(config)
     db = _get_db()
     try:
-        entity, _ = _find_block_or_field(db, project_id, field_name)
+        entity = _find_block(db, project_id, field_name)
         if not entity:
             return f"找不到内容块「{field_name}」"
         content = entity.content or ""
@@ -382,7 +377,7 @@ def update_field(field_name: str, content: str, config: Annotated[RunnableConfig
     project_id = _get_project_id(config)
     db = _get_db()
     try:
-        entity, _ = _find_block_or_field(db, project_id, field_name)
+        entity = _find_block(db, project_id, field_name)
         if not entity:
             return _json_err(f"找不到内容块「{field_name}」")
 

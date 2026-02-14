@@ -154,11 +154,14 @@ async def generate_outline(
             content_type="unknown",
         )
     
-    # 获取 Golden Context
-    gc = project.golden_context or {}
-    intent = gc.get("intent", "")
-    creator_profile = gc.get("creator_profile", "")
-    consumer_personas = gc.get("consumer_personas", [])
+    # 从 ContentBlock 和 creator_profile 关系获取上下文（P3-2: 不再读 project.golden_context）
+    from core.tools.architecture_reader import get_intent_and_research
+    intent_research = get_intent_and_research(project_id, db)
+    intent = intent_research.get("intent", "")
+    research = intent_research.get("research", "")
+    creator_profile = ""
+    if project.creator_profile:
+        creator_profile = project.creator_profile.to_prompt_context()
     
     # 自动推断内容类型（如果未指定）
     if not content_type:
@@ -176,7 +179,7 @@ async def generate_outline(
 - 内容类型: {content_type}
 - 创作者特质: {creator_profile}
 - 项目意图: {intent}
-- 目标用户: {json.dumps(consumer_personas, ensure_ascii=False) if consumer_personas else '待定义'}
+- 目标用户: {research if research else '待定义'}
 
 ## 大纲要求
 {structure_hint or default_hint}

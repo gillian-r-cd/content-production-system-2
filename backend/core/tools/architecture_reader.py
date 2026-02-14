@@ -65,7 +65,6 @@ class ProjectArchitecture:
     project_id: str
     project_name: str
     current_phase: str
-    use_flexible_architecture: bool  # [已废弃] 统一为 True
     phases: List[PhaseInfo]
     total_fields: int
     completed_fields: int
@@ -171,7 +170,6 @@ def get_project_architecture(project_id: str, db: Optional[Session] = None) -> O
         project_id=project.id,
         project_name=project.name,
         current_phase=project.current_phase,
-        use_flexible_architecture=project.use_flexible_architecture,
         phases=phases,
         total_fields=total_fields,
         completed_fields=completed_fields,

@@ -3,7 +3,7 @@
 // 5个 special_handler 对应 5 个专用 UI：
 //   - eval_persona_setup: 目标消费者画像选择/创建
 //   - eval_task_config: 评估任务配置（卡片式）
-//   - eval_report: 统一评估报告面板（执行 + 评分 + 诊断 + LLM 日志，合并原 eval_execution/eval_grader_report/eval_diagnosis）
+//   - eval_report: 统一评估报告面板（执行 + 评分 + 诊断 + LLM 日志）
 
 "use client";
 
@@ -1614,10 +1614,6 @@ export function getEvalFieldEditor(handler: string): React.FC<EvalFieldProps> | 
     "eval_persona_setup": EvalPersonaSetup,
     "eval_task_config": EvalTaskConfig,
     "eval_report": EvalReportPanel,
-    // 向后兼容旧 handler 名称
-    "eval_execution": EvalReportPanel,
-    "eval_grader_report": EvalReportPanel,
-    "eval_diagnosis": EvalReportPanel,
   };
   return map[handler] || null;
 }

@@ -1,7 +1,7 @@
 # backend/api/agent.py
-# 功能: Agent 对话 API，支持 SSE 流式输出、对话历史、编辑重发
+# 功能: Agent 对话 API，支持 SSE 流式输出、对话历史、编辑重发、多模式切换
 # 主要路由: /stream, /chat, /history, /retry, /advance
-# 架构: stream_chat 使用 LangGraph astream_events，不再手动路由
+# 架构: stream_chat 使用 LangGraph astream_events，所有模式统一走 Agent Graph
 
 """
 Agent 对话 API
@@ -25,12 +25,13 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from core.database import get_db
+from core.config import settings
 from core.models import (
     Project, ChatMessage, GenerationLog,
-    ContentVersion, generate_uuid,
+    ContentVersion, AgentMode, generate_uuid,
 )
 from core.models.content_block import ContentBlock
-from core.orchestrator import agent_graph
+from core.orchestrator import get_agent_graph
 from core.agent_tools import PRODUCE_TOOLS
 
 router = APIRouter()
@@ -163,7 +164,7 @@ class ChatRequest(BaseModel):
     message: str
     current_phase: Optional[str] = None
     references: List[str] = []
-    mode: str = "assistant"  # "assistant" | "cocreation"
+    mode: str = "assistant"  # 模式名：assistant / strategist / critic / reader / creative / 自定义
 
 
 class FieldUpdatedInfo(BaseModel):
@@ -279,8 +280,9 @@ async def chat(
                 "project_id": request.project_id,
             }
         }
+        _graph = await get_agent_graph()
         result = await asyncio.wait_for(
-            agent_graph.ainvoke(state, config=config),
+            _graph.ainvoke(state, config=config),
             timeout=300,
         )
     except asyncio.TimeoutError:
@@ -401,7 +403,8 @@ async def retry_message(
             "project_id": user_msg.project_id,
         }
     }
-    result = await agent_graph.ainvoke(state, config=config)
+    _graph = await get_agent_graph()
+    result = await _graph.ainvoke(state, config=config)
 
     # 提取最后一条 AI 消息
     ai_messages = [m for m in result["messages"] if isinstance(m, AIMessage)]
@@ -550,16 +553,7 @@ async def stream_chat(
     db.commit()
     saved_user_msg_id = user_msg.id
 
-    # ---- 共创模式分流 ----
-    if request.mode == "cocreation":
-        return StreamingResponse(
-            _handle_cocreation_stream(request, db, project, saved_user_msg_id),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "Connection": "keep-alive",
-                      "X-Accel-Buffering": "no"},
-        )
-
-    # ---- 助手模式：走 Agent Graph ----
+    # ---- 所有模式统一走 Agent Graph（已删除共创分流） ----
 
     # 处理 @ 引用：将引用内容追加到用户消息
     augmented_message = request.message
@@ -573,10 +567,15 @@ async def stream_chat(
                 f"{request.message}\n\n---\n以下是用户引用的内容块：\n{ref_text}"
             )
 
+    # ---- 查 AgentMode ----
+    mode_name = request.mode or "assistant"
+    mode_obj = db.query(AgentMode).filter(AgentMode.name == mode_name).first()
+    mode_prompt = mode_obj.system_prompt if mode_obj else ""
+
     # Checkpointer 配置 + LLM 日志回调
     from core.llm_logger import GenerationLogCallback
 
-    thread_id = f"{request.project_id}:assistant"
+    thread_id = f"{request.project_id}:{mode_name}"
     llm_log_cb = GenerationLogCallback(
         project_id=request.project_id,
         phase=current_phase,
@@ -603,6 +602,9 @@ async def stream_chat(
         "project_id": request.project_id,
         "current_phase": current_phase,
         "creator_profile": creator_profile_str,
+        "mode": mode_name,
+        "mode_prompt": mode_prompt,
+        "memory_context": "",  # M2 阶段启用：MemoryItem 全量注入
     }
 
     # ---- 产出类工具集（执行后前端需刷新左侧面板） ----
@@ -631,7 +633,8 @@ async def stream_chat(
             logger.info("[stream] 开始 astream_events, project=%s, phase=%s",
                         request.project_id, current_phase)
 
-            async for event in agent_graph.astream_events(
+            _graph = await get_agent_graph()
+            async for event in _graph.astream_events(
                 input_state, config=config, version="v2"
             ):
                 kind = event["event"]
@@ -772,7 +775,7 @@ async def stream_chat(
             # 从最终 state 中提取 AI 消息内容
             if not full_content:
                 try:
-                    final_state = await agent_graph.aget_state(config)
+                    final_state = await _graph.aget_state(config)
                     if final_state and final_state.values:
                         msgs = final_state.values.get("messages", [])
                         # 取最后一条 AIMessage（非 ToolMessage）
@@ -800,7 +803,7 @@ async def stream_chat(
                 content=full_content,
                 message_metadata={
                     "phase": current_phase,
-                    "mode": "assistant",
+                    "mode": mode_name,
                     "tools_used": tools_used,
                 },
             )
@@ -818,14 +821,14 @@ async def stream_chat(
                     field_id=None,
                     phase=current_phase,
                     operation=op_name,
-                    model=getattr(llm, "model_name", "gpt-4o"),
+                    model=getattr(llm, "model_name", settings.openai_model),
                     tokens_in=tokens_in_est,
                     tokens_out=tokens_out_est,
                     duration_ms=duration_ms,
                     prompt_input=request.message[:2000],
                     prompt_output=full_content[:2000],
                     cost=GenerationLog.calculate_cost(
-                        getattr(llm, "model_name", "gpt-4o"),
+                        getattr(llm, "model_name", settings.openai_model),
                         tokens_in_est, tokens_out_est
                     ),
                     status="success",
@@ -864,85 +867,7 @@ async def stream_chat(
     )
 
 
-# ============== Cocreation Stream (placeholder) ==============
-
-async def _handle_cocreation_stream(request, db, project, user_msg_id):
-    """
-    共创模式流式输出。
-    不走 Agent Graph，直接用 llm.astream() 进行纯角色扮演对话。
-    """
-    from core.llm import llm
-    from core.llm_logger import GenerationLogCallback
-    from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
-
-    logger.info("[cocreation] 开始, project=%s", request.project_id)
-    yield sse_event({"type": "user_saved", "message_id": user_msg_id})
-
-    # 日志回调：cocreation 的 LLM 调用也会被记录到 GenerationLog
-    cocreation_log_cb = GenerationLogCallback(
-        project_id=request.project_id,
-        phase=project.current_phase,
-        operation="cocreation_stream",
-    )
-
-    try:
-        # 加载共创对话历史
-        history = db.query(ChatMessage).filter(
-            ChatMessage.project_id == request.project_id,
-        ).order_by(ChatMessage.created_at.desc()).limit(20).all()
-        history.reverse()
-
-        # 构建消息
-        messages = [
-            SystemMessage(content="你是一个创意共创伙伴。与创作者进行头脑风暴，帮助发展想法。"
-                          "\n\n**输出格式要求**：必须使用完整的标点符号，用完整句子回复。"),
-        ]
-        for m in history:
-            meta = m.message_metadata or {}
-            if meta.get("mode") != "cocreation":
-                continue
-            if m.role == "user":
-                messages.append(HumanMessage(content=m.content))
-            else:
-                messages.append(AIMessage(content=m.content))
-        messages.append(HumanMessage(content=request.message))
-
-        # 流式输出（config 中注入日志回调）
-        full_content = ""
-        token_count = 0
-        async for chunk in llm.astream(messages, config={"callbacks": [cocreation_log_cb]}):
-            if chunk.content:
-                full_content += chunk.content
-                token_count += 1
-                yield sse_event({"type": "token", "content": chunk.content})
-
-        logger.info("[cocreation] 完成, tokens=%d, content=%d chars",
-                     token_count, len(full_content))
-
-        # 保存回复
-        agent_msg = ChatMessage(
-            id=generate_uuid(),
-            project_id=request.project_id,
-            role="assistant",
-            content=full_content,
-            message_metadata={
-                "phase": project.current_phase,
-                "mode": "cocreation",
-            },
-        )
-        db.add(agent_msg)
-        db.commit()
-
-        yield sse_event({
-            "type": "done",
-            "message_id": agent_msg.id,
-            "is_producing": False,
-            "route": "cocreation",
-        })
-
-    except Exception as e:
-        logger.error(f"[cocreation] error: {e}")
-        yield sse_event({"type": "error", "error": str(e)})
+# _handle_cocreation_stream 已删除 — 所有模式统一走 Agent Graph
 
 
 # ============== Advance Phase ==============

@@ -29,7 +29,7 @@ def save_content_version(
 
     Args:
         db: 数据库会话（调用者控制 commit）
-        entity_id: ContentBlock.id 或 ProjectField.id
+        entity_id: ContentBlock.id
         old_content: 被覆写的旧内容
         source: 版本来源（manual / ai_generate / ai_regenerate / agent）
         source_detail: 来源补充说明（如具体的修改指令）

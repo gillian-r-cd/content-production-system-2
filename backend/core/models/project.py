@@ -21,7 +21,6 @@ if TYPE_CHECKING:
     from core.models.creator_profile import CreatorProfile
     from core.models.project_field import ProjectField
     from core.models.simulation_record import SimulationRecord
-    from core.models.evaluation import EvaluationReport
     from core.models.generation_log import GenerationLog
     from core.models.content_block import ContentBlock
 
@@ -87,14 +86,13 @@ class Project(BaseModel):
     creator_profile: Mapped["CreatorProfile"] = relationship(
         "CreatorProfile", back_populates="projects"
     )
+    # [已废弃] P0-1 统一后不再使用，保留仅为兼容旧 api/fields.py 和迁移脚本
+    # 新代码统一使用 content_blocks 关系
     fields: Mapped[list["ProjectField"]] = relationship(
         "ProjectField", back_populates="project", cascade="all, delete-orphan"
     )
     simulation_records: Mapped[list["SimulationRecord"]] = relationship(
         "SimulationRecord", back_populates="project", cascade="all, delete-orphan"
-    )
-    evaluation_reports: Mapped[list["EvaluationReport"]] = relationship(
-        "EvaluationReport", back_populates="project", cascade="all, delete-orphan"
     )
     generation_logs: Mapped[list["GenerationLog"]] = relationship(
         "GenerationLog", back_populates="project", cascade="all, delete-orphan"

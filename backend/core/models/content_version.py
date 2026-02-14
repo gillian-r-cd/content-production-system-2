@@ -5,7 +5,7 @@
 
 """
 ContentVersion 模型
-记录 ContentBlock 和 ProjectField 的内容历史版本
+记录 ContentBlock 的内容历史版本
 每次「重新生成」或「Agent 修改」前，自动保存当前内容为一个版本
 """
 
@@ -35,7 +35,7 @@ class ContentVersion(BaseModel):
     将变更前的内容保存为一个版本快照。
 
     Attributes:
-        block_id: 关联的 ContentBlock 或 ProjectField 的 ID
+        block_id: 关联的 ContentBlock 的 ID
         version_number: 版本号（从 1 开始递增）
         content: 该版本的完整内容
         source: 产生该版本的来源（manual/ai_generate/ai_regenerate/agent）

@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from core.database import get_db
+from core.config import settings
 from datetime import datetime
 
 logger = logging.getLogger("blocks")
@@ -423,6 +424,12 @@ def create_block(
     if order_index is None:
         order_index = _get_next_order_index(data.project_id, data.parent_id, db)
     
+    # 有预置内容时自动推导状态：need_review → in_progress(待确认), 否则 completed
+    if data.content:
+        initial_status = "in_progress" if data.need_review else "completed"
+    else:
+        initial_status = "pending"
+
     block = ContentBlock(
         id=generate_uuid(),
         project_id=data.project_id,
@@ -432,7 +439,7 @@ def create_block(
         depth=depth,
         order_index=order_index,
         content=data.content,
-        status="pending",
+        status=initial_status,
         ai_prompt=data.ai_prompt,
         constraints=data.constraints or {},
         depends_on=data.depends_on,
@@ -1156,13 +1163,13 @@ async def generate_block_content_stream(
                 field_id=block.id,
                 phase=block.parent_id or "content_block",
                 operation=f"block_generate_stream_{block.name}",
-                model="gpt-5.1",
+                model=settings.openai_model,
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
                 duration_ms=duration_ms,
                 prompt_input=system_prompt,
                 prompt_output=full_content,
-                cost=GenerationLog.calculate_cost("gpt-5.1", tokens_in, tokens_out),
+                cost=GenerationLog.calculate_cost(settings.openai_model, tokens_in, tokens_out),
                 status="success",
             )
             db.add(gen_log)
@@ -1218,7 +1225,7 @@ async def generate_block_content_stream(
                                 field_id=save_block.id,
                                 phase=save_block.parent_id or "content_block",
                                 operation=f"block_generate_stream_interrupted_{save_block.name}",
-                                model="gpt-5.1",
+                                model=settings.openai_model,
                                 tokens_in=len(system_prompt) // 4,
                                 tokens_out=len(partial_content) // 4,
                                 duration_ms=duration_ms,
@@ -1415,6 +1422,8 @@ def migrate_project_to_blocks(
     phase_handler_map = {
         "intent": "intent",
         "research": "research",
+        "produce_inner": "produce_inner",
+        "produce_outer": "produce_outer",
         "simulate": "simulate",
         "evaluate": "evaluate",
     }
@@ -1686,7 +1695,7 @@ async def generate_ai_prompt(
         project_id=request.project_id or "global",
         phase="utility",
         operation="generate_ai_prompt",
-        model="gpt-5.1",
+        model=settings.openai_model,
         prompt_input=f"[System]\n{system_content}\n\n[User]\n{user_msg}",
         prompt_output=generated_prompt,
         tokens_in=response.tokens_in if hasattr(response, 'tokens_in') else 0,
@@ -1700,6 +1709,6 @@ async def generate_ai_prompt(
     
     return {
         "prompt": generated_prompt,
-        "model": "gpt-5.1",
+        "model": settings.openai_model,
         "tokens_used": (response.tokens_in or 0) + (response.tokens_out or 0),
     }

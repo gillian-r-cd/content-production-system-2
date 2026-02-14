@@ -1,6 +1,6 @@
 # backend/core/tools/__init__.py
 # 功能: 工具包入口，导出所有LangGraph工具
-# 包含: deep_research, field_generator, simulator, evaluator, architecture_reader
+# 包含: deep_research, field_generator, simulator, eval_engine, architecture_reader
 
 """
 LangGraph 工具包
@@ -32,15 +32,6 @@ from core.tools.simulator import (
     run_exploration_simulation,
     SimulationResult,
     SimulationFeedback,
-)
-
-from core.tools.evaluator import (
-    evaluate_project,
-    evaluate_section,
-    generate_suggestions,
-    EvaluationResult,
-    SectionScore,
-    Suggestion,
 )
 
 from core.tools.architecture_reader import (
@@ -135,14 +126,6 @@ __all__ = [
     "run_experience_simulation",
     "SimulationResult",
     "SimulationFeedback",
-    
-    # Evaluator
-    "evaluate_project",
-    "evaluate_section",
-    "generate_suggestions",
-    "EvaluationResult",
-    "SectionScore",
-    "Suggestion",
     
     # Architecture Reader
     "get_project_architecture",

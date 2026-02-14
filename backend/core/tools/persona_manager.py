@@ -397,8 +397,10 @@ async def generate_persona(
             error="Project not found",
         )
     
-    gc = project.golden_context or {}
-    intent = gc.get("intent", "")
+    # 从 ContentBlock 获取意图信息（P3-2: 不再读 project.golden_context）
+    from core.tools.architecture_reader import get_intent_and_research
+    intent_research = get_intent_and_research(project_id, db)
+    intent = intent_research.get("intent", "")
     
     # 获取现有人物作为参考
     field = _get_research_field(project_id, db)

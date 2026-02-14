@@ -384,7 +384,6 @@ export function ContentBlockCard({
     "intent_analysis", "intent",
     "consumer_research", "research",
     "consumer_simulation", "simulate",
-    "eval_coach", "eval_editor", "eval_expert", "eval_consumer", "eval_seller", "eval_diagnoser", "eval_container",
   ].includes(specialHandler);
   
   if (isSpecialField) {
@@ -395,13 +394,6 @@ export function ContentBlockCard({
       "research": { icon: "🔍", title: "消费者调研", desc: "包含 DeepResearch 调研结果和消费者画像" },
       "consumer_simulation": { icon: "🎭", title: "消费者模拟", desc: "模拟消费者体验和反馈" },
       "simulate": { icon: "🎭", title: "消费者模拟", desc: "模拟消费者体验和反馈" },
-      "eval_container": { icon: "📊", title: "综合评估", desc: "评估容器，请进入查看各角色评估结果" },
-      "eval_coach": { icon: "🎯", title: "教练评审", desc: "从策略视角评估内容方向和定位" },
-      "eval_editor": { icon: "✍️", title: "编辑评审", desc: "从手艺视角评估内容质量和结构" },
-      "eval_expert": { icon: "🔬", title: "专家评审", desc: "从专业视角评估内容准确性和深度" },
-      "eval_consumer": { icon: "👤", title: "消费者体验", desc: "以目标消费者身份体验和评价内容" },
-      "eval_seller": { icon: "💰", title: "内容销售测试", desc: "模拟销售对话测试内容转化能力" },
-      "eval_diagnoser": { icon: "🔍", title: "综合诊断", desc: "跨角色诊断分析，需先完成其他评估" },
     };
     const info = specialLabels[specialHandler] || { icon: "⚡", title: specialHandler, desc: "特殊处理内容块" };
     
@@ -978,7 +970,6 @@ export function ContentBlockCard({
                             <span className="px-1.5 py-0.5 text-xs rounded bg-purple-600/20 text-purple-400">
                               {dep.special_handler === "intent" ? "意图分析" :
                                dep.special_handler === "research" ? "消费者调研" :
-                               dep.special_handler === "simulate" ? "模拟测试" :
                                dep.special_handler === "evaluate" ? "评估结果" : dep.special_handler}
                             </span>
                           )}

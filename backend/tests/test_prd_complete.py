@@ -23,8 +23,6 @@ from core.models import (
     Project,
     ProjectField,
     CreatorProfile,
-    EvaluationTemplate,
-    EvaluationReport,
     SimulationRecord,
     Simulator,
     GenerationLog,
@@ -153,93 +151,8 @@ class TestVersionManagement:
         assert field_a.id not in field_b_v2.dependencies["depends_on"]
 
 
-class TestEvaluationWorkflow:
-    """评估工作流测试"""
-    
-    def test_evaluation_template_validation(self, db_session):
-        """评估模板权重验证"""
-        template = EvaluationTemplate(
-            id=generate_uuid(),
-            name="Test Template",
-            sections=[
-                {"id": "a", "name": "Section A", "weight": 0.5},
-                {"id": "b", "name": "Section B", "weight": 0.3},
-                {"id": "c", "name": "Section C", "weight": 0.2},
-            ],
-        )
-        
-        errors = template.validate()
-        assert len(errors) == 0  # 权重总和为1
-    
-    def test_evaluation_report_suggestions(self, db_session):
-        """评估报告建议管理"""
-        project = Project(id=generate_uuid(), name="Test Project")
-        db_session.add(project)
-        db_session.commit()
-        
-        report = EvaluationReport(
-            id=generate_uuid(),
-            project_id=project.id,
-            scores={"quality": {"score": 8.0}},
-            overall_score=8.0,
-            suggestions=[
-                {"id": "s1", "content": "Add more examples", "priority": "high", "adopted": False},
-                {"id": "s2", "content": "Improve formatting", "priority": "medium", "adopted": False},
-            ],
-            summary="Good overall quality",
-        )
-        db_session.add(report)
-        db_session.commit()
-        
-        # 测试获取未采纳建议
-        pending = report.get_pending_suggestions()
-        assert len(pending) == 2
-        
-        # 采纳建议
-        result = report.adopt_suggestion("s1", "Added 5 examples to Module 2")
-        assert result == True
-        
-        pending = report.get_pending_suggestions()
-        assert len(pending) == 1
-    
-    def test_evaluation_report_structure(self, db_session):
-        """评估报告结构完整性"""
-        project = Project(id=generate_uuid(), name="Test Project")
-        db_session.add(project)
-        db_session.commit()
-        
-        template = EvaluationTemplate(
-            id=generate_uuid(),
-            name="Standard Template",
-            sections=[
-                {
-                    "id": "intent",
-                    "name": "Intent Alignment",
-                    "weight": 0.25,
-                    "grader_prompt": "Evaluate intent alignment",
-                    "metrics": [
-                        {"name": "coverage", "type": "score_1_10"},
-                    ],
-                },
-            ],
-        )
-        db_session.add(template)
-        db_session.commit()
-        
-        report = EvaluationReport(
-            id=generate_uuid(),
-            project_id=project.id,
-            template_id=template.id,
-            scores={"intent": {"scores": {"coverage": 8.5}, "summary": "Good coverage"}},
-            overall_score=8.5,
-            suggestions=[],
-            summary="Overall good",
-        )
-        db_session.add(report)
-        db_session.commit()
-        
-        assert report.overall_score == 8.5
-        assert "intent" in report.scores
+# TestEvaluationWorkflow 已移除：旧评估体系(EvaluationTemplate/Report)已删除
+# 评估功能测试请参见 Eval V2 体系 (EvalRun/EvalTask/EvalTrial)
 
 
 class TestSimulationExecution:

@@ -38,7 +38,7 @@ class ProjectUpdate(BaseModel):
     current_phase: Optional[str] = None
     phase_order: Optional[List[str]] = None
     agent_autonomy: Optional[Dict[str, bool]] = None
-    golden_context: Optional[dict] = None
+    golden_context: Optional[dict] = None  # [已废弃] P3-2: 不再使用，保留兼容旧API客户端
     use_deep_research: Optional[bool] = None
     use_flexible_architecture: Optional[bool] = None
 
@@ -54,7 +54,7 @@ class ProjectResponse(BaseModel):
     phase_order: List[str]
     phase_status: Dict[str, str]
     agent_autonomy: Dict[str, bool]
-    golden_context: dict
+    golden_context: dict  # [已废弃] P3-2: 保留兼容旧数据，新项目为空dict
     use_deep_research: bool
     use_flexible_architecture: bool = True  # [已废弃] 统一为 True
     created_at: str
@@ -87,14 +87,8 @@ def create_project(
     db: Session = Depends(get_db),
 ):
     """创建新项目"""
-    # 获取创作者特质内容，用于 golden_context
-    golden_context = {}
-    if project.creator_profile_id:
-        creator_profile = db.query(CreatorProfile).filter(
-            CreatorProfile.id == project.creator_profile_id
-        ).first()
-        if creator_profile:
-            golden_context["creator_profile"] = creator_profile.to_prompt_context()
+    # P3-2: golden_context 已废弃，创作者特质通过 creator_profile 关系获取，
+    # 意图/调研结果通过 ContentBlock 依赖链传递
     
     # ===== 确定阶段顺序 =====
     # 如果传入了 phase_order 参数：
@@ -131,7 +125,7 @@ def create_project(
         phase_order=actual_phase_order,
         phase_status={p: "pending" for p in actual_phase_order},
         agent_autonomy=agent_autonomy,  # 使用默认自主权
-        golden_context=golden_context,
+        golden_context={},  # P3-2: 已废弃，保留空dict兼容DB
     )
     
     db.add(db_project)
@@ -188,7 +182,6 @@ def delete_project(
     from core.models.chat_history import ChatMessage
     from core.models.generation_log import GenerationLog
     from core.models.simulation_record import SimulationRecord
-    from core.models.evaluation import EvaluationReport
     from core.models.eval_run import EvalRun
     from core.models.eval_task import EvalTask
     from core.models.eval_trial import EvalTrial
@@ -231,10 +224,7 @@ def delete_project(
     # 删除关联的模拟记录
     db.query(SimulationRecord).filter(SimulationRecord.project_id == project_id).delete()
     
-    # 删除关联的评估记录
-    db.query(EvaluationReport).filter(EvaluationReport.project_id == project_id).delete()
-    
-    # 删除关联的内容块（灵活架构）
+    # 删除关联的内容块
     db.query(ContentBlock).filter(ContentBlock.project_id == project_id).delete()
     
     # 删除关联的对话记录
@@ -284,7 +274,7 @@ def duplicate_project(
         phase_order=old_project.phase_order.copy() if old_project.phase_order else PROJECT_PHASES.copy(),
         phase_status=old_project.phase_status.copy() if old_project.phase_status else {},
         agent_autonomy=old_project.agent_autonomy.copy() if old_project.agent_autonomy else {},
-        golden_context=old_project.golden_context.copy() if old_project.golden_context else {},
+        golden_context={},  # P3-2: 已废弃，不再复制
         use_deep_research=old_project.use_deep_research,
         use_flexible_architecture=True,  # P0-1: 统一为 True
     )
@@ -438,7 +428,7 @@ def create_new_version(
         phase_order=old_project.phase_order.copy() if old_project.phase_order else PROJECT_PHASES.copy(),
         phase_status=old_project.phase_status.copy() if old_project.phase_status else {},
         agent_autonomy=old_project.agent_autonomy.copy() if old_project.agent_autonomy else {},
-        golden_context=old_project.golden_context.copy() if old_project.golden_context else {},
+        golden_context={},  # P3-2: 已废弃，不再复制
         use_deep_research=old_project.use_deep_research,
         use_flexible_architecture=True,  # P0-1: 统一为 True
     )
@@ -565,11 +555,11 @@ def export_project(
     导出项目完整数据（JSON）
 
     包含：项目本身、内容块、字段、对话记录、版本历史、
-    评估记录、模拟记录、生成日志（可选）
+    模拟记录、评估记录（V2）、生成日志（可选）
     """
     from core.models import (
         ProjectField, ContentBlock, GenerationLog,
-        SimulationRecord, EvaluationReport,
+        SimulationRecord,
         EvalRun, EvalTask, EvalTrial,
     )
     from core.models.chat_history import ChatMessage
@@ -648,12 +638,6 @@ def export_project(
     ).all()
     sim_data = [_ser(s) for s in sim_records]
 
-    # EvaluationReports
-    eval_reports = db.query(EvaluationReport).filter(
-        EvaluationReport.project_id == project_id,
-    ).all()
-    eval_reports_data = [_ser(r) for r in eval_reports]
-
     # EvalRuns + Tasks + Trials
     eval_runs = db.query(EvalRun).filter(
         EvalRun.project_id == project_id,
@@ -693,7 +677,6 @@ def export_project(
         "content_versions": versions_data,
         "block_history": history_data,
         "simulation_records": sim_data,
-        "evaluation_reports": eval_reports_data,
         "eval_runs": eval_runs_data,
         "eval_tasks": tasks_data,
         "eval_trials": trials_data,
@@ -720,7 +703,7 @@ def import_project(
     """
     from core.models import (
         ProjectField, ContentBlock, GenerationLog,
-        SimulationRecord, EvaluationReport,
+        SimulationRecord,
         EvalRun, EvalTask, EvalTrial,
     )
     from core.models.chat_history import ChatMessage
@@ -946,21 +929,7 @@ def import_project(
             )
             db.add(new_sim)
 
-        # ============ 9. EvaluationReports ============
-        for r in data.get("evaluation_reports", []):
-            old_id = r.get("id", "")
-            new_report = EvaluationReport(
-                id=_new_id(old_id),
-                project_id=new_proj_id,
-                template_id=r.get("template_id"),
-                scores=r.get("scores", {}),
-                overall_score=r.get("overall_score"),
-                suggestions=r.get("suggestions", []),
-                summary=r.get("summary", ""),
-            )
-            db.add(new_report)
-
-        # ============ 10. EvalRuns + Tasks + Trials ============
+        # ============ 9. EvalRuns + Tasks + Trials ============
         for run in data.get("eval_runs", []):
             old_id = run.get("id", "")
             new_run = EvalRun(

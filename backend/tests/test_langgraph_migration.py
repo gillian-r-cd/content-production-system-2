@@ -348,12 +348,11 @@ class TestImportIntegrity:
         from core.tools.deep_research import deep_research
         from core.tools.persona_manager import manage_persona
         from core.tools.skill_manager import manage_skill
-        from core.tools.evaluator import evaluate_project
         from core.tools.outline_generator import generate_outline
         from core.tools.simulator import run_dialogue_simulation
         from core.tools.eval_engine import run_task_trial
         assert all([
             generate_field, deep_research, manage_persona,
-            manage_skill, evaluate_project, generate_outline,
+            manage_skill, generate_outline,
             run_dialogue_simulation, run_task_trial,
         ])

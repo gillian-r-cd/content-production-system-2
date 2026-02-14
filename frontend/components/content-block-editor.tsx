@@ -1019,7 +1019,6 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate 
                                 <span className="px-1.5 py-0.5 text-xs rounded bg-purple-600/20 text-purple-400">
                                   {dep.special_handler === "intent" ? "意图分析" :
                                    dep.special_handler === "research" ? "消费者调研" :
-                                   dep.special_handler === "simulate" ? "模拟测试" :
                                    dep.special_handler === "evaluate" ? "评估结果" : dep.special_handler}
                                 </span>
                                 <span className={`px-1.5 py-0.5 text-xs rounded ${

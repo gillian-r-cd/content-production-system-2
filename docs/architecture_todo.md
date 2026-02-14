@@ -2,7 +2,7 @@
 
 创建时间：2026-02-13
 最后更新：2026-02-14
-状态：第四批 + 第五批（P2-5）+ 第六批已完成 — P0-1/P2-5/P3-1/P3-3b/P3-4a/P3-6 全面完成
+状态：旧评估系统完全清除 — Eval V2 (EvalRun/EvalTask/EvalTrial) 统一
 目标：消除项目中非本质和有明显断裂的架构问题，按优先级逐步推进
 
 ---
@@ -76,7 +76,18 @@
   - 后端 `models/project.py`：默认值改为 True，标记已废弃
   - 后端 `api/projects.py`：所有 schema 默认值改为 True、clone/fork 固定为 True
 
-**预估工时**：✅ 全面完成。后端统一 + 前端主组件 + 辅助组件 + `use_flexible_architecture` 清理 + FieldCard 物理删除全部完成。
+**审计修复**（2026-02-14 二次审计发现并修复的残留问题）
+- [x] `agent_tools.py`: `_find_block_or_field` → `_find_block`，去除 `etype` 返回值和所有调用处解包 ✅
+- [x] `api/blocks.py`: 5 处硬编码 `"gpt-5.1"` → `settings.openai_model` ✅
+- [x] `api/agent.py`: `getattr(llm, "model_name", "gpt-4o")` → `settings.openai_model` ✅
+- [x] `version_service.py`: docstring 残留 "ProjectField.id" 引用已清理 ✅
+- [x] `content_version.py`: docstring 残留 ProjectField 引用已清理 ✅
+- [x] `field_generator.py`: 鸭子类型注释 "ProjectField 或 ContentBlock" → "ContentBlock" ✅
+- [x] `evaluator.py`: 鸭子类型注释 "ContentBlock 或 ProjectField" → "ContentBlock" ✅
+- [x] `prompt_engine.py`: 类型注解 `ProjectField` → `ContentBlock`（import + 3 处函数签名 + 1 处 docstring） ✅
+- [x] `models/project.py`: `fields` relationship 添加废弃注释标记 ✅
+
+**预估工时**：✅ 全面完成。后端统一 + 前端主组件 + 辅助组件 + `use_flexible_architecture` 清理 + FieldCard 物理删除 + 残留引用审计修复全部完成。
 **剩余**：`Field` interface / `fieldAPI` 物理删除（已标记 @deprecated，当前无活跃调用方；可在确认无残留引用后安全删除）
 **风险**：涉及所有组件，需要充分测试
 
@@ -407,14 +418,16 @@ const response = await fetch(`http://localhost:8000/api/fields/${candidate.id}/g
 
 **子任务**
 
-- [ ] P3-2a. 从 `Project` 模型中移除 `golden_context` 字段（需做 DB migration）
-  - ⚠️ 依赖 P0-1：`api/fields.py`、`prompt_engine.py`、`api/evaluation.py` 仍活跃使用 golden_context
-  - 需先完成 ContentBlock 统一，prompt_engine 改为从 ContentBlock 依赖链读取上下文
-- [ ] P3-2b. 从前端 `Project` interface 中移除 `golden_context`（依赖 P3-2a）
+- [x] P3-2a. 清理所有 `golden_context` 读写点，DB 列保留（default={}）兼容旧数据 ✅ 2026-02-14
+  - `persona_manager.py`: 改用 `architecture_reader.get_intent_and_research()` 获取意图
+  - `outline_generator.py`: 改用 `get_intent_and_research()` + `creator_profile` 关系获取上下文
+  - `api/projects.py`: 创建/克隆/Fork 不再写入 golden_context（设为 {}）
+  - `ProjectUpdate`/`ProjectResponse` schema 标记废弃注释
+- [x] P3-2b. 前端 `Project` interface 的 `golden_context` 标记 `@deprecated` + 改为可选 ✅ 2026-02-14
 - [x] P3-2c. 从 `orchestrator.py` 中移除 `normalize_intent()` 和 `normalize_consumer_personas()`（已确认无调用方） ✅ 2026-02-14（P3-1e 同步完成）
-- [ ] P3-2d. 更新 `agent_design.md` 文档与实际实现对齐
+- [x] P3-2d. `agent_design.md` 数据模型章节补充 golden_context 废弃说明 ✅ 2026-02-14
 
-**预估工时**：小
+**预估工时**：✅ 全部完成（DB 列保留兼容旧数据，所有功能性读写已切换到 ContentBlock 依赖链）
 
 ---
 
@@ -449,7 +462,7 @@ _test_design_pref.py
 
 - [ ] P3-3a. 评估是否引入 Alembic 做后续 schema 变更管理
 - [x] P3-3b. 将已执行的迁移脚本归档到 `scripts/archive/`（保留 `__init__.py` 和 `init_db.py`）✅ 2026-02-14
-- [ ] P3-3c. 在 `init_db.py` 中确保新建数据库已包含所有字段（避免还需跑旧迁移）
+- [x] P3-3c. 在 `init_db.py` 中补充 Grader 预置数据（`PRESET_GRADERS`），新建 DB 无需跑旧迁移 ✅ 2026-02-14
 
 **预估工时**：小
 
@@ -499,24 +512,33 @@ _test_design_pref.py
 
 ---
 
-### P3-6. 评估系统存在旧（EvaluationTemplate/EvaluationReport）和新（EvalRun/EvalTask/EvalTrial）两套
+### P3-6. 评估系统旧→新（Eval V2）全面置换 ✅
 
 **问题描述**
 
-类似 P0-1 的双轨问题，但影响面较小：
-- 旧评估：`models/evaluation.py` 的 `EvaluationTemplate` + `EvaluationReport`
+类似 P0-1 的双轨问题，旧评估体系已全面删除：
+- ~~旧评估：`models/evaluation.py` 的 `EvaluationTemplate` + `EvaluationReport`~~ **已删除**
 - 新评估：`models/eval_run.py` + `eval_task.py` + `eval_trial.py` + `grader.py`
-- API 层：`api/evaluation.py`（旧）和 `api/eval.py`（新）
-
-`SPECIAL_HANDLERS` 中也残留了大量旧 Eval 体系的别名（eval_container, eval_coach, eval_editor 等）。
+- ~~API 层：`api/evaluation.py`（旧）~~ **已删除**，仅保留 `api/eval.py`（Eval V2）
 
 **子任务**
 
-- [x] P3-6a. 确认旧评估体系仍有活跃使用 — `core/tools/evaluator.py` 中 `run_evaluation` 工具仍依赖 `EvaluationTemplate` ✅ 2026-02-14
-- [x] P3-6b. `evaluation.router` 在 `main.py` 中标记 deprecated 注释，但因 `evaluator.py` 仍活跃使用旧模型，暂不删除 ✅ 2026-02-14
-- [ ] P3-6c. 清理 `SPECIAL_HANDLERS` 中标记为"旧版别名"的条目（依赖 evaluator.py 重构）
+- [x] P3-6a. 确认旧评估体系的活跃使用范围 ✅ 2026-02-14
+- [x] P3-6b. `evaluation.router` 标记 deprecated ✅ 2026-02-14
+- [x] P3-6c. `SPECIAL_HANDLERS` 删除 10 个旧别名（7 个旧角色 + 3 个旧版别名） ✅ 2026-02-14
+- [x] P3-6d. `api/eval.py` 删除 `_handle_legacy_eval()` + `eval_container` 分支 + `_extract_score_from_content()` ✅ 2026-02-14
+- [x] P3-6e. `api/evaluation.py`（旧 API）从 main.py 摘除并删除文件 ✅ 2026-02-14
+- [x] P3-6f. `core/tools/evaluator.py`（旧评估工具）从 `__init__.py` 摘除并删除文件 ✅ 2026-02-14
+- [x] P3-6g. `core/models/evaluation.py`（旧模型）删除，同步清理：✅ 2026-02-14
+  - `models/__init__.py` 移除导出
+  - `models/project.py` 移除 `evaluation_reports` 关系
+  - `api/projects.py` 移除导出/导入/删除中的 EvaluationReport 引用
+  - `scripts/init_db.py` 移除旧评估模板种子数据
+  - 测试文件更新（test_models, test_e2e_integration, test_prd_complete）
+- [x] P3-6h. 前端清理：`content-block-card.tsx` 移除 7 个旧 eval 图标映射；`eval-field-editors.tsx` 移除 3 个旧别名路由 ✅ 2026-02-14
+- [x] P3-6i. `api/__init__.py` 移除 eager import 避免 langgraph 链式加载 ✅ 2026-02-14
 
-**预估工时**：小
+**预估工时**：✅ 全部完成
 
 ---
 
@@ -556,15 +578,24 @@ _test_design_pref.py
   P3-6a/b 旧评估系统检查  ✅（仍有活跃使用，标记 deprecated）
   P3-4a agent_design.md 与代码对齐  ✅
 
-第六批（清理）: ✅ P3-1 已完成
-  P3-1  ContentProductionAgent 清理  ✅ 2026-02-14
-  P3-2  golden_context 清理（依赖 prompt_engine 改造）— P3-2c/d 已完成
-  P3-3a/c  Alembic 评估 + init_db 完善
-  P3-4b/c  其他文档更新
-  P3-6c  SPECIAL_HANDLERS 旧别名清理（依赖 evaluator.py 重构）
+第六批（清理）: ✅ 已完成 2026-02-14
+  P3-1  ContentProductionAgent 清理  ✅
+  P3-2  golden_context 全面清理  ✅ — 读写点切换到 ContentBlock 依赖链，DB 列保留兼容
+  P3-3c init_db.py 补充 Grader 预置数据  ✅
+  P3-2d agent_design.md golden_context 描述更新  ✅
 
-未来批次（中等优先级）:
+第七批（旧评估系统清除）: ✅ 已完成 2026-02-14
+  P3-6  旧评估系统全面置换为 Eval V2  ✅
+        删除: evaluation.py(模型), evaluator.py(工具), evaluation.py(API)
+        清理: SPECIAL_HANDLERS 10个旧别名, _handle_legacy_eval, 前端旧eval图标
+        更新: main.py, __init__.py, projects.py, init_db.py, 3个测试文件
+
+剩余低优先级（不阻塞开发）:
+  P0-1a ProjectField 数据迁移验证（旧项目）
+  P0-2e ChatMessage 元数据评估（已是纯展示用，暂不紧迫）
   P2-1  前端状态管理（Zustand / Context）— 影响大但风险高
+  P3-3a Alembic 评估（当前无紧迫 schema 变更）
+  P3-4b/c 其他文档更新
 ```
 
 ### 注意事项
