@@ -1,11 +1,13 @@
 // frontend/components/channel-selector.tsx
 // 功能: 外延设计渠道选择组件
 // 类似 ProposalSelector，但更简单：只有一级渠道列表
+// P0-1: 统一使用 blockAPI（已移除 fieldAPI 分支）
 
 "use client";
 
 import { useState, useMemo, useEffect } from "react";
-import { fieldAPI, agentAPI } from "@/lib/api";
+import { blockAPI, agentAPI } from "@/lib/api";
+import type { ContentBlock } from "@/lib/api";
 import { Check, Plus, Trash2, GripVertical, Send, Pencil, X } from "lucide-react";
 
 // 渠道定义
@@ -124,11 +126,11 @@ export function ChannelSelector({
     }));
   };
 
-  // 保存修改
+  // 保存修改（P0-1: 统一使用 blockAPI）
   const handleSave = async () => {
     setIsSaving(true);
     try {
-      await fieldAPI.update(fieldId, {
+      await blockAPI.update(fieldId, {
         content: JSON.stringify(channelsData, null, 2),
       });
       onSave?.();
@@ -140,6 +142,18 @@ export function ChannelSelector({
     }
   };
 
+  // 查找 produce_outer 阶段的 ContentBlock ID
+  const _findProduceOuterParent = async (): Promise<string | null> => {
+    try {
+      const tree = await blockAPI.getProjectBlocks(projectId);
+      const flatten = (blocks: ContentBlock[]): ContentBlock[] =>
+        blocks.flatMap(b => [b, ...flatten(b.children || [])]);
+      const all = flatten(tree.blocks || []);
+      const phase = all.find(b => b.block_type === "phase" && b.special_handler === "produce_outer");
+      return phase?.id || null;
+    } catch { return null; }
+  };
+
   // 确认并创建内容块
   const handleConfirm = async () => {
     if (selectedChannels.length === 0) {
@@ -149,20 +163,22 @@ export function ChannelSelector({
 
     setIsCreatingFields(true);
     try {
-      // 为每个选中的渠道创建一个内容块
+      // 找到 produce_outer 阶段作为父块
+      const parentId = await _findProduceOuterParent();
+
+      // 为每个选中的渠道创建一个 ContentBlock
       for (const channel of selectedChannels) {
-        await fieldAPI.create({
+        await blockAPI.create({
           project_id: projectId,
+          parent_id: parentId,
           name: channel.name,
-          phase: "produce_outer",
-          field_type: "richtext",
+          block_type: "field",
           ai_prompt: `为「${channel.name}」渠道创作内容。
 内容形式：${channel.content_form}
 渠道特点：${channel.reason}`,
-          status: "pending",
           need_review: true,
           constraints: {
-            max_length: 2000,  // 外延内容不需要太长
+            max_length: 2000,
             output_format: "text",
           },
         });
@@ -174,7 +190,7 @@ export function ChannelSelector({
         confirmed: true,
         confirmed_channels: selectedChannels.map(ch => ch.id),
       };
-      await fieldAPI.update(fieldId, {
+      await blockAPI.update(fieldId, {
         content: JSON.stringify(confirmedData, null, 2),
         status: "completed",
       });

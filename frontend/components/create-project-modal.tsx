@@ -64,7 +64,7 @@ export function CreateProjectModal({
   const [templates, setTemplates] = useState<TemplateItem[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
   const [expandedTemplateId, setExpandedTemplateId] = useState<string | null>(null);
-  const [useNewArchitecture, setUseNewArchitecture] = useState(false); // 是否使用新架构
+  // P0-1: 所有项目都使用 ContentBlock 架构（原 useNewArchitecture 始终为 true）
   
   // 状态
   const [loading, setLoading] = useState(false);
@@ -196,20 +196,17 @@ export function CreateProjectModal({
     setError(null);
 
     try {
-      // 1. 创建项目
-      // 如果使用新架构，传递 use_flexible_architecture=true
-      // 如果没有选择模板（从零开始），后端会创建空的组结构
+      // 1. 创建项目（P0-1: 始终使用 ContentBlock 架构）
       const project = await projectAPI.create({
         name: name.trim(),
         creator_profile_id: creatorProfileId,
         use_deep_research: useDeepResearch,
-        use_flexible_architecture: useNewArchitecture,
-        // 如果从零开始（selectedTemplateId === null），传递空的 phase_order
-        phase_order: useNewArchitecture && selectedTemplateId === null ? [] : undefined,
+        use_flexible_architecture: true,
+        phase_order: selectedTemplateId === null ? [] : undefined,
       });
       
-      // 2. 如果选择了使用新架构且选择了模板，应用模板
-      if (useNewArchitecture && selectedTemplateId) {
+      // 2. 如果选择了模板，应用模板
+      if (selectedTemplateId) {
         try {
           await blockAPI.applyTemplate(project.id, selectedTemplateId);
         } catch (templateErr) {
@@ -354,29 +351,16 @@ export function CreateProjectModal({
               <div className="flex items-center justify-between p-4 bg-surface-2 rounded-lg">
                 <div>
                   <p className="text-sm font-medium text-zinc-200">
-                    使用灵活流程架构
+                    选择流程模板
                   </p>
                   <p className="text-xs text-zinc-500 mt-1">
-                    支持自定义阶段、无限层级结构（实验性功能）
+                    所有项目使用灵活架构，支持自定义阶段和内容块
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setUseNewArchitecture(!useNewArchitecture)}
-                  className={`relative w-12 h-6 rounded-full transition-colors ${
-                    useNewArchitecture ? "bg-brand-600" : "bg-zinc-600"
-                  }`}
-                >
-                  <span
-                    className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
-                      useNewArchitecture ? "left-7" : "left-1"
-                    }`}
-                  />
-                </button>
               </div>
               
-              {/* 模板选择（仅在启用新架构时显示） */}
-              {useNewArchitecture && (
+              {/* 模板选择 */}
+              {(
                 <div className="space-y-3">
                   <label className="block text-sm font-medium text-zinc-300">
                     选择流程模板
@@ -507,13 +491,7 @@ export function CreateProjectModal({
                 </div>
               )}
               
-              {!useNewArchitecture && (
-                <div className="p-4 bg-surface-2 rounded-lg">
-                  <p className="text-sm text-zinc-400">
-                    将使用标准8阶段流程：意图分析 → 消费者调研 → 内涵设计 → 内涵生产 → 外延设计 → 外延生产 → 消费者模拟 → 评估
-                  </p>
-                </div>
-              )}
+              {/* P0-1: 传统流程提示已移除，所有项目使用 ContentBlock 架构 */}
             </div>
           )}
 

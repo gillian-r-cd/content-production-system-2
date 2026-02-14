@@ -7,17 +7,16 @@
 
 import React, { useState, useEffect, useCallback } from "react";
 import { blockAPI } from "@/lib/api";
-import type { Field, ContentBlock } from "@/lib/api";
+import type { ContentBlock } from "@/lib/api";
 import { EvalTaskConfig, EvalReportPanel } from "./eval-field-editors";
 import { SlidersHorizontal, BarChart3, Loader2 } from "lucide-react";
 
 interface EvalPhasePanelProps {
   projectId: string | null;
-  fields: Field[];
   onFieldsChange?: () => void;
 }
 
-export function EvalPhasePanel({ projectId, fields, onFieldsChange }: EvalPhasePanelProps) {
+export function EvalPhasePanel({ projectId, onFieldsChange }: EvalPhasePanelProps) {
   const [configBlock, setConfigBlock] = useState<ContentBlock | null>(null);
   const [reportBlock, setReportBlock] = useState<ContentBlock | null>(null);
   const [loading, setLoading] = useState(true);

@@ -11,15 +11,15 @@ import { ContentPanel } from "@/components/content-panel";
 import { AgentPanel } from "@/components/agent-panel";
 import { CreateProjectModal } from "@/components/create-project-modal";
 import { GlobalSearchModal } from "@/components/global-search-modal";
-import { projectAPI, fieldAPI, agentAPI } from "@/lib/api";
+import { projectAPI, agentAPI } from "@/lib/api";
 import { requestNotificationPermission } from "@/lib/utils";
-import type { Project, Field, ContentBlock } from "@/lib/api";
+import type { Project, ContentBlock } from "@/lib/api";
 import { Copy, Trash2, ChevronDown, CheckSquare, Square, X, Download, Upload, Search } from "lucide-react";
 
 export default function WorkspacePage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
-  const [fields, setFields] = useState<Field[]>([]);
+  // P0-1: fields state 已移除，统一使用 allBlocks (ContentBlock)
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -73,7 +73,6 @@ export default function WorkspacePage() {
   // 加载当前项目的内容块 & 记住选中项目
   useEffect(() => {
     if (currentProject) {
-      loadFields(currentProject.id);
       localStorage.setItem("lastProjectId", currentProject.id);
     }
   }, [currentProject?.id]);
@@ -93,15 +92,6 @@ export default function WorkspacePage() {
       setError(err instanceof Error ? err.message : "加载项目失败");
     } finally {
       setLoading(false);
-    }
-  };
-
-  const loadFields = async (projectId: string) => {
-    try {
-      const data = await fieldAPI.listByProject(projectId);
-      setFields(data);
-    } catch (err) {
-      console.error("加载字段失败:", err);
     }
   };
 
@@ -147,27 +137,6 @@ export default function WorkspacePage() {
       await projectAPI.update(currentProject.id, { agent_autonomy: autonomy });
     } catch (err) {
       console.error("更新自主权设置失败:", err);
-    }
-  };
-
-  // 版本警告状态
-  const [fieldVersionWarning, setFieldVersionWarning] = useState<string | null>(null);
-  const [fieldAffectedNames, setFieldAffectedNames] = useState<string[] | null>(null);
-
-  const handleFieldUpdate = async (fieldId: string, content: string) => {
-    try {
-      const result = await fieldAPI.update(fieldId, { content });
-      // 重新加载字段
-      if (currentProject) {
-        loadFields(currentProject.id);
-      }
-      // 检查版本警告
-      if (result?.version_warning) {
-        setFieldVersionWarning(result.version_warning);
-        setFieldAffectedNames(result.affected_fields || null);
-      }
-    } catch (err) {
-      console.error("更新内容块失败:", err);
     }
   };
 
@@ -557,7 +526,6 @@ export default function WorkspacePage() {
           leftPanel={
             <ProgressPanel
               project={currentProject}
-              fields={fields}
               blocksRefreshKey={blocksRefreshKey}
               onPhaseClick={handlePhaseClick}
               onPhaseReorder={handlePhaseReorder}
@@ -565,7 +533,7 @@ export default function WorkspacePage() {
               onBlockSelect={handleBlockSelect}
               onBlocksChange={setAllBlocks}
               onProjectChange={async () => {
-                // 刷新项目数据（获取最新的 use_flexible_architecture 等）
+                // 刷新项目数据
                 if (currentProject) {
                   const updatedProject = await projectAPI.get(currentProject.id);
                   setCurrentProject(updatedProject);
@@ -578,25 +546,20 @@ export default function WorkspacePage() {
               projectId={currentProject?.id || null}
               currentPhase={currentProject?.current_phase || "intent"}
               phaseStatus={currentProject?.phase_status || {}}
-              fields={fields}
               selectedBlock={selectedBlock}
               allBlocks={allBlocks}
-              useFlexibleArchitecture={currentProject?.use_flexible_architecture || false}
-              onFieldUpdate={handleFieldUpdate}
               onFieldsChange={() => {
                 if (currentProject) {
-                  loadFields(currentProject.id);
-                  // 同时刷新 ContentBlocks（确保树形视图和内容面板同步）
+                  // 刷新 ContentBlocks（确保树形视图和内容面板同步）
                   setBlocksRefreshKey(prev => prev + 1);
                 }
               }}
               onBlockSelect={handleBlockSelect}
               onPhaseAdvance={async () => {
-                // 阶段推进后，刷新项目、字段和对话历史
+                // 阶段推进后，刷新项目和对话历史
                 if (currentProject) {
                   const updatedProject = await projectAPI.get(currentProject.id);
                   setCurrentProject(updatedProject);
-                  await loadFields(currentProject.id);
                   // ===== 关键修复：切换 selectedBlock 到新组的虚拟块 =====
                   // 防止停留在旧阶段的选中状态导致视觉上"跳过"新组
                   const newPhase = updatedProject.current_phase;
@@ -635,17 +598,12 @@ export default function WorkspacePage() {
               key={refreshKey}  // 触发刷新
               projectId={currentProject?.id || null}
               currentPhase={currentProject?.current_phase}
-              fields={fields}
               allBlocks={allBlocks}
-              useFlexibleArchitecture={currentProject?.use_flexible_architecture || false}
               onContentUpdate={async () => {
-                // Agent生成内容后，刷新内容块、内容块和项目状态
+                // Agent生成内容后，刷新内容块和项目状态
                 if (currentProject) {
-                  await loadFields(currentProject.id);
-                  // 重新加载项目以获取最新的phase_status
                   const updatedProject = await projectAPI.get(currentProject.id);
                   setCurrentProject(updatedProject);
-                  // 刷新内容块（灵活架构）
                   setBlocksRefreshKey(prev => prev + 1);
                 }
               }}
@@ -681,68 +639,31 @@ export default function WorkspacePage() {
           open={showSearch}
           onClose={() => setShowSearch(false)}
           onNavigateToField={(fieldId, fieldType) => {
-            // 定位到字段：如果是 block，通过 allBlocks 找到并选中
-            if (fieldType === "block") {
-              const block = allBlocks.find(b => b.id === fieldId);
-              if (block) {
-                setSelectedBlock(block);
+            // P0-1: 统一通过 allBlocks 定位内容块
+            const findBlockRecursive = (blocks: ContentBlock[], id: string): ContentBlock | null => {
+              for (const b of blocks) {
+                if (b.id === id) return b;
+                if (b.children) {
+                  const found = findBlockRecursive(b.children, id);
+                  if (found) return found;
+                }
               }
-            } else {
-              // 对于 ProjectField，找到对应的组并触发 phase click
-              const field = fields.find(f => f.id === fieldId);
-              if (field && field.phase) {
-                handlePhaseClick(field.phase);
-              }
+              return null;
+            };
+            const block = findBlockRecursive(allBlocks, fieldId);
+            if (block) {
+              setSelectedBlock(block);
             }
             setShowSearch(false);
           }}
           onContentUpdate={() => {
             setRefreshKey(prev => prev + 1);
             setBlocksRefreshKey(prev => prev + 1);
-            if (currentProject) loadFields(currentProject.id);
           }}
         />
       )}
 
-      {/* 版本警告弹窗（字段更新触发） */}
-      {fieldVersionWarning && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-surface-1 border border-surface-3 rounded-xl shadow-2xl max-w-md w-full mx-4">
-            <div className="px-5 py-4 border-b border-surface-3">
-              <h3 className="text-base font-semibold text-amber-400 flex items-center gap-2">
-                ⚠️ 上游内容变更提醒
-              </h3>
-            </div>
-            <div className="p-5 space-y-3">
-              <p className="text-sm text-zinc-300">{fieldVersionWarning}</p>
-              {fieldAffectedNames && fieldAffectedNames.length > 0 && (
-                <div className="bg-surface-2 rounded-lg p-3">
-                  <p className="text-xs text-zinc-400 mb-2">受影响的内容块：</p>
-                  <ul className="space-y-1">
-                    {fieldAffectedNames.map((name, i) => (
-                      <li key={i} className="text-sm text-amber-300 flex items-center gap-1.5">
-                        <span className="text-amber-400">•</span> {name}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              <p className="text-xs text-zinc-500">
-                建议：您可以选择创建新版本来保留修改前的内容，
-                或关闭此提示并手动重新生成受影响的内容块。
-              </p>
-            </div>
-            <div className="px-5 py-4 border-t border-surface-3 flex justify-end gap-3">
-              <button
-                onClick={() => { setFieldVersionWarning(null); setFieldAffectedNames(null); }}
-                className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-200 bg-surface-2 hover:bg-surface-3 rounded-lg transition-colors"
-              >
-                知道了，稍后处理
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* P0-1: 版本警告弹窗已移除，版本管理统一在 ContentBlock 编辑器中处理 */}
     </div>
   );
 }

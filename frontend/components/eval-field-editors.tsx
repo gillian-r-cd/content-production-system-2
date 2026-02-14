@@ -10,7 +10,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { evalAPI, blockAPI, graderAPI, settingsAPI, fieldAPI } from "@/lib/api";
+import { evalAPI, blockAPI, graderAPI, settingsAPI } from "@/lib/api";
 import { sendNotification } from "@/lib/utils";
 import type { ContentBlock, EvalConfig, LLMCall, GraderData } from "@/lib/api";
 import {
@@ -340,18 +340,17 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
 
   const _loadDeps = async () => {
     try {
-      const [personaResp, graderList, blockTree, simList, projectFields] = await Promise.all([
+      const [personaResp, graderList, blockTree, simList] = await Promise.all([
         evalAPI.getPersonas(projectId).catch(() => ({ personas: [] })) as Promise<any>,
         graderAPI.listForProject(projectId).catch(() => []),
         blockAPI.getProjectBlocks(projectId).catch(() => ({ blocks: [] })),
         settingsAPI.listSimulators().catch(() => []) as Promise<SimulatorData[]>,
-        fieldAPI.listByProject(projectId).catch(() => []) as Promise<any[]>,
       ]);
       setPersonas(personaResp.personas || []);
       setGraders(graderList);
       // 过滤掉"体验式"模拟器
       setSimulators((simList || []).filter((s: SimulatorData) => s.interaction_type !== "experience"));
-      // 提取所有 field 类型的内容块作为可选内容块
+      // 提取所有 field 类型的内容块作为可选内容块（P0-1: 统一使用 blockAPI）
       const fields: {id: string; name: string}[] = [];
       const _flatten = (blocks: any[]) => {
         for (const b of blocks) {
@@ -362,13 +361,6 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
         }
       };
       _flatten(blockTree.blocks || []);
-      // 也加载传统流程的 ProjectField（避免重复）
-      const blockNames = new Set(fields.map(f => f.name));
-      for (const pf of (projectFields || [])) {
-        if (pf.content && pf.phase !== "evaluate" && !blockNames.has(pf.name)) {
-          fields.push({ id: pf.id, name: `${pf.name}` });
-        }
-      }
       setProjectBlocks(fields);
     } catch { /* ignore */ }
   };

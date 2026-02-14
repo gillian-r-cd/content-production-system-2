@@ -1,10 +1,15 @@
 # backend/api/fields.py
-# 功能: 字段管理API
-# 主要路由: CRUD操作、生成、依赖管理
+# 功能: 字段管理API（已废弃 — 请使用 api/blocks.py 的 ContentBlock API）
+# 主要路由: CRUD操作、生成、依赖管理（所有路由已标记 deprecated）
 # 数据结构: FieldCreate, FieldUpdate, FieldResponse
+# 废弃原因: P0-1 统一到 ContentBlock 模型，ProjectField 不再是主要数据模型
 
 """
-字段管理 API
+字段管理 API — DEPRECATED
+
+⚠️ 此模块基于旧的 ProjectField 模型，已被 ContentBlock 架构取代。
+所有路由标记为 deprecated，新功能请使用 api/blocks.py。
+前端应逐步迁移 fieldAPI → blockAPI。
 """
 
 from typing import Optional, List, Dict
@@ -115,7 +120,7 @@ class GenerateRequest(BaseModel):
 
 # ============== Routes ==============
 
-@router.get("/project/{project_id}", response_model=list[FieldResponse])
+@router.get("/project/{project_id}", response_model=list[FieldResponse], deprecated=True)
 def list_project_fields(
     project_id: str,
     phase: Optional[str] = None,
@@ -130,7 +135,7 @@ def list_project_fields(
     return [_field_to_response(f) for f in fields]
 
 
-@router.post("/", response_model=FieldResponse)
+@router.post("/", response_model=FieldResponse, deprecated=True)
 def create_field(
     field: FieldCreate,
     db: Session = Depends(get_db),
@@ -187,7 +192,7 @@ def create_field(
     return _field_to_response(db_field)
 
 
-@router.get("/{field_id}", response_model=FieldResponse)
+@router.get("/{field_id}", response_model=FieldResponse, deprecated=True)
 def get_field(
     field_id: str,
     db: Session = Depends(get_db),
@@ -199,7 +204,7 @@ def get_field(
     return _field_to_response(field)
 
 
-@router.put("/{field_id}", response_model=FieldResponse)
+@router.put("/{field_id}", response_model=FieldResponse, deprecated=True)
 def update_field(
     field_id: str,
     update: FieldUpdate,
@@ -250,7 +255,7 @@ def update_field(
     return _field_to_response(field, version_warning, affected if affected else None)
 
 
-@router.delete("/{field_id}")
+@router.delete("/{field_id}", deprecated=True)
 def delete_field(
     field_id: str,
     db: Session = Depends(get_db),
@@ -266,7 +271,7 @@ def delete_field(
     return {"message": "Field deleted"}
 
 
-@router.post("/{field_id}/generate", response_model=FieldResponse)
+@router.post("/{field_id}/generate", response_model=FieldResponse, deprecated=True)
 async def generate_field_content(
     field_id: str,
     request: GenerateRequest,
@@ -347,7 +352,7 @@ async def generate_field_content(
     return _field_to_response(field)
 
 
-@router.post("/{field_id}/generate/stream")
+@router.post("/{field_id}/generate/stream", deprecated=True)
 async def generate_field_stream_api(
     field_id: str,
     request: GenerateRequest,
@@ -456,7 +461,7 @@ async def generate_field_stream_api(
     )
 
 
-@router.get("/project/{project_id}/order")
+@router.get("/project/{project_id}/order", deprecated=True)
 def get_field_order(
     project_id: str,
     db: Session = Depends(get_db),
@@ -492,7 +497,7 @@ class BatchGenerateResponse(BaseModel):
     completed: bool  # 是否全部完成
 
 
-@router.post("/project/{project_id}/generate-batch", response_model=BatchGenerateResponse)
+@router.post("/project/{project_id}/generate-batch", response_model=BatchGenerateResponse, deprecated=True)
 async def batch_generate_fields(
     project_id: str,
     request: BatchGenerateRequest,

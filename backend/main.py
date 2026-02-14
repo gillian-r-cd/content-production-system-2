@@ -85,10 +85,11 @@ def create_app() -> FastAPI:
     from api import graders as graders_api
     
     app.include_router(projects.router, prefix="/api/projects", tags=["projects"])
-    app.include_router(fields.router, prefix="/api/fields", tags=["fields"])
+    app.include_router(fields.router, prefix="/api/fields", tags=["fields"])  # [已废弃] P0-1: 统一使用 blocks.router，保留兼容
     app.include_router(agent.router, prefix="/api/agent", tags=["agent"])
     app.include_router(settings_api.router, prefix="/api/settings", tags=["settings"])
     app.include_router(simulation.router, prefix="/api/simulations", tags=["simulations"])
+    # ⚠️ DEPRECATED: 旧评估系统（EvaluationTemplate/EvaluationReport），前端已改用 /api/eval（EvalRun/EvalTask/EvalTrial）
     app.include_router(evaluation.router, prefix="/api/evaluations", tags=["evaluations"])
     
     # 新架构：内容块和阶段模板

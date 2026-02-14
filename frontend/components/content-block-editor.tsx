@@ -8,7 +8,7 @@
 import { useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { blockAPI, fieldAPI, projectAPI, runAutoTriggerChain } from "@/lib/api";
+import { blockAPI, projectAPI, runAutoTriggerChain } from "@/lib/api";
 import { useBlockGeneration } from "@/lib/hooks/useBlockGeneration";
 import { sendNotification } from "@/lib/utils";
 import type { ContentBlock } from "@/lib/api";
@@ -142,13 +142,11 @@ interface ContentBlockEditorProps {
   block: ContentBlock;
   projectId: string;
   allBlocks?: ContentBlock[];  // 用于依赖选择
-  isVirtual?: boolean;  // 是否是虚拟块（来自 ProjectField）
   onUpdate?: () => void;
 }
 
-export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual = false, onUpdate }: ContentBlockEditorProps) {
-  // 判断是否使用 Field API（虚拟块需要更新 ProjectField 表）
-  const useFieldAPI = isVirtual || !!block.parent_id?.startsWith("virtual_");
+export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate }: ContentBlockEditorProps) {
+  // P0-1: 统一使用 blockAPI（已移除 fieldAPI/isVirtual 分支）
   const [isEditing, setIsEditing] = useState(false);
   const [isEditingName, setIsEditingName] = useState(false);
   const [editedName, setEditedName] = useState(block.name);
@@ -187,7 +185,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
     isGenerating, generatingContent, canGenerate, unmetDependencies,
     handleGenerate: _handleGenerate, handleStop: handleStopGeneration,
   } = useBlockGeneration({
-    block, projectId, allBlocks, useFieldAPI,
+    block, projectId, allBlocks,
     preAnswers, hasPreQuestions,
     onUpdate,
     onContentReady: (content) => setEditedContent(content),
@@ -294,11 +292,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
   const handleSavePreAnswers = async () => {
     setIsSavingPreAnswers(true);
     try {
-      if (useFieldAPI) {
-        await fieldAPI.update(block.id, { pre_answers: preAnswers });
-      } else {
-        await blockAPI.update(block.id, { pre_answers: preAnswers });
-      }
+      await blockAPI.update(block.id, { pre_answers: preAnswers });
       setPreAnswersSaved(true);
       setTimeout(() => setPreAnswersSaved(false), 2000);
       onUpdate?.();
@@ -319,11 +313,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
   const handleSaveName = async () => {
     if (editedName.trim() && editedName !== block.name) {
       try {
-        if (useFieldAPI) {
-          await fieldAPI.update(block.id, { name: editedName.trim() });
-        } else {
-          await blockAPI.update(block.id, { name: editedName.trim() });
-        }
+        await blockAPI.update(block.id, { name: editedName.trim() });
         onUpdate?.();
       } catch (err) {
         console.error("更新名称失败:", err);
@@ -355,12 +345,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
   // 保存内容
   const handleSaveContent = async () => {
     try {
-      let result: any;
-      if (useFieldAPI) {
-        result = await fieldAPI.update(block.id, { content: editedContent });
-      } else {
-        result = await blockAPI.update(block.id, { content: editedContent });
-      }
+      const result: any = await blockAPI.update(block.id, { content: editedContent });
       setIsEditing(false);
       onUpdate?.();
       
@@ -399,11 +384,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
   // 保存 AI 提示词
   const handleSavePrompt = async () => {
     try {
-      if (useFieldAPI) {
-        await fieldAPI.update(block.id, { ai_prompt: editedPrompt });
-      } else {
-        await blockAPI.update(block.id, { ai_prompt: editedPrompt });
-      }
+      await blockAPI.update(block.id, { ai_prompt: editedPrompt });
       setSavedPrompt(editedPrompt); // 乐观更新本地状态，立即反映到 UI
       setShowPromptModal(false);
       onUpdate?.();
@@ -416,11 +397,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
   // 保存约束
   const handleSaveConstraints = async () => {
     try {
-      if (useFieldAPI) {
-        await fieldAPI.update(block.id, { constraints: editedConstraints });
-      } else {
-        await blockAPI.update(block.id, { constraints: editedConstraints });
-      }
+      await blockAPI.update(block.id, { constraints: editedConstraints });
       setShowConstraintsModal(false);
       onUpdate?.();
     } catch (err) {
@@ -432,17 +409,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
   // 保存依赖
   const handleSaveDependencies = async () => {
     try {
-      if (useFieldAPI) {
-        // ProjectField 的依赖结构不同
-        await fieldAPI.update(block.id, { 
-          dependencies: { 
-            depends_on: selectedDependencies,
-            dependency_type: "all"
-          }
-        });
-      } else {
-        await blockAPI.update(block.id, { depends_on: selectedDependencies });
-      }
+      await blockAPI.update(block.id, { depends_on: selectedDependencies });
       setShowDependencyModal(false);
       onUpdate?.();
     } catch (err) {
@@ -469,11 +436,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], isVirtual
   const handleDelete = async () => {
     if (!confirm(`确定要删除「${block.name}」吗？此操作不可撤销。`)) return;
     try {
-      if (useFieldAPI) {
-        await fieldAPI.delete(block.id);
-      } else {
-        await blockAPI.delete(block.id);
-      }
+      await blockAPI.delete(block.id);
       onUpdate?.();
     } catch (err) {
       console.error("删除失败:", err);

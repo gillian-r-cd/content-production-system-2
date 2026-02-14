@@ -2,17 +2,17 @@
 // 功能: 左栏项目进度面板，支持传统视图和树形视图切换
 // 主要组件: ProgressPanel
 // 新增: 树形视图集成 BlockTree 组件
-// 优化: 拆分 useEffect 避免 fields 变化触发灵活架构重复加载；
-//       首次加载才显示 spinner；onBlocksChange 仅在数据实际变化时触发
+// P0-1: 统一使用 ContentBlock，已移除 fields/ProjectField 依赖
+// 优化: 首次加载才显示 spinner；onBlocksChange 仅在数据实际变化时触发
 
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { cn, PHASE_NAMES, PHASE_STATUS, PHASE_SPECIAL_HANDLERS, FIXED_TOP_PHASES, DRAGGABLE_PHASES, FIXED_BOTTOM_PHASES } from "@/lib/utils";
-import type { Project, ContentBlock, Field } from "@/lib/api";
+import type { Project, ContentBlock } from "@/lib/api";
 import { blockAPI, runAutoTriggerChain } from "@/lib/api";
 import BlockTree from "./block-tree";
-import { List, GitBranch } from "lucide-react";
+// lucide-react icons removed: view toggle已移除
 
 // 辅助函数：将树形结构扁平化为数组（用于依赖选择）
 function flattenBlocks(blocks: ContentBlock[]): ContentBlock[] {
@@ -32,11 +32,8 @@ function flattenBlocks(blocks: ContentBlock[]): ContentBlock[] {
 // PHASE_SPECIAL_HANDLERS, FIXED_TOP_PHASES, DRAGGABLE_PHASES, FIXED_BOTTOM_PHASES
 // 均从 @/lib/utils 导入（统一来源: backend/core/phase_config.py）
 
-type ViewMode = "classic" | "tree";
-
 interface ProgressPanelProps {
   project: Project | null;
-  fields?: Field[];  // 传统字段数据，用于构建虚拟树形视图
   blocksRefreshKey?: number;  // 外部触发 ContentBlocks 重新加载
   onPhaseClick?: (phase: string) => void;
   onPhaseReorder?: (phases: string[]) => void;
@@ -48,7 +45,6 @@ interface ProgressPanelProps {
 
 export function ProgressPanel({
   project,
-  fields = [],
   blocksRefreshKey = 0,
   onPhaseClick,
   onPhaseReorder,
@@ -58,61 +54,31 @@ export function ProgressPanel({
   onBlocksChange,
 }: ProgressPanelProps) {
   const [showAutonomySettings, setShowAutonomySettings] = useState(false);
-  const [viewMode, setViewMode] = useState<ViewMode>(() => {
-    if (typeof window !== "undefined") {
-      return (localStorage.getItem("viewMode") as ViewMode) || "classic";
-    }
-    return "classic";
-  });
+  // P0-1: 传统视图已移除，统一使用树形架构
   const [contentBlocks, setContentBlocks] = useState<ContentBlock[]>([]);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [isLoadingBlocks, setIsLoadingBlocks] = useState(false);
-  const [isMigrating, setIsMigrating] = useState(false);
   const initialBlocksLoadDone = useRef(false);  // 标记初次加载是否完成
   const prevBlocksSignature = useRef("");  // 用于比较 blocks 是否实际变化
   
-  // 灵活架构项目强制使用树形视图，锁死传统视图
-  // 传统架构项目默认使用传统视图
-  const isFlexibleArch = project?.use_flexible_architecture === true;
   
   useEffect(() => {
-    if (isFlexibleArch && viewMode !== "tree") {
-      setViewMode("tree");
-      localStorage.setItem("viewMode", "tree");
-    } else if (!isFlexibleArch && viewMode === "tree") {
-      // 传统架构项目：自动切回传统视图
-      setViewMode("classic");
-      localStorage.setItem("viewMode", "classic");
-    }
     // 切换项目时重置初次加载标记，确保新项目首次显示 spinner
     initialBlocksLoadDone.current = false;
     prevBlocksSignature.current = "";
-  }, [isFlexibleArch, project?.id]);
+  }, [project?.id]);
   
   const allPhases = project?.phase_order || [];
   const phaseStatus = project?.phase_status || {};
   const currentPhase = project?.current_phase || "intent";
   
-  // ===== 加载内容块（树形视图用）=====
-  // 关键修复：拆分为两个 useEffect，避免 fields 变化触发灵活架构重新加载
-  // 之前一个 useEffect 同时依赖 fields 和 blocksRefreshKey，
-  // 导致一次操作触发两次树重建（fields 变一次、blocksRefreshKey 变一次）
-  
-  // Effect 1: 灵活架构 —— 只响应 blocksRefreshKey 和 project 变化
+  // ===== 加载内容块 =====
+  // P0-1: 统一使用 ContentBlock API，classic 和 tree 视图都需要
   useEffect(() => {
-    if (viewMode === "tree" && project?.id && project.use_flexible_architecture) {
+    if (project?.id) {
       loadContentBlocks();
     }
-  }, [viewMode, project?.id, project?.use_flexible_architecture, blocksRefreshKey]);
-  
-  // Effect 2: 传统架构 —— 只响应 fields 变化
-  useEffect(() => {
-    if (viewMode === "tree" && project?.id && !project?.use_flexible_architecture && fields.length > 0) {
-      const virtualBlocks = buildVirtualBlocksFromFields(project, fields);
-      setContentBlocks(virtualBlocks);
-      notifyBlocksChangeIfNeeded(virtualBlocks);
-    }
-  }, [viewMode, project?.id, project?.use_flexible_architecture, fields]);
+  }, [project?.id, blocksRefreshKey]);
   
   // 辅助函数：计算 blocks 签名，用于比较是否实际变化
   const computeBlocksSignature = useCallback((blocks: ContentBlock[]): string => {
@@ -134,157 +100,43 @@ export function ProgressPanel({
   const loadContentBlocks = async () => {
     if (!project?.id) return;
     
-    // ===== 关键修复：只在首次加载时显示 spinner =====
-    // 后续刷新时静默更新数据，避免 spinner 闪烁导致树跳动
+    // 只在首次加载时显示 spinner，后续静默刷新
     if (!initialBlocksLoadDone.current) {
       setIsLoadingBlocks(true);
     }
     try {
-      // ===== 关键逻辑：根据项目架构决定数据来源 =====
-      if (project.use_flexible_architecture) {
-        // 真正的灵活架构项目：从 ContentBlock 表加载
-        const data = await blockAPI.getProjectBlocks(project.id);
-        if (data.blocks && data.blocks.length > 0) {
-          setContentBlocks(data.blocks);
-          notifyBlocksChangeIfNeeded(data.blocks);
-        } else {
-          setContentBlocks([]);
-          notifyBlocksChangeIfNeeded([]);
-        }
-        
-        // 前端驱动自动触发链：找到可触发的块 → 逐个生成 → 递归
-        runAutoTriggerChain(project.id, () => {
-          // 每个块完成后刷新 UI
-          blockAPI.getProjectBlocks(project.id).then((freshData) => {
-            if (freshData.blocks) {
-              setContentBlocks(freshData.blocks);
-              notifyBlocksChangeIfNeeded(freshData.blocks);
-            }
-          }).catch(console.error);
-        }).catch(console.error);
+      // P0-1: 统一从 ContentBlock API 加载
+      const data = await blockAPI.getProjectBlocks(project.id);
+      if (data.blocks && data.blocks.length > 0) {
+        setContentBlocks(data.blocks);
+        notifyBlocksChangeIfNeeded(data.blocks);
       } else {
-        // 传统架构项目：从 ProjectField 构建虚拟块
-        const virtualBlocks = buildVirtualBlocksFromFields(project, fields);
-        setContentBlocks(virtualBlocks);
-        notifyBlocksChangeIfNeeded(virtualBlocks);
+        setContentBlocks([]);
+        notifyBlocksChangeIfNeeded([]);
       }
+      
+      // 前端驱动自动触发链
+      runAutoTriggerChain(project.id, () => {
+        blockAPI.getProjectBlocks(project.id).then((freshData) => {
+          if (freshData.blocks) {
+            setContentBlocks(freshData.blocks);
+            notifyBlocksChangeIfNeeded(freshData.blocks);
+          }
+        }).catch(console.error);
+      }).catch(console.error);
     } catch (err) {
       console.error("加载内容块失败:", err);
-      const virtualBlocks = buildVirtualBlocksFromFields(project, fields);
-      setContentBlocks(virtualBlocks);
-      notifyBlocksChangeIfNeeded(virtualBlocks);
+      setContentBlocks([]);
+      notifyBlocksChangeIfNeeded([]);
     } finally {
       setIsLoadingBlocks(false);
       initialBlocksLoadDone.current = true;
     }
   };
   
-  // 从传统 fields 构建虚拟树形结构
-  const buildVirtualBlocksFromFields = (project: Project, fields: Field[]): ContentBlock[] => {
-    const phaseOrder = project.phase_order || [];
-    const phaseStatus = project.phase_status || {};
-    
-    // 按阶段分组字段
-    const fieldsByPhase: Record<string, Field[]> = {};
-    for (const field of fields) {
-      if (!fieldsByPhase[field.phase]) {
-        fieldsByPhase[field.phase] = [];
-      }
-      fieldsByPhase[field.phase].push(field);
-    }
-    
-    // 为每个组创建虚拟的 ContentBlock
-    const virtualBlocks: ContentBlock[] = phaseOrder.map((phase, idx) => {
-      const phaseFields = fieldsByPhase[phase] || [];
-      
-      // 阶段块
-      const phaseBlock: ContentBlock = {
-        id: `virtual_phase_${phase}`,
-        project_id: project.id,
-        parent_id: null,
-        name: PHASE_NAMES[phase] || phase,
-        block_type: "phase",
-        depth: 0,
-        order_index: idx,
-        content: "",
-        status: phaseStatus[phase] as "pending" | "in_progress" | "completed" | "failed" || "pending",
-        ai_prompt: "",
-        constraints: {},
-        depends_on: [],
-        special_handler: PHASE_SPECIAL_HANDLERS[phase] || null,
-        pre_questions: [],
-        pre_answers: {},
-        need_review: true,
-        is_collapsed: false,
-        children: phaseFields.map((field, fieldIdx) => ({
-          id: field.id,  // 使用真实的 field id
-          project_id: project.id,
-          parent_id: `virtual_phase_${phase}`,
-          name: field.name,
-          block_type: "field" as const,
-          depth: 1,
-          order_index: fieldIdx,
-          content: field.content || "",
-          status: field.status as "pending" | "in_progress" | "completed" | "failed" || "pending",
-          ai_prompt: field.ai_prompt || "",
-          constraints: field.constraints || {},
-          depends_on: field.dependencies?.depends_on || [],
-          special_handler: null,
-          pre_questions: field.pre_questions || [],
-          pre_answers: field.pre_answers || {},
-          need_review: field.need_review,
-          is_collapsed: false,
-          children: [],
-          created_at: field.created_at,
-          updated_at: field.updated_at,
-        })),
-        created_at: null,
-        updated_at: null,
-      };
-      
-      return phaseBlock;
-    });
-    
-    return virtualBlocks;
-  };
+  // P0-1: buildVirtualBlocksFromFields 已移除（不再从 ProjectField 构建虚拟块）
   
-  // 迁移传统项目到 content_blocks 架构
-  const handleMigrateToBlocks = async () => {
-    if (!project?.id) return;
-    
-    if (!confirm("确定要迁移到灵活架构吗？迁移后可以自由添加/删除/排序组和内容块。")) {
-      return;
-    }
-    
-    setIsMigrating(true);
-    try {
-      // 调用后端迁移 API
-      const result = await blockAPI.migrateProject(project.id);
-      
-      // 通知父组件刷新项目数据（以获取最新的 use_flexible_architecture）
-      // 注意：需要等待父组件更新完成后才能正确加载内容块
-      // 这里用 setTimeout 等待一个渲染周期
-      await new Promise<void>((resolve) => {
-        onProjectChange?.();
-        // 给父组件时间更新 project prop
-        setTimeout(resolve, 100);
-      });
-      
-      // 迁移成功后，直接从 API 加载真实的 ContentBlocks（不依赖 project prop）
-      const data = await blockAPI.getProjectBlocks(project.id);
-      if (data.blocks && data.blocks.length > 0) {
-        setContentBlocks(data.blocks);
-        onBlocksChange?.(flattenBlocks(data.blocks));
-      }
-
-      alert(`迁移成功！已创建 ${result.phases_created} 个组，迁移 ${result.fields_migrated} 个内容块。\n\n请刷新页面以确保所有状态同步。`);
-    } catch (err) {
-      console.error("迁移失败:", err);
-      alert("迁移失败: " + (err instanceof Error ? err.message : "未知错误"));
-    } finally {
-      setIsMigrating(false);
-    }
-  };
+  // P0-1: handleMigrateToBlocks 已移除（所有项目都已统一为 ContentBlock 架构）
 
   const handleBlockSelect = (block: ContentBlock) => {
     setSelectedBlockId(block.id);
@@ -370,9 +222,10 @@ export function ProgressPanel({
     handleDragEnd();
   };
 
-  // 获取阶段下的内容块
-  const getPhaseFields = (phase: string): Field[] => {
-    return fields.filter(f => f.phase === phase);
+  // P0-1: 从 contentBlocks 中获取某个阶段下的子块（替代旧的 ProjectField 查询）
+  const getPhaseBlocks = (phase: string): ContentBlock[] => {
+    const phaseBlock = contentBlocks.find(b => b.block_type === "phase" && (b.name === (PHASE_NAMES[phase] || phase) || b.name === phase));
+    return phaseBlock?.children || [];
   };
   
   // 折叠状态
@@ -399,7 +252,7 @@ export function ProgressPanel({
     const isCurrent = phase === currentPhase;
     const isDragging = draggedPhase === phase;
     const isDragOver = dragOverPhase === phase;
-    const phaseFields = getPhaseFields(phase);
+    const phaseFields = getPhaseBlocks(phase);
     const isExpanded = expandedPhases[phase] ?? isCurrent;  // 当前组默认展开
     
     return (
@@ -481,34 +334,14 @@ export function ProgressPanel({
         {/* 阶段下的内容块列表 */}
         {isExpanded && phaseFields.length > 0 && (
           <div className="ml-6 mt-1 space-y-0.5">
-            {phaseFields.map(field => {
-              const fieldStatus = field.status || "pending";
+            {phaseFields.map(block => {
+              const blockStatus = block.status || "pending";
               return (
                 <button
-                  key={field.id}
+                  key={block.id}
                   onClick={() => {
-                    // 将字段转换为 ContentBlock 格式传递
-                    const virtualBlock: ContentBlock = {
-                      id: field.id,
-                      project_id: project?.id || "",
-                      parent_id: `virtual_phase_${phase}`,
-                      name: field.name,
-                      block_type: "field",
-                      depth: 1,
-                      order_index: 0,
-                      content: field.content || "",
-                      status: fieldStatus as "pending" | "in_progress" | "completed" | "failed",
-                      ai_prompt: field.ai_prompt || "",
-                      constraints: field.constraints || {},
-                      depends_on: field.dependencies?.depends_on || [],
-                      special_handler: null,
-                      need_review: field.need_review,
-                      is_collapsed: false,
-                      children: [],
-                      created_at: field.created_at,
-                      updated_at: field.updated_at,
-                    };
-                    onBlockSelect?.(virtualBlock);
+                    // P0-1: 直接传递 ContentBlock，不再构建虚拟块
+                    onBlockSelect?.(block);
                   }}
                   className="w-full flex items-center gap-2 px-3 py-1.5 rounded text-left text-sm hover:bg-surface-3 transition-colors"
                 >
@@ -516,14 +349,14 @@ export function ProgressPanel({
                   <div
                     className={cn(
                       "w-1.5 h-1.5 rounded-full flex-shrink-0",
-                      fieldStatus === "completed" && "bg-emerald-500",
-                      fieldStatus === "in_progress" && "bg-amber-500",
-                      fieldStatus === "pending" && "bg-zinc-600"
+                      blockStatus === "completed" && "bg-emerald-500",
+                      blockStatus === "in_progress" && "bg-amber-500",
+                      blockStatus === "pending" && "bg-zinc-600"
                     )}
                   />
                   {/* 内容块名称 */}
                   <span className="flex-1 text-zinc-400 truncate">
-                    {field.name}
+                    {block.name}
                   </span>
                 </button>
               );
@@ -548,74 +381,10 @@ export function ProgressPanel({
         )}
       </div>
       
-      {/* 视图切换 */}
-      {project && (
-        <div className="flex items-center gap-1 mb-4 p-1 bg-surface-1 rounded-lg">
-          <button
-            onClick={() => { 
-              if (!isFlexibleArch) {
-                setViewMode("classic"); 
-                localStorage.setItem("viewMode", "classic"); 
-              }
-            }}
-            disabled={isFlexibleArch}
-            className={cn(
-              "flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
-              isFlexibleArch
-                ? "text-zinc-600 cursor-not-allowed opacity-50"
-                : viewMode === "classic"
-                  ? "bg-surface-3 text-zinc-200"
-                  : "text-zinc-500 hover:text-zinc-300"
-            )}
-            title={isFlexibleArch ? "已迁移至树形架构，无法切换回传统视图" : "切换到传统视图"}
-          >
-            <List className="w-3.5 h-3.5" />
-            传统
-            {isFlexibleArch && <span className="ml-0.5">🔒</span>}
-          </button>
-          <button
-            onClick={() => { setViewMode("tree"); localStorage.setItem("viewMode", "tree"); }}
-            className={cn(
-              "flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
-              viewMode === "tree"
-                ? "bg-surface-3 text-zinc-200"
-                : "text-zinc-500 hover:text-zinc-300"
-            )}
-          >
-            <GitBranch className="w-3.5 h-3.5" />
-            树形
-          </button>
-        </div>
-      )}
+      {/* P0-1: 视图切换已移除，所有项目使用树形架构 */}
 
-      {/* 流程进度 - 传统视图 */}
-      {viewMode === "classic" && (
-        <div className="space-y-1">
-          <h3 className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-3">
-            流程进度
-          </h3>
-          
-          {/* 顶部固定阶段 */}
-          {topPhases.map(phase => renderPhaseItem(phase, false))}
-          
-          {/* 可拖拽的中间阶段 */}
-          {middlePhases.length > 0 && (
-            <div className="py-1">
-              <div className="text-xs text-zinc-600 px-3 mb-1 flex items-center gap-1">
-                <span>↕</span>
-                <span>可拖拽调整顺序</span>
-              </div>
-              {middlePhases.map(phase => renderPhaseItem(phase, true))}
-            </div>
-          )}
-          
-          {/* 底部固定阶段 */}
-          {bottomPhases.map(phase => renderPhaseItem(phase, false))}
-        </div>
-      )}
-      
-      {/* 流程进度 - 树形视图 */}
-      {viewMode === "tree" && project && (
+      {/* 内容结构 - 树形视图 */}
+      {project && (
         <div className="space-y-1">
           <h3 className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-3">
             内容结构
@@ -629,46 +398,20 @@ export function ProgressPanel({
             <div className="text-center py-8">
               <p className="text-sm text-zinc-500 mb-3">尚未创建内容块</p>
               <p className="text-xs text-zinc-600">
-                可在此添加组，或切换到传统视图使用预设流程
+                与 Agent 对话或手动添加内容块开始项目
               </p>
             </div>
           ) : null}
           
-          {/* 判断是否是虚拟树形结构 */}
-          {!project.use_flexible_architecture ? (
-            <>
-              {/* 虚拟结构只读提示 */}
-              <div className="mb-3 p-3 bg-amber-900/20 border border-amber-700/30 rounded-lg">
-                <p className="text-xs text-amber-300">
-                  当前显示传统流程的树形视图（只读）
-                </p>
-                <button
-                  onClick={handleMigrateToBlocks}
-                  disabled={isMigrating}
-                  className="mt-2 w-full px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-700 disabled:opacity-50 rounded-lg transition-colors"
-                >
-                  {isMigrating ? "迁移中..." : "迁移到灵活架构（可编辑）"}
-                </button>
-              </div>
-              <BlockTree
-                blocks={contentBlocks}
-                projectId={project.id}
-                selectedBlockId={selectedBlockId}
-                onSelectBlock={handleBlockSelect}
-                onBlocksChange={loadContentBlocks}
-                editable={false}  // 虚拟结构不可编辑
-              />
-            </>
-          ) : (
-            <BlockTree
-              blocks={contentBlocks}
-              projectId={project.id}
-              selectedBlockId={selectedBlockId}
-              onSelectBlock={handleBlockSelect}
-              onBlocksChange={loadContentBlocks}
-              editable={true}  // 真实结构可编辑
-            />
-          )}
+          {/* P0-1: 统一使用 ContentBlock 架构，始终可编辑 */}
+          <BlockTree
+            blocks={contentBlocks}
+            projectId={project.id}
+            selectedBlockId={selectedBlockId}
+            onSelectBlock={handleBlockSelect}
+            onBlocksChange={loadContentBlocks}
+            editable={true}
+          />
         </div>
       )}
 

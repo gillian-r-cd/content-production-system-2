@@ -19,7 +19,7 @@ export interface Project {
   agent_autonomy: Record<string, boolean>;
   golden_context: Record<string, string>;
   use_deep_research: boolean;
-  use_flexible_architecture?: boolean;
+  use_flexible_architecture?: boolean;  // [已废弃] 统一为 true
   created_at: string;
   updated_at: string;
 }
@@ -31,6 +31,7 @@ export interface FieldConstraints {
   example?: string | null;          // 示例输出
 }
 
+/** @deprecated P0-1: 统一使用 ContentBlock，此接口仅保留供 FieldCard（经典视图）编译通过 */
 export interface Field {
   id: string;
   project_id: string;
@@ -258,8 +259,9 @@ export interface SearchResult {
   snippets: SearchSnippet[];
 }
 
-// ============== Field API ==============
+// ============== Field API (已废弃 P0-1: 统一使用 blockAPI) ==============
 
+/** @deprecated P0-1: 统一使用 blockAPI */
 export const fieldAPI = {
   listByProject: (projectId: string, phase?: string) => {
     const query = phase ? `?phase=${phase}` : "";

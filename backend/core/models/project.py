@@ -46,7 +46,7 @@ class Project(BaseModel):
         phase_status: 每个阶段的状态
         agent_autonomy: Agent自主权设置，每阶段是否需人工确认
         use_deep_research: 是否使用DeepResearch进行调研
-        use_flexible_architecture: 是否使用灵活的 ContentBlock 架构
+        use_flexible_architecture: [已废弃] 统一为 True（所有项目使用 ContentBlock 架构）
     
     废弃字段（保留用于数据库兼容，不再使用）:
         golden_context: 已废弃。创作者特质通过 creator_profile 关系获取，
@@ -81,7 +81,7 @@ class Project(BaseModel):
     # 意图分析/消费者调研结果通过字段内容和依赖关系传递
     golden_context: Mapped[dict] = mapped_column(JSON, default=dict)
     use_deep_research: Mapped[bool] = mapped_column(default=True)
-    use_flexible_architecture: Mapped[bool] = mapped_column(default=False)  # 是否使用灵活的 ContentBlock 架构
+    use_flexible_architecture: Mapped[bool] = mapped_column(default=True)  # 已废弃：所有项目统一使用 ContentBlock 架构，默认 True
 
     # 关联
     creator_profile: Mapped["CreatorProfile"] = relationship(

@@ -2,12 +2,14 @@
 // 功能: 内涵设计方案编辑器（全功能）
 // 支持: 编辑方案名称/描述、编辑/添加/删除/重排字段、从模板导入内容块、
 //       添加/删除自定义方案、确认后导入到内涵生产
-// 数据: 读写 ProjectField 的 content（JSON proposals 格式）
+// 数据: 读写 ContentBlock 的 content（JSON proposals 格式）
+// P0-1: 统一使用 blockAPI（已移除 fieldAPI 分支）
 
 "use client";
 
 import React, { useState, useMemo, useCallback, useEffect, useRef } from "react";
-import { fieldAPI, settingsAPI } from "@/lib/api";
+import { blockAPI, settingsAPI } from "@/lib/api";
+import type { ContentBlock } from "@/lib/api";
 import {
   Check, Send, ChevronDown, ChevronUp, FileText, ArrowRight,
   Plus, Trash2, X, Save, PackagePlus,
@@ -443,7 +445,7 @@ export function ProposalSelector({
     saveTimeoutRef.current = setTimeout(async () => {
       try {
         setIsSaving(true);
-        await fieldAPI.update(fieldId, {
+        await blockAPI.update(fieldId, {
           content: JSON.stringify(newData, null, 2),
         });
         setDirty(false);
@@ -471,7 +473,7 @@ export function ProposalSelector({
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     try {
       setIsSaving(true);
-      await fieldAPI.update(fieldId, {
+      await blockAPI.update(fieldId, {
         content: JSON.stringify(data, null, 2),
       });
       setDirty(false);
@@ -648,6 +650,19 @@ export function ProposalSelector({
 
   // ============== 确认并创建内容块 ==============
 
+  // 查找指定 special_handler 的阶段 ContentBlock ID
+  const _findPhaseBlock = async (handler: string): Promise<string | null> => {
+    try {
+      const tree = await blockAPI.getProjectBlocks(projectId);
+      const flatten = (blocks: ContentBlock[]): ContentBlock[] =>
+        blocks.flatMap(b => [b, ...flatten(b.children || [])]);
+      const phase = flatten(tree.blocks || []).find(
+        b => b.block_type === "phase" && b.special_handler === handler
+      );
+      return phase?.id || null;
+    } catch { return null; }
+  };
+
   const handleConfirm = async () => {
     const proposal = data.proposals.find(p => p.id === selectedProposalId);
     if (!proposal) {
@@ -657,41 +672,39 @@ export function ProposalSelector({
 
     setIsCreatingFields(true);
     try {
+      // 找到 produce_inner 阶段作为父块
+      const parentId = await _findPhaseBlock("produce_inner");
+
       // 两轮创建：proposal 中 depends_on 可能存 field ID（LLM 生成）或 name（UI 编辑），需统一转为实际字段 ID
       const sortedFields = [...proposal.fields].sort((a, b) => a.order - b.order);
 
-      // 第一轮：创建所有内容块（不带依赖），建立 proposalId/name → realId 映射
+      // 第一轮：创建所有 ContentBlock（不带依赖），建立 proposalId/name → realId 映射
       const proposalToRealId: Record<string, string> = {};
-      const createdEntries: Array<{ fieldId: string; deps: string[] }> = [];
+      const createdEntries: Array<{ blockId: string; deps: string[] }> = [];
 
       for (const pField of sortedFields) {
-        const created = await fieldAPI.create({
+        const created = await blockAPI.create({
           project_id: projectId,
+          parent_id: parentId,
           name: pField.name,
-          phase: "produce_inner",
-          field_type: pField.field_type || "richtext",
+          block_type: "field",
           ai_prompt: pField.ai_prompt || "",
-          status: "pending",
           need_review: pField.need_review !== false,
-          dependencies: { depends_on: [], dependency_type: "all" },
           constraints: pField.constraints || {},
         });
-        // 映射 proposal 内的 field id 和 name → 实际创建的 field id
         if (pField.id) proposalToRealId[pField.id] = created.id;
         proposalToRealId[pField.name] = created.id;
-        createdEntries.push({ fieldId: created.id, deps: pField.depends_on || [] });
+        createdEntries.push({ blockId: created.id, deps: pField.depends_on || [] });
       }
 
-      // 第二轮：将 depends_on 中的 proposalId/name 转换为实际字段 ID 并更新
+      // 第二轮：将 depends_on 中的 proposalId/name 转换为实际 block ID 并更新
       for (const entry of createdEntries) {
         if (entry.deps.length > 0) {
           const realDepsIds = entry.deps
             .map(dep => proposalToRealId[dep])
             .filter(Boolean);
           if (realDepsIds.length > 0) {
-            await fieldAPI.update(entry.fieldId, {
-              dependencies: { depends_on: realDepsIds, dependency_type: "all" },
-            });
+            await blockAPI.update(entry.blockId, { depends_on: realDepsIds });
           }
         }
       }
@@ -702,7 +715,7 @@ export function ProposalSelector({
         selected_proposal_id: proposal.id,
         confirmed: true,
       };
-      await fieldAPI.update(fieldId, {
+      await blockAPI.update(fieldId, {
         content: JSON.stringify(confirmedData, null, 2),
         status: "completed",
       });
@@ -726,10 +739,18 @@ export function ProposalSelector({
 
     setIsResetting(true);
     try {
-      // 1. 删除已创建的 produce_inner 字段
-      const produceFields = await fieldAPI.listByProject(projectId, "produce_inner");
-      for (const f of produceFields) {
-        await fieldAPI.delete(f.id);
+      // 1. 删除已创建的 produce_inner 内容块
+      const tree = await blockAPI.getProjectBlocks(projectId);
+      const flatten = (blocks: ContentBlock[]): ContentBlock[] =>
+        blocks.flatMap(b => [b, ...flatten(b.children || [])]);
+      const all = flatten(tree.blocks || []);
+      const produceInner = all.find(b => b.block_type === "phase" && b.special_handler === "produce_inner");
+      if (produceInner) {
+        // 删除 produce_inner 阶段下的所有 field 子块
+        const children = all.filter(b => b.parent_id === produceInner.id && b.block_type === "field");
+        for (const child of children) {
+          await blockAPI.delete(child.id);
+        }
       }
 
       // 2. 重置确认状态并保存
@@ -738,7 +759,7 @@ export function ProposalSelector({
         confirmed: false,
         selected_proposal_id: undefined,
       };
-      await fieldAPI.update(fieldId, {
+      await blockAPI.update(fieldId, {
         content: JSON.stringify(resetData, null, 2),
         status: "in_progress",
       });

@@ -1,11 +1,12 @@
 // frontend/components/research-panel.tsx
 // 功能: 消费者调研报告展示面板
 // 主要功能: 展示调研报告、人物卡片可勾选、内容可编辑
+// P0-1: 统一使用 blockAPI（已移除 fieldAPI/isBlock 分支）
 
 "use client";
 
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
-import { fieldAPI, blockAPI, API_BASE } from "@/lib/api";
+import { blockAPI, API_BASE } from "@/lib/api";
 import { sendNotification } from "@/lib/utils";
 
 // 人物小传类型 - 匹配实际 AI 输出格式
@@ -57,7 +58,6 @@ interface ResearchPanelProps {
   content: string;
   onUpdate?: () => void;
   onAdvance?: () => void;  // 确认进入下一阶段
-  isBlock?: boolean;  // true = 使用 blockAPI 保存（ContentBlock），false/undefined = 使用 fieldAPI（ProjectField）
 }
 
 export function ResearchPanel({
@@ -66,7 +66,6 @@ export function ResearchPanel({
   content,
   onUpdate,
   onAdvance,
-  isBlock = false,
 }: ResearchPanelProps) {
   // 解析调研数据（自动补全缺失字段防止渲染崩溃）
   const initialData = useMemo<ResearchData | null>(() => {
@@ -137,18 +136,13 @@ export function ResearchPanel({
     });
   }, [data]);
 
-  // 保存到服务器（自动判断使用 blockAPI 或 fieldAPI）
+  // 保存到服务器（统一使用 blockAPI）
   const handleSave = async () => {
     if (!data) return;
     
     setIsSaving(true);
     try {
-      const payload = { content: JSON.stringify(data, null, 2) };
-      if (isBlock) {
-        await blockAPI.update(fieldId, payload);
-      } else {
-        await fieldAPI.update(fieldId, payload);
-      }
+      await blockAPI.update(fieldId, { content: JSON.stringify(data, null, 2) });
       onUpdate?.();
     } catch (err) {
       console.error("保存失败:", err);

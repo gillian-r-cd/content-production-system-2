@@ -8,7 +8,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { cn, PHASE_NAMES, sendNotification, requestNotificationPermission } from "@/lib/utils";
 import { agentAPI, parseReferences, API_BASE } from "@/lib/api";
-import type { Field, ChatMessageRecord, ContentBlock } from "@/lib/api";
+import type { ChatMessageRecord, ContentBlock } from "@/lib/api";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
@@ -25,10 +25,8 @@ interface MentionItem {
 
 interface AgentPanelProps {
   projectId: string | null;
-  currentPhase?: string;  // 当前阶段（传统视图点击阶段时同步）
-  fields?: Field[];
-  allBlocks?: ContentBlock[];  // 灵活架构的内容块
-  useFlexibleArchitecture?: boolean;
+  currentPhase?: string;  // 当前阶段
+  allBlocks?: ContentBlock[];  // 所有内容块
   onContentUpdate?: () => void;  // 当Agent生成内容后刷新
   isLoading?: boolean;
 }
@@ -71,9 +69,7 @@ const TOOL_DESCS: Record<string, string> = {
 export function AgentPanel({
   projectId,
   currentPhase,
-  fields = [],
   allBlocks = [],
-  useFlexibleArchitecture = false,
   onContentUpdate,
   isLoading = false,
 }: AgentPanelProps) {
@@ -100,8 +96,8 @@ export function AgentPanel({
   const mentionItems: MentionItem[] = (() => {
     const seen = new Set<string>(); // 用于去重
     
-    if (useFlexibleArchitecture && allBlocks.length > 0) {
-      // 灵活架构：从 allBlocks 扁平列表中提取有内容的字段
+    if (allBlocks.length > 0) {
+      // P0-1: 统一从 allBlocks (ContentBlock) 提取可引用项
       // 注意：allBlocks 是扁平数组，不应递归 children（会重复）
       const items: MentionItem[] = [];
       
@@ -151,48 +147,9 @@ export function AgentPanel({
         }
       }
       return items;
-    } else {
-      // 传统架构：使用 ProjectField，所有字段都可引用
-      const items: MentionItem[] = fields
-        .filter((f) => {
-          if (seen.has(f.id)) return false;
-          seen.add(f.id);
-          return true;
-        })
-        .map((f) => ({
-          id: f.id,
-          name: f.name,
-          label: PHASE_NAMES[f.phase] || f.phase,
-          hasContent: !!(f.content && f.content.trim()),
-        }));
-
-      // 额外：从 design_inner 字段的 JSON 中提取各方案，使其可单独 @ 引用
-      const designField = fields.find(f => f.phase === "design_inner" && f.content);
-      if (designField) {
-        try {
-          const parsed = JSON.parse(designField.content);
-          const proposals = parsed?.proposals;
-          if (Array.isArray(proposals)) {
-            proposals.forEach((p: any, i: number) => {
-              if (p && p.name) {
-                const pName = `方案${i + 1}:${p.name}`;
-                if (!seen.has(pName)) {
-                  seen.add(pName);
-                  items.push({
-                    id: `proposal_${p.id || i}`,
-                    name: pName,
-                    label: "内涵设计",
-                    hasContent: true,
-                  });
-                }
-              }
-            });
-          }
-        } catch { /* not JSON, skip */ }
-      }
-
-      return items;
     }
+    // P0-1: 传统 ProjectField 分支已移除，统一使用 ContentBlock
+    return [];
   })();
 
   const filteredMentionItems = mentionItems.filter((item) =>

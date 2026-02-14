@@ -30,7 +30,7 @@ from core.models import (
     ContentVersion, generate_uuid,
 )
 from core.models.content_block import ContentBlock
-from core.orchestrator import agent_graph, content_agent
+from core.orchestrator import agent_graph
 from core.agent_tools import PRODUCE_TOOLS
 
 router = APIRouter()
@@ -240,9 +240,11 @@ async def chat(
 ):
     """
     ⚠️ DEPRECATED: 请使用 /stream (SSE) 端点。
-    非流式对话，使用 content_agent.run()（向后兼容包装）。
-    前端已不再调用此端点。计划在清理 content_agent 时一并移除。
+    非流式对话。前端已不再调用此端点。
+    P3-1: 已改为直接使用 agent_graph.ainvoke()。
     """
+    from langchain_core.messages import HumanMessage, AIMessage
+
     project = db.query(Project).filter(Project.id == request.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -265,13 +267,20 @@ async def chat(
         creator_profile_str = project.creator_profile.to_prompt_context()
 
     try:
+        state = {
+            "messages": [HumanMessage(content=request.message)],
+            "project_id": request.project_id,
+            "current_phase": current_phase,
+            "creator_profile": creator_profile_str,
+        }
+        config = {
+            "configurable": {
+                "thread_id": f"{request.project_id}:assistant",
+                "project_id": request.project_id,
+            }
+        }
         result = await asyncio.wait_for(
-            content_agent.run(
-                project_id=request.project_id,
-                message=request.message,
-                current_phase=current_phase,
-                creator_profile=creator_profile_str,
-            ),
+            agent_graph.ainvoke(state, config=config),
             timeout=300,
         )
     except asyncio.TimeoutError:
@@ -293,7 +302,10 @@ async def chat(
         db.commit()
         return JSONResponse(status_code=500, content={"detail": str(agent_err)[:200]})
 
-    agent_output = result.get("agent_output", "") or result.get("display_output", "")
+    # 提取最后一条 AI 消息
+    ai_messages = [m for m in result["messages"] if isinstance(m, AIMessage)]
+    last_ai = ai_messages[-1] if ai_messages else None
+    agent_output = last_ai.content if last_ai else ""
 
     agent_msg = ChatMessage(
         id=generate_uuid(),
@@ -369,25 +381,41 @@ async def retry_message(
     if project.creator_profile:
         creator_profile_str = project.creator_profile.to_prompt_context()
 
-    result = await content_agent.run(
-        project_id=user_msg.project_id,
-        message=user_msg.content,
-        current_phase=(
-            user_msg.message_metadata.get("phase", project.current_phase)
-            if user_msg.message_metadata
-            else project.current_phase
-        ),
-        creator_profile=creator_profile_str,
+    current_phase = (
+        user_msg.message_metadata.get("phase", project.current_phase)
+        if user_msg.message_metadata
+        else project.current_phase
     )
+
+    # P3-1: 直接使用 agent_graph.ainvoke()，不再经过 ContentProductionAgent 包装
+    from langchain_core.messages import HumanMessage, AIMessage
+    state = {
+        "messages": [HumanMessage(content=user_msg.content)],
+        "project_id": user_msg.project_id,
+        "current_phase": current_phase,
+        "creator_profile": creator_profile_str,
+    }
+    config = {
+        "configurable": {
+            "thread_id": f"{user_msg.project_id}:assistant",
+            "project_id": user_msg.project_id,
+        }
+    }
+    result = await agent_graph.ainvoke(state, config=config)
+
+    # 提取最后一条 AI 消息
+    ai_messages = [m for m in result["messages"] if isinstance(m, AIMessage)]
+    last_ai = ai_messages[-1] if ai_messages else None
+    agent_output = last_ai.content if last_ai else ""
 
     new_msg = ChatMessage(
         id=generate_uuid(),
         project_id=user_msg.project_id,
         role="assistant",
-        content=result.get("agent_output", ""),
+        content=agent_output,
         parent_message_id=message_id,
         message_metadata={
-            "phase": result.get("current_phase", "intent"),
+            "phase": current_phase,
             "is_retry": True,
         },
     )
@@ -396,8 +424,8 @@ async def retry_message(
 
     return ChatResponseSchema(
         message_id=new_msg.id,
-        message=result.get("agent_output", ""),
-        phase=result.get("current_phase", "intent"),
+        message=agent_output,
+        phase=current_phase,
         phase_status=project.phase_status or {},
         waiting_for_human=False,
     )

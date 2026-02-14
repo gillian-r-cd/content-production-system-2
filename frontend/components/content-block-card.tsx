@@ -8,7 +8,7 @@
 import { useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { blockAPI, fieldAPI, runAutoTriggerChain } from "@/lib/api";
+import { blockAPI, runAutoTriggerChain } from "@/lib/api";
 import { useBlockGeneration } from "@/lib/hooks/useBlockGeneration";
 import type { ContentBlock } from "@/lib/api";
 import { VersionHistoryButton } from "./version-history";
@@ -40,7 +40,6 @@ interface ContentBlockCardProps {
   block: ContentBlock;
   projectId: string;
   allBlocks?: ContentBlock[];  // 用于依赖选择
-  isVirtual?: boolean;  // 是否是虚拟块（来自 ProjectField）
   onUpdate?: () => void;
   onSelect?: () => void;  // 点击选中此块（用于进入子组/分组）
 }
@@ -49,12 +48,10 @@ export function ContentBlockCard({
   block, 
   projectId, 
   allBlocks = [], 
-  isVirtual = false, 
   onUpdate,
   onSelect 
 }: ContentBlockCardProps) {
-  // 判断是否使用 Field API（虚拟块需要更新 ProjectField 表）
-  const useFieldAPI = isVirtual || !!block.parent_id?.startsWith("virtual_");
+  // P0-1: 统一使用 blockAPI（已移除 fieldAPI/isVirtual 分支）
   
   const [isExpanded, setIsExpanded] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -97,7 +94,7 @@ export function ContentBlockCard({
     isGenerating, generatingContent, canGenerate, unmetDependencies,
     handleGenerate: _handleGenerate, handleStop: _handleStop,
   } = useBlockGeneration({
-    block, projectId, allBlocks, useFieldAPI,
+    block, projectId, allBlocks,
     preAnswers, hasPreQuestions,
     onUpdate,
     onContentReady: (content) => setEditedContent(content),
@@ -135,11 +132,7 @@ export function ContentBlockCard({
   const handleSavePreAnswers = async () => {
     setIsSavingPreAnswers(true);
     try {
-      if (useFieldAPI) {
-        await fieldAPI.update(block.id, { pre_answers: preAnswers } as any);
-      } else {
-        await blockAPI.update(block.id, { pre_answers: preAnswers });
-      }
+      await blockAPI.update(block.id, { pre_answers: preAnswers });
       setPreAnswersSaved(true);
       setTimeout(() => setPreAnswersSaved(false), 2000);
       onUpdate?.();
@@ -199,11 +192,7 @@ export function ContentBlockCard({
   const handleSaveName = async () => {
     if (editedName.trim() && editedName !== block.name) {
       try {
-        if (useFieldAPI) {
-          await fieldAPI.update(block.id, { name: editedName.trim() });
-        } else {
-          await blockAPI.update(block.id, { name: editedName.trim() });
-        }
+        await blockAPI.update(block.id, { name: editedName.trim() });
         onUpdate?.();
       } catch (err) {
         console.error("更新名称失败:", err);
@@ -217,11 +206,7 @@ export function ContentBlockCard({
   // 保存内容
   const handleSaveContent = async () => {
     try {
-      if (useFieldAPI) {
-        await fieldAPI.update(block.id, { content: editedContent });
-      } else {
-        await blockAPI.update(block.id, { content: editedContent });
-      }
+      await blockAPI.update(block.id, { content: editedContent });
       setIsEditing(false);
       onUpdate?.();
     } catch (err) {
@@ -233,11 +218,7 @@ export function ContentBlockCard({
   // 保存 AI 提示词
   const handleSavePrompt = async () => {
     try {
-      if (useFieldAPI) {
-        await fieldAPI.update(block.id, { ai_prompt: editedPrompt });
-      } else {
-        await blockAPI.update(block.id, { ai_prompt: editedPrompt });
-      }
+      await blockAPI.update(block.id, { ai_prompt: editedPrompt });
       setSavedPrompt(editedPrompt); // 乐观更新本地状态，立即反映到 UI
       setShowPromptModal(false);
       onUpdate?.();
@@ -250,11 +231,7 @@ export function ContentBlockCard({
   // 保存约束
   const handleSaveConstraints = async () => {
     try {
-      if (useFieldAPI) {
-        await fieldAPI.update(block.id, { constraints: editedConstraints });
-      } else {
-        await blockAPI.update(block.id, { constraints: editedConstraints });
-      }
+      await blockAPI.update(block.id, { constraints: editedConstraints });
       setShowConstraintsModal(false);
       onUpdate?.();
     } catch (err) {
@@ -266,16 +243,7 @@ export function ContentBlockCard({
   // 保存依赖
   const handleSaveDependencies = async () => {
     try {
-      if (useFieldAPI) {
-        await fieldAPI.update(block.id, { 
-          dependencies: { 
-            depends_on: selectedDependencies,
-            dependency_type: "all"
-          }
-        });
-      } else {
-        await blockAPI.update(block.id, { depends_on: selectedDependencies });
-      }
+      await blockAPI.update(block.id, { depends_on: selectedDependencies });
       setShowDependencyModal(false);
       onUpdate?.();
     } catch (err) {
@@ -300,11 +268,7 @@ export function ContentBlockCard({
     e.stopPropagation();
     if (!confirm(`确定要删除「${block.name}」吗？此操作不可撤销。`)) return;
     try {
-      if (useFieldAPI) {
-        await fieldAPI.delete(block.id);
-      } else {
-        await blockAPI.delete(block.id);
-      }
+      await blockAPI.delete(block.id);
       onUpdate?.();
     } catch (err) {
       console.error("删除失败:", err);
@@ -315,11 +279,7 @@ export function ContentBlockCard({
   // 切换 need_review 状态
   const handleToggleNeedReview = async () => {
     try {
-      if (useFieldAPI) {
-        await fieldAPI.update(block.id, { need_review: !block.need_review });
-      } else {
-        await blockAPI.update(block.id, { need_review: !block.need_review });
-      }
+      await blockAPI.update(block.id, { need_review: !block.need_review });
       onUpdate?.();
     } catch (err) {
       console.error("切换审核状态失败:", err);

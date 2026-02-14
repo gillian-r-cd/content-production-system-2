@@ -24,7 +24,7 @@ LangGraph Agent 核心编排器
 - 不再需要手动意图分类 + if/elif 路由
 """
 
-import json
+
 import logging
 import operator
 from typing import TypedDict, Annotated, Optional, List, Dict
@@ -42,31 +42,7 @@ from core.agent_tools import AGENT_TOOLS
 logger = logging.getLogger("orchestrator")
 
 
-# ============== 辅助函数（保留，供其他模块使用） ==============
-
-def normalize_intent(raw_intent) -> str:
-    """
-    将项目意图规范化为字符串格式。
-
-    意图可能是：
-    - 字典 {"做什么": "...", "给谁看": "...", "核心价值": "..."}
-    - 字符串
-    - None 或空值
-    """
-    if not raw_intent:
-        return ""
-    if isinstance(raw_intent, dict):
-        return json.dumps(raw_intent, ensure_ascii=False, indent=2)
-    return str(raw_intent)
-
-
-def normalize_consumer_personas(raw_personas) -> str:
-    """将消费者画像规范化为字符串格式。"""
-    if not raw_personas:
-        return ""
-    if isinstance(raw_personas, dict):
-        return json.dumps(raw_personas, ensure_ascii=False, indent=2)
-    return str(raw_personas)
+# P3-1e: normalize_intent() 和 normalize_consumer_personas() 已删除（无调用方）
 
 
 # ============== State 定义 ==============
@@ -383,48 +359,5 @@ def create_agent_graph():
 agent_graph = create_agent_graph()
 
 
-# ============== 向后兼容（临时，M3 完成后删除） ==============
-# agent.py 旧代码引用了这些名称，在 M3 重写 api/agent.py 之前保持可导入
-
-class ContentProductionAgent:
-    """
-    向后兼容的包装类。
-    新代码应直接使用 agent_graph.astream_events()。
-    """
-
-    async def run(self, project_id: str, message: str, **kwargs) -> dict:
-        """
-        同步执行（非流式）。
-        将旧接口映射到新 LangGraph graph.ainvoke()。
-        """
-        state = {
-            "messages": [HumanMessage(content=message)],
-            "project_id": project_id,
-            "current_phase": kwargs.get("current_phase", "intent"),
-            "creator_profile": kwargs.get("creator_profile", ""),
-        }
-        config = {
-            "configurable": {
-                "thread_id": f"{project_id}:assistant",
-                "project_id": project_id,
-            }
-        }
-        result = await agent_graph.ainvoke(state, config=config)
-
-        # 提取最后一条 AI 消息
-        ai_messages = [m for m in result["messages"] if isinstance(m, AIMessage)]
-        last_ai = ai_messages[-1] if ai_messages else None
-
-        return {
-            "agent_output": last_ai.content if last_ai else "",
-            "display_output": last_ai.content if last_ai else "",
-            "messages": result["messages"],
-            "current_phase": state["current_phase"],
-        }
-
-
-# 向后兼容的全局实例
-content_agent = ContentProductionAgent()
-
-# 向后兼容的旧 State 类型别名
-ContentProductionState = AgentState
+# P3-1: ContentProductionAgent、content_agent、ContentProductionState 已删除
+# api/agent.py 的 /chat 和 /retry 已直接使用 agent_graph.ainvoke()

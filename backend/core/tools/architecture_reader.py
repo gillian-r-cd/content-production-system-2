@@ -65,7 +65,7 @@ class ProjectArchitecture:
     project_id: str
     project_name: str
     current_phase: str
-    use_flexible_architecture: bool
+    use_flexible_architecture: bool  # [已废弃] 统一为 True
     phases: List[PhaseInfo]
     total_fields: int
     completed_fields: int

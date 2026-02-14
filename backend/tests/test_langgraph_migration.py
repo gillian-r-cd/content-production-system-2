@@ -155,22 +155,15 @@ class TestOrchestrator:
         # 应该包含关键片段
         assert "工具" in prompt or "tool" in prompt.lower()
     
-    def test_content_agent_compat(self):
-        """ContentProductionAgent 向后兼容类应该存在"""
-        from core.orchestrator import content_agent, ContentProductionAgent
-        assert isinstance(content_agent, ContentProductionAgent)
-        assert hasattr(content_agent, 'run')
-    
-    def test_backward_compat_exports(self):
-        """向后兼容导出应该存在"""
-        from core.orchestrator import (
-            ContentProductionState,
-            normalize_intent,
-            normalize_consumer_personas,
-        )
-        assert ContentProductionState is not None
-        assert callable(normalize_intent)
-        assert callable(normalize_consumer_personas)
+    def test_dead_code_removed(self):
+        """P3-1: ContentProductionAgent 等向后兼容代码已删除"""
+        import importlib
+        mod = importlib.import_module("core.orchestrator")
+        assert not hasattr(mod, "ContentProductionAgent"), "ContentProductionAgent should be removed"
+        assert not hasattr(mod, "content_agent"), "content_agent should be removed"
+        assert not hasattr(mod, "ContentProductionState"), "ContentProductionState alias should be removed"
+        assert not hasattr(mod, "normalize_intent"), "normalize_intent should be removed"
+        assert not hasattr(mod, "normalize_consumer_personas"), "normalize_consumer_personas should be removed"
 
 
 # ============== Test 4: API 端点 ==============
@@ -323,7 +316,7 @@ class TestImportIntegrity:
                     continue
                 filepath = os.path.join(root, f)
                 try:
-                    with open(filepath) as fh:
+                    with open(filepath, encoding="utf-8") as fh:
                         tree = ast.parse(fh.read())
                     for node in ast.walk(tree):
                         if isinstance(node, ast.ImportFrom):

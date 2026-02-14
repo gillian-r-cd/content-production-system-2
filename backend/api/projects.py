@@ -28,7 +28,7 @@ class ProjectCreate(BaseModel):
     name: str
     creator_profile_id: Optional[str] = None
     use_deep_research: bool = True
-    use_flexible_architecture: bool = False  # 是否使用灵活的 ContentBlock 架构
+    use_flexible_architecture: bool = True  # [已废弃] 统一为 True
     phase_order: Optional[List[str]] = None  # 自定义阶段顺序，None 使用默认，[] 表示从零开始
 
 
@@ -56,7 +56,7 @@ class ProjectResponse(BaseModel):
     agent_autonomy: Dict[str, bool]
     golden_context: dict
     use_deep_research: bool
-    use_flexible_architecture: bool = False  # 是否使用灵活的 ContentBlock 架构
+    use_flexible_architecture: bool = True  # [已废弃] 统一为 True
     created_at: str
     updated_at: str
 
@@ -286,7 +286,7 @@ def duplicate_project(
         agent_autonomy=old_project.agent_autonomy.copy() if old_project.agent_autonomy else {},
         golden_context=old_project.golden_context.copy() if old_project.golden_context else {},
         use_deep_research=old_project.use_deep_research,
-        use_flexible_architecture=old_project.use_flexible_architecture if hasattr(old_project, 'use_flexible_architecture') else False,
+        use_flexible_architecture=True,  # P0-1: 统一为 True
     )
     
     db.add(new_project)
@@ -440,7 +440,7 @@ def create_new_version(
         agent_autonomy=old_project.agent_autonomy.copy() if old_project.agent_autonomy else {},
         golden_context=old_project.golden_context.copy() if old_project.golden_context else {},
         use_deep_research=old_project.use_deep_research,
-        use_flexible_architecture=old_project.use_flexible_architecture if hasattr(old_project, 'use_flexible_architecture') else False,
+        use_flexible_architecture=True,  # P0-1: 统一为 True
     )
     
     db.add(new_project)
@@ -802,7 +802,7 @@ def import_project(
             agent_autonomy=proj_data.get("agent_autonomy", {}),
             golden_context=proj_data.get("golden_context", {}),
             use_deep_research=proj_data.get("use_deep_research", True),
-            use_flexible_architecture=proj_data.get("use_flexible_architecture", False),
+            use_flexible_architecture=True,  # P0-1: 统一为 True
         )
         db.add(new_project)
 
@@ -1332,7 +1332,7 @@ def _project_to_response(project: Project) -> ProjectResponse:
         agent_autonomy=project.agent_autonomy or {},
         golden_context=project.golden_context or {},
         use_deep_research=project.use_deep_research if hasattr(project, 'use_deep_research') else True,
-        use_flexible_architecture=project.use_flexible_architecture if hasattr(project, 'use_flexible_architecture') else False,
+        use_flexible_architecture=project.use_flexible_architecture if hasattr(project, 'use_flexible_architecture') else True,  # P0-1: 统一为 True
         created_at=project.created_at.isoformat() if project.created_at else "",
         updated_at=project.updated_at.isoformat() if project.updated_at else "",
     )

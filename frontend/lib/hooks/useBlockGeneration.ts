@@ -1,12 +1,13 @@
 // frontend/lib/hooks/useBlockGeneration.ts
 // 功能: ContentBlock 内容生成的共享逻辑（流式 SSE + 依赖检查 + 停止 + 自动触发链）
 // 主要导出: useBlockGeneration() 自定义 Hook
+// P0-1: 统一使用 blockAPI，已移除 fieldAPI 分支
 // 设计原则: 消除 ContentBlockEditor 和 ContentBlockCard 中 ~80 行完全重复的生成逻辑
 
 "use client";
 
 import { useState, useRef, useMemo, useCallback } from "react";
-import { blockAPI, fieldAPI, runAutoTriggerChain } from "@/lib/api";
+import { blockAPI, runAutoTriggerChain } from "@/lib/api";
 import { readSSEStream } from "@/lib/sse";
 import { sendNotification } from "@/lib/utils";
 import type { ContentBlock } from "@/lib/api";
@@ -15,8 +16,6 @@ interface UseBlockGenerationOptions {
   block: ContentBlock;
   projectId: string;
   allBlocks: ContentBlock[];
-  /** 是否使用旧 Field API（虚拟块兼容） */
-  useFieldAPI: boolean;
   /** 预提问答案（生成前先保存） */
   preAnswers?: Record<string, string>;
   /** 是否有预提问 */
@@ -44,7 +43,6 @@ export function useBlockGeneration({
   block,
   projectId,
   allBlocks,
-  useFieldAPI,
   preAnswers,
   hasPreQuestions,
   onSavePreAnswers,
@@ -83,12 +81,7 @@ export function useBlockGeneration({
       if (onSavePreAnswers) {
         await onSavePreAnswers();
       } else {
-        // 默认保存逻辑
-        if (useFieldAPI) {
-          await fieldAPI.update(block.id, { pre_answers: preAnswers } as any);
-        } else {
-          await blockAPI.update(block.id, { pre_answers: preAnswers });
-        }
+        await blockAPI.update(block.id, { pre_answers: preAnswers });
       }
     }
 
@@ -100,42 +93,35 @@ export function useBlockGeneration({
     setGeneratingContent("");
 
     try {
-      if (useFieldAPI) {
-        const result = await fieldAPI.generate(block.id, preAnswers || {});
-        if (generatingBlockIdRef.current === currentBlockId) {
-          onContentReady?.(result.content);
-        }
-        onUpdate?.();
-      } else {
-        const response = await blockAPI.generateStream(block.id, abortController.signal);
-        if (!response.ok) {
-          const error = await response.json().catch(() => ({ detail: "生成失败" }));
-          throw new Error(error.detail || `HTTP ${response.status}`);
-        }
+      // P0-1: 统一使用 blockAPI 流式生成
+      const response = await blockAPI.generateStream(block.id, abortController.signal);
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: "生成失败" }));
+        throw new Error(error.detail || `HTTP ${response.status}`);
+      }
 
-        let accumulatedContent = "";
+      let accumulatedContent = "";
 
-        for await (const data of readSSEStream(response)) {
-          if (data.chunk) {
-            accumulatedContent += data.chunk as string;
-            if (generatingBlockIdRef.current === currentBlockId) {
-              setGeneratingContent(accumulatedContent);
-            }
+      for await (const data of readSSEStream(response)) {
+        if (data.chunk) {
+          accumulatedContent += data.chunk as string;
+          if (generatingBlockIdRef.current === currentBlockId) {
+            setGeneratingContent(accumulatedContent);
           }
-          if (data.done) {
-            const finalContent = (data.content as string) || accumulatedContent;
-            if (generatingBlockIdRef.current === currentBlockId) {
-              onContentReady?.(finalContent);
-            }
-            onUpdate?.();
-            sendNotification("内容生成完成", `「${block.name}」已生成完毕，点击查看`);
-            if (projectId) {
-              runAutoTriggerChain(projectId, () => onUpdate?.()).catch(console.error);
-            }
+        }
+        if (data.done) {
+          const finalContent = (data.content as string) || accumulatedContent;
+          if (generatingBlockIdRef.current === currentBlockId) {
+            onContentReady?.(finalContent);
           }
-          if (data.error) {
-            throw new Error(data.error as string);
+          onUpdate?.();
+          sendNotification("内容生成完成", `「${block.name}」已生成完毕，点击查看`);
+          if (projectId) {
+            runAutoTriggerChain(projectId, () => onUpdate?.()).catch(console.error);
           }
+        }
+        if (data.error) {
+          throw new Error(data.error as string);
         }
       }
     } catch (err) {
@@ -158,7 +144,7 @@ export function useBlockGeneration({
     }
   }, [
     block.id, block.name, projectId, canGenerate, unmetDependencies,
-    useFieldAPI, preAnswers, hasPreQuestions,
+    preAnswers, hasPreQuestions,
     onSavePreAnswers, onUpdate, onContentReady,
   ]);
 
