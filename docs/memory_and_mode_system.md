@@ -492,42 +492,44 @@ def read_mode_history(
 
 ## 五、里程碑与 TODO
 
-### M1：模式切换基础功能（消除分流）
+### M1：模式切换基础功能（消除分流） ✅ 已完成
 
 **目标：** 所有模式统一走 Agent Graph，共享工具和上下文。
 **前置依赖：** 无。
+**状态：** 全部完成，13/13 测试通过（2026-02-14）。
 
-| # | 任务 | 文件 | 说明 |
+| # | 任务 | 文件 | 状态 |
 |---|------|------|------|
-| M1-1 | 创建 `AgentMode` 模型 | `backend/core/models/agent_mode.py` | 新建文件，定义 AgentMode 表结构 |
-| M1-2 | 导出 AgentMode | `backend/core/models/__init__.py` | 添加 import 和 __all__ 条目 |
-| M1-3 | 预置模式数据 | `backend/scripts/init_db.py` | 在 seed_default_data 中插入 5 个系统模式（assistant/strategist/critic/reader/creative） |
-| M1-4 | 扩展 AgentState | `backend/core/orchestrator.py` | 新增 mode, mode_prompt, memory_context 字段 |
-| M1-5 | 修改 build_system_prompt | `backend/core/orchestrator.py` | 用 mode_prompt 替换硬编码身份段，增加 memory_section 占位 |
-| M1-6 | 取消共创分流 | `backend/api/agent.py` | 删除 `_handle_cocreation_stream`，删除 `if mode == "cocreation"` 分流 |
-| M1-7 | stream_chat 传入模式信息 | `backend/api/agent.py` | 查 AgentMode，构建 input_state 含 mode/mode_prompt |
-| M1-8 | thread_id 按模式隔离 | `backend/api/agent.py` | `thread_id = f"{project_id}:{mode}"` |
-| M1-9 | 模式管理 API | `backend/api/modes.py`（新建） | GET/POST/PUT/DELETE `/api/modes` |
-| M1-10 | 前端模式选择器 | `frontend/components/agent-panel.tsx` | 从后端加载模式列表，替换硬编码的二选一按钮 |
-| M1-11 | 验证：所有模式可调用工具 | 手动测试 | 在编辑/教练等模式中执行 modify_field 等操作 |
+| M1-1 | 创建 `AgentMode` 模型 | `backend/core/models/agent_mode.py` | ✅ |
+| M1-2 | 导出 AgentMode | `backend/core/models/__init__.py` | ✅ |
+| M1-3 | 预置模式数据 | `backend/scripts/init_db.py` | ✅ |
+| M1-4 | 扩展 AgentState | `backend/core/orchestrator.py` | ✅ |
+| M1-5 | 修改 build_system_prompt | `backend/core/orchestrator.py` | ✅ |
+| M1-6 | 取消共创分流 | `backend/api/agent.py` | ✅ |
+| M1-7 | stream_chat 传入模式信息 | `backend/api/agent.py` | ✅ |
+| M1-8 | thread_id 按模式隔离 | `backend/api/agent.py` | ✅ |
+| M1-9 | 模式管理 API | `backend/api/modes.py`（新建） | ✅ |
+| M1-10 | 前端模式选择器 | `frontend/components/agent-panel.tsx` | ✅ |
+| M1-11 | 验证：所有模式可调用工具 | `backend/tests/test_memory_mode.py` | ✅ |
 
-### M2：Memory 系统（跨模式知识积累）
+### M2：Memory 系统（跨模式知识积累） ✅ 已完成
 
 **目标：** 对话中的关键信息自动提炼、跨模式可见。
 **前置依赖：** M1 完成。
+**状态：** 全部完成，13/13 测试通过（2026-02-14）。
 
-| # | 任务 | 文件 | 说明 |
+| # | 任务 | 文件 | 状态 |
 |---|------|------|------|
-| M2-1 | 创建 `MemoryItem` 模型 | `backend/core/models/memory_item.py` | 新建文件，定义 memory_items 表结构 |
-| M2-2 | 导出 MemoryItem | `backend/core/models/__init__.py` | 添加 import 和 __all__ 条目 |
-| M2-3 | 创建 memory_service | `backend/core/memory_service.py` | extract_memories() 提炼逻辑 |
-| M2-4 | 对话结束后触发提炼 | `backend/api/agent.py` | stream_chat 的 done 事件后调用 extract_memories |
-| M2-5 | stream_chat 注入记忆 | `backend/api/agent.py` | 查 MemoryItem 全量，传入 input_state.memory_context |
-| M2-6 | build_system_prompt 拼入记忆段 | `backend/core/orchestrator.py` | 使用 memory_context 构建「项目记忆」段落 |
-| M2-7 | 添加 read_mode_history 工具 | `backend/core/agent_tools.py` | 新增跨模式查阅工具 |
-| M2-8 | 注册到 AGENT_TOOLS | `backend/core/agent_tools.py` | 添加到工具列表 |
-| M2-9 | 记忆去重逻辑 | `backend/core/memory_service.py` | 新记忆入库前检查是否已有类似条目 |
-| M2-10 | 验证：记忆跨模式可见 | 手动测试 | 助手模式设偏好 → 切编辑模式 → 检查是否遵守 |
+| M2-1 | 创建 `MemoryItem` 模型 | `backend/core/models/memory_item.py` | ✅ |
+| M2-2 | 导出 MemoryItem | `backend/core/models/__init__.py` | ✅ |
+| M2-3 | 创建 memory_service | `backend/core/memory_service.py` | ✅ |
+| M2-4 | 对话结束后触发提炼 | `backend/api/agent.py` | ✅ |
+| M2-5 | stream_chat 注入记忆 | `backend/api/agent.py` | ✅ |
+| M2-6 | build_system_prompt 拼入记忆段 | `backend/core/orchestrator.py` | ✅ |
+| M2-7 | 添加 read_mode_history 工具 | `backend/core/agent_tools.py` | ✅ |
+| M2-8 | 注册到 AGENT_TOOLS | `backend/core/agent_tools.py` | ✅ |
+| M2-9 | 记忆去重逻辑 | `backend/core/memory_service.py` | ✅ |
+| M2-10 | 验证：记忆跨模式可见 | `backend/tests/test_memory_mode.py` | ✅ |
 
 ### M3：Memory 管理能力（可选，远期）
 

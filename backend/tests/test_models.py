@@ -103,14 +103,6 @@ class TestProject:
         project.current_phase = "evaluate"
         assert project.get_next_phase() is None
     
-    def test_autonomy_check(self, db_session):
-        project = Project(
-            name="测试项目",
-            agent_autonomy={"intent": True, "research": False}
-        )
-        
-        assert project.needs_human_confirm("intent") is True
-        assert project.needs_human_confirm("research") is False
 
 
 class TestFieldTemplate:

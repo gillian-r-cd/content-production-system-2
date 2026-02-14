@@ -81,7 +81,6 @@ def update_system_prompt(
 class AgentSettingsUpdate(BaseModel):
     tools: Optional[list] = None
     skills: Optional[list] = None
-    autonomy_defaults: Optional[dict] = None
     tool_prompts: Optional[dict] = None
 
 
@@ -90,7 +89,7 @@ class AgentSettingsResponse(BaseModel):
     name: str
     tools: list
     skills: list
-    autonomy_defaults: dict
+    autonomy_defaults: dict = {}  # [已废弃] 保留兼容旧数据
     tool_prompts: dict
 
     model_config = {"from_attributes": True}
@@ -112,16 +111,6 @@ def get_agent_settings(db: Session = Depends(get_db)):
                 "run_evaluation", "generate_outline", "manage_skill",
             ],
             skills=[],
-            autonomy_defaults={
-                "intent": True,
-                "research": True,
-                "design_inner": True,
-                "produce_inner": True,
-                "design_outer": True,
-                "produce_outer": True,
-                "simulate": True,
-                "evaluate": True,
-            },
         )
         db.add(settings)
         db.commit()

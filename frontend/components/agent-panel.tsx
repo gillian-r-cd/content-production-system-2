@@ -1,7 +1,7 @@
 // frontend/components/agent-panel.tsx
 // 功能: 右栏AI Agent对话面板
 // 主要组件: AgentPanel, MessageBubble, MentionDropdown, ToolSelector
-// 支持: @引用、对话历史加载、编辑重发、再试一次、一键复制、Tool调用、流式输出、Markdown渲染
+// 支持: @引用、对话历史加载、编辑重发、再试一次、一键复制、Tool调用、流式输出、Markdown渲染、顶部模式切换标签栏
 
 "use client";
 
@@ -14,6 +14,7 @@ import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import { settingsAPI } from "@/lib/api";
 import { Square } from "lucide-react";
+import { MemoryPanel } from "./memory-panel";
 
 // 统一的可引用项（兼容 Field 和 ContentBlock）
 interface MentionItem {
@@ -87,6 +88,7 @@ export function AgentPanel({
   const [editContent, setEditContent] = useState("");
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
   const [availableTools, setAvailableTools] = useState<{ id: string; name: string; desc: string }[]>([]);
+  const [showMemoryPanel, setShowMemoryPanel] = useState(false);
 
   // 加载可用 Agent 模式
   useEffect(() => {
@@ -837,14 +839,67 @@ export function AgentPanel({
         </div>
       )}
 
-      {/* 头部 */}
-      <div className="px-4 py-3 border-b border-surface-3">
-        <h2 className="font-semibold text-zinc-100">AI Agent</h2>
-        <p className="text-xs text-zinc-500">
-          {projectId ? "与 Agent 对话推进内容生产" : "请先选择项目"}
-        </p>
-      </div>
+      {/* 记忆面板（覆盖整个 Agent 面板区域） */}
+      {showMemoryPanel && projectId && (
+        <MemoryPanel
+          projectId={projectId}
+          onClose={() => setShowMemoryPanel(false)}
+        />
+      )}
 
+      {/* 头部 + 模式切换（记忆面板隐藏时显示） */}
+      {!showMemoryPanel && (
+      <div className="border-b border-surface-3">
+        <div className="px-4 pt-3 pb-2 flex items-center justify-between">
+          <div>
+            <h2 className="font-semibold text-zinc-100">AI Agent</h2>
+            <p className="text-xs text-zinc-500">
+              {projectId ? "与 Agent 对话推进内容生产" : "请先选择项目"}
+            </p>
+          </div>
+          {projectId && (
+            <button
+              onClick={() => setShowMemoryPanel(true)}
+              title="查看项目记忆"
+              className="text-zinc-500 hover:text-zinc-300 text-lg px-2 py-1 rounded hover:bg-surface-2 transition"
+            >
+              🧠
+            </button>
+          )}
+        </div>
+        {/* 模式切换标签栏 */}
+        <div className="px-3 flex gap-1 overflow-x-auto">
+          {availableModes.length > 0 ? (
+            availableModes.map((mode) => (
+              <button
+                key={mode.name}
+                onClick={() => setChatMode(mode.name)}
+                title={mode.description}
+                className={cn(
+                  "flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-t-lg transition-all whitespace-nowrap border-b-2",
+                  chatMode === mode.name
+                    ? "border-brand-500 text-brand-300 bg-brand-500/10"
+                    : "border-transparent text-zinc-500 hover:text-zinc-300 hover:bg-surface-2"
+                )}
+              >
+                <span className="text-base leading-none">{mode.icon}</span>
+                <span>{mode.display_name}</span>
+              </button>
+            ))
+          ) : (
+            <button
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-t-lg border-b-2 border-brand-500 text-brand-300 bg-brand-500/10"
+            >
+              <span className="text-base leading-none">🛠️</span>
+              <span>助手</span>
+            </button>
+          )}
+        </div>
+      </div>
+      )}
+
+      {!showMemoryPanel && (
+      <>
       {/* 消息列表 */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.length === 0 && (
@@ -958,34 +1013,8 @@ export function AgentPanel({
           </div>
         </div>
 
-        {/* 模式切换 + 快捷操作 */}
+        {/* 快捷操作 */}
         <div className="flex gap-2 mt-2 flex-wrap items-center">
-          {/* 模式切换 - 动态加载 */}
-          <div className="flex bg-surface-2 rounded-md border border-surface-3 overflow-hidden mr-2">
-            {availableModes.length > 0 ? (
-              availableModes.map((mode) => (
-                <button
-                  key={mode.name}
-                  onClick={() => setChatMode(mode.name)}
-                  title={mode.description}
-                  className={cn(
-                    "px-2 py-1 text-xs transition-colors whitespace-nowrap",
-                    chatMode === mode.name
-                      ? "bg-brand-600 text-white"
-                      : "text-zinc-400 hover:text-zinc-200 hover:bg-surface-3"
-                  )}
-                >
-                  {mode.icon} {mode.display_name}
-                </button>
-              ))
-            ) : (
-              <button
-                className="px-2 py-1 text-xs bg-brand-600 text-white"
-              >
-                🛠️ 助手
-              </button>
-            )}
-          </div>
           <QuickAction label="继续" onClick={() => setInput("继续")} disabled={!projectId || sending} />
           <QuickAction label="开始调研" onClick={() => setInput("开始消费者调研")} disabled={!projectId || sending} />
           <QuickAction label="评估" onClick={() => setInput("评估当前内容")} disabled={!projectId || sending} />
@@ -998,6 +1027,8 @@ export function AgentPanel({
           </button>
         </div>
       </div>
+      </>
+      )}
     </div>
   );
 }

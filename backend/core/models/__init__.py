@@ -28,6 +28,7 @@ from core.models.eval_task import EvalTask, SIMULATOR_TYPES, INTERACTION_MODES, 
 from core.models.eval_trial import EvalTrial, EVAL_TRIAL_STATUS
 from core.models.grader import Grader, GRADER_TYPE_CHOICES, PRESET_GRADERS
 from core.models.agent_mode import AgentMode
+from core.models.memory_item import MemoryItem
 
 __all__ = [
     # 基础
@@ -100,4 +101,7 @@ __all__ = [
     
     # Agent 模式
     "AgentMode",
+    
+    # 项目记忆（Memory System M2）
+    "MemoryItem",
 ]

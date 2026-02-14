@@ -1,11 +1,175 @@
 // frontend/components/settings/logs-section.tsx
 // 功能: 调试日志查看和导出
+// 主要组件: LogsSection, LogDetailModal, MessageBlock
+// 数据结构:
+//   prompt_input: JSON 数组 [{role, content, tool_calls?, tool_call_id?, name?}]
+//   prompt_output: 纯文本（可能含 [tool_calls] 后缀）
 
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { settingsAPI } from "@/lib/api";
 
+// ---- 角色配色与标签 ----
+const ROLE_CONFIG: Record<string, { label: string; color: string; bg: string }> = {
+  system: { label: "System Prompt", color: "text-violet-300", bg: "bg-violet-500/10 border-violet-500/30" },
+  human: { label: "用户消息", color: "text-green-300", bg: "bg-green-500/10 border-green-500/30" },
+  ai: { label: "AI 回复", color: "text-amber-300", bg: "bg-amber-500/10 border-amber-500/30" },
+  tool: { label: "工具结果", color: "text-cyan-300", bg: "bg-cyan-500/10 border-cyan-500/30" },
+  unknown: { label: "未知", color: "text-zinc-400", bg: "bg-zinc-500/10 border-zinc-500/30" },
+};
+
+// ---- 单条 Message 展示块 ----
+function MessageBlock({ msg, index, defaultOpen }: { msg: any; index: number; defaultOpen: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
+  const role = msg.role || "unknown";
+  const config = ROLE_CONFIG[role] || ROLE_CONFIG.unknown;
+  const content = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content, null, 2);
+  const charCount = content.length;
+
+  return (
+    <div className={`border rounded-lg overflow-hidden ${config.bg}`}>
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-4 py-2 text-left hover:bg-white/5 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <span className={`text-xs font-medium ${config.color}`}>
+            #{index + 1} {config.label}
+          </span>
+          {msg.name && (
+            <span className="text-xs text-zinc-500">({msg.name})</span>
+          )}
+          {msg.tool_calls && msg.tool_calls.length > 0 && (
+            <span className="text-xs text-cyan-400">
+              🔧 {msg.tool_calls.map((tc: any) => tc.name).join(", ")}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-zinc-600">{charCount.toLocaleString()} 字符</span>
+          <span className="text-zinc-500 text-xs">{open ? "▼" : "▶"}</span>
+        </div>
+      </button>
+      {open && (
+        <div className="border-t border-white/10">
+          <pre className="p-4 text-sm text-zinc-300 whitespace-pre-wrap overflow-auto max-h-[60vh] leading-relaxed">
+            {content}
+          </pre>
+          {msg.tool_calls && msg.tool_calls.length > 0 && (
+            <div className="px-4 pb-3 border-t border-white/10 pt-2">
+              <p className="text-xs text-cyan-400 mb-1">Tool Calls:</p>
+              <pre className="text-xs text-zinc-400 whitespace-pre-wrap">
+                {JSON.stringify(msg.tool_calls, null, 2)}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---- 解析 prompt_input ----
+function parsePromptInput(raw: string): { parsed: any[] | null; rawText: string } {
+  if (!raw) return { parsed: null, rawText: "无" };
+  try {
+    const arr = JSON.parse(raw);
+    if (Array.isArray(arr) && arr.length > 0 && arr[0].role) {
+      return { parsed: arr, rawText: raw };
+    }
+  } catch {
+    // 旧格式或解析失败 — 显示原始文本
+  }
+  return { parsed: null, rawText: raw };
+}
+
+// ---- 日志详情弹窗 ----
+function LogDetailModal({ log, onClose }: { log: any; onClose: () => void }) {
+  const { parsed: messages, rawText } = useMemo(() => parsePromptInput(log.prompt_input), [log.prompt_input]);
+  const [showRawInput, setShowRawInput] = useState(false);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <div className="relative w-full max-w-4xl max-h-[90vh] flex flex-col bg-surface-1 border border-surface-3 rounded-xl overflow-hidden">
+        {/* 头部 */}
+        <div className="flex-shrink-0 flex justify-between items-center px-6 py-4 border-b border-surface-3">
+          <div>
+            <h3 className="text-lg font-medium text-zinc-100">日志详情</h3>
+            <div className="flex gap-4 mt-1 text-xs text-zinc-500">
+              <span>{log.operation}</span>
+              <span>{log.model}</span>
+              <span>Tokens: {(log.tokens_in || 0) + (log.tokens_out || 0)}</span>
+              <span>{log.duration_ms}ms</span>
+              <span>${(log.cost || 0).toFixed(4)}</span>
+            </div>
+          </div>
+          <button onClick={onClose} className="text-zinc-400 hover:text-zinc-200 text-xl">✕</button>
+        </div>
+
+        {/* 内容区域（可滚动） */}
+        <div className="flex-1 overflow-auto p-6 space-y-6">
+          {/* 输入 (Messages) */}
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-sm font-medium text-zinc-400">
+                输入 (Messages) — 大模型实际收到的全部信息
+              </h4>
+              {messages && (
+                <button
+                  onClick={() => setShowRawInput(!showRawInput)}
+                  className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors"
+                >
+                  {showRawInput ? "分层展示" : "原始 JSON"}
+                </button>
+              )}
+            </div>
+
+            {showRawInput || !messages ? (
+              // 原始文本视图
+              <pre className="p-4 bg-surface-2 rounded-lg text-sm text-zinc-300 whitespace-pre-wrap overflow-auto max-h-[60vh] leading-relaxed">
+                {messages ? JSON.stringify(messages, null, 2) : rawText}
+              </pre>
+            ) : (
+              // 分层消息视图
+              <div className="space-y-2">
+                {messages.map((msg: any, idx: number) => (
+                  <MessageBlock
+                    key={idx}
+                    msg={msg}
+                    index={idx}
+                    defaultOpen={msg.role === "human" || messages.length <= 3}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* 输出 (Response) */}
+          <div>
+            <h4 className="text-sm font-medium text-zinc-400 mb-3">输出 (Response)</h4>
+            <pre className="p-4 bg-surface-2 rounded-lg text-sm text-zinc-300 whitespace-pre-wrap overflow-auto max-h-[60vh] leading-relaxed">
+              {log.prompt_output || "无"}
+            </pre>
+          </div>
+
+          {/* 错误信息（如果有） */}
+          {log.error_message && (
+            <div>
+              <h4 className="text-sm font-medium text-red-400 mb-3">错误信息</h4>
+              <pre className="p-4 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-300 whitespace-pre-wrap overflow-auto">
+                {log.error_message}
+              </pre>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---- 主组件 ----
 export function LogsSection({ logs, onRefresh }: { logs: any[]; onRefresh?: () => void }) {
   const [selectedLog, setSelectedLog] = useState<any>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -40,8 +204,8 @@ export function LogsSection({ logs, onRefresh }: { logs: any[]; onRefresh?: () =
           <p className="text-sm text-zinc-500 mt-1">查看每次 AI 调用的详细信息</p>
         </div>
         <div className="flex gap-2">
-          <button 
-            onClick={handleRefresh} 
+          <button
+            onClick={handleRefresh}
             disabled={isRefreshing}
             className="px-4 py-2 bg-brand-600 hover:bg-brand-700 disabled:bg-zinc-600 rounded-lg text-white transition-colors"
           >
@@ -96,29 +260,7 @@ export function LogsSection({ logs, onRefresh }: { logs: any[]; onRefresh?: () =
 
       {/* 日志详情弹窗 */}
       {selectedLog && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/60" onClick={() => setSelectedLog(null)} />
-          <div className="relative w-full max-w-3xl max-h-[80vh] overflow-auto bg-surface-1 border border-surface-3 rounded-xl p-6">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-medium text-zinc-100">日志详情</h3>
-              <button onClick={() => setSelectedLog(null)} className="text-zinc-400 hover:text-zinc-200">✕</button>
-            </div>
-            <div className="space-y-4">
-              <div>
-                <h4 className="text-sm text-zinc-500 mb-2">输入 (Prompt)</h4>
-                <pre className="p-4 bg-surface-2 rounded-lg text-sm text-zinc-300 whitespace-pre-wrap overflow-auto max-h-60">
-                  {selectedLog.prompt_input || "无"}
-                </pre>
-              </div>
-              <div>
-                <h4 className="text-sm text-zinc-500 mb-2">输出 (Response)</h4>
-                <pre className="p-4 bg-surface-2 rounded-lg text-sm text-zinc-300 whitespace-pre-wrap overflow-auto max-h-60">
-                  {selectedLog.prompt_output || "无"}
-                </pre>
-              </div>
-            </div>
-          </div>
-        </div>
+        <LogDetailModal log={selectedLog} onClose={() => setSelectedLog(null)} />
       )}
     </div>
   );

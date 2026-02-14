@@ -1,20 +1,25 @@
 # backend/core/llm_logger.py
 # 功能: LangChain 回调处理器，自动记录每次 LLM 调用到 GenerationLog
 # 设计: 作为全局 callback 注入 LLM 实例，无需在每个调用点手动记录
-# 关键: 这是 P4（调试日志记录）的根本解决方案
+# 关键: 这是调试日志记录的根本解决方案
+# 数据结构:
+#   prompt_input: JSON 数组，每项 {"role": str, "content": str, "tool_calls"?: list}
+#   prompt_output: 完整的 LLM 输出文本（含 tool_calls JSON）
 
 """
 LLM 调用日志回调
 
 每次 LLM 调用（无论来自 agent_node、tool 内部还是其他场景）
 都会自动创建一条 GenerationLog 记录，包含：
-- 输入/输出内容（截断到 2000 字）
-- token 数（估算）
+- 输入: 完整的 messages 数组（JSON 格式，不截断）
+- 输出: 完整的 LLM 响应内容
+- token 数（优先使用 API 返回值，否则估算）
 - 耗时
 - 成本
-- 操作类型（从 run_id 和 metadata 推断）
+- 操作类型
 """
 
+import json
 import time
 import logging
 from typing import Any, Dict, List, Optional
@@ -25,6 +30,57 @@ from langchain_core.messages import BaseMessage
 from langchain_core.outputs import LLMResult
 
 logger = logging.getLogger("llm_logger")
+
+
+def _serialize_messages(messages: List[List[BaseMessage]]) -> str:
+    """
+    将 LangChain messages 序列化为 JSON 字符串，保留完整内容不截断。
+
+    输出格式: JSON 数组，每项:
+      {"role": "system"|"human"|"ai"|"tool", "content": "...", "tool_calls": [...]}
+
+    设计原则:
+    - 不截断任何内容 — 调试日志的意义就是完整记录
+    - DB 字段为 Text 类型（SQLite 无长度限制），存储无问题
+    - 前端负责展示层的折叠/滚动
+    """
+    result = []
+    for msg_list in messages:
+        for msg in msg_list:
+            role = getattr(msg, "type", "unknown")
+            content = getattr(msg, "content", "")
+
+            entry: Dict[str, Any] = {"role": role}
+
+            if isinstance(content, str):
+                entry["content"] = content
+            elif isinstance(content, list):
+                # 多模态内容（如图片），尝试序列化
+                entry["content"] = content
+            else:
+                entry["content"] = str(content)
+
+            # 记录 tool_calls（AIMessage 的工具调用信息）
+            tool_calls = getattr(msg, "tool_calls", None)
+            if tool_calls:
+                entry["tool_calls"] = [
+                    {"name": tc.get("name", ""), "args": tc.get("args", {})}
+                    for tc in tool_calls
+                ]
+
+            # 记录 tool_call_id（ToolMessage 的关联 ID）
+            tool_call_id = getattr(msg, "tool_call_id", None)
+            if tool_call_id:
+                entry["tool_call_id"] = tool_call_id
+
+            # 记录 name（ToolMessage 的工具名称）
+            name = getattr(msg, "name", None)
+            if name:
+                entry["name"] = name
+
+            result.append(entry)
+
+    return json.dumps(result, ensure_ascii=False)
 
 
 class GenerationLogCallback(AsyncCallbackHandler):
@@ -60,20 +116,10 @@ class GenerationLogCallback(AsyncCallbackHandler):
         run_id: UUID,
         **kwargs: Any,
     ) -> None:
-        """LLM 调用开始时记录开始时间和输入。"""
+        """LLM 调用开始时记录开始时间和完整输入（不截断）。"""
         self._start_times[run_id] = time.time()
-        # 记录输入内容（截断）
         try:
-            input_texts = []
-            for msg_list in messages:
-                for msg in msg_list:
-                    role = getattr(msg, "type", "unknown")
-                    content = getattr(msg, "content", "")
-                    if isinstance(content, str):
-                        input_texts.append(f"[{role}] {content[:300]}")
-                    elif isinstance(content, list):
-                        input_texts.append(f"[{role}] (structured content)")
-            self._inputs[run_id] = "\n".join(input_texts)[:2000]
+            self._inputs[run_id] = _serialize_messages(messages)
         except Exception:
             self._inputs[run_id] = "(failed to serialize input)"
 
@@ -84,7 +130,7 @@ class GenerationLogCallback(AsyncCallbackHandler):
         run_id: UUID,
         **kwargs: Any,
     ) -> None:
-        """LLM 调用结束时创建 GenerationLog 记录。"""
+        """LLM 调用结束时创建 GenerationLog 记录（完整保存输入输出）。"""
         if not self.project_id:
             return
 
@@ -93,7 +139,7 @@ class GenerationLogCallback(AsyncCallbackHandler):
         duration_ms = int((time.time() - start_time) * 1000)
 
         try:
-            # 提取输出
+            # 提取输出（不截断）
             output_text = ""
             model_name = "unknown"
             tokens_in = 0
@@ -107,6 +153,19 @@ class GenerationLogCallback(AsyncCallbackHandler):
                     if not output_text and hasattr(gen[0], "message"):
                         msg = gen[0].message
                         output_text = msg.content if hasattr(msg, "content") else ""
+                    # 如果有 tool_calls，也记录到输出
+                    if hasattr(gen[0], "message") and hasattr(gen[0].message, "tool_calls"):
+                        tool_calls = gen[0].message.tool_calls
+                        if tool_calls:
+                            tc_json = json.dumps(
+                                [{"name": tc.get("name", ""), "args": tc.get("args", {})}
+                                 for tc in tool_calls],
+                                ensure_ascii=False,
+                            )
+                            if output_text:
+                                output_text += f"\n\n[tool_calls] {tc_json}"
+                            else:
+                                output_text = f"[tool_calls] {tc_json}"
 
             # 提取 token 使用量（如果 LLM 提供了）
             if response.llm_output:
@@ -121,7 +180,7 @@ class GenerationLogCallback(AsyncCallbackHandler):
             if not tokens_out:
                 tokens_out = len(output_text) // 4
 
-            # 写入数据库
+            # 写入数据库（不截断 — Text 字段无长度限制）
             from core.database import get_db
             from core.models.generation_log import GenerationLog
             from core.models.base import generate_uuid
@@ -133,21 +192,22 @@ class GenerationLogCallback(AsyncCallbackHandler):
                     project_id=self.project_id,
                     field_id=self.field_id,
                     phase=self.phase,
-                    operation=self.operation or f"llm_call",
+                    operation=self.operation or "llm_call",
                     model=model_name,
                     tokens_in=tokens_in,
                     tokens_out=tokens_out,
                     duration_ms=duration_ms,
-                    prompt_input=input_text[:2000],
-                    prompt_output=(output_text or "")[:2000],
+                    prompt_input=input_text,
+                    prompt_output=output_text or "",
                     cost=GenerationLog.calculate_cost(model_name, tokens_in, tokens_out),
                     status="success",
                 )
                 db.add(gen_log)
                 db.commit()
                 logger.debug(
-                    "[llm_logger] logged: op=%s, model=%s, in=%d, out=%d, %dms",
+                    "[llm_logger] logged: op=%s, model=%s, in=%d, out=%d, %dms, input_len=%d, output_len=%d",
                     gen_log.operation, model_name, tokens_in, tokens_out, duration_ms,
+                    len(input_text), len(output_text),
                 )
             finally:
                 db.close()
@@ -192,11 +252,11 @@ class GenerationLogCallback(AsyncCallbackHandler):
                     tokens_in=len(input_text) // 4,
                     tokens_out=0,
                     duration_ms=duration_ms,
-                    prompt_input=input_text[:2000],
+                    prompt_input=input_text,
                     prompt_output="",
                     cost=0.0,
                     status="failed",
-                    error_message=str(error)[:500],
+                    error_message=str(error)[:1000],
                 )
                 db.add(gen_log)
                 db.commit()

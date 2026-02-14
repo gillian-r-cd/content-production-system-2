@@ -1,6 +1,7 @@
 # backend/scripts/init_db.py
 # 功能: 初始化数据库，创建表，插入预置数据（含评分器 Grader）
 # 主要函数: init_database(), seed_default_data()
+# 注意: 综合评估模板使用 EVAL_TEMPLATE_V2 常量（单一事实来源），已有过期版本会自动更新
 
 """
 数据库初始化脚本
@@ -26,6 +27,12 @@ from core.models import (
     PRESET_GRADERS,
     AgentMode,
     generate_uuid,
+)
+from core.models.field_template import (
+    EVAL_TEMPLATE_V2_NAME,
+    EVAL_TEMPLATE_V2_DESCRIPTION,
+    EVAL_TEMPLATE_V2_CATEGORY,
+    EVAL_TEMPLATE_V2_FIELDS,
 )
 
 
@@ -217,15 +224,6 @@ def seed_default_data():
                     "skill_manager",
                 ],
                 skills=[],
-                autonomy_defaults={
-                    "intent": True,
-                    "research": True,
-                    "design_inner": True,
-                    "produce_inner": True,
-                    "design_outer": True,
-                    "produce_outer": True,
-                    "evaluate": True,
-                },
                 tool_prompts={
                     "deep_research": "你是一个专业的用户研究专家。基于项目意图，进行网络调研，分析目标用户群体的特征、痛点和需求。",
                     "generate_field": "你是一个专业的内容创作者。基于上下文和依赖字段，生成高质量的内容。遵循创作者特质、保持风格一致性。",
@@ -489,50 +487,32 @@ def seed_default_data():
             db.add_all(modes)
             print(f"  - 创建了 {len(modes)} 个预置 Agent 模式")
         
-        # 5.6 预置综合评估模板（Eval V2：画像 → 任务配置 → 评估报告）
-        eval_template_exists = db.query(FieldTemplate).filter(
-            FieldTemplate.name == "综合评估模板"
+        # 5.6 预置/更新综合评估模板（Eval V2：画像 → 任务配置 → 评估报告）
+        # 使用 EVAL_TEMPLATE_V2 常量作为单一事实来源，若已存在但过期则更新
+        eval_template_existing = db.query(FieldTemplate).filter(
+            FieldTemplate.name == EVAL_TEMPLATE_V2_NAME
         ).first()
-        if not eval_template_exists:
+        if eval_template_existing:
+            # 检查是否需要更新（字段数或 special_handler 不一致）
+            existing_handlers = sorted(
+                f.get("special_handler", "") for f in (eval_template_existing.fields or [])
+            )
+            expected_handlers = sorted(
+                f.get("special_handler", "") for f in EVAL_TEMPLATE_V2_FIELDS
+            )
+            if existing_handlers != expected_handlers:
+                eval_template_existing.fields = EVAL_TEMPLATE_V2_FIELDS
+                eval_template_existing.description = EVAL_TEMPLATE_V2_DESCRIPTION
+                eval_template_existing.category = EVAL_TEMPLATE_V2_CATEGORY
+                print("  - 更新了综合评估模板为最新V2版本")
+            else:
+                print("  - 综合评估模板已是最新V2版本，跳过")
+        else:
             eval_template = FieldTemplate(
-                name="综合评估模板",
-                description=(
-                    "Eval V2 综合评估模板：目标画像 → 任务配置 → 评估报告（执行+评分+诊断一体化）。"
-                    "支持自定义 simulator × persona × grader 组合，并行执行无限 trial。"
-                ),
-                category="评估",
-                fields=[
-                    {
-                        "name": "目标消费者画像",
-                        "type": "richtext",
-                        "ai_prompt": "从消费者调研中加载并管理目标消费者画像，也可手动创建新画像。",
-                        "pre_questions": [],
-                        "depends_on": [],
-                        "dependency_type": "all",
-                        "special_handler": "eval_persona_setup",
-                        "constraints": {},
-                    },
-                    {
-                        "name": "评估任务配置",
-                        "type": "richtext",
-                        "ai_prompt": "配置评估任务：选择模拟器类型、交互模式、消费者画像、评分维度。支持批量创建和全回归模板。",
-                        "pre_questions": [],
-                        "depends_on": ["目标消费者画像"],
-                        "dependency_type": "all",
-                        "special_handler": "eval_task_config",
-                        "constraints": {},
-                    },
-                    {
-                        "name": "评估报告",
-                        "type": "richtext",
-                        "ai_prompt": "统一评估报告：执行所有试验 → 各 Grader 评分 → 综合诊断。含完整 LLM 调用日志、分维度评分、交互记录。",
-                        "pre_questions": [],
-                        "depends_on": ["评估任务配置"],
-                        "dependency_type": "all",
-                        "special_handler": "eval_report",
-                        "constraints": {},
-                    },
-                ]
+                name=EVAL_TEMPLATE_V2_NAME,
+                description=EVAL_TEMPLATE_V2_DESCRIPTION,
+                category=EVAL_TEMPLATE_V2_CATEGORY,
+                fields=EVAL_TEMPLATE_V2_FIELDS,
             )
             db.add(eval_template)
             print("  - 创建了综合评估模板（V2）")

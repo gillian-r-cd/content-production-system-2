@@ -826,6 +826,61 @@ async def _manage_skill_impl(
     return f"操作失败: {result.message}"
 
 
+# ============== 跨模式对话查阅（M2 Memory System） ==============
+
+@tool
+async def read_mode_history(
+    mode_name: str,
+    limit: int = 10,
+    *,
+    config: Annotated[RunnableConfig, InjectedToolArg],
+) -> str:
+    """查阅创作者在其他模式中的对话记录。
+
+    当你需要更多上下文来理解创作者之前的讨论时使用。
+    例如：创作者说"按之前和审稿人讨论的来"，你可以查阅审稿人模式的对话。
+
+    Args:
+        mode_name: 模式名称，如 "assistant"、"strategist"、"critic"、"reader"、"creative"
+        limit: 返回最近几条消息，默认10，最大20
+    """
+    project_id = _get_project_id(config)
+    if not project_id:
+        return "无法获取项目 ID"
+
+    limit = min(max(limit, 1), 20)
+
+    db = _get_db()
+    try:
+        from core.models.chat_history import ChatMessage
+        messages = db.query(ChatMessage).filter(
+            ChatMessage.project_id == project_id,
+        ).order_by(ChatMessage.created_at.desc()).limit(limit * 3).all()
+
+        # 从 metadata 中筛选目标模式的消息
+        mode_msgs = []
+        for msg in reversed(messages):  # 按时间正序
+            meta = msg.message_metadata or {}
+            msg_mode = meta.get("mode", "assistant")
+            if msg_mode == mode_name:
+                mode_msgs.append(msg)
+            if len(mode_msgs) >= limit:
+                break
+
+        if not mode_msgs:
+            return f"「{mode_name}」模式中暂无对话记录。"
+
+        lines = []
+        for msg in mode_msgs:
+            role = "用户" if msg.role == "user" else "Agent"
+            content = msg.content[:500] if msg.content else ""
+            lines.append(f"[{role}] {content}")
+
+        return f"「{mode_name}」模式最近 {len(mode_msgs)} 条对话：\n\n" + "\n\n".join(lines)
+    finally:
+        db.close()
+
+
 # ============== 导出 ==============
 
 # 所有工具列表 — 注册到 Agent Graph 的 bind_tools()
@@ -842,6 +897,7 @@ AGENT_TOOLS = [
     run_evaluation,
     generate_outline,
     manage_skill,
+    read_mode_history,
 ]
 
 # 这些工具执行后表示产生了内容块更新，前端需要刷新

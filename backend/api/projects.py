@@ -37,7 +37,7 @@ class ProjectUpdate(BaseModel):
     name: Optional[str] = None
     current_phase: Optional[str] = None
     phase_order: Optional[List[str]] = None
-    agent_autonomy: Optional[Dict[str, bool]] = None
+    agent_autonomy: Optional[Dict[str, bool]] = None  # [已废弃] 不再使用，保留兼容旧API客户端
     golden_context: Optional[dict] = None  # [已废弃] P3-2: 不再使用，保留兼容旧API客户端
     use_deep_research: Optional[bool] = None
     use_flexible_architecture: Optional[bool] = None
@@ -53,7 +53,7 @@ class ProjectResponse(BaseModel):
     current_phase: str
     phase_order: List[str]
     phase_status: Dict[str, str]
-    agent_autonomy: Dict[str, bool]
+    agent_autonomy: Dict[str, bool]  # [已废弃] 保留兼容旧数据，新项目为空dict
     golden_context: dict  # [已废弃] P3-2: 保留兼容旧数据，新项目为空dict
     use_deep_research: bool
     use_flexible_architecture: bool = True  # [已废弃] 统一为 True
@@ -103,17 +103,6 @@ def create_project(
     # 确定初始阶段：如果有阶段则使用第一个，否则为空字符串
     initial_phase = actual_phase_order[0] if actual_phase_order else ""
     
-    # ===== 关键：从AgentSettings读取默认自主权 =====
-    from core.models.agent_settings import AgentSettings
-    agent_settings = db.query(AgentSettings).filter(AgentSettings.name == "default").first()
-    
-    # 根据实际阶段列表设置自主权
-    if agent_settings and agent_settings.autonomy_defaults:
-        default_autonomy = agent_settings.autonomy_defaults
-        agent_autonomy = {p: default_autonomy.get(p, True) for p in actual_phase_order}
-    else:
-        agent_autonomy = {p: True for p in actual_phase_order}
-    
     db_project = Project(
         id=generate_uuid(),
         name=project.name,
@@ -124,7 +113,6 @@ def create_project(
         current_phase=initial_phase,
         phase_order=actual_phase_order,
         phase_status={p: "pending" for p in actual_phase_order},
-        agent_autonomy=agent_autonomy,  # 使用默认自主权
         golden_context={},  # P3-2: 已废弃，保留空dict兼容DB
     )
     

@@ -123,23 +123,6 @@ export default function WorkspacePage() {
     }
   };
 
-  const handleAutonomyChange = async (autonomy: Record<string, boolean>) => {
-    if (!currentProject) return;
-    
-    try {
-      // 更新本地状态
-      setCurrentProject({
-        ...currentProject,
-        agent_autonomy: autonomy,
-      });
-      
-      // 保存到服务器
-      await projectAPI.update(currentProject.id, { agent_autonomy: autonomy });
-    } catch (err) {
-      console.error("更新自主权设置失败:", err);
-    }
-  };
-
   const handleBlockSelect = (block: ContentBlock) => {
     setSelectedBlock(block);
     console.log("选中内容块:", block.name, block.block_type);
@@ -529,7 +512,6 @@ export default function WorkspacePage() {
               blocksRefreshKey={blocksRefreshKey}
               onPhaseClick={handlePhaseClick}
               onPhaseReorder={handlePhaseReorder}
-              onAutonomyChange={handleAutonomyChange}
               onBlockSelect={handleBlockSelect}
               onBlocksChange={setAllBlocks}
               onProjectChange={async () => {

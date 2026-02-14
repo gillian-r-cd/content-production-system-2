@@ -1,9 +1,8 @@
 // frontend/components/progress-panel.tsx
-// 功能: 左栏项目进度面板，支持传统视图和树形视图切换
+// 功能: 左栏项目进度面板，树形架构视图
 // 主要组件: ProgressPanel
-// 新增: 树形视图集成 BlockTree 组件
 // P0-1: 统一使用 ContentBlock，已移除 fields/ProjectField 依赖
-// 优化: 首次加载才显示 spinner；onBlocksChange 仅在数据实际变化时触发
+// 已移除: Agent自主权设置（AutonomySettingsModal）— 不再由传统流程设置
 
 "use client";
 
@@ -37,7 +36,6 @@ interface ProgressPanelProps {
   blocksRefreshKey?: number;  // 外部触发 ContentBlocks 重新加载
   onPhaseClick?: (phase: string) => void;
   onPhaseReorder?: (phases: string[]) => void;
-  onAutonomyChange?: (autonomy: Record<string, boolean>) => void;
   onBlockSelect?: (block: ContentBlock) => void;
   onBlocksChange?: (blocks: ContentBlock[]) => void;  // 当内容块加载/变化时通知父组件
   onProjectChange?: () => void;  // 项目数据变化时通知父组件刷新
@@ -48,12 +46,10 @@ export function ProgressPanel({
   blocksRefreshKey = 0,
   onPhaseClick,
   onPhaseReorder,
-  onAutonomyChange,
   onProjectChange,
   onBlockSelect,
   onBlocksChange,
 }: ProgressPanelProps) {
-  const [showAutonomySettings, setShowAutonomySettings] = useState(false);
   // P0-1: 传统视图已移除，统一使用树形架构
   const [contentBlocks, setContentBlocks] = useState<ContentBlock[]>([]);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
@@ -424,13 +420,6 @@ export function ProgressPanel({
           快捷操作
         </h3>
         
-        <button 
-          onClick={() => setShowAutonomySettings(true)}
-          className="w-full px-3 py-2 text-sm text-left text-zinc-400 hover:text-zinc-200 hover:bg-surface-3 rounded-lg transition-colors"
-        >
-          ⚙ Agent自主权设置
-        </button>
-        
         <button className="w-full px-3 py-2 text-sm text-left text-zinc-400 hover:text-zinc-200 hover:bg-surface-3 rounded-lg transition-colors">
           + 新建版本
         </button>
@@ -444,126 +433,7 @@ export function ProgressPanel({
         </button>
       </div>
 
-      {/* Agent自主权设置弹窗 */}
-      {showAutonomySettings && project && (
-        <AutonomySettingsModal
-          project={project}
-          onClose={() => setShowAutonomySettings(false)}
-          onSave={onAutonomyChange}
-        />
-      )}
     </div>
   );
 }
 
-interface AutonomySettingsModalProps {
-  project: Project;
-  onClose: () => void;
-  onSave?: (autonomy: Record<string, boolean>) => void;
-}
-
-function AutonomySettingsModal({ project, onClose, onSave }: AutonomySettingsModalProps) {
-  const [autonomy, setAutonomy] = useState<Record<string, boolean>>(
-    project.agent_autonomy || {}
-  );
-
-  // Escape 键关闭
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [onClose]);
-
-  const allPhases = [
-    { id: "intent", name: "意图分析", desc: "Agent自动提问并分析意图" },
-    { id: "research", name: "消费者调研", desc: "Agent自动调研用户画像" },
-    { id: "design_inner", name: "内涵设计", desc: "Agent自动设计内容方案" },
-    { id: "produce_inner", name: "内涵生产", desc: "Agent自动生产各内容块内容" },
-    { id: "design_outer", name: "外延设计", desc: "Agent自动设计传播方案" },
-    { id: "produce_outer", name: "外延生产", desc: "Agent自动生产渠道内容" },
-    { id: "evaluate", name: "评估", desc: "配置评估任务，执行多维度评估" },
-  ];
-
-  const handleToggle = (phase: string) => {
-    setAutonomy((prev) => ({
-      ...prev,
-      [phase]: !prev[phase],
-    }));
-  };
-
-  const handleSave = () => {
-    onSave?.(autonomy);
-    onClose();
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-surface-2 rounded-xl border border-surface-3 w-full max-w-lg max-h-[80vh] overflow-hidden">
-        <div className="px-4 py-3 border-b border-surface-3">
-          <h3 className="font-medium text-zinc-200">Agent自主权设置</h3>
-          <p className="text-xs text-zinc-500 mt-1">
-            设置各组Agent是否自动执行，不勾选 = 需要人工确认后才继续
-          </p>
-        </div>
-
-        <div className="p-4 max-h-[50vh] overflow-y-auto space-y-3">
-          {allPhases.map((phase) => (
-            <label
-              key={phase.id}
-              className="flex items-start gap-3 p-3 rounded-lg hover:bg-surface-3 cursor-pointer"
-            >
-              <input
-                type="checkbox"
-                checked={autonomy[phase.id] !== false}
-                onChange={() => handleToggle(phase.id)}
-                className="mt-0.5 rounded"
-              />
-              <div className="flex-1">
-                <div className="text-sm text-zinc-200">{phase.name}</div>
-                <div className="text-xs text-zinc-500 mt-0.5">{phase.desc}</div>
-              </div>
-              <span className={`text-xs px-2 py-0.5 rounded ${
-                autonomy[phase.id] !== false
-                  ? "bg-green-600/20 text-green-400"
-                  : "bg-yellow-600/20 text-yellow-400"
-              }`}>
-                {autonomy[phase.id] !== false ? "自动" : "需确认"}
-              </span>
-            </label>
-          ))}
-        </div>
-
-        <div className="px-4 py-3 border-t border-surface-3 flex justify-between">
-          <div className="flex gap-2">
-            <button
-              onClick={() => setAutonomy(allPhases.reduce((acc, p) => ({ ...acc, [p.id]: true }), {}))}
-              className="px-3 py-1.5 text-xs bg-surface-3 hover:bg-surface-4 rounded-lg"
-            >
-              全部自动
-            </button>
-            <button
-              onClick={() => setAutonomy(allPhases.reduce((acc, p) => ({ ...acc, [p.id]: false }), {}))}
-              className="px-3 py-1.5 text-xs bg-surface-3 hover:bg-surface-4 rounded-lg"
-            >
-              全部确认
-            </button>
-          </div>
-          <div className="flex gap-2">
-            <button
-              onClick={onClose}
-              className="px-4 py-2 text-sm bg-surface-3 hover:bg-surface-4 rounded-lg"
-            >
-              取消
-            </button>
-            <button
-              onClick={handleSave}
-              className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-700 rounded-lg"
-            >
-              保存
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}

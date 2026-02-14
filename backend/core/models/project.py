@@ -1,7 +1,7 @@
 # backend/core/models/project.py
 # 功能: 项目模型，内容生产的核心实体
 # 主要类: Project
-# 数据结构: 存储项目配置、阶段状态、Agent自主权设置等
+# 数据结构: 存储项目配置、阶段状态等
 
 """
 项目模型
@@ -43,7 +43,6 @@ class Project(BaseModel):
         current_phase: 当前阶段
         phase_order: 阶段顺序（可拖拽调整内涵/外延的顺序）
         phase_status: 每个阶段的状态
-        agent_autonomy: Agent自主权设置，每阶段是否需人工确认
         use_deep_research: 是否使用DeepResearch进行调研
         use_flexible_architecture: [已废弃] 统一为 True（所有项目使用 ContentBlock 架构）
     
@@ -72,9 +71,8 @@ class Project(BaseModel):
     phase_status: Mapped[dict] = mapped_column(
         JSON, default=lambda: {phase: "pending" for phase in PROJECT_PHASES}
     )
-    agent_autonomy: Mapped[dict] = mapped_column(
-        JSON, default=lambda: {phase: True for phase in PROJECT_PHASES}  # 默认都需要确认
-    )
+    # [已废弃] Agent自主权设置，不再使用，保留用于数据库兼容
+    agent_autonomy: Mapped[dict] = mapped_column(JSON, default=dict)
     # 已废弃：不再使用此字段，保留用于数据库兼容
     # 创作者特质通过 creator_profile 关系获取
     # 意图分析/消费者调研结果通过字段内容和依赖关系传递
@@ -115,10 +113,5 @@ class Project(BaseModel):
         if current_idx < 0 or current_idx >= len(self.phase_order) - 1:
             return None
         return self.phase_order[current_idx + 1]
-
-    def needs_human_confirm(self, phase: str = None) -> bool:
-        """检查指定阶段是否需要人工确认"""
-        phase = phase or self.current_phase
-        return self.agent_autonomy.get(phase, True)
 
 

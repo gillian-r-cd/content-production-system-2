@@ -2,6 +2,7 @@
 # 功能: Agent 对话 API，支持 SSE 流式输出、对话历史、编辑重发、多模式切换
 # 主要路由: /stream, /chat, /history, /retry, /advance
 # 架构: stream_chat 使用 LangGraph astream_events，所有模式统一走 Agent Graph
+# 日志: GenerationLog 由 GenerationLogCallback 自动记录（不在此文件手动创建）
 
 """
 Agent 对话 API
@@ -15,7 +16,6 @@ Agent 对话 API
 
 import json
 import asyncio
-import time
 import logging
 from typing import Optional, List, Dict
 
@@ -25,9 +25,8 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from core.database import get_db
-from core.config import settings
 from core.models import (
-    Project, ChatMessage, GenerationLog,
+    Project, ChatMessage,
     ContentVersion, AgentMode, generate_uuid,
 )
 from core.models.content_block import ContentBlock
@@ -39,6 +38,21 @@ logger = logging.getLogger("agent")
 
 
 # ============== Helpers ==============
+
+async def _extract_and_save_memories(
+    project_id: str, mode: str, phase: str, messages: list[dict],
+):
+    """后台异步任务：从对话中提炼记忆并保存（M2 Memory System）"""
+    try:
+        from core.memory_service import extract_memories, save_memories
+        extracted = await extract_memories(project_id, mode, phase, messages)
+        if extracted:
+            saved = await save_memories(project_id, mode, phase, extracted)
+            if saved:
+                logger.info("[memory] 提炼并保存了 %d 条记忆 (project=%s)", saved, project_id)
+    except Exception as e:
+        logger.warning("[memory] 记忆提炼后台任务失败: %s", e)
+
 
 def _save_version_before_overwrite(
     db: Session, entity_id: str, old_content: str,
@@ -634,6 +648,10 @@ async def stream_chat(
     if project.creator_profile:
         creator_profile_str = project.creator_profile.to_prompt_context()
 
+    # M2+M3: 加载项目记忆（超阈值时 LLM 预筛选）
+    from core.memory_service import load_memory_context_async
+    memory_ctx = await load_memory_context_async(request.project_id, mode_name, current_phase)
+
     input_state = {
         "messages": input_messages,
         "project_id": request.project_id,
@@ -641,7 +659,7 @@ async def stream_chat(
         "creator_profile": creator_profile_str,
         "mode": mode_name,
         "mode_prompt": mode_prompt,
-        "memory_context": "",  # M2 阶段启用：MemoryItem 全量注入
+        "memory_context": memory_ctx,
     }
 
     # ---- 产出类工具集（执行后前端需刷新左侧面板） ----
@@ -650,11 +668,7 @@ async def stream_chat(
         "run_research",
     }
 
-    _stream_start_time = time.time()
-
     async def event_generator():
-        from core.llm import llm
-
         try:
             # 1. 返回用户消息真实 ID
             yield sse_event({"type": "user_saved", "message_id": saved_user_msg_id})
@@ -846,33 +860,8 @@ async def stream_chat(
             )
             db.add(agent_msg)
 
-            # ---- 创建 GenerationLog（调试日志页面数据来源） ----
-            try:
-                duration_ms = int((time.time() - _stream_start_time) * 1000)
-                op_name = f"agent_stream_{tools_used[0]}" if tools_used else "agent_stream_chat"
-                tokens_in_est = len(request.message) // 4
-                tokens_out_est = len(full_content) // 4
-                gen_log = GenerationLog(
-                    id=generate_uuid(),
-                    project_id=request.project_id,
-                    field_id=None,
-                    phase=current_phase,
-                    operation=op_name,
-                    model=getattr(llm, "model_name", settings.openai_model),
-                    tokens_in=tokens_in_est,
-                    tokens_out=tokens_out_est,
-                    duration_ms=duration_ms,
-                    prompt_input=request.message[:2000],
-                    prompt_output=full_content[:2000],
-                    cost=GenerationLog.calculate_cost(
-                        getattr(llm, "model_name", settings.openai_model),
-                        tokens_in_est, tokens_out_est
-                    ),
-                    status="success",
-                )
-                db.add(gen_log)
-            except Exception as log_err:
-                logger.warning("[stream] GenerationLog 保存失败(可忽略): %s", log_err)
+            # GenerationLog 由 GenerationLogCallback 自动记录（完整 messages + 不截断）
+            # 不再手动创建重复日志
 
             db.commit()
 
@@ -882,6 +871,19 @@ async def stream_chat(
                 "is_producing": is_producing,
                 "route": tools_used[0] if tools_used else "chat",
             })
+
+            # M2: 异步触发记忆提炼（不阻塞 SSE 流）
+            try:
+                from core.memory_service import extract_memories, save_memories
+                _conv = [
+                    {"role": "user", "content": request.message},
+                    {"role": "assistant", "content": full_content},
+                ]
+                asyncio.create_task(_extract_and_save_memories(
+                    request.project_id, mode_name, current_phase, _conv,
+                ))
+            except Exception as mem_err:
+                logger.debug("[stream] 记忆提炼触发失败(可忽略): %s", mem_err)
 
         except Exception as e:
             import traceback

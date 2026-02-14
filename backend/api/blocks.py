@@ -1354,7 +1354,7 @@ def _field_template_to_blocks(field_template: "FieldTemplate", project_id: str) 
     # 创建字段块
     for idx, field in enumerate(field_template.fields or []):
         template_content = field.get("content", "")
-        blocks.append({
+        block_data = {
             "id": generate_uuid(),
             "project_id": project_id,
             "parent_id": phase_id,
@@ -1372,7 +1372,11 @@ def _field_template_to_blocks(field_template: "FieldTemplate", project_id: str) 
                 ("in_progress" if field.get("need_review", False) else "completed")
                 if template_content else "pending"
             ),
-        })
+        }
+        # 传递 special_handler（评估模板等依赖此字段）
+        if field.get("special_handler"):
+            block_data["special_handler"] = field["special_handler"]
+        blocks.append(block_data)
     
     return blocks
 
@@ -1455,7 +1459,7 @@ def migrate_project_to_blocks(
             order_index=idx,
             status=project.phase_status.get(phase_name, "pending"),
             special_handler=phase_handler_map.get(phase_name),
-            need_review=not project.agent_autonomy.get(phase_name, True),
+            need_review=False,  # 自主权设置已移除，phase block 默认不需要人工确认
         )
         db.add(phase_block)
         phase_blocks[phase_name] = phase_id

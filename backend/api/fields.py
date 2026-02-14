@@ -486,7 +486,6 @@ def get_field_order(
 class BatchGenerateRequest(BaseModel):
     """批量生成请求"""
     phase: Optional[str] = None  # 不指定则生成所有pending字段
-    respect_autonomy: bool = True  # 是否尊重Agent自主权检查点
 
 
 class BatchGenerateResponse(BaseModel):
@@ -507,7 +506,6 @@ async def batch_generate_fields(
     一键生成（批量生成字段）
     
     按依赖顺序批量生成所有pending状态的字段。
-    如果respect_autonomy=True，会在需要人工确认的阶段暂停。
     """
     from core.tools import generate_fields_parallel
     
@@ -562,15 +560,6 @@ async def batch_generate_fields(
     
     # 逐组生成
     for group in ordered_groups:
-        # 检查自主权（如果需要）
-        if request.respect_autonomy:
-            phases_in_group = set(f.phase for f in group)
-            for phase in phases_in_group:
-                if project.agent_autonomy and project.agent_autonomy.get(phase, True):
-                    # 需要人工确认，暂停
-                    pending_ids.extend([f.id for f in group])
-                    continue
-        
         # 为每个字段构建上下文
         for field in group:
             # 获取依赖字段

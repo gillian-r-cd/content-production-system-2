@@ -16,7 +16,8 @@ export interface Project {
   current_phase: string;
   phase_order: string[];
   phase_status: Record<string, string>;
-  agent_autonomy: Record<string, boolean>;
+  /** @deprecated 已废弃，不再由传统流程设置 */
+  agent_autonomy?: Record<string, boolean>;
   /** @deprecated P3-2: 已废弃 */
   golden_context?: Record<string, string>;
   use_deep_research: boolean;
@@ -1161,6 +1162,52 @@ export const modesAPI = {
     }),
   delete: (id: string) =>
     fetchAPI<{ message: string }>(`/api/modes/${id}`, { method: "DELETE" }),
+};
+
+// ============== Memory Types & API ==============
+
+export interface MemoryItemInfo {
+  id: string;
+  project_id: string;
+  content: string;
+  source_mode: string;
+  source_phase: string;
+  related_blocks: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export const memoriesAPI = {
+  list: (projectId: string) =>
+    fetchAPI<MemoryItemInfo[]>(`/api/memories/${projectId}`),
+
+  get: (projectId: string, memoryId: string) =>
+    fetchAPI<MemoryItemInfo>(`/api/memories/${projectId}/${memoryId}`),
+
+  create: (projectId: string, data: {
+    content: string;
+    source_mode?: string;
+    source_phase?: string;
+    related_blocks?: string[];
+  }) =>
+    fetchAPI<MemoryItemInfo>(`/api/memories/${projectId}`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  update: (projectId: string, memoryId: string, data: {
+    content?: string;
+    related_blocks?: string[];
+  }) =>
+    fetchAPI<MemoryItemInfo>(`/api/memories/${projectId}/${memoryId}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+
+  delete: (projectId: string, memoryId: string) =>
+    fetchAPI<{ message: string }>(`/api/memories/${projectId}/${memoryId}`, {
+      method: "DELETE",
+    }),
 };
 
 // ============== Utilities ==============

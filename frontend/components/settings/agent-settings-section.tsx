@@ -1,5 +1,5 @@
 // frontend/components/settings/agent-settings-section.tsx
-// 功能: Agent 设置 — 工具、技能、自主权配置
+// 功能: Agent 设置 — 工具、技能配置
 
 "use client";
 
@@ -8,7 +8,7 @@ import { settingsAPI } from "@/lib/api";
 import { FormField } from "./shared";
 
 export function AgentSettingsSection({ settings, onRefresh }: { settings: any; onRefresh: () => void }) {
-  const [editForm, setEditForm] = useState<any>(settings || { tools: [], skills: [], autonomy_defaults: {} });
+  const [editForm, setEditForm] = useState<any>(settings || { tools: [], skills: [] });
   const [isSaving, setIsSaving] = useState(false);
   const [editingSkillIndex, setEditingSkillIndex] = useState<number | null>(null);
   const [newSkill, setNewSkill] = useState({ name: "", description: "", prompt: "" });
@@ -106,16 +106,6 @@ export function AgentSettingsSection({ settings, onRefresh }: { settings: any; o
     setToolPrompts(newPrompts);
     setEditForm({ ...editForm, tool_prompts: newPrompts });
   };
-
-  const PHASES = [
-    { id: "intent", name: "意图分析" },
-    { id: "research", name: "消费者调研" },
-    { id: "design_inner", name: "内涵设计" },
-    { id: "produce_inner", name: "内涵生产" },
-    { id: "design_outer", name: "外延设计" },
-    { id: "produce_outer", name: "外延生产" },
-    { id: "evaluate", name: "评估" },
-  ];
 
   const addSkill = () => {
     if (!newSkill.name.trim()) return;
@@ -315,30 +305,6 @@ export function AgentSettingsSection({ settings, onRefresh }: { settings: any; o
           </div>
         </div>
 
-        {/* 默认自主权设置 */}
-        <div className="p-5 bg-surface-2 border border-surface-3 rounded-xl">
-          <h3 className="font-medium text-zinc-200 mb-4">🎛️ 默认自主权设置</h3>
-          <p className="text-sm text-zinc-500 mb-4">
-            设置 Agent 在各组是否默认自主执行（每个项目可以单独覆盖）
-          </p>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {PHASES.map((phase) => (
-              <label key={phase.id} className="flex items-center gap-2 cursor-pointer p-2 rounded-lg hover:bg-surface-3">
-                <input
-                  type="checkbox"
-                  checked={editForm.autonomy_defaults?.[phase.id] !== false}
-                  onChange={(e) => {
-                    setEditForm({
-                      ...editForm,
-                      autonomy_defaults: { ...editForm.autonomy_defaults, [phase.id]: e.target.checked },
-                    });
-                  }}
-                />
-                <span className="text-sm text-zinc-300">{phase.name}</span>
-              </label>
-            ))}
-          </div>
-        </div>
       </div>
     </div>
   );

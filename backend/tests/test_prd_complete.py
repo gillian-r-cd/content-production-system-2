@@ -285,25 +285,6 @@ class TestBatchGeneration:
         assert set(f.name for f in order[1]) == {"Field B", "Field C"}
         assert order[2][0].name == "Field D"
     
-    def test_autonomy_check_during_batch(self, db_session):
-        """批量生成时的自主权检查"""
-        project = Project(
-            id=generate_uuid(),
-            name="Test Project",
-            agent_autonomy={
-                "intent": False,  # 自动
-                "research": True,  # 需确认
-                "produce_inner": False,  # 自动
-            },
-        )
-        db_session.add(project)
-        db_session.commit()
-        
-        # research阶段需要确认
-        assert project.needs_human_confirm("research") == True
-        
-        # produce_inner阶段自动
-        assert project.needs_human_confirm("produce_inner") == False
 
 
 class TestLogExport:
