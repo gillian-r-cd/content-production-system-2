@@ -118,28 +118,32 @@ class TestAgentTools:
 class TestOrchestrator:
     """验证 orchestrator.py 的 Agent Graph"""
     
-    def test_agent_graph_exists(self):
-        """编译后的图应该存在"""
-        from core.orchestrator import agent_graph
-        assert agent_graph is not None
-    
-    def test_agent_graph_nodes(self):
-        """图应该包含 agent 和 tools 节点"""
-        from core.orchestrator import agent_graph
-        nodes = set(agent_graph.get_graph().nodes.keys())
+    def test_graph_builder_exists(self):
+        """graph builder 应该存在（编译后的图通过 get_agent_graph() 异步获取）"""
+        from core.orchestrator import _graph_builder
+        assert _graph_builder is not None
+
+    def test_graph_builder_nodes(self):
+        """graph builder 应该包含 agent 和 tools 节点"""
+        from core.orchestrator import _graph_builder
+        # StateGraph 未编译时通过 .nodes 属性查看
+        nodes = set(_graph_builder.nodes.keys())
         assert "agent" in nodes, f"Missing 'agent' node. Got: {nodes}"
         assert "tools" in nodes, f"Missing 'tools' node. Got: {nodes}"
-    
+
     def test_agent_state_fields(self):
-        """AgentState 应该有且仅有 4 个字段"""
+        """AgentState 应该有 7 个字段（原 4 个 + mode/mode_prompt/memory_context）"""
         from core.orchestrator import AgentState
         fields = list(AgentState.__annotations__.keys())
-        assert len(fields) == 4, f"Expected 4 fields, got {len(fields)}: {fields}"
+        assert len(fields) == 7, f"Expected 7 fields, got {len(fields)}: {fields}"
         assert "messages" in fields
         assert "project_id" in fields
         assert "current_phase" in fields
         assert "creator_profile" in fields
-    
+        assert "mode" in fields
+        assert "mode_prompt" in fields
+        assert "memory_context" in fields
+
     def test_build_system_prompt(self):
         """build_system_prompt 应该返回非空字符串"""
         from core.orchestrator import build_system_prompt, AgentState
@@ -148,13 +152,33 @@ class TestOrchestrator:
             project_id="test-id",
             current_phase="intent",
             creator_profile="",
+            mode="assistant",
+            mode_prompt="",
+            memory_context="",
         )
         prompt = build_system_prompt(state)
         assert isinstance(prompt, str)
         assert len(prompt) > 500, f"System prompt too short: {len(prompt)} chars"
         # 应该包含关键片段
         assert "工具" in prompt or "tool" in prompt.lower()
-    
+
+    def test_build_system_prompt_with_mode(self):
+        """build_system_prompt 使用 mode_prompt 时应替换身份段"""
+        from core.orchestrator import build_system_prompt, AgentState
+        custom_identity = "你是一个严格的审稿人。"
+        state = AgentState(
+            messages=[],
+            project_id="test-id",
+            current_phase="intent",
+            creator_profile="",
+            mode="critic",
+            mode_prompt=custom_identity,
+            memory_context="",
+        )
+        prompt = build_system_prompt(state)
+        assert custom_identity in prompt, "mode_prompt should replace identity section"
+        assert "智能内容生产 Agent" not in prompt, "Default identity should be replaced"
+
     def test_dead_code_removed(self):
         """P3-1: ContentProductionAgent 等向后兼容代码已删除"""
         import importlib
@@ -196,11 +220,11 @@ class TestAgentAPI:
         assert payload["type"] == "token"
         assert payload["content"] == "hello"
     
-    def test_checkpointer_is_sqlite(self):
-        """Checkpointer 应该是 SqliteSaver（持久化）"""
-        from core.orchestrator import agent_graph
-        from langgraph.checkpoint.sqlite import SqliteSaver
-        assert isinstance(agent_graph.checkpointer, SqliteSaver)
+    def test_get_agent_graph_is_async(self):
+        """get_agent_graph 应该是异步函数（返回编译后的图 + AsyncSqliteSaver）"""
+        import asyncio
+        from core.orchestrator import get_agent_graph
+        assert asyncio.iscoroutinefunction(get_agent_graph), "get_agent_graph should be async"
 
 
 # ============== Test 5: 编辑引擎 ==============

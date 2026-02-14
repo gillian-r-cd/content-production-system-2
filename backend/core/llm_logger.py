@@ -6,7 +6,7 @@
 """
 LLM 调用日志回调
 
-每次 LLM 调用（无论来自 agent_node、tool 内部、cocreation 还是其他场景）
+每次 LLM 调用（无论来自 agent_node、tool 内部还是其他场景）
 都会自动创建一条 GenerationLog 记录，包含：
 - 输入/输出内容（截断到 2000 字）
 - token 数（估算）

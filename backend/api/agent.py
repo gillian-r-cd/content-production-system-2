@@ -221,13 +221,26 @@ class ChatResponseExtended(BaseModel):
 def get_chat_history(
     project_id: str,
     limit: int = 100,
+    mode: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
-    """获取项目的对话历史"""
+    """获取项目的对话历史（可按 mode 过滤）"""
+    query = db.query(ChatMessage).filter(ChatMessage.project_id == project_id)
+
+    if mode:
+        # message_metadata 是 JSON 字段，用 json_extract 按 mode 过滤（SQLite 兼容）
+        from sqlalchemy import func, or_
+        mode_expr = func.json_extract(ChatMessage.message_metadata, "$.mode")
+        if mode == "assistant":
+            # 向后兼容：M1 之前的旧消息没有 mode 字段，归属到 assistant
+            query = query.filter(
+                or_(mode_expr == mode, mode_expr.is_(None))
+            )
+        else:
+            query = query.filter(mode_expr == mode)
+
     messages = (
-        db.query(ChatMessage)
-        .filter(ChatMessage.project_id == project_id)
-        .order_by(ChatMessage.created_at.asc())
+        query.order_by(ChatMessage.created_at.asc())
         .limit(limit)
         .all()
     )
@@ -252,13 +265,18 @@ async def chat(
 
     current_phase = request.current_phase or project.current_phase
 
+    # 查 AgentMode
+    mode_name = request.mode or "assistant"
+    mode_obj = db.query(AgentMode).filter(AgentMode.name == mode_name).first()
+    mode_prompt = mode_obj.system_prompt if mode_obj else ""
+
     # 保存用户消息
     user_msg = ChatMessage(
         id=generate_uuid(),
         project_id=request.project_id,
         role="user",
         content=request.message,
-        message_metadata={"phase": current_phase, "references": request.references},
+        message_metadata={"phase": current_phase, "mode": mode_name, "references": request.references},
     )
     db.add(user_msg)
     db.commit()
@@ -273,10 +291,13 @@ async def chat(
             "project_id": request.project_id,
             "current_phase": current_phase,
             "creator_profile": creator_profile_str,
+            "mode": mode_name,
+            "mode_prompt": mode_prompt,
+            "memory_context": "",  # M2 阶段启用
         }
         config = {
             "configurable": {
-                "thread_id": f"{request.project_id}:assistant",
+                "thread_id": f"{request.project_id}:{mode_name}",
                 "project_id": request.project_id,
             }
         }
@@ -289,7 +310,7 @@ async def chat(
         error_msg = ChatMessage(
             id=generate_uuid(), project_id=request.project_id,
             role="assistant", content="⚠️ 处理超时，请稍后重试。",
-            message_metadata={"phase": current_phase, "error": "timeout"},
+            message_metadata={"phase": current_phase, "mode": mode_name, "error": "timeout"},
         )
         db.add(error_msg)
         db.commit()
@@ -298,7 +319,7 @@ async def chat(
         error_msg = ChatMessage(
             id=generate_uuid(), project_id=request.project_id,
             role="assistant", content=f"⚠️ 处理失败: {str(agent_err)[:200]}",
-            message_metadata={"phase": current_phase, "error": str(agent_err)[:200]},
+            message_metadata={"phase": current_phase, "mode": mode_name, "error": str(agent_err)[:200]},
         )
         db.add(error_msg)
         db.commit()
@@ -314,7 +335,7 @@ async def chat(
         project_id=request.project_id,
         role="assistant",
         content=agent_output,
-        message_metadata={"phase": current_phase, "mode": "assistant"},
+        message_metadata={"phase": current_phase, "mode": mode_name},
     )
     db.add(agent_msg)
     db.commit()
@@ -389,17 +410,30 @@ async def retry_message(
         else project.current_phase
     )
 
-    # P3-1: 直接使用 agent_graph.ainvoke()，不再经过 ContentProductionAgent 包装
+    # 从原消息 metadata 中提取 mode，回退到 assistant
+    mode_name = (
+        (msg.message_metadata or {}).get("mode")
+        or (user_msg.message_metadata or {}).get("mode")
+        or "assistant"
+    )
+
+    # 查 AgentMode 获取 mode_prompt
+    mode_obj = db.query(AgentMode).filter(AgentMode.name == mode_name).first()
+    mode_prompt = mode_obj.system_prompt if mode_obj else ""
+
     from langchain_core.messages import HumanMessage, AIMessage
     state = {
         "messages": [HumanMessage(content=user_msg.content)],
         "project_id": user_msg.project_id,
         "current_phase": current_phase,
         "creator_profile": creator_profile_str,
+        "mode": mode_name,
+        "mode_prompt": mode_prompt,
+        "memory_context": "",  # M2 阶段启用
     }
     config = {
         "configurable": {
-            "thread_id": f"{user_msg.project_id}:assistant",
+            "thread_id": f"{user_msg.project_id}:{mode_name}",
             "project_id": user_msg.project_id,
         }
     }
@@ -419,6 +453,7 @@ async def retry_message(
         parent_message_id=message_id,
         message_metadata={
             "phase": current_phase,
+            "mode": mode_name,
             "is_retry": True,
         },
     )
@@ -462,6 +497,7 @@ async def call_tool(
         content=f"调用工具: {request.tool_name}",
         message_metadata={
             "phase": project.current_phase,
+            "mode": "assistant",  # /tool 端点默认归入 assistant 模式
             "tool_called": request.tool_name,
             "parameters": request.parameters,
         },
@@ -486,6 +522,7 @@ async def call_tool(
         content=str(output),
         message_metadata={
             "phase": project.current_phase,
+            "mode": "assistant",  # /tool 端点默认归入 assistant 模式
             "tools_used": [request.tool_name],
         },
     )
@@ -537,6 +574,11 @@ async def stream_chat(
 
     current_phase = request.current_phase or project.current_phase
 
+    # ---- 查 AgentMode（提前到保存用户消息之前，确保 mode_name 统一） ----
+    mode_name = request.mode or "assistant"
+    mode_obj = db.query(AgentMode).filter(AgentMode.name == mode_name).first()
+    mode_prompt = mode_obj.system_prompt if mode_obj else ""
+
     # ---- 保存用户消息 ----
     user_msg = ChatMessage(
         id=generate_uuid(),
@@ -546,7 +588,7 @@ async def stream_chat(
         message_metadata={
             "phase": current_phase,
             "references": request.references,
-            "mode": request.mode,
+            "mode": mode_name,
         },
     )
     db.add(user_msg)
@@ -566,11 +608,6 @@ async def stream_chat(
             augmented_message = (
                 f"{request.message}\n\n---\n以下是用户引用的内容块：\n{ref_text}"
             )
-
-    # ---- 查 AgentMode ----
-    mode_name = request.mode or "assistant"
-    mode_obj = db.query(AgentMode).filter(AgentMode.name == mode_name).first()
-    mode_prompt = mode_obj.system_prompt if mode_obj else ""
 
     # Checkpointer 配置 + LLM 日志回调
     from core.llm_logger import GenerationLogCallback
@@ -901,7 +938,10 @@ async def advance_phase(
         project_id=request.project_id,
         role="assistant",
         content=msg_content,
-        message_metadata={"phase": result.next_phase},
+        message_metadata={
+            "phase": result.next_phase,
+            "mode": request.mode or "assistant",
+        },
     )
     db.add(enter_msg)
     db.commit()

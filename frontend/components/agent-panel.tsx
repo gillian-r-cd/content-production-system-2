@@ -179,7 +179,7 @@ export function AgentPanel({
     } else {
       setMessages([]);
     }
-  }, [projectId]);
+  }, [projectId, chatMode]);
 
   // 加载工具列表（从后台 Agent 设置）
   useEffect(() => {
@@ -232,7 +232,7 @@ export function AgentPanel({
   const loadHistory = async () => {
     if (!projectId) return;
     try {
-      const history = await agentAPI.getHistory(projectId);
+      const history = await agentAPI.getHistory(projectId, 100, chatMode);
       setMessages(history);
     } catch (err) {
       console.error("加载对话历史失败:", err);

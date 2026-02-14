@@ -339,8 +339,8 @@ export const agentAPI = {
   },
 
   // 获取对话历史
-  getHistory: (projectId: string, limit: number = 100) =>
-    fetchAPI<ChatMessageRecord[]>(`/api/agent/history/${projectId}?limit=${limit}`),
+  getHistory: (projectId: string, limit: number = 100, mode?: string) =>
+    fetchAPI<ChatMessageRecord[]>(`/api/agent/history/${projectId}?limit=${limit}${mode ? `&mode=${mode}` : ""}`),
   
   // 编辑消息
   editMessage: (messageId: string, content: string) =>

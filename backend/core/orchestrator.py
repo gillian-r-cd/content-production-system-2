@@ -1,13 +1,14 @@
 # backend/core/orchestrator.py
 # 功能: LangGraph Agent 核心编排器（重写版）
-# 架构: Custom StateGraph + Tool Calling
-# 主要导出: agent_graph, AgentState, build_system_prompt
+# 架构: Custom StateGraph + Tool Calling + AsyncSqliteSaver
+# 主要导出: get_agent_graph(), AgentState, build_system_prompt
 # 设计原则:
 #   1. LLM 通过 bind_tools 自动选择工具（不再手动 if/elif 路由）
 #   2. State 保留 7 个字段（messages + 3 上下文 + 3 模式/记忆）
 #   3. 所有 DB 操作在 @tool 函数内完成，不通过 State 传递
-#   4. Checkpointer (SqliteSaver) 跨请求/跨重启保持对话状态（含 ToolMessage）
+#   4. Checkpointer (AsyncSqliteSaver) 跨请求/跨重启保持对话状态（含 ToolMessage）
 #   5. trim_messages 管理 context window，防止超限
+#   6. Graph 延迟编译（get_agent_graph() 异步首次初始化 checkpointer）
 
 """
 LangGraph Agent 核心编排器
