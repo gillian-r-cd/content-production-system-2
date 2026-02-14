@@ -531,18 +531,20 @@ def read_mode_history(
 | M2-9 | 记忆去重逻辑 | `backend/core/memory_service.py` | ✅ |
 | M2-10 | 验证：记忆跨模式可见 | `backend/tests/test_memory_mode.py` | ✅ |
 
-### M3：Memory 管理能力（可选，远期）
+### M3：Memory 管理能力 ✅ 已完成
 
 **目标：** 记忆可查看、可编辑、可跨项目。
 **前置依赖：** M2 完成。
+**状态：** 全部完成，26/26 测试通过（含 M1+M2 回归，2026-02-15）。
 
-| # | 任务 | 文件 | 说明 |
+| # | 任务 | 文件 | 状态 |
 |---|------|------|------|
-| M3-1 | Memory CRUD API | `backend/api/memories.py` | 用户可查看/删除/编辑记忆 |
-| M3-2 | 前端记忆面板 | `frontend/components/memory-panel.tsx` | 显示 Agent 记住了什么，允许手动修正 |
-| M3-3 | 记忆自动合并/遗忘 | `backend/core/memory_service.py` | 记忆过多时 LLM 合并相似条目 |
-| M3-4 | LLM 预筛选 | `backend/core/memory_service.py` | 记忆 > 100 条时，用 LLM 选 top-10 |
-| M3-5 | 跨项目通用记忆 | 模型改动 | project_id 可选为 NULL，表示全局记忆 |
+| M3-1 | Memory CRUD API | `backend/api/memories.py` | ✅ |
+| M3-2 | 前端记忆面板 | `frontend/components/memory-panel.tsx` | ✅ |
+| M3-3 | 记忆自动合并/遗忘 | `backend/core/memory_service.py` | ✅ |
+| M3-4 | LLM 预筛选 | `backend/core/memory_service.py` | ✅ |
+| M3-5 | 跨项目通用记忆 | 模型改动 | ✅ |
+| M3-6 | 验证 | `backend/tests/test_memory_m3.py` | ✅ |
 
 ---
 

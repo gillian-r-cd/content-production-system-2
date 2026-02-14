@@ -300,6 +300,10 @@ async def chat(
         creator_profile_str = project.creator_profile.to_prompt_context()
 
     try:
+        # M2+M3: 加载项目记忆
+        from core.memory_service import load_memory_context_async
+        memory_ctx = await load_memory_context_async(request.project_id, mode_name, current_phase)
+
         state = {
             "messages": [HumanMessage(content=request.message)],
             "project_id": request.project_id,
@@ -307,7 +311,7 @@ async def chat(
             "creator_profile": creator_profile_str,
             "mode": mode_name,
             "mode_prompt": mode_prompt,
-            "memory_context": "",  # M2 阶段启用
+            "memory_context": memory_ctx,
         }
         config = {
             "configurable": {
@@ -436,6 +440,11 @@ async def retry_message(
     mode_prompt = mode_obj.system_prompt if mode_obj else ""
 
     from langchain_core.messages import HumanMessage, AIMessage
+
+    # M2+M3: 加载项目记忆
+    from core.memory_service import load_memory_context_async
+    memory_ctx = await load_memory_context_async(user_msg.project_id, mode_name, current_phase)
+
     state = {
         "messages": [HumanMessage(content=user_msg.content)],
         "project_id": user_msg.project_id,
@@ -443,7 +452,7 @@ async def retry_message(
         "creator_profile": creator_profile_str,
         "mode": mode_name,
         "mode_prompt": mode_prompt,
-        "memory_context": "",  # M2 阶段启用
+        "memory_context": memory_ctx,
     }
     config = {
         "configurable": {

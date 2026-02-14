@@ -51,9 +51,15 @@ export function MemoryPanel({ projectId, onClose }: MemoryPanelProps) {
     loadMemories();
   }, [loadMemories]);
 
+  // 全局记忆用 _global 作为路径参数，项目记忆用 projectId
+  const getMemoryScope = (mem: MemoryItemInfo) =>
+    mem.project_id === null ? "_global" : projectId;
+
   const handleDelete = async (memoryId: string) => {
+    const mem = memories.find((m) => m.id === memoryId);
+    if (!mem) return;
     try {
-      await memoriesAPI.delete(projectId, memoryId);
+      await memoriesAPI.delete(getMemoryScope(mem), memoryId);
       setMemories((prev) => prev.filter((m) => m.id !== memoryId));
     } catch (err) {
       console.error("Failed to delete memory:", err);
@@ -67,9 +73,11 @@ export function MemoryPanel({ projectId, onClose }: MemoryPanelProps) {
 
   const handleSaveEdit = async () => {
     if (!editingId || !editContent.trim()) return;
+    const mem = memories.find((m) => m.id === editingId);
+    if (!mem) return;
     try {
       setSaving(true);
-      const updated = await memoriesAPI.update(projectId, editingId, {
+      const updated = await memoriesAPI.update(getMemoryScope(mem), editingId, {
         content: editContent.trim(),
       });
       setMemories((prev) =>
@@ -177,6 +185,9 @@ export function MemoryPanel({ projectId, onClose }: MemoryPanelProps) {
                 /* 显示模式 */
                 <>
                   <p className="text-sm text-zinc-200 leading-relaxed">
+                    {mem.project_id === null && (
+                      <span className="text-xs text-amber-500/80 mr-1.5">[全局]</span>
+                    )}
                     {mem.content}
                   </p>
                   <div className="flex items-center justify-between mt-1.5">

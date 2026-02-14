@@ -87,10 +87,12 @@ def list_memories(project_id: str, include_global: bool = False, db: Session = D
 @router.get("/{project_id}/{memory_id}", response_model=MemoryResponse)
 def get_memory(project_id: str, memory_id: str, db: Session = Depends(get_db)):
     """获取单条记忆详情"""
-    mem = db.query(MemoryItem).filter(
-        MemoryItem.id == memory_id,
-        MemoryItem.project_id == project_id,
-    ).first()
+    query = db.query(MemoryItem).filter(MemoryItem.id == memory_id)
+    if project_id == "_global":
+        query = query.filter(MemoryItem.project_id.is_(None))
+    else:
+        query = query.filter(MemoryItem.project_id == project_id)
+    mem = query.first()
     if not mem:
         raise HTTPException(status_code=404, detail="Memory not found")
     return mem
@@ -128,10 +130,12 @@ def update_memory(
     db: Session = Depends(get_db),
 ):
     """更新记忆内容"""
-    mem = db.query(MemoryItem).filter(
-        MemoryItem.id == memory_id,
-        MemoryItem.project_id == project_id,
-    ).first()
+    query = db.query(MemoryItem).filter(MemoryItem.id == memory_id)
+    if project_id == "_global":
+        query = query.filter(MemoryItem.project_id.is_(None))
+    else:
+        query = query.filter(MemoryItem.project_id == project_id)
+    mem = query.first()
     if not mem:
         raise HTTPException(status_code=404, detail="Memory not found")
 
@@ -152,10 +156,12 @@ def update_memory(
 @router.delete("/{project_id}/{memory_id}")
 def delete_memory(project_id: str, memory_id: str, db: Session = Depends(get_db)):
     """删除一条记忆"""
-    mem = db.query(MemoryItem).filter(
-        MemoryItem.id == memory_id,
-        MemoryItem.project_id == project_id,
-    ).first()
+    query = db.query(MemoryItem).filter(MemoryItem.id == memory_id)
+    if project_id == "_global":
+        query = query.filter(MemoryItem.project_id.is_(None))
+    else:
+        query = query.filter(MemoryItem.project_id == project_id)
+    mem = query.first()
     if not mem:
         raise HTTPException(status_code=404, detail="Memory not found")
 

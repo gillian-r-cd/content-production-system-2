@@ -1178,8 +1178,8 @@ export interface MemoryItemInfo {
 }
 
 export const memoriesAPI = {
-  list: (projectId: string) =>
-    fetchAPI<MemoryItemInfo[]>(`/api/memories/${projectId}`),
+  list: (projectId: string, includeGlobal: boolean = true) =>
+    fetchAPI<MemoryItemInfo[]>(`/api/memories/${projectId}${includeGlobal ? "?include_global=true" : ""}`),
 
   get: (projectId: string, memoryId: string) =>
     fetchAPI<MemoryItemInfo>(`/api/memories/${projectId}/${memoryId}`),
