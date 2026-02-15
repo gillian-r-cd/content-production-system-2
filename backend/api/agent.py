@@ -179,6 +179,7 @@ class ChatRequest(BaseModel):
     current_phase: Optional[str] = None
     references: List[str] = []
     mode: str = "assistant"  # 模式名：assistant / strategist / critic / reader / creative / 自定义
+    followup_context: Optional[str] = None  # 追问上下文（Suggestion Card 追问时注入）
 
 
 class FieldUpdatedInfo(BaseModel):
@@ -650,7 +651,12 @@ async def stream_chat(
     }
 
     # SqliteSaver 持久化后不再需要 Bootstrap — checkpoint 跨重启自动恢复
-    input_messages = [HumanMessage(content=augmented_message)]
+    from langchain_core.messages import SystemMessage
+    input_messages = []
+    # 追问上下文注入（Suggestion Card 追问时前端传入）
+    if request.followup_context:
+        input_messages.append(SystemMessage(content=request.followup_context))
+    input_messages.append(HumanMessage(content=augmented_message))
 
     # 构建 AgentState
     creator_profile_str = ""
@@ -749,6 +755,7 @@ async def stream_chat(
                     # 向前端发送 route 事件（兼容旧前端）
                     if not first_tool_sent:
                         route_map = {
+                            "propose_edit": "suggest",
                             "run_research": "research",
                             "modify_field": "modify",
                             "generate_field_content": "generate_field",
@@ -773,7 +780,13 @@ async def stream_chat(
                 # ---- 工具结束 ----
                 elif kind == "on_tool_end":
                     tool_output = event["data"].get("output", "")
-                    if isinstance(tool_output, str):
+                    # LangGraph on_tool_end 可能返回 ToolMessage 对象而非纯字符串
+                    # 需要提取 .content 属性以获得工具的实际输出
+                    if hasattr(tool_output, "content"):
+                        # ToolMessage / AIMessage 等 LangChain message 对象
+                        raw = tool_output.content
+                        output_str = raw if isinstance(raw, str) else str(raw)
+                    elif isinstance(tool_output, str):
                         output_str = tool_output
                     else:
                         output_str = str(tool_output)
@@ -782,11 +795,47 @@ async def stream_chat(
                     if field_updated:
                         is_producing = True
 
-                    logger.info("[stream] tool_end: %s, output=%d chars, field_updated=%s",
-                                current_tool, len(output_str), field_updated)
+                    logger.info("[stream] tool_end: %s, output_type=%s, output=%d chars, field_updated=%s",
+                                current_tool, type(tool_output).__name__, len(output_str), field_updated)
+
+                    # propose_edit 特殊处理：解析 JSON 输出，发送 suggestion_card SSE 事件
+                    if current_tool == "propose_edit":
+                        logger.info("[stream] propose_edit output_str[:200]: %s", output_str[:200])
+                        try:
+                            result = json.loads(output_str)
+                            if result.get("status") == "suggestion":
+                                yield sse_event({
+                                    "type": "suggestion_card",
+                                    "id": result.get("id"),
+                                    "group_id": result.get("group_id"),
+                                    "group_summary": result.get("group_summary"),
+                                    "target_field": result.get("target_field"),
+                                    "target_entity_id": result.get("target_entity_id"),
+                                    "summary": result.get("summary"),
+                                    "reason": result.get("reason"),
+                                    "diff_preview": result.get("diff_preview"),
+                                    "edits_count": result.get("edits_count", 0),
+                                    "applied_count": result.get("applied_count", 0),
+                                    "failed_count": result.get("failed_count", 0),
+                                })
+                            else:
+                                # propose_edit 返回错误
+                                yield sse_event({
+                                    "type": "tool_end",
+                                    "tool": current_tool,
+                                    "output": result.get("message", output_str[:500]),
+                                    "field_updated": False,
+                                })
+                        except (json.JSONDecodeError, TypeError):
+                            yield sse_event({
+                                "type": "tool_end",
+                                "tool": current_tool,
+                                "output": output_str[:500],
+                                "field_updated": False,
+                            })
 
                     # modify_field 特殊处理：解析 JSON 输出
-                    if current_tool == "modify_field":
+                    elif current_tool == "modify_field":
                         try:
                             result = json.loads(output_str)
                             if result.get("status") == "need_confirm":
@@ -967,3 +1016,129 @@ async def advance_phase(
         project_updated=True,
         is_producing=False,
     )
+
+
+# ============== Suggestion Card Confirm API ==============
+
+class ConfirmSuggestionRequest(BaseModel):
+    """确认/拒绝 Suggestion Card 请求"""
+    project_id: str
+    suggestion_id: str              # 单 Card 时为 card_id
+    action: str                     # "accept" | "reject"
+
+
+class AppliedCardInfo(BaseModel):
+    card_id: str
+    entity_id: str
+    version_id: str | None
+
+
+class ConfirmSuggestionResponse(BaseModel):
+    success: bool
+    applied_cards: list[AppliedCardInfo] = []
+    message: str
+
+
+@router.post("/confirm-suggestion", response_model=ConfirmSuggestionResponse)
+async def confirm_suggestion(
+    request: ConfirmSuggestionRequest,
+    db: Session = Depends(get_db),
+):
+    """确认或拒绝 Suggestion Card。
+
+    accept: 从缓存取 SuggestionCard → 保存旧版本 → 应用编辑 → 写 DB
+    reject: 标记为已拒绝 → 返回确认
+    """
+    from core.agent_tools import PENDING_SUGGESTIONS
+    from core.edit_engine import apply_edits
+    from core.version_service import save_content_version
+
+    suggestion_id = request.suggestion_id
+    card = PENDING_SUGGESTIONS.get(suggestion_id)
+
+    if not card:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Suggestion {suggestion_id} not found (may have expired or already processed)",
+        )
+
+    if request.action == "reject":
+        # 标记为已拒绝，从缓存移除
+        card["status"] = "rejected"
+        PENDING_SUGGESTIONS.pop(suggestion_id, None)
+        logger.info("[confirm-suggestion] 拒绝: %s (%s)", suggestion_id[:8], card["target_field"])
+        return ConfirmSuggestionResponse(
+            success=True,
+            applied_cards=[],
+            message=f"已拒绝对「{card['target_field']}」的修改建议",
+        )
+
+    if request.action == "accept":
+        entity_id = card["target_entity_id"]
+        original_content = card["original_content"]
+        modified_content = card["modified_content"]
+        target_field = card["target_field"]
+
+        try:
+            # 1. 读取当前内容
+            entity = db.query(ContentBlock).filter(
+                ContentBlock.id == entity_id,
+                ContentBlock.deleted_at == None,  # noqa: E711
+            ).first()
+
+            if not entity:
+                raise HTTPException(status_code=404, detail=f"内容块 {entity_id} 不存在")
+
+            # 冲突检测: 如果内容在 propose_edit 后被修改，重新计算 diff
+            current_content = entity.content or ""
+            if current_content != original_content:
+                logger.warning(
+                    "[confirm-suggestion] 内容已变更，基于当前内容重新应用 edits"
+                )
+                # 重新应用 edits 到最新内容（而非使用缓存的 modified_content）
+                re_modified, re_changes = apply_edits(current_content, card["edits"])
+                applied = [c for c in re_changes if c["status"] == "applied"]
+                if not applied:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="内容已被修改，原修改建议无法应用。请重新生成建议。"
+                    )
+                modified_content = re_modified
+
+            # 2. 保存旧版本（保存的是当前 DB 中的内容）
+            version_id = save_content_version(
+                db, entity_id, current_content, "agent",
+                source_detail=f"propose_edit: {card['summary']}",
+            )
+
+            # 3. 应用修改
+            entity.content = modified_content
+            db.commit()
+
+            # 4. 清理缓存
+            card["status"] = "accepted"
+            PENDING_SUGGESTIONS.pop(suggestion_id, None)
+
+            logger.info(
+                "[confirm-suggestion] 应用: %s (%s), version_id=%s",
+                suggestion_id[:8], target_field, version_id,
+            )
+
+            return ConfirmSuggestionResponse(
+                success=True,
+                applied_cards=[AppliedCardInfo(
+                    card_id=suggestion_id,
+                    entity_id=entity_id,
+                    version_id=version_id or "",
+                )],
+                message=f"已应用对「{target_field}」的修改",
+            )
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            db.rollback()
+            logger.error("[confirm-suggestion] 应用失败: %s", e, exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    raise HTTPException(status_code=400, detail=f"Unknown action: {request.action}")

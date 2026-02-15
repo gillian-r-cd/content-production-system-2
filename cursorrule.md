@@ -2,14 +2,15 @@
 
 # 不容辩驳的原则
 * 一步一步修改，一步一步验证，一步一步更新todo
+* 不要用 emoji 作为视觉标记（UI mockup 除外）
+* 未经事先询问并确认，不得覆盖我的 .env 文件
 
 # 编码模式偏好
 * 始终优先选择简单的解决方案
 * 尽可能避免代码重复
 * 修复问题或漏洞时，在现有实现的所有方案都尝试完毕之前，不要引入新的模式或技术
-* 未经事先询问并确认，不得覆盖我的.env 文件
 * 编码时请注意合理模块化
-* 在每次创建/更新文件时，都在文件最开头用注释写清楚这个文件的功能、主要函数和数据结构。
+* 在每次创建/更新文件时，都在文件最开头用注释写清楚这个文件的功能、主要函数和数据结构
 
 # 编程工作流偏好
 * 专注于与任务相关的代码区域
@@ -18,45 +19,116 @@
 
 ---
 
-# 项目技术文档索引
+# 项目概况
 
-本项目是一个「以终为始的内容生产系统」，请在开发前阅读以下文档：
+本项目是一个 **AI Agent 驱动的商业内容生产系统**。核心理念是"以终为始"：先明确目标受众的期望行动，再倒推内容该怎么写。Agent 不是工具，而是协作者——它主动推进流程、提出修改建议、等待用户确认。
 
-## 核心文档
+## 技术栈
+
+| 层级 | 技术 |
+|------|------|
+| 前端 | Next.js 16 + TypeScript + Radix UI + Tailwind CSS |
+| 后端 | Python 3.14 + FastAPI + LangGraph |
+| 数据库 | SQLite + SQLAlchemy |
+| AI | OpenAI GPT-5.1 |
+
+## 核心架构
+
+```
+前端三栏布局: [进度面板] [内容编辑面板] [Agent 对话面板]
+                ↓              ↓                ↓
+           progress-panel  content-panel    agent-panel
+                                               ↓ SSE
+后端 FastAPI ─── api/ ─── core/orchestrator.py (LangGraph Agent)
+                              ├── agent_tools.py (12 个 @tool)
+                              ├── tools/ (eval_engine, simulator, deep_research...)
+                              ├── models/ (Project, ContentBlock, FieldTemplate...)
+                              ├── memory_service.py
+                              ├── phase_service.py
+                              └── version_service.py
+```
+
+## 数据模型核心
+
+- **Project**: 项目实体，包含 `current_phase`, `phase_order`, `phase_status`
+- **ContentBlock**: 树形内容块，统一承载 phase/field/section 三种 `block_type`
+- **FieldTemplate**: 可复用字段模板，含预置 Eval 配置
+- **AgentMode**: Agent 人格模式，每个 Mode 有独立的 system_prompt
+- **MemoryItem**: Agent 记忆条目，跨会话持久化
+- **ContentVersion**: 内容版本快照，支持 rollback
+
+## Agent 工具清单 (agent_tools.py)
+
+| 工具 | 用途 |
+|------|------|
+| `modify_field` | 修改已有内容块（当前为全文覆写，待迁移到 Suggestion Card） |
+| `generate_field_content` | 为空白内容块生成内容 |
+| `query_field` | 查询字段内容（带 LLM 摘要） |
+| `read_field` | 读取字段完整原始内容 |
+| `update_field` | 直接覆写字段（用户提供完整新内容时） |
+| `manage_architecture` | 增删改查项目结构（phase/field） |
+| `advance_to_phase` | 推进项目到下一阶段 |
+| `run_research` | 执行消费者调研（Deep Research） |
+| `manage_persona` | 管理消费者画像 |
+| `run_evaluation` | 运行 Eval V2 评估 |
+| `generate_outline` | 生成内容大纲 |
+| `manage_skill` | 管理 Agent 技能 |
+| `read_mode_history` | 读取其他模式的对话历史 |
+
+## 关键设计理念
+
+1. **以终为始**: 先定目标受众的期望行动，再倒推内容
+2. **ContentBlock 统一树**: 所有内容都是树形内容块，phase/field/section 只是 block_type
+3. **Agent 引领流程**: Agent 知道下一步该做什么，主动推进
+4. **修改是决策不是执行**: 修改建议先展示给用户确认（Suggestion Card），不自主执行
+5. **Memory 跨会话持久化**: 创作者画像 + 记忆系统保证全局一致性
+6. **Mode 即视角**: 不同 Mode（助手/批评家/编辑等）提供不同视角，但共享数据
+
+## 核心设计文档
+
 | 文档 | 用途 | 何时阅读 |
 |------|------|----------|
+| `docs/first_principles.md` | 第一性原理、架构分层、迭代复盘、差距分析 | 理解项目根本目的时 |
+| `docs/suggestion_card_design.md` | 修改闭环设计、System Prompt 工程、Milestone/Todo | 实现修改相关功能时（核心） |
 | `docs/architecture.md` | 系统架构、数据结构、模块职责 | 理解整体设计时 |
-| `docs/context_management.md` | 上下文引用、一致性保障、Golden Context | 实现AI交互时（核心） |
-| `docs/agent_research.md` | Agent技术选型、Skill设计、自迭代机制 | 技术决策时 |
-| `docs/ai_prompting_guide.md` | 动态提示词注入、字段注入 | 实现AI交互时 |
-| `docs/field_schemas.md` | 品类字段定义（仅供参考的模板库） | 扩展新品类时 |
-| `docs/ui_design.md` | 三栏布局、后台设置、本地存储 | 实现界面时 |
-| `docs/implementation_guide.md` | 实现路径、技术选型、MVP范围 | 开始编码前 |
+| `docs/memory_and_mode_system.md` | Memory 和 Mode 系统设计 | 实现 AI 交互时 |
+| `docs/implementation_plan_v3.md` | 实施计划（含 edit_engine 设计） | 查看历史设计时 |
+| `docs/eval_system_design.md` | Eval V2 评估系统设计 | 实现评估功能时 |
+| `docs/user_guide.md` | 使用者指南 | 了解用户视角时 |
+| `docs/design-system.md` | 前端设计系统 | 实现界面时 |
 
-## 关键设计理念（必须遵守）
-1. **以终为始**：先定目标，再倒推内容
-2. **内涵是完整生产**：内涵=核心内容的完整生产（如课程素材），外延=营销触达
-3. **外延可随时开始**：只要价值点清晰，外延可以提前生产，内涵更新后再迭代
-4. **用户定义一切**：CreatorProfile、FieldSchema、Simulator提示词都由用户自定义
-5. **Golden Context自动注入**：创作者特质+核心意图+用户画像，每次LLM调用必须注入
-6. **@引用机制**：用户用@语法引用已有内容（@意图分析、@内涵.课程目标）
-7. **一致性保障**：禁忌词检查+风格一致性检查+意图对齐检查
-8. **三栏布局**：左进度、中编辑、右对话（Agent入口+上下文引用）
+## 当前开发重点（Suggestion Card）
 
-## 数据流向
+正在设计和实施的核心改进是 **Suggestion Card 修改闭环**：
+
+1. Agent 输出修改建议时，使用 `propose_edit` 工具（待实现）
+2. 前端以 Suggestion Card 形式展示 diff
+3. 用户可以"应用 / 拒绝 / 追问"
+4. 应用后保存版本快照，支持 15 秒 Undo Toast 和完整版本回滚
+5. 多字段修改以 SuggestionGroup 形式聚合展示
+
+详见 `docs/suggestion_card_design.md`
+
+## 目录结构
+
 ```
-CreatorProfile（全局约束）
-        ↓
-Intent → ConsumerResearch → ContentCore → ContentExtension
-                                 ↓              ↓
-                            Simulator ←────────┘
-                                 ↓
-                              Report
+├── docs/                    # 设计文档
+├── backend/                 # Python 后端
+│   ├── core/               # 核心业务逻辑
+│   │   ├── models/         # SQLAlchemy 数据模型
+│   │   ├── tools/          # Eval 引擎、模拟器、调研等
+│   │   ├── orchestrator.py # LangGraph Agent 编排器
+│   │   ├── agent_tools.py  # 12 个 @tool 定义
+│   │   ├── edit_engine.py  # anchor-based edits + diff 生成（已实现未接入）
+│   │   ├── memory_service.py
+│   │   ├── phase_service.py
+│   │   └── version_service.py
+│   ├── api/                # FastAPI 路由
+│   ├── scripts/            # 数据库初始化脚本
+│   └── main.py
+├── frontend/               # Next.js 前端
+│   ├── app/                # 页面路由
+│   ├── components/         # React 组件
+│   └── lib/                # API 客户端、工具函数
+└── cursorrule.md           # 本文件
 ```
-
-## 开发顺序（Phase by Phase）
-1. 数据模型（core/models/）
-2. Prompt引擎（core/prompt_engine.py, core/ai_client.py）
-3. 核心模块（core/modules/）
-4. 流程编排（core/orchestrator.py）
-5. CLI界面（ui/cli.py）

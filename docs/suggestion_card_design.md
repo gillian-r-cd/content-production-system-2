@@ -1309,30 +1309,30 @@ Agent: [文字] "好的，我看了场景库的内容，建议如下修改："
 
 #### 后端
 
-- [ ] **T1.1** `version_service.py`：`save_content_version()` 改为返回 `version_id`（当前返回 None）
+- [x] **T1.1** `version_service.py`：`save_content_version()` 改为返回 `version_id`（当前返回 None）
   - `db.flush()` 后返回 `ver.id`
 
-- [ ] **T1.2** 在 `agent_tools.py` 中新增 `propose_edit` @tool
+- [x] **T1.2** 在 `agent_tools.py` 中新增 `propose_edit` @tool
   - 读取目标内容块当前内容
   - 调用 `edit_engine.apply_edits()` 生成 modified_content 和 changes
   - 调用 `edit_engine.generate_revision_markdown()` 生成 diff_preview
   - 缓存 SuggestionCard 到内存字典（`PENDING_SUGGESTIONS: Dict[str, dict]`）
   - 返回结构化 JSON：`{status: "suggestion", id, target_field, entity_id, summary, reason, diff_preview, edits_count}`
 
-- [ ] **T1.3** 在 `agent_tools.py` 的 `AGENT_TOOLS` 列表中注册 `propose_edit`
+- [x] **T1.3** 在 `agent_tools.py` 的 `AGENT_TOOLS` 列表中注册 `propose_edit`
 
-- [ ] **T1.4** 在 `api/agent.py` 的 SSE stream 的 `on_tool_end` 处理中，增加 `propose_edit` 的特殊分支
+- [x] **T1.4** 在 `api/agent.py` 的 SSE stream 的 `on_tool_end` 处理中，增加 `propose_edit` 的特殊分支
   - 解析 tool output JSON
   - 如果 `status == "suggestion"`，yield `sse_event({"type": "suggestion_card", ...})`
   - 附带完整的 diff_preview、summary、reason、suggestion_id、entity_id
 
-- [ ] **T1.5** 新增 Confirm API：`POST /api/agent/confirm-suggestion`
+- [x] **T1.5** 新增 Confirm API：`POST /api/agent/confirm-suggestion`
   - 请求体：`{project_id, suggestion_id, action: "accept"|"reject"}`
   - accept：从缓存取 SuggestionCard → `version_service.save_content_version()` 返回 version_id → `edit_engine.apply_edits()` → 写 DB
   - reject：从缓存删除 → 注入拒绝消息到对话 → 返回确认
   - 返回体：`{success, applied_cards: [{card_id, entity_id, version_id}], message}`
 
-- [ ] **T1.6** 重构 `orchestrator.py` 的 `build_system_prompt()`（参照第六章完整方案）
+- [x] **T1.6** 重构 `orchestrator.py` 的 `build_system_prompt()`（参照第六章完整方案）
   - 使用 XML 标签重新组织 system prompt 结构（`<identity>`、`<output_rules>`、`<action_guide>`、`<modification_rules>`、`<disambiguation>`、`<project_context>`、`<interaction_rules>`）
   - 删除旧的"修改确认流程"段（第 249-253 行）
   - 删除旧的"你的能力"段，替换为 `<action_guide>` 行动指南（6.4 节）
@@ -1344,56 +1344,56 @@ Agent: [文字] "好的，我看了场景库的内容，建议如下修改："
 
 #### 前端
 
-- [ ] **T1.7** 在 `agent-panel.tsx` 中新增 `SuggestionCard` 子组件
+- [x] **T1.7** 在 `frontend/components/suggestion-card.tsx` 中新增独立 `SuggestionCard` 子组件
   - 渲染 summary、target_field、reason
   - 使用 `<del>/<ins>` HTML 渲染 diff_preview（通过已有的 `rehype-raw` 插件）
   - 三个按钮：应用 / 拒绝 / 追问
   - 五种状态的视觉样式（参照 7.5 节）
   - 样式：卡片式（border + 背景色），与普通消息气泡视觉区分
 
-- [ ] **T1.8** 在 `agent-panel.tsx` 的 SSE 事件处理中，增加 `suggestion_card` 事件分支
-  - 将 suggestion 数据存入 state
-  - 在消息流中渲染 SuggestionCard 组件
+- [x] **T1.8** 在 `agent-panel.tsx` 的 SSE 事件处理中，增加 `suggestion_card` 事件分支
+  - 将 suggestion 数据存入 state（`suggestions` Map）
+  - 在消息流中渲染 SuggestionCard 组件（通过 `[SuggestionCardPlaceholder-{id}]` 占位符）
 
-- [ ] **T1.9** 实现 SuggestionCard 的三个按钮交互
+- [x] **T1.9** 实现 SuggestionCard 的三个按钮交互
   - 应用：调用 Confirm API → 成功后更新 Card 状态为 `accepted` + 触发 `onContentUpdate()` + 显示 Undo Toast
   - 拒绝：调用 Confirm API → 更新 Card 状态为 `rejected`
   - 追问：Card 进入追问状态 → 输入框预填上下文 → 发送后走正常 Agent 对话流
 
-- [ ] **T1.10** 实现 Undo Toast 组件
+- [x] **T1.10** 实现 UndoToast 组件（`frontend/components/undo-toast.tsx`）
   - 收到 Confirm API 返回的 `version_id` 和 `entity_id` 后显示
   - 15 秒倒计时，带进度条
   - 点击"撤回"→ 调用 `POST /api/versions/{entity_id}/rollback/{version_id}` → Card 状态变为 `undone` → 刷新内容面板
   - 倒计时结束后自动消失
 
-- [ ] **T1.11** 实现追问上下文注入
-  - 点击追问后，记录当前 Card 的 `{card_id, target_field, summary}`
-  - 发送消息时，在 HumanMessage 前注入 SystemMessage：`"[用户正在对 Suggestion #{card_id} 进行追问...]"`
-  - Agent 生成新 Card 时，前端检测是否是对旧 Card 的替代（通过 `supersedes` 字段），更新旧 Card 状态为 `superseded`
+- [x] **T1.11** 实现追问上下文注入
+  - 点击追问后，记录当前 Card 的 `{card_id, target_field, summary}` 到 `followUpContextRef`
+  - 发送消息时，在请求体中附带 `followup_context` 字段
+  - 后端在 HumanMessage 前注入 SystemMessage：`"[用户正在对 Suggestion #{card_id} 进行追问...]"`
 
-- [ ] **T1.12** 在 `TOOL_NAMES` 和 `TOOL_DESCS` 中添加 `propose_edit` 的显示名称
+- [x] **T1.12** 在 `TOOL_NAMES` 和 `TOOL_DESCS` 中添加 `propose_edit` 的显示名称
 
-- [ ] **T1.13** 添加 diff 样式（`<del>/<ins>` 的 CSS）
-  - 在全局样式或组件内样式中定义
+- [x] **T1.13** 添加 diff 样式（`<del>/<ins>` 的 CSS）
+  - 在 `globals.css` 中定义全局样式
   - del: 红色背景 + 删除线
   - ins: 绿色背景
 
 #### Prompt 工程（参照第六章完整方案）
 
-- [ ] **T1.14** 编写 `propose_edit` 的完整 docstring（参照 6.6 节草案）
+- [x] **T1.14** 编写 `propose_edit` 的完整 docstring（参照 6.6 节草案）
   - 何时使用 / 何时不使用 / 错误用法
   - edits 格式示例和 anchor 精确性要求
   - 多字段修改的 group_id 用法
 
-- [ ] **T1.15** 改造 `modify_field` 的 docstring（参照 6.6 节草案）
+- [x] **T1.15** 改造 `modify_field` 的 docstring（参照 6.6 节草案）
   - 增加 CRITICAL 标记：大多数场景应优先使用 propose_edit
   - 增加"何时不使用"段和 vs propose_edit 消歧
 
-- [ ] **T1.16** 统一其他工具的 docstring 为标准模板（参照 6.6 节）
+- [x] **T1.16** 统一其他工具的 docstring 为标准模板（参照 6.6 节）
   - 优先改造弱项：manage_persona、read_field、advance_to_phase、manage_skill
   - 为所有工具补充"何时不使用"段
 
-- [ ] **T1.17** 更新 5 个预置 Mode Prompt（参照 6.7 节）
+- [x] **T1.17** 更新 5 个预置 Mode Prompt（参照 6.7 节）
   - assistant: 增加 propose_edit 修改规则
   - critic: 替换"执行修改"为 propose_edit + 推理策略
   - strategist: 增加"讨论收敛后 propose_edit"规则

@@ -15,6 +15,8 @@ import rehypeRaw from "rehype-raw";
 import { settingsAPI } from "@/lib/api";
 import { Square } from "lucide-react";
 import { MemoryPanel } from "./memory-panel";
+import { SuggestionCard, UndoToast } from "./suggestion-card";
+import type { SuggestionCardData, SuggestionStatus } from "./suggestion-card";
 
 // 统一的可引用项（兼容 Field 和 ContentBlock）
 interface MentionItem {
@@ -34,6 +36,7 @@ interface AgentPanelProps {
 
 // 工具名称映射（匹配后端 AGENT_TOOLS 的 tool.name）
 const TOOL_NAMES: Record<string, string> = {
+  propose_edit: "修改建议",
   modify_field: "修改内容块",
   generate_field_content: "生成内容块",
   query_field: "查询内容块",
@@ -53,6 +56,7 @@ const TOOL_NAMES: Record<string, string> = {
 };
 
 const TOOL_DESCS: Record<string, string> = {
+  propose_edit: "向用户展示修改建议和diff预览",
   modify_field: "修改指定内容块的已有内容",
   generate_field_content: "为指定内容块生成新内容",
   query_field: "查询内容块状态信息",
@@ -89,6 +93,15 @@ export function AgentPanel({
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
   const [availableTools, setAvailableTools] = useState<{ id: string; name: string; desc: string }[]>([]);
   const [showMemoryPanel, setShowMemoryPanel] = useState(false);
+  const [suggestions, setSuggestions] = useState<SuggestionCardData[]>([]);
+  const [undoToast, setUndoToast] = useState<{
+    entityId: string;
+    versionId: string;
+    targetField: string;
+    suggestionId: string;
+  } | null>(null);
+  // 追问上下文: 当用户点击追问按钮时存储，下次发送消息时注入
+  const followUpContextRef = useRef<{ cardId: string; targetField: string; summary: string } | null>(null);
 
   // 加载可用 Agent 模式
   useEffect(() => {
@@ -208,6 +221,7 @@ export function AgentPanel({
       } catch (err) {
         console.error("加载工具列表失败:", err);
         setAvailableTools([
+          { id: "propose_edit", name: "修改建议", desc: "向用户展示修改建议和diff预览" },
           { id: "modify_field", name: "修改内容块", desc: "修改指定内容块的已有内容" },
           { id: "generate_field_content", name: "生成内容块", desc: "为指定内容块生成新内容" },
           { id: "query_field", name: "查询内容块", desc: "查询内容块状态信息" },
@@ -376,17 +390,27 @@ export function AgentPanel({
     abortControllerRef.current = abortController;
 
     try {
+      // 构建请求体（含追问上下文注入）
+      const requestBody: Record<string, unknown> = {
+        project_id: projectId,
+        message: userMessage,
+        references,
+        current_phase: currentPhase || undefined,
+        mode: chatMode,
+      };
+
+      // 追问上下文注入（T1.11）
+      if (followUpContextRef.current) {
+        const ctx = followUpContextRef.current;
+        requestBody.followup_context = `[用户正在对 Suggestion #${ctx.cardId.slice(0, 8)} 进行追问，目标字段: ${ctx.targetField}，原建议: ${ctx.summary}]`;
+        followUpContextRef.current = null; // 用完即清
+      }
+
       // 使用流式 API（传递 current_phase 确保后端使用正确的阶段）
       const response = await fetch(`${API_BASE}/api/agent/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          project_id: projectId,
-          message: userMessage,
-          references,
-          current_phase: currentPhase || undefined,
-          mode: chatMode,
-        }),
+        body: JSON.stringify(requestBody),
         signal: abortController.signal,
       });
 
@@ -437,6 +461,7 @@ export function AgentPanel({
                   "evaluate": "📋 正在执行评估...",
                   "generate_field": "⚙️ 正在生成内容块...",
                   "modify": "✏️ 正在修改内容...",
+                  "suggest": "✏️ 正在生成修改建议...",
                   "generic_research": "🔍 正在进行深度调研...",
                   "advance_phase": "⏭️ 正在推进组...",
                   "query": "🔎 正在查询内容块...",
@@ -486,8 +511,31 @@ export function AgentPanel({
                       : m
                   )
                 );
+              } else if (data.type === "suggestion_card") {
+                // Suggestion Card（propose_edit 工具输出）
+                console.log("[AgentPanel] Suggestion card:", data.id, data.target_field);
+                const newCard: SuggestionCardData = {
+                  id: data.id,
+                  target_field: data.target_field,
+                  summary: data.summary || "",
+                  reason: data.reason,
+                  diff_preview: data.diff_preview || "",
+                  edits_count: data.edits_count || 0,
+                  group_id: data.group_id,
+                  group_summary: data.group_summary,
+                  status: "pending",
+                };
+                setSuggestions((prev) => [...prev, newCard]);
+                // 更新 AI 气泡显示简要提示
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === tempAiMsg.id
+                      ? { ...m, content: `✏️ 修改建议已生成：**${data.summary}**\n\n请查看下方的修改预览卡片。` }
+                      : m
+                  )
+                );
               } else if (data.type === "modify_confirm_needed") {
-                // 修改确认（需要用户确认的修改）
+                // 修改确认（需要用户确认的修改）— 旧流程兼容
                 console.log("[AgentPanel] Modify confirm needed:", data.target_field);
                 const summary = data.summary || "修改建议已生成";
                 setMessages((prev) =>
@@ -710,6 +758,7 @@ export function AgentPanel({
                   "research": "📊 正在进行消费者调研...",
                   "generate_field": "⚙️ 正在生成内容块...",
                   "modify": "✏️ 正在修改内容...",
+                  "suggest": "✏️ 正在生成修改建议...",
                   "evaluate": "📋 正在执行评估...",
                   "advance_phase": "⏭️ 正在推进组...",
                   "chat": "💬 正在思考...",
@@ -739,6 +788,25 @@ export function AgentPanel({
                 const sm = data.output ? data.output.slice(0, 200) : "";
                 setMessages(prev =>
                   prev.map(m => m.id === tempAiMsg.id ? { ...m, content: `✅ ${tn} 完成。${sm ? "\n" + sm : ""}` } : m)
+                );
+              } else if (data.type === "suggestion_card") {
+                console.log("[AgentPanel] Suggestion card (tool):", data.id, data.target_field);
+                const newCard: SuggestionCardData = {
+                  id: data.id,
+                  target_field: data.target_field,
+                  summary: data.summary || "",
+                  reason: data.reason,
+                  diff_preview: data.diff_preview || "",
+                  edits_count: data.edits_count || 0,
+                  group_id: data.group_id,
+                  group_summary: data.group_summary,
+                  status: "pending",
+                };
+                setSuggestions((prev) => [...prev, newCard]);
+                setMessages(prev =>
+                  prev.map(m => m.id === tempAiMsg.id
+                    ? { ...m, content: `✏️ 修改建议已生成：**${data.summary}**\n\n请查看下方的修改预览卡片。` }
+                    : m)
                 );
               } else if (data.type === "modify_confirm_needed") {
                 const summary = data.summary || "修改建议已生成";
@@ -793,6 +861,48 @@ export function AgentPanel({
       console.error("复制失败:", err);
     }
   };
+
+  // ── Suggestion Card 回调 ──
+
+  const handleSuggestionStatusChange = useCallback((
+    suggestionId: string,
+    status: SuggestionStatus,
+    undoInfo?: { entity_id: string; version_id: string },
+  ) => {
+    setSuggestions((prev) =>
+      prev.map((s) => s.id === suggestionId ? { ...s, status, entity_id: undoInfo?.entity_id, version_id: undoInfo?.version_id } : s)
+    );
+    // 接受时显示 Undo Toast（仅当 version_id 有效时才可撤回）
+    if (status === "accepted" && undoInfo && undoInfo.version_id) {
+      const card = suggestions.find((s) => s.id === suggestionId);
+      setUndoToast({
+        entityId: undoInfo.entity_id,
+        versionId: undoInfo.version_id,
+        targetField: card?.target_field || "",
+        suggestionId,
+      });
+    }
+  }, [suggestions]);
+
+  const handleSuggestionFollowUp = useCallback((card: SuggestionCardData) => {
+    // 存储追问上下文，下次发送时注入
+    followUpContextRef.current = {
+      cardId: card.id,
+      targetField: card.target_field,
+      summary: card.summary,
+    };
+    // 预填输入框
+    setInput(`关于「${card.target_field}」的修改建议，`);
+    inputRef.current?.focus();
+  }, []);
+
+  const handleUndoComplete = useCallback((suggestionId: string) => {
+    setSuggestions((prev) =>
+      prev.map((s) => s.id === suggestionId ? { ...s, status: "undone" as SuggestionStatus } : s)
+    );
+    setUndoToast(null);
+    if (onContentUpdate) onContentUpdate();
+  }, [onContentUpdate]);
 
   const handleToolCall = async (toolId: string) => {
     if (!projectId) return;
@@ -926,6 +1036,22 @@ export function AgentPanel({
           />
         ))}
 
+        {/* Suggestion Cards */}
+        {suggestions.length > 0 && (
+          <div className="space-y-2">
+            {suggestions.map((card) => (
+              <SuggestionCard
+                key={card.id}
+                data={card}
+                projectId={projectId || ""}
+                onStatusChange={handleSuggestionStatusChange}
+                onFollowUp={handleSuggestionFollowUp}
+                onContentUpdate={onContentUpdate}
+              />
+            ))}
+          </div>
+        )}
+
         {sending && (
           <div className="flex items-center gap-2 text-zinc-500">
             <div className="w-2 h-2 bg-brand-500 rounded-full animate-pulse" />
@@ -935,6 +1061,19 @@ export function AgentPanel({
 
         <div ref={messagesEndRef} />
       </div>
+
+      {/* Undo Toast */}
+      {undoToast && (
+        <div className="px-4 py-2 border-t border-surface-3">
+          <UndoToast
+            entityId={undoToast.entityId}
+            versionId={undoToast.versionId}
+            targetField={undoToast.targetField}
+            onUndo={() => handleUndoComplete(undoToast.suggestionId)}
+            onExpire={() => setUndoToast(null)}
+          />
+        </div>
+      )}
 
       {/* 输入区 */}
       <div className="p-4 border-t border-surface-3">

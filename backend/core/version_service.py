@@ -23,7 +23,7 @@ def save_content_version(
     old_content: str,
     source: str,
     source_detail: str = None,
-) -> None:
+) -> str | None:
     """
     保存旧内容为 ContentVersion（覆写前调用）。
 
@@ -33,9 +33,12 @@ def save_content_version(
         old_content: 被覆写的旧内容
         source: 版本来源（manual / ai_generate / ai_regenerate / agent）
         source_detail: 来源补充说明（如具体的修改指令）
+
+    Returns:
+        version_id: 新创建的版本 ID（空内容或失败时返回 None）
     """
     if not old_content or not old_content.strip():
-        return  # 空内容不值得保存版本
+        return None  # 空内容不值得保存版本
 
     try:
         from core.models import ContentVersion, generate_uuid
@@ -57,6 +60,8 @@ def save_content_version(
         db.add(ver)
         db.flush()  # 立即写入以获得 ID，但不 commit（让调用者控制事务）
         logger.info(f"[版本] 保存 {entity_id[:8]}... v{next_ver} ({source})")
+        return ver.id
     except Exception as e:
         logger.warning(f"[版本] 保存失败(可忽略): {e}")
+        return None
 

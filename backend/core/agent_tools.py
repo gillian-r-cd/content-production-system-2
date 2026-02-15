@@ -1,11 +1,13 @@
 # backend/core/agent_tools.py
 # 功能: LangGraph Agent 的工具定义层
 # 主要导出: AGENT_TOOLS (list[BaseTool]) — 注册到 Agent 的全部 @tool
+#           PENDING_SUGGESTIONS (dict) — 未确认的 SuggestionCard 内存缓存
 # 设计原则:
 #   1. 每个 @tool 是现有 tool 模块的薄包装，复用已有逻辑
 #   2. docstring 是 LLM 选择工具的唯一依据（通过 bind_tools → JSON Schema）
 #   3. project_id 从 RunnableConfig 获取（LangGraph 自动透传）
 #   4. DB session 在工具内部创建，不从 State 传递
+#   5. propose_edit 只生成预览不写 DB，修改由 Confirm API 执行
 
 """
 Agent 工具定义
@@ -88,6 +90,142 @@ def _set_content_status(entity) -> None:
         entity.status = "completed"
 
 
+# ============== Suggestion Card 缓存 ==============
+# M1: 内存字典缓存未确认的 SuggestionCard（M5 迁移到 DB）
+# key = suggestion_id (UUID), value = SuggestionCard dict
+PENDING_SUGGESTIONS: dict[str, dict] = {}
+
+
+# ============== 0. propose_edit ==============
+
+@tool
+async def propose_edit(
+    target_field: str,
+    summary: str,
+    reason: str,
+    edits: list[dict],
+    group_id: str = "",
+    group_summary: str = "",
+    *, config: Annotated[RunnableConfig, InjectedToolArg],
+) -> str:
+    """向用户提出内容修改建议，展示修改预览供用户确认。不会直接执行修改。
+
+    何时使用:
+    - 你分析后认为某个内容块需要修改，且有具体的修改方案
+    - 用户说"帮我改一下 XX"（默认走确认流程）
+    - 评估/批评后有具体的可操作改进点
+    - 一句话能说清楚"改什么"和"为什么改"
+
+    何时不使用:
+    - 还在讨论方向，不确定该怎么改 -> 文本对话
+    - 有多种修改方向需要用户选择 -> 文本对话，列出选项
+    - 修改范围太大（整篇重写） -> generate_field_content
+    - 用户说"直接改，不用确认" -> modify_field
+
+    错误用法:
+    - 用户说"你觉得场景库怎么样？" -> 不要 propose_edit，这是讨论不是修改请求
+    - 你只有模糊方向如"可能需要改进" -> 不要 propose_edit，先明确具体改什么
+    - anchor 写成"大概是第三段" -> anchor 必须是原文中精确存在的文本
+
+    多字段修改:
+    - 当多个字段的修改有共同原因时，使用相同的 group_id
+    - 首次调用提供 group_summary
+    - 彼此独立的修改不用 group_id
+
+    edits 格式:
+      [{"type": "replace", "anchor": "原文中精确存在的文本", "new_text": "替换后的文本"}]
+      [{"type": "insert_after", "anchor": "定位锚点", "new_text": "插入的内容"}]
+      [{"type": "delete", "anchor": "要删除的文本", "new_text": ""}]
+
+    CRITICAL: anchor 必须是目标内容块中精确存在的文本片段。不确定时先用 read_field 查看原文。
+
+    Args:
+        target_field: 目标内容块名称
+        summary: 一句话描述修改内容（如"加强开头的吸引力"）
+        reason: 修改原因（如"当前开头过于平淡，缺少 hook"）
+        edits: 编辑操作列表，格式见上
+        group_id: 多字段修改的组 ID（可选）
+        group_summary: 整组修改的总体说明（仅首次调用时提供）
+    """
+    from core.edit_engine import apply_edits, generate_revision_markdown
+    from core.models import generate_uuid
+
+    project_id = _get_project_id(config)
+    db = _get_db()
+    try:
+        entity = _find_block(db, project_id, target_field)
+        if not entity:
+            return _json_err(f"找不到内容块「{target_field}」")
+
+        original_content = entity.content or ""
+        if not original_content.strip():
+            return _json_err(f"内容块「{target_field}」为空，请使用 generate_field_content 生成内容")
+
+        # 调用 edit_engine 生成预览
+        modified_content, changes = apply_edits(original_content, edits)
+
+        # 检查是否有任何编辑成功应用
+        applied = [c for c in changes if c["status"] == "applied"]
+        failed = [c for c in changes if c["status"] == "failed"]
+
+        if not applied and failed:
+            # 所有编辑都失败了 — fallback: 用全文 diff
+            fail_reasons = "; ".join(
+                f"anchor '{c.get('anchor', '')[:30]}...' -> {c['reason']}" for c in failed
+            )
+            logger.warning(f"[propose_edit] 所有 edits 失败: {fail_reasons}")
+            return _json_err(f"编辑定位失败: {fail_reasons}。请使用 read_field 查看原文后重试。")
+
+        # 生成 diff 预览
+        diff_preview = generate_revision_markdown(original_content, modified_content)
+
+        # 构造 SuggestionCard
+        suggestion_id = generate_uuid()
+        card = {
+            "id": suggestion_id,
+            "group_id": group_id or None,
+            "group_summary": group_summary or None,
+            "target_field": target_field,
+            "target_entity_id": entity.id,
+            "summary": summary,
+            "reason": reason,
+            "edits": edits,
+            "changes": changes,
+            "diff_preview": diff_preview,
+            "original_content": original_content,
+            "modified_content": modified_content,
+            "status": "pending",
+            "source_mode": config.get("configurable", {}).get("thread_id", "").split(":")[-1] or "assistant",
+        }
+
+        # 缓存到内存字典
+        PENDING_SUGGESTIONS[suggestion_id] = card
+        logger.info(f"[propose_edit] 缓存建议 {suggestion_id[:8]}... 目标={target_field}, "
+                     f"edits={len(edits)}, applied={len(applied)}, failed={len(failed)}")
+
+        # 返回结构化 JSON — SSE 层会解析这个输出
+        return json.dumps({
+            "status": "suggestion",
+            "id": suggestion_id,
+            "group_id": group_id or None,
+            "group_summary": group_summary or None,
+            "target_field": target_field,
+            "target_entity_id": entity.id,
+            "summary": summary,
+            "reason": reason,
+            "diff_preview": diff_preview,
+            "edits_count": len(edits),
+            "applied_count": len(applied),
+            "failed_count": len(failed),
+        }, ensure_ascii=False)
+
+    except Exception as e:
+        logger.error(f"propose_edit error: {e}", exc_info=True)
+        return _json_err(str(e))
+    finally:
+        db.close()
+
+
 # ============== 1. modify_field ==============
 
 @tool
@@ -97,15 +235,30 @@ async def modify_field(
     reference_fields: Optional[List[str]] = None,
     *, config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
-    """修改指定内容块的已有内容。当用户要求修改、调整、重写、优化某个内容块的文本时使用。
+    """直接修改内容块，跳过确认流程。仅限用户明确说"直接改"时使用。
 
-    ⚠️ 这是修改【已有内容】（改文字），不是创建新内容块（改结构）。
-    - 创建/删除/移动内容块 → 请用 manage_architecture
-    - 内容块为空需要首次生成 → 请用 generate_field_content
+    CRITICAL: 调用此工具前必须确认用户消息中包含"直接""不用确认""直接改"等明确跳过确认的表述。
+    如果用户只说"帮我改一下""修改一下""改改"但没有"直接"二字，必须使用 propose_edit。
 
-    典型场景：
-    - "@场景库 把5个模块改成7个" → modify_field("场景库", "把5个模块改成7个")
-    - "参考 @用户画像 修改 @场景库" → modify_field("场景库", "修改描述", ["用户画像"])
+    何时使用（必须同时满足）:
+    1. 用户消息包含"直接改""不用确认""直接修改""别问我直接改"等明确跳过确认的关键词
+    2. 修改目标明确
+
+    何时不使用:
+    - 用户说"帮我改一下" -> propose_edit（没说"直接"）
+    - 用户说"把字母改成数字" -> propose_edit（没说"直接"）
+    - 用户说"修改建议""suggestion card" -> propose_edit
+    - Agent 自主判断需要修改 -> propose_edit
+    - 创建新内容块 -> manage_architecture
+    - 内容块为空需首次生成 -> generate_field_content
+
+    典型用法:
+    - "@场景库 直接帮我把5个改成7个" -> modify_field（包含"直接"）
+    - "不用确认，直接改 @场景库" -> modify_field（包含"直接""不用确认"）
+
+    反例（不应使用 modify_field）:
+    - "帮我改一下 @场景库 的开头" -> propose_edit（没说"直接"）
+    - "把 @课程内容 的字母改成数字" -> propose_edit（没说"直接"）
 
     Args:
         field_name: 要修改的目标内容块名称
@@ -193,13 +346,20 @@ async def generate_field_content(
 ) -> str:
     """为指定内容块生成内容（从零开始或全部重写）。
 
-    与 modify_field 的区别：
-    - generate = 从零生成（内容块为空或需要全部重写）
-    - modify = 在已有内容基础上局部修改
+    何时使用:
+    - 内容块为空，需要首次生成内容
+    - 用户要求"整个重写""从头来过"
+    - 用户说"生成XX""帮我写XX"（且内容块当前为空或需全部替换）
 
-    典型场景：
+    何时不使用:
+    - 内容块已有内容，只需局部修改 → propose_edit（默认）或 modify_field（用户说"直接改"）
+    - 用户想看已有内容 → read_field
+    - 用户想改项目结构 → manage_architecture
+
+    典型场景:
     - "生成场景库" → generate_field_content("场景库")
     - "帮我写一个详细的意图分析" → generate_field_content("意图分析", "详细的")
+    - "帮我把场景库整个重写" → generate_field_content("场景库", "重写")
 
     Args:
         field_name: 要生成内容的内容块名称
@@ -295,11 +455,18 @@ async def query_field(
     question: str,
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
-    """查询内容块并回答相关问题。当用户想了解、分析、总结某个内容块时使用。
+    """查询内容块并回答相关问题。用 LLM 分析内容后回答，而非直接返回原文。
 
-    与 read_field 的区别：query_field 会用 LLM 分析并回答，read_field 只返回原文。
+    何时使用:
+    - 用户问关于某个内容块的具体问题："XX写了什么""XX怎么样""总结一下XX"
+    - 需要对内容进行分析、评价、摘要
 
-    典型场景：
+    何时不使用:
+    - 需要获取原文用于 propose_edit 的 anchor 定位 → read_field
+    - 用户明确说"让我看看原文" → read_field
+    - 用户想修改内容 → propose_edit 或 modify_field
+
+    典型场景:
     - "@逐字稿1 这个怎么样" → query_field("逐字稿1", "这个怎么样")
     - "意图分析里写了什么？" → query_field("意图分析", "写了什么")
 
@@ -341,9 +508,17 @@ async def _query_field_impl(field_name: str, question: str, config: RunnableConf
 
 @tool
 def read_field(field_name: str, config: Annotated[RunnableConfig, InjectedToolArg]) -> str:
-    """读取指定内容块的完整原始内容并返回。
+    """读取指定内容块的完整原始内容并返回。不经过 LLM 处理，直接返回原文。
 
-    典型场景：在修改前先读取当前内容、用户说"看看场景库"。
+    何时使用:
+    - 在调用 propose_edit 之前，需要确认原文中有哪些 anchor 可用
+    - 用户说"看看场景库""让我看一下原文"
+    - 需要获取完整内容供自己分析或回复引用
+
+    何时不使用:
+    - 用户想让你分析/总结/评价内容 → query_field（会用 LLM 分析后回答）
+    - 用户想修改内容 → propose_edit 或 modify_field（它们内部会自动读取）
+    - 只需要看摘要 → 直接看 field_index 中的摘要即可
 
     Args:
         field_name: 要读取的内容块名称
@@ -366,9 +541,17 @@ def read_field(field_name: str, config: Annotated[RunnableConfig, InjectedToolAr
 def update_field(field_name: str, content: str, config: Annotated[RunnableConfig, InjectedToolArg]) -> str:
     """直接用给定内容完整覆写指定内容块。仅当用户提供了完整的新内容要求直接替换时使用。
 
-    ⚠️ 这会直接覆盖全部内容，没有预览和确认流程。
-    - 局部修改 → 请用 modify_field
-    - 让 AI 生成 → 请用 generate_field_content
+    何时使用:
+    - 用户提供了完整的新内容文本，要求直接替换
+    - 用户粘贴了一段内容说"把XX替换成这个"
+
+    何时不使用:
+    - 局部修改 → propose_edit（默认）或 modify_field（用户说"直接改"）
+    - 让 AI 生成内容 → generate_field_content
+    - Agent 自主判断需要更新 → propose_edit
+
+    典型场景:
+    - 用户粘贴一大段内容："把场景库改成这个：[内容]" → update_field("场景库", "[内容]")
 
     Args:
         field_name: 要更新的内容块名称
@@ -406,10 +589,16 @@ def manage_architecture(
 ) -> str:
     """管理项目结构：添加/删除/移动内容块或组。当用户要求改变项目的结构时使用。
 
-    ⚠️ 这是改【项目结构】（增删内容块/组），不是改内容块里的文字。
-    - 改文字内容 → 请用 modify_field
+    何时使用:
+    - 用户要求添加、删除、移动内容块或组
+    - 用户说"帮我加一个XX""删掉XX""把XX移到YY组"
 
-    典型场景：
+    何时不使用:
+    - 改内容块里的文字 → propose_edit 或 modify_field
+    - 生成内容 → generate_field_content
+    - 推进项目阶段 → advance_to_phase
+
+    典型场景:
     - "帮我加一个新内容块叫XX" → manage_architecture("add_field", "XX", '{"phase":"design_inner"}')
     - "删掉场景库" → manage_architecture("remove_field", "场景库")
     - "新增一个组叫测试" → manage_architecture("add_phase", "test", '{"display_name":"测试"}')
@@ -473,9 +662,16 @@ def manage_architecture(
 def advance_to_phase(target_phase: str = "", *, config: Annotated[RunnableConfig, InjectedToolArg]) -> str:
     """推进项目到下一组或跳转到指定组。
 
-    当用户说"继续"、"下一步"、"进入XX阶段"时使用。
+    何时使用:
+    - 用户说"继续""下一步""进入XX阶段"
+    - 当前组的内容已完成，用户准备进入下一阶段
 
-    典型场景：
+    何时不使用:
+    - 用户想修改当前组的内容 → propose_edit 或 modify_field
+    - 用户想添加新组 → manage_architecture("add_phase", ...)
+    - 用户只是在讨论流程，还没决定推进 → 文本对话
+
+    典型场景:
     - "进入外延设计" → advance_to_phase("design_outer")
     - "继续" → advance_to_phase("")
 
@@ -514,19 +710,24 @@ async def run_research(
     research_type: str = "consumer",
     *, config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
-    """执行调研。
+    """执行调研。分析目标用户或调研特定主题。
 
-    两种类型：
-    - consumer（消费者调研）：分析目标用户画像、痛点、需求
-    - generic（通用深度调研）：搜索并整理特定主题的资料
+    何时使用:
+    - 用户说"开始消费者调研""帮我调研XX"
+    - 项目需要用户画像数据或市场信息
 
-    典型场景：
+    何时不使用:
+    - 用户想管理已有的消费者画像 → manage_persona
+    - 用户想查看已有的调研报告 → read_field("消费者调研")
+    - 用户在讨论内容修改 → propose_edit 或 modify_field
+
+    典型场景:
     - "开始消费者调研" → run_research("消费者调研", "consumer")
     - "调研一下AI教育市场" → run_research("AI教育市场", "generic")
 
     Args:
         query: 调研主题或查询内容
-        research_type: "consumer" 或 "generic"
+        research_type: "consumer"（消费者调研）或 "generic"（通用深度调研）
     """
     return await _run_research_impl(query, research_type, config)
 
@@ -595,10 +796,21 @@ async def manage_persona(
     persona_data: str = "",
     *, config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
-    """管理消费者画像/角色。
+    """管理消费者画像/角色。创建、查看、更新、删除消费者画像。
+
+    何时使用:
+    - 用户说"创建一个画像""分析一下我的目标用户" → generate
+    - 用户说"看看有哪些画像" → list
+    - 用户说"更新画像的职业信息" → update
+    - 用户说"删掉这个画像" → delete
+
+    何时不使用:
+    - 用户在讨论内容修改 → propose_edit 或 modify_field
+    - 用户想看消费者调研报告 → read_field("消费者调研")
+    - 用户说"帮我做消费者调研" → run_research
 
     Args:
-        operation: list / create / generate / update / delete
+        operation: list（查看所有画像）/ create（手动创建）/ generate（AI生成）/ update（更新）/ delete（删除）
         persona_data: 角色描述或数据（JSON 字符串，create/generate/update 时需要）
     """
     return await _manage_persona_impl(operation, persona_data, config)
@@ -646,17 +858,23 @@ async def run_evaluation(
 ) -> str:
     """对项目内容执行质量评估，生成评估报告。
 
-    当用户说「评估一下」「检查内容质量」「评价XX内容块」时使用。
+    何时使用:
+    - 用户说"评估一下""检查内容质量""评价XX"
+    - 内容生成完成后，用户想知道质量如何
 
-    典型场景：
-    - 「评估一下」→ run_evaluation()（全量评估）
-    - 「评价一下场景库」→ run_evaluation(field_names=["场景库"])
-    - 「用原创性 grader 评价场景库」→ run_evaluation(field_names=["场景库"], grader_name="原创性")
-    - 「评估所有内涵设计的内容」→ run_evaluation(field_names=["主题表达", "价值主张", ...])
+    何时不使用:
+    - 内容块还没有生成内容（空的内容块无法评估）→ 先 generate_field_content
+    - 用户想修改内容 → propose_edit 或 modify_field
+    - 用户只是想看内容 → read_field 或 query_field
 
-    参数：
-    - field_names: 要评估的内容块名称列表。为空时评估全部有内容的内容块。
-    - grader_name: 指定使用的评估维度/Grader 名称。为空时使用全部评估维度。
+    典型场景:
+    - "评估一下" → run_evaluation()（全量评估）
+    - "评价一下场景库" → run_evaluation(field_names=["场景库"])
+    - "用原创性 grader 评价场景库" → run_evaluation(field_names=["场景库"], grader_name="原创性")
+
+    Args:
+        field_names: 要评估的内容块名称列表。为空时评估全部有内容的内容块。
+        grader_name: 指定使用的评估维度/Grader 名称。为空时使用全部评估维度。
     """
     return await _run_evaluation_impl(field_names or [], grader_name, config)
 
@@ -730,7 +948,16 @@ async def _run_evaluation_impl(
 async def generate_outline(topic: str = "", *, config: Annotated[RunnableConfig, InjectedToolArg]) -> str:
     """生成内容大纲/结构规划。帮助创作者规划内容的整体架构。
 
-    典型场景：
+    何时使用:
+    - 用户说"帮我设计大纲""规划一下内容结构"
+    - 项目初期需要内容架构规划
+
+    何时不使用:
+    - 用户想修改已有内容 → propose_edit 或 modify_field
+    - 用户想改项目结构（增删内容块）→ manage_architecture
+    - 用户想生成具体内容块的内容 → generate_field_content
+
+    典型场景:
     - "帮我设计一下大纲" → generate_outline()
     - "做一个关于AI培训的课程大纲" → generate_outline("AI培训课程")
 
@@ -779,7 +1006,16 @@ async def manage_skill(
 ) -> str:
     """管理和使用写作技能/风格。查看可用技能、用特定风格重写内容。
 
-    典型场景：
+    何时使用:
+    - 用户说"有什么技能""看看可用的风格" → manage_skill("list")
+    - 用户说"用XX风格帮我写/改" → manage_skill("apply", "XX", "目标内容块")
+
+    何时不使用:
+    - 用户想修改内容但没提到特定风格 → propose_edit 或 modify_field
+    - 用户想从零生成内容 → generate_field_content
+    - 用户在讨论风格方向但还没确定 → 文本对话
+
+    典型场景:
     - "有什么技能可以用" → manage_skill("list")
     - "用专业文案帮我写场景库" → manage_skill("apply", "专业文案", "场景库")
 
@@ -837,8 +1073,18 @@ async def read_mode_history(
 ) -> str:
     """查阅创作者在其他模式中的对话记录。
 
-    当你需要更多上下文来理解创作者之前的讨论时使用。
-    例如：创作者说"按之前和审稿人讨论的来"，你可以查阅审稿人模式的对话。
+    何时使用:
+    - 用户引用了其他模式的讨论："按之前和审稿人讨论的来"
+    - 需要跨模式上下文来做出更好的决策
+
+    何时不使用:
+    - 查看当前模式的对话 → 已在上下文中，无需查阅
+    - 查看内容块内容 → read_field
+    - 查看项目记忆 → 记忆已在 system prompt 中
+
+    典型场景:
+    - 用户说"按审稿人之前的建议改" → read_mode_history("critic")
+    - 用户说"之前策略顾问怎么说的" → read_mode_history("strategist")
 
     Args:
         mode_name: 模式名称，如 "assistant"、"strategist"、"critic"、"reader"、"creative"
@@ -885,6 +1131,7 @@ async def read_mode_history(
 
 # 所有工具列表 — 注册到 Agent Graph 的 bind_tools()
 AGENT_TOOLS = [
+    propose_edit,
     modify_field,
     generate_field_content,
     query_field,
@@ -901,6 +1148,7 @@ AGENT_TOOLS = [
 ]
 
 # 这些工具执行后表示产生了内容块更新，前端需要刷新
+# 注意: propose_edit 不在此列 — 它只生成预览，不写 DB
 PRODUCE_TOOLS = {
     "modify_field",
     "generate_field_content",
