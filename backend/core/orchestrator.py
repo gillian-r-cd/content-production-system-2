@@ -161,17 +161,22 @@ def build_system_prompt(state: AgentState) -> str:
     else:
         identity = "你是一个智能内容生产 Agent，帮助创作者完成从意图分析到内容发布的全流程。"
 
-    # ---- 动态段落 4: 活跃建议卡片（Layer 3） ----
+    # ---- 动态段落 4: 活跃建议卡片（Layer 3, M1.5: 按 mode 过滤） ----
     active_suggestions_section = ""
+    current_mode = state.get("mode", "assistant")
     try:
         from core.agent_tools import PENDING_SUGGESTIONS
         if PENDING_SUGGESTIONS:
             items = []
             for sid, card in PENDING_SUGGESTIONS.items():
+                # M1.5: 只展示当前 mode 产生的 pending 卡片，避免跨模式认知污染
+                if card.get("source_mode", "assistant") != current_mode:
+                    continue
                 target = card.get("target_field", "?")
                 summary = card.get("summary", "")
                 items.append(f"  - #{sid[:8]}: 目标字段「{target}」，摘要: {summary}")
-            active_suggestions_section = "<active_suggestions>\n当前有未决的修改建议卡片（用户尚未操作）:\n" + "\n".join(items) + "\n注意: 用户可能会追问这些建议的细节或要求调整。\n</active_suggestions>"
+            if items:
+                active_suggestions_section = "<active_suggestions>\n当前有未决的修改建议卡片（用户尚未操作）:\n" + "\n".join(items) + "\n注意: 用户可能会追问这些建议的细节或要求调整。\n</active_suggestions>"
     except Exception as e:
         logger.warning(f"build active_suggestions failed: {e}")
 

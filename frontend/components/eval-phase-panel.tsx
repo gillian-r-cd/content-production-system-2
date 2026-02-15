@@ -14,9 +14,11 @@ import { SlidersHorizontal, BarChart3, Loader2 } from "lucide-react";
 interface EvalPhasePanelProps {
   projectId: string | null;
   onFieldsChange?: () => void;
+  /** M3: 将消息发送到 Agent 对话面板 */
+  onSendToAgent?: (message: string) => void;
 }
 
-export function EvalPhasePanel({ projectId, onFieldsChange }: EvalPhasePanelProps) {
+export function EvalPhasePanel({ projectId, onFieldsChange, onSendToAgent }: EvalPhasePanelProps) {
   const [configBlock, setConfigBlock] = useState<ContentBlock | null>(null);
   const [reportBlock, setReportBlock] = useState<ContentBlock | null>(null);
   const [loading, setLoading] = useState(true);
@@ -145,6 +147,7 @@ export function EvalPhasePanel({ projectId, onFieldsChange }: EvalPhasePanelProp
             block={reportBlock}
             projectId={projectId}
             onUpdate={handleUpdate}
+            onSendToAgent={onSendToAgent}
           />
         )}
       </div>

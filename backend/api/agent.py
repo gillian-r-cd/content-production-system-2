@@ -1,7 +1,8 @@
 # backend/api/agent.py
 # 功能: Agent 对话 API，支持 SSE 流式输出、对话历史、编辑重发、多模式切换
-# 主要路由: /stream, /chat, /history, /retry, /advance
+# 主要路由: /stream, /chat, /history, /retry, /advance, /confirm-suggestion, /inline-edit
 # 架构: stream_chat 使用 LangGraph astream_events，所有模式统一走 Agent Graph
+# confirm-suggestion 支持 accept/reject/partial/undo 四种 action（M6 扩展 undo）
 # 日志: GenerationLog 由 GenerationLogCallback 自动记录（不在此文件手动创建）
 
 """
@@ -695,6 +696,7 @@ async def stream_chat(
             first_tool_sent = False     # 用于向前端发 route 事件（兼容）
             tool_chars = 0              # 工具内 LLM 输出的字符数（用于进度显示）
             event_count = 0             # 事件计数（调试用）
+            suggestion_cards_emitted = []  # 收集本次流中产生的 suggestion cards（用于持久化到 message_metadata）
 
             logger.info("[stream] 开始 astream_events, project=%s, phase=%s",
                         request.project_id, current_phase)
@@ -796,6 +798,21 @@ async def stream_chat(
                     else:
                         output_str = str(tool_output)
 
+                    # ---- 并行工具调用兼容: 当 event["name"] 缺失时，通过输出内容识别工具 ----
+                    # LangGraph astream_events v2 在并行 tool calling 时，
+                    # 第 2+ 个 on_tool_end 的 event["name"] 可能为 None。
+                    # 通过解析 JSON 输出的 status 字段来补充识别，避免丢失 suggestion_card。
+                    if not ended_tool and output_str.lstrip().startswith("{"):
+                        try:
+                            _peek = json.loads(output_str)
+                            _status = _peek.get("status")
+                            if _status in ("suggestion", "error") and "target_field" in _peek:
+                                ended_tool = "propose_edit"
+                            elif _status in ("need_confirm", "applied", "rewritten"):
+                                ended_tool = "rewrite_field"
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+
                     field_updated = ended_tool in produce_tools
                     if field_updated:
                         is_producing = True
@@ -809,7 +826,7 @@ async def stream_chat(
                         try:
                             result = json.loads(output_str)
                             if result.get("status") == "suggestion":
-                                yield sse_event({
+                                card_sse = {
                                     "type": "suggestion_card",
                                     "id": result.get("id"),
                                     "group_id": result.get("group_id"),
@@ -822,6 +839,19 @@ async def stream_chat(
                                     "edits_count": result.get("edits_count", 0),
                                     "applied_count": result.get("applied_count", 0),
                                     "failed_count": result.get("failed_count", 0),
+                                }
+                                yield sse_event(card_sse)
+                                # 收集卡片数据用于持久化到 message_metadata（刷新后可恢复）
+                                suggestion_cards_emitted.append({
+                                    "id": result.get("id"),
+                                    "target_field": result.get("target_field"),
+                                    "summary": result.get("summary"),
+                                    "reason": result.get("reason"),
+                                    "diff_preview": result.get("diff_preview"),
+                                    "edits_count": result.get("edits_count", 0),
+                                    "group_id": result.get("group_id"),
+                                    "group_summary": result.get("group_summary"),
+                                    "status": "pending",
                                 })
                             else:
                                 # propose_edit 返回错误
@@ -910,18 +940,32 @@ async def stream_chat(
                     logger.warning("[stream] 回退提取失败: %s", fallback_err)
 
             # 保存 assistant 最终回复到 ChatMessage DB
+            msg_metadata = {
+                "phase": current_phase,
+                "mode": mode_name,
+                "tools_used": tools_used,
+            }
+            # 将本次流中产生的 suggestion cards 持久化到 message_metadata
+            # 刷新页面后前端可从历史消息中恢复卡片状态
+            if suggestion_cards_emitted:
+                msg_metadata["suggestion_cards"] = suggestion_cards_emitted
+
             agent_msg = ChatMessage(
                 id=generate_uuid(),
                 project_id=request.project_id,
                 role="assistant",
                 content=full_content,
-                message_metadata={
-                    "phase": current_phase,
-                    "mode": mode_name,
-                    "tools_used": tools_used,
-                },
+                message_metadata=msg_metadata,
             )
             db.add(agent_msg)
+
+            # 反写 message_id 到 PENDING_SUGGESTIONS（供 confirm API 定位消息并更新元数据）
+            if suggestion_cards_emitted:
+                from core.agent_tools import PENDING_SUGGESTIONS as _PS
+                for _sc in suggestion_cards_emitted:
+                    _cid = _sc.get("id")
+                    if _cid and _cid in _PS:
+                        _PS[_cid]["message_id"] = agent_msg.id
 
             # GenerationLog 由 GenerationLogCallback 自动记录（完整 messages + 不截断）
             # 不再手动创建重复日志
@@ -1050,17 +1094,78 @@ async def confirm_suggestion(
     request: ConfirmSuggestionRequest,
     db: Session = Depends(get_db),
 ):
-    """确认或拒绝 Suggestion Card / SuggestionGroup。
+    """确认、拒绝或撤回 Suggestion Card / SuggestionGroup。
 
     accept: 应用所有 card（单 card 或 group 内所有 card）
     reject: 标记为已拒绝
     partial: 仅应用 accepted_card_ids 中指定的 card
+    undo: 标记为已撤回（前端已调用 rollback API 回滚内容，此处仅持久化状态）
     """
     from core.agent_tools import PENDING_SUGGESTIONS
     from core.edit_engine import apply_edits
     from core.version_service import save_content_version
 
     suggestion_id = request.suggestion_id
+
+    def _persist_card_status(card_ids: list[str], new_status: str, card_data_list: list[dict]):
+        """将卡片状态更新持久化到 ChatMessage.message_metadata，刷新后可恢复。
+
+        M6 T6.1: 当 card_data 中缺少 message_id 时（SSE 流尚未结束/race condition），
+        回退到按 project_id 搜索近期 assistant 消息的 suggestion_cards 元数据。
+        """
+        # 收集需要更新的 message_id → card_ids 映射
+        msg_card_map: dict[str, list[str]] = {}
+        orphan_card_ids: list[str] = []
+        for cid, cdata in zip(card_ids, card_data_list):
+            mid = cdata.get("message_id")
+            if mid:
+                msg_card_map.setdefault(mid, []).append(cid)
+            else:
+                orphan_card_ids.append(cid)
+
+        # DB 回退: 对没有 message_id 的卡片，搜索近期消息找到包含它们的 ChatMessage
+        if orphan_card_ids:
+            orphan_set = set(orphan_card_ids)
+            recent_msgs = (
+                db.query(ChatMessage)
+                .filter(
+                    ChatMessage.project_id == request.project_id,
+                    ChatMessage.role == "assistant",
+                )
+                .order_by(ChatMessage.created_at.desc())
+                .limit(20)
+                .all()
+            )
+            for rmsg in recent_msgs:
+                if not rmsg.message_metadata:
+                    continue
+                cards_in_meta = rmsg.message_metadata.get("suggestion_cards", [])
+                for c in cards_in_meta:
+                    if c.get("id") in orphan_set:
+                        msg_card_map.setdefault(rmsg.id, []).append(c["id"])
+                        orphan_set.discard(c["id"])
+                if not orphan_set:
+                    break
+            if orphan_set:
+                logger.warning(
+                    "[_persist_card_status] %d 张卡片找不到关联消息，状态未持久化: %s",
+                    len(orphan_set), orphan_set,
+                )
+
+        if not msg_card_map:
+            return
+        for mid, cids in msg_card_map.items():
+            msg = db.query(ChatMessage).filter(ChatMessage.id == mid).first()
+            if not msg or not msg.message_metadata:
+                continue
+            cards_in_meta = msg.message_metadata.get("suggestion_cards", [])
+            cid_set = set(cids)
+            for c in cards_in_meta:
+                if c.get("id") in cid_set:
+                    c["status"] = new_status
+            # SQLAlchemy JSON 列需要显式标记为脏
+            updated_meta = {**msg.message_metadata, "suggestion_cards": cards_in_meta}
+            msg.message_metadata = updated_meta
 
     # 解析目标 cards: suggestion_id 可能是单个 card_id 或 group_id
     cards_to_process: list[tuple[str, dict]] = []  # [(card_id, card_data), ...]
@@ -1085,6 +1190,13 @@ async def confirm_suggestion(
         for cid, cdata in cards_to_process:
             cdata["status"] = "rejected"
             PENDING_SUGGESTIONS.pop(cid, None)
+        # 持久化状态到 message_metadata（刷新后保留 rejected 状态）
+        _persist_card_status(
+            [cid for cid, _ in cards_to_process],
+            "rejected",
+            [cd for _, cd in cards_to_process],
+        )
+        db.commit()
         field_names = ", ".join(f"「{c['target_field']}」" for _, c in cards_to_process)
         logger.info("[confirm-suggestion] 拒绝 %d 张卡: %s", len(cards_to_process), field_names)
         return ConfirmSuggestionResponse(
@@ -1163,6 +1275,13 @@ async def confirm_suggestion(
                     cid[:8], target_field, version_id,
                 )
 
+            # 持久化状态到 message_metadata（刷新后保留 accepted 状态）
+            _persist_card_status(
+                [cid for cid, _ in cards_to_apply],
+                "accepted",
+                [cd for _, cd in cards_to_apply],
+            )
+
             db.commit()
 
             field_names = ", ".join(f"「{c['target_field']}」" for _, c in cards_to_apply)
@@ -1179,4 +1298,114 @@ async def confirm_suggestion(
             logger.error("[confirm-suggestion] 批量应用失败: %s", e, exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
 
+    # --- undo / supersede: 仅持久化状态变更（不操作 DB 内容） ---
+    # undo: 前端已调用 rollback API 回滚了内容，此处仅持久化 "undone" 状态
+    # supersede: 追问产生新卡片后，旧卡片标记为 "superseded"
+    if request.action in ("undo", "supersede"):
+        status_map = {"undo": "undone", "supersede": "superseded"}
+        new_status = status_map[request.action]
+        for cid, cdata in cards_to_process:
+            cdata["status"] = new_status
+        _persist_card_status(
+            [cid for cid, _ in cards_to_process],
+            new_status,
+            [cd for _, cd in cards_to_process],
+        )
+        db.commit()
+        logger.info("[confirm-suggestion] %s %d 张卡", request.action, len(cards_to_process))
+        return ConfirmSuggestionResponse(
+            success=True,
+            applied_cards=[],
+            message=f"已标记 {len(cards_to_process)} 张卡片为 {new_status}",
+        )
+
     raise HTTPException(status_code=400, detail=f"Unknown action: {request.action}")
+
+
+# ============== M4: Inline AI 编辑 ==============
+
+class InlineEditRequest(BaseModel):
+    """M4: 轻量级 inline AI 编辑请求"""
+    text: str                   # 用户选中的文本
+    operation: str              # "rewrite" | "expand" | "condense"
+    context: str = ""           # 选中文本的上下文（提高改写一致性）
+    project_id: str = ""        # 可选: 用于加载 creator_profile
+
+
+class InlineEditResponse(BaseModel):
+    """M4: inline AI 编辑结果"""
+    original: str
+    replacement: str
+    diff_preview: str
+
+
+@router.post("/inline-edit", response_model=InlineEditResponse)
+async def inline_edit(
+    request: InlineEditRequest,
+    db: Session = Depends(get_db),
+):
+    """M4: 轻量级 inline AI 文本转换（不经过 Agent Graph，直接 LLM 调用）。
+
+    用户在 ContentBlockEditor 中选中文本后，通过 floating toolbar 触发。
+    使用 llm_mini 以获得更快的响应速度和更低的成本。
+    """
+    from core.llm import llm_mini
+    from core.edit_engine import generate_revision_markdown
+    from langchain_core.messages import SystemMessage, HumanMessage
+
+    if not request.text.strip():
+        raise HTTPException(status_code=400, detail="未选中任何文本")
+
+    # 根据操作类型构建 prompt
+    operation_prompts = {
+        "rewrite": "改写以下文本，使其更清晰、更专业，保持原意不变。",
+        "expand": "扩展以下文本，增加更多细节和论证，使其更加丰富和有说服力。",
+        "condense": "精简以下文本，保留核心信息，去除冗余，使其更加简洁有力。",
+    }
+
+    instruction = operation_prompts.get(request.operation)
+    if not instruction:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的操作: {request.operation}。可选: rewrite, expand, condense",
+        )
+
+    # 可选: 加载 creator_profile 增强风格一致性
+    creator_context = ""
+    if request.project_id:
+        project = db.query(Project).filter(Project.id == request.project_id).first()
+        if project and project.creator_profile:
+            creator_context = f"\n\n创作者风格参考：\n{project.creator_profile.to_prompt_context()}"
+
+    system = (
+        f"你是一个专业的中文内容编辑。请{instruction}\n\n"
+        "规则：\n"
+        "- 只输出修改后的文本，不要添加任何解释、标注或注释\n"
+        "- 保持原文的格式（Markdown 标题级别、列表样式等）\n"
+        "- 如果提供了上下文，参考上下文保持风格和术语一致性\n"
+        "- 不要输出引号包裹结果"
+        f"{creator_context}"
+    )
+
+    if request.context:
+        user_content = f"上下文（仅供参考，不要修改）：\n{request.context}\n\n---\n需要修改的文本：\n{request.text}"
+    else:
+        user_content = f"需要修改的文本：\n{request.text}"
+
+    try:
+        response = await llm_mini.ainvoke([
+            SystemMessage(content=system),
+            HumanMessage(content=user_content),
+        ])
+        replacement = response.content.strip()
+    except Exception as e:
+        logger.error("[inline-edit] LLM 调用失败: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"AI 处理失败: {str(e)[:200]}")
+
+    diff_preview = generate_revision_markdown(request.text, replacement)
+
+    return InlineEditResponse(
+        original=request.text,
+        replacement=replacement,
+        diff_preview=diff_preview,
+    )

@@ -87,11 +87,23 @@ export interface ChatMessageRecord {
   is_edited: boolean;
   metadata: {
     phase?: string;
+    mode?: string;
     tool_used?: string;
     tools_used?: string[];
     skill_used?: string;
     references?: string[];
     is_retry?: boolean;
+    suggestion_cards?: Array<{
+      id: string;
+      target_field: string;
+      summary: string;
+      reason?: string;
+      diff_preview: string;
+      edits_count: number;
+      group_id?: string;
+      group_summary?: string;
+      status: string;
+    }>;
   };
   created_at: string;
 }
@@ -370,6 +382,18 @@ export const agentAPI = {
         parameters,
       }),
     }),
+
+  // M4: Inline AI 编辑（轻量级 LLM 调用，不经过 Agent Graph）
+  inlineEdit: (data: {
+    text: string;
+    operation: "rewrite" | "expand" | "condense";
+    context?: string;
+    project_id?: string;
+  }) =>
+    fetchAPI<{ original: string; replacement: string; diff_preview: string }>(
+      "/api/agent/inline-edit",
+      { method: "POST", body: JSON.stringify(data) }
+    ),
 };
 
 // ============== Settings API ==============

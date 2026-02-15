@@ -29,6 +29,8 @@ export interface SuggestionCardData {
   status: SuggestionStatus;
   // 关联的 AI 消息 ID — 用于在消息流中 inline 渲染卡片
   messageId?: string;
+  // 产生此卡片的 Agent 模式（用于按 mode 隔离渲染）
+  mode?: string;
   // Undo 信息（confirm API 返回后填充）
   entity_id?: string;
   version_id?: string;

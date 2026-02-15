@@ -26,6 +26,8 @@ interface EvalFieldProps {
   block: ContentBlock;
   projectId: string;
   onUpdate?: () => void;
+  /** M3: 将消息发送到 Agent 对话面板（用于 Eval 诊断→Agent 修改桥接） */
+  onSendToAgent?: (message: string) => void;
 }
 
 interface PersonaData {
@@ -952,7 +954,7 @@ function scoreBg(score: number, max: number = 10): string {
   return "bg-red-500";
 }
 
-export function EvalReportPanel({ block, projectId, onUpdate }: EvalFieldProps) {
+export function EvalReportPanel({ block, projectId, onUpdate, onSendToAgent }: EvalFieldProps) {
   const [executing, setExecuting] = useState(false);
   const [reportData, setReportData] = useState<any>(null);
   const [expandedTrial, setExpandedTrial] = useState<number | null>(null);
@@ -1596,6 +1598,20 @@ export function EvalReportPanel({ block, projectId, onUpdate }: EvalFieldProps) 
                   <div className="prose prose-sm prose-invert max-w-none">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>{reportData.diagnosis}</ReactMarkdown>
                   </div>
+                  {/* M3: 让 Agent 根据诊断结果生成修改建议 */}
+                  {onSendToAgent && (
+                    <button
+                      onClick={() => {
+                        const diagnosisText = reportData.diagnosis;
+                        const message = `根据以下评估诊断结果，帮我逐项修改内容：\n\n${diagnosisText}`;
+                        onSendToAgent(message);
+                      }}
+                      className="mt-4 px-4 py-2 bg-brand-500 hover:bg-brand-600 text-white text-sm rounded-lg transition-colors flex items-center gap-2"
+                    >
+                      <Zap className="w-4 h-4" />
+                      让 Agent 修改
+                    </button>
+                  )}
                 </div>
               )}
             </div>

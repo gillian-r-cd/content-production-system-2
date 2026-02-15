@@ -5,10 +5,10 @@
 
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { blockAPI, projectAPI, runAutoTriggerChain } from "@/lib/api";
+import { blockAPI, projectAPI, runAutoTriggerChain, agentAPI } from "@/lib/api";
 import { useBlockGeneration } from "@/lib/hooks/useBlockGeneration";
 import { sendNotification } from "@/lib/utils";
 import type { ContentBlock } from "@/lib/api";
@@ -32,7 +32,9 @@ import {
   RefreshCw,
   X,
   Copy,
-  Check
+  Check,
+  Sparkles,
+  Loader2,
 } from "lucide-react";
 
 // ===== 版本警告弹窗组件（含保存新版本功能） =====
@@ -143,9 +145,11 @@ interface ContentBlockEditorProps {
   projectId: string;
   allBlocks?: ContentBlock[];  // 用于依赖选择
   onUpdate?: () => void;
+  /** M3: 将消息发送到 Agent 对话面板（Eval 诊断→Agent 修改桥接） */
+  onSendToAgent?: (message: string) => void;
 }
 
-export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate }: ContentBlockEditorProps) {
+export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate, onSendToAgent }: ContentBlockEditorProps) {
   // P0-1: 统一使用 blockAPI（已移除 fieldAPI/isVirtual 分支）
   const [isEditing, setIsEditing] = useState(false);
   const [isEditingName, setIsEditingName] = useState(false);
@@ -164,6 +168,19 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate 
   const [aiPromptPurpose, setAiPromptPurpose] = useState("");
   const [generatingPrompt, setGeneratingPrompt] = useState(false);
   
+  // M4: Inline AI 编辑状态
+  const [selectedText, setSelectedText] = useState("");
+  const [selectionRange, setSelectionRange] = useState<{ start: number; end: number } | null>(null);
+  const [inlineEditLoading, setInlineEditLoading] = useState(false);
+  const [inlineEditResult, setInlineEditResult] = useState<{
+    original: string;
+    replacement: string;
+    diff_preview: string;
+  } | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const contentDisplayRef = useRef<HTMLDivElement>(null);
+  const [toolbarPosition, setToolbarPosition] = useState<{ top: number; left: number } | null>(null);
+
   // 复制状态
   const [copied, setCopied] = useState(false);
   const handleCopyContent = () => {
@@ -233,6 +250,11 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate 
     setEditedConstraints(block.constraints || {});
     setSelectedDependencies(block.depends_on || []);
     setPreAnswers(block.pre_answers || {});
+    // M4: 切换 block 或内容变化时清空 inline edit 状态
+    setSelectedText("");
+    setToolbarPosition(null);
+    setInlineEditResult(null);
+    setInlineEditLoading(false);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [block.id, block.content, block.name, block.ai_prompt, block.depends_on, block.pre_answers]);
   
@@ -443,6 +465,129 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate 
       alert("删除失败: " + (err instanceof Error ? err.message : "未知错误"));
     }
   };
+
+  // ===== M4: Inline AI 编辑处理 =====
+
+  /** 用户在内容展示区域松开鼠标后，检测是否有文本选中 */
+  const handleContentMouseUp = useCallback(() => {
+    // 短暂延迟，确保浏览器完成 selection 计算
+    setTimeout(() => {
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed || !selection.toString().trim()) {
+        // 没有选中文本时不清空（避免干扰已有的 inline edit 状态）
+        return;
+      }
+      // 确保选中区域在我们的内容展示区域内
+      if (!contentDisplayRef.current?.contains(selection.anchorNode)) {
+        return;
+      }
+      const text = selection.toString().trim();
+      if (text.length < 2) return; // 忽略过短的选中
+
+      const range = selection.getRangeAt(0);
+      const rect = range.getBoundingClientRect();
+
+      setSelectedText(text);
+      setToolbarPosition({
+        top: rect.top - 8,                    // 选区上方
+        left: rect.left + rect.width / 2,     // 水平居中
+      });
+      // 清除之前的结果（新选中 = 新一轮）
+      setInlineEditResult(null);
+    }, 10);
+  }, []);
+
+  /** 点击工具栏按钮，发起 inline AI 调用 */
+  const handleInlineEdit = useCallback(async (operation: "rewrite" | "expand" | "condense") => {
+    if (!selectedText || inlineEditLoading) return;
+    setInlineEditLoading(true);
+    try {
+      const result = await agentAPI.inlineEdit({
+        text: selectedText,
+        operation,
+        context: (block.content || "").slice(0, 500),
+        project_id: projectId,
+      });
+      setInlineEditResult({
+        original: result.original,
+        replacement: result.replacement,
+        diff_preview: result.diff_preview,
+      });
+    } catch (err) {
+      console.error("[M4] Inline edit failed:", err);
+      sendNotification("AI 编辑失败: " + (err instanceof Error ? err.message : "未知错误"), "error");
+    } finally {
+      setInlineEditLoading(false);
+    }
+  }, [selectedText, inlineEditLoading, block.content, projectId]);
+
+  /** 接受 inline 修改：在原内容中定位并替换 */
+  const handleAcceptInlineEdit = useCallback(async () => {
+    if (!inlineEditResult || !block.content) return;
+    const { original, replacement } = inlineEditResult;
+
+    // 尝试在原始 Markdown 内容中精确查找选中文本
+    let newContent = block.content;
+    if (newContent.includes(original)) {
+      newContent = newContent.replace(original, replacement);
+    } else {
+      // 回退: 尝试忽略 Markdown 行内标记的匹配
+      // 构建一个 regex，在 original 的每个字符之间允许可选的 **, __, ~~, ` 等标记
+      const escaped = original.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const flexiblePattern = escaped.split("").join("(?:\\*{1,2}|_{1,2}|~~|`)*");
+      const regex = new RegExp(flexiblePattern);
+      const match = newContent.match(regex);
+      if (match && match.index !== undefined) {
+        newContent = newContent.slice(0, match.index) + replacement + newContent.slice(match.index + match[0].length);
+      } else {
+        // 真的找不到 → 复制到剪贴板让用户手动替换
+        await navigator.clipboard.writeText(replacement);
+        sendNotification("无法自动定位原文（可能含格式标记），修改后的文本已复制到剪贴板，请手动替换", "warning");
+        setInlineEditResult(null);
+        setSelectedText("");
+        setToolbarPosition(null);
+        return;
+      }
+    }
+
+    try {
+      await blockAPI.update(block.id, { content: newContent });
+      setInlineEditResult(null);
+      setSelectedText("");
+      setToolbarPosition(null);
+      onUpdate?.();
+      sendNotification("已应用 AI 修改", "success");
+    } catch (err) {
+      console.error("[M4] Apply inline edit failed:", err);
+      sendNotification("保存失败: " + (err instanceof Error ? err.message : "未知错误"), "error");
+    }
+  }, [inlineEditResult, block.content, block.id, onUpdate]);
+
+  /** 拒绝 inline 修改 */
+  const handleRejectInlineEdit = useCallback(() => {
+    setInlineEditResult(null);
+    setSelectedText("");
+    setToolbarPosition(null);
+    window.getSelection()?.removeAllRanges();
+  }, []);
+
+  /** 清除选中：点击内容区域外时 */
+  useEffect(() => {
+    if (!selectedText && !inlineEditResult) return;
+    const handleMouseDown = (e: MouseEvent) => {
+      // 如果点击的是工具栏/结果面板自身，不清除
+      const toolbar = document.getElementById("m4-inline-toolbar");
+      if (toolbar?.contains(e.target as Node)) return;
+      // 如果点击的是内容展示区域，不清除（由 mouseUp 处理新选中）
+      if (contentDisplayRef.current?.contains(e.target as Node)) return;
+      // 其他地方 → 清除
+      setSelectedText("");
+      setToolbarPosition(null);
+      setInlineEditResult(null);
+    };
+    document.addEventListener("mousedown", handleMouseDown);
+    return () => document.removeEventListener("mousedown", handleMouseDown);
+  }, [selectedText, inlineEditResult]);
 
   return (
     <div className="h-full flex flex-col p-6">
@@ -721,7 +866,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate 
           {block.special_handler && getEvalFieldEditor(block.special_handler) ? (
             (() => {
               const EvalEditor = getEvalFieldEditor(block.special_handler!)!;
-              return <EvalEditor block={block} projectId={projectId} onUpdate={onUpdate} />;
+              return <EvalEditor block={block} projectId={projectId} onUpdate={onUpdate} onSendToAgent={onSendToAgent} />;
             })()
           ) : isEditing ? (
             <div className="h-full flex flex-col gap-3">
@@ -753,7 +898,14 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate 
           ) : (
             <div 
               className="min-h-[200px] cursor-pointer group"
-              onClick={() => setIsEditing(true)}
+              onClick={() => {
+                // M4: 有文本选中时不要进入编辑模式
+                const sel = window.getSelection();
+                if (sel && !sel.isCollapsed) return;
+                if (inlineEditResult) return; // 正在预览 diff 时也不进入编辑
+                setIsEditing(true);
+              }}
+              onMouseUp={handleContentMouseUp}
             >
               {isGenerating ? (
                 <div className="prose prose-invert prose-sm max-w-none">
@@ -766,7 +918,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate 
                   <span className="text-sm text-brand-400 animate-pulse">后台生成中，请稍候...</span>
                 </div>
               ) : block.content ? (
-                <div className="relative">
+                <div className="relative" ref={contentDisplayRef}>
                   <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-10">
                     <button 
                       onClick={(e) => { e.stopPropagation(); handleCopyContent(); }}
@@ -1120,6 +1272,104 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate 
             onUpdate?.();
           }}
         />
+      )}
+
+      {/* ===== M4: Inline AI Floating Toolbar ===== */}
+      {toolbarPosition && !isEditing && (
+        <div
+          id="m4-inline-toolbar"
+          className="fixed z-50"
+          style={{
+            top: `${toolbarPosition.top}px`,
+            left: `${toolbarPosition.left}px`,
+            transform: "translate(-50%, -100%)",
+          }}
+          onMouseDown={(e) => e.preventDefault()} // 阻止清除文本选中
+        >
+          {/* 状态 1: AI 处理中 */}
+          {inlineEditLoading && (
+            <div className="flex items-center gap-2 px-4 py-2 bg-surface-1 border border-brand-500/40 rounded-lg shadow-xl">
+              <Loader2 className="w-4 h-4 text-brand-400 animate-spin" />
+              <span className="text-sm text-brand-300">AI 处理中...</span>
+            </div>
+          )}
+
+          {/* 状态 2: 显示结果面板 */}
+          {!inlineEditLoading && inlineEditResult && (
+            <div className="w-[480px] max-w-[90vw] bg-surface-1 border border-surface-3 rounded-xl shadow-2xl overflow-hidden">
+              <div className="px-4 py-2.5 border-b border-surface-3 flex items-center justify-between">
+                <h4 className="text-sm font-medium text-zinc-200 flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-brand-400" />
+                  AI 修改建议
+                </h4>
+                <button
+                  onClick={handleRejectInlineEdit}
+                  className="p-1 text-zinc-500 hover:text-zinc-300 transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="p-4 space-y-3 max-h-[300px] overflow-y-auto">
+                {/* 原文 */}
+                <div>
+                  <span className="text-xs text-zinc-500 mb-1 block">原文</span>
+                  <div className="px-3 py-2 bg-red-950/30 border border-red-500/20 rounded-lg text-sm text-red-300/80 line-through whitespace-pre-wrap">
+                    {inlineEditResult.original}
+                  </div>
+                </div>
+                {/* 修改后 */}
+                <div>
+                  <span className="text-xs text-zinc-500 mb-1 block">修改后</span>
+                  <div className="px-3 py-2 bg-emerald-950/30 border border-emerald-500/20 rounded-lg text-sm text-emerald-300 whitespace-pre-wrap">
+                    {inlineEditResult.replacement}
+                  </div>
+                </div>
+              </div>
+              <div className="px-4 py-3 border-t border-surface-3 flex justify-end gap-2">
+                <button
+                  onClick={handleRejectInlineEdit}
+                  className="px-3 py-1.5 text-sm text-zinc-400 hover:text-zinc-200 bg-surface-2 hover:bg-surface-3 rounded-lg transition-colors"
+                >
+                  拒绝
+                </button>
+                <button
+                  onClick={handleAcceptInlineEdit}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-brand-600 hover:bg-brand-700 text-white rounded-lg transition-colors"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  接受修改
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* 状态 3: 选中文本工具栏（默认状态） */}
+          {!inlineEditLoading && !inlineEditResult && selectedText && (
+            <div className="flex items-center gap-1 px-2 py-1.5 bg-surface-1 border border-surface-3 rounded-lg shadow-xl">
+              <Sparkles className="w-3.5 h-3.5 text-brand-400 mr-1" />
+              <button
+                onClick={() => handleInlineEdit("rewrite")}
+                className="px-2.5 py-1 text-xs text-zinc-300 hover:text-white hover:bg-brand-600/30 rounded transition-colors"
+              >
+                改写
+              </button>
+              <div className="w-px h-4 bg-surface-3" />
+              <button
+                onClick={() => handleInlineEdit("expand")}
+                className="px-2.5 py-1 text-xs text-zinc-300 hover:text-white hover:bg-brand-600/30 rounded transition-colors"
+              >
+                扩展
+              </button>
+              <div className="w-px h-4 bg-surface-3" />
+              <button
+                onClick={() => handleInlineEdit("condense")}
+                className="px-2.5 py-1 text-xs text-zinc-300 hover:text-white hover:bg-brand-600/30 rounded transition-colors"
+              >
+                精简
+              </button>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

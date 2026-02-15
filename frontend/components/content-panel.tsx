@@ -26,6 +26,8 @@ interface ContentPanelProps {
   onFieldsChange?: () => void;
   onPhaseAdvance?: () => void;
   onBlockSelect?: (block: ContentBlock) => void;
+  /** M3: 将消息发送到 Agent 对话面板（Eval 诊断→Agent 修改桥接） */
+  onSendToAgent?: (message: string) => void;
 }
 
 export function ContentPanel({
@@ -37,6 +39,7 @@ export function ContentPanel({
   onFieldsChange,
   onPhaseAdvance,
   onBlockSelect,
+  onSendToAgent,
 }: ContentPanelProps) {
   const [isAdvancing, setIsAdvancing] = useState(false);
 
@@ -89,6 +92,7 @@ export function ContentPanel({
             projectId={projectId}
             allBlocks={allBlocks}
             onUpdate={onFieldsChange}
+            onSendToAgent={onSendToAgent}
           />
         );
       } else {
@@ -141,6 +145,7 @@ export function ContentPanel({
             projectId={projectId}
             allBlocks={allBlocks}
             onUpdate={onFieldsChange}
+            onSendToAgent={onSendToAgent}
           />
         );
       } else {
@@ -165,6 +170,7 @@ export function ContentPanel({
         <EvalPhasePanel
           projectId={projectId}
           onFieldsChange={onFieldsChange}
+          onSendToAgent={onSendToAgent}
         />
       );
     }
@@ -353,6 +359,7 @@ export function ContentPanel({
         projectId={projectId}
         allBlocks={allBlocks}
         onUpdate={onFieldsChange}
+        onSendToAgent={onSendToAgent}
       />
     );
   }
@@ -377,6 +384,7 @@ export function ContentPanel({
       projectId={projectId}
       allBlocks={allBlocks}
       onUpdate={onFieldsChange}
+      onSendToAgent={onSendToAgent}
     />
   );
 }

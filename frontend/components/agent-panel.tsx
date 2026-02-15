@@ -32,6 +32,9 @@ interface AgentPanelProps {
   allBlocks?: ContentBlock[];  // 所有内容块
   onContentUpdate?: () => void;  // 当Agent生成内容后刷新
   isLoading?: boolean;
+  /** M3: 外部组件注入的消息（如 Eval 诊断→Agent 修改桥接），消费后清空 */
+  externalMessage?: string | null;
+  onExternalMessageConsumed?: () => void;
 }
 
 // 工具名称映射（匹配后端 AGENT_TOOLS 的 tool.name）
@@ -77,6 +80,8 @@ export function AgentPanel({
   allBlocks = [],
   onContentUpdate,
   isLoading = false,
+  externalMessage,
+  onExternalMessageConsumed,
 }: AgentPanelProps) {
   const [messages, setMessages] = useState<ChatMessageRecord[]>([]);
   const [input, setInput] = useState("");
@@ -94,16 +99,22 @@ export function AgentPanel({
   const [availableTools, setAvailableTools] = useState<{ id: string; name: string; desc: string }[]>([]);
   const [showMemoryPanel, setShowMemoryPanel] = useState(false);
   const [suggestions, setSuggestions] = useState<SuggestionCardData[]>([]);
-  const [undoToast, setUndoToast] = useState<{
+  // M6 T6.7: UndoToast 队列（FIFO）— 连续接受多张卡片时依次显示撤回 toast
+  const [undoQueue, setUndoQueue] = useState<{
     entityId: string;
     versionId: string;
     targetField: string;
     suggestionId: string;
     /** Group 全部撤回用: 多个 rollback 目标 */
     rollbackTargets?: RollbackTarget[];
-  } | null>(null);
+  }[]>([]);
   // Suggestion 生命周期事件队列: accept/reject/undo/followup 事件在此积累，下次发送消息时序列化注入
   const pendingEventsRef = useRef<string[]>([]);
+  // M6 T6.3: suggestionsRef 镜像 suggestions state，供 useCallback 闭包读取最新值
+  const suggestionsRef = useRef<SuggestionCardData[]>(suggestions);
+  useEffect(() => { suggestionsRef.current = suggestions; }, [suggestions]);
+  // M6 T6.5: 追问源卡片 ID，新卡片到达后标记旧卡片为 superseded
+  const followUpSourceRef = useRef<string | null>(null);
 
   // 加载可用 Agent 模式
   useEffect(() => {
@@ -247,11 +258,43 @@ export function AgentPanel({
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // M3: 外部组件注入消息（如 Eval 诊断→Agent 修改）— 消费后通知父组件清空
+  useEffect(() => {
+    if (externalMessage && !sending) {
+      handleSend(externalMessage);
+      onExternalMessageConsumed?.();
+    }
+  }, [externalMessage]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const loadHistory = async () => {
     if (!projectId) return;
     try {
       const history = await agentAPI.getHistory(projectId, 100, chatMode);
       setMessages(history);
+
+      // 从 message_metadata.suggestion_cards 恢复卡片状态（持久化 → 刷新后不丢失）
+      const restoredCards: SuggestionCardData[] = [];
+      for (const msg of history) {
+        const cards = msg.metadata?.suggestion_cards;
+        if (cards && Array.isArray(cards)) {
+          for (const c of cards) {
+            restoredCards.push({
+              id: c.id,
+              target_field: c.target_field,
+              summary: c.summary || "",
+              reason: c.reason,
+              diff_preview: c.diff_preview || "",
+              edits_count: c.edits_count || 0,
+              group_id: c.group_id,
+              group_summary: c.group_summary,
+              status: (c.status || "pending") as SuggestionStatus,
+              messageId: msg.id,
+              mode: msg.metadata?.mode || "assistant",
+            });
+          }
+        }
+      }
+      setSuggestions(restoredCards);
     } catch (err) {
       console.error("加载对话历史失败:", err);
     }
@@ -426,6 +469,7 @@ export function AgentPanel({
       let buffer = "";
       let fullContent = "";
       let currentRoute = "";  // 跟踪当前路由
+      const cardSummaries: string[] = [];  // M6 T6.6: 累积卡片摘要
       
       // 产出类型路由（内容应显示在中间区，聊天区只显示简短确认）
       // 后端使用的阶段名称（兼容旧 route 事件）
@@ -514,7 +558,7 @@ export function AgentPanel({
                 );
               } else if (data.type === "suggestion_card") {
                 // Suggestion Card（propose_edit 工具输出）— 关联到当前 AI 消息
-                console.log("[AgentPanel] Suggestion card:", data.id, data.target_field, "→ msg:", tempAiMsg.id);
+                console.log("[AgentPanel] Suggestion card:", data.id, data.target_field, "→ msg:", tempAiMsg.id, "mode:", chatMode);
                 const newCard: SuggestionCardData = {
                   id: data.id,
                   target_field: data.target_field,
@@ -526,13 +570,42 @@ export function AgentPanel({
                   group_summary: data.group_summary,
                   status: "pending",
                   messageId: tempAiMsg.id,  // 关联到产生此卡片的 AI 消息
+                  mode: chatMode,           // 记录产生此卡片的 Agent 模式（M1.5 mode 隔离）
                 };
+
+                // M6 T6.5: 追问→superseded 闭环
+                // 如果有追问源卡片且新卡片目标字段相同，标记旧卡片为 superseded
+                const sourceCardId = followUpSourceRef.current;
+                if (sourceCardId) {
+                  const sourceCard = suggestionsRef.current.find((s) => s.id === sourceCardId);
+                  if (sourceCard && sourceCard.target_field === data.target_field) {
+                    setSuggestions((prev) =>
+                      prev.map((s) => s.id === sourceCardId ? { ...s, status: "superseded" as SuggestionStatus } : s)
+                    );
+                    // 持久化 superseded 状态（fire-and-forget）
+                    if (projectId) {
+                      fetch(`${API_BASE}/api/agent/confirm-suggestion`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          project_id: projectId,
+                          suggestion_id: sourceCardId,
+                          action: "undo",  // 复用 undo action 持久化非 pending 状态
+                        }),
+                      }).catch(() => {});
+                    }
+                  }
+                  followUpSourceRef.current = null;  // 消费后清空
+                }
+
                 setSuggestions((prev) => [...prev, newCard]);
-                // 更新 AI 气泡显示简要提示（卡片会 inline 渲染在此消息下方）
+                // M6 T6.6: 累积卡片摘要（不覆盖之前的）
+                cardSummaries.push(data.summary || data.target_field);
+                const summaryText = cardSummaries.map((s, i) => `${i + 1}. **${s}**`).join("\n");
                 setMessages((prev) =>
                   prev.map((m) =>
                     m.id === tempAiMsg.id
-                      ? { ...m, content: `✏️ 修改建议已生成：**${data.summary}**` }
+                      ? { ...m, content: `✏️ 修改建议已生成：\n${summaryText}` }
                       : m
                   )
                 );
@@ -694,11 +767,22 @@ export function AgentPanel({
       // 2. 删除该消息之后的所有消息（从UI中移除），并更新编辑消息
       const editedMsgIndex = messages.findIndex(m => m.id === editingMessageId);
       if (editedMsgIndex !== -1) {
+        // M6 T6.8: 收集被截断消息的 ID，用于清理关联的 suggestion cards
+        const removedMsgIds = new Set(messages.slice(editedMsgIndex + 1).map(m => m.id));
         setMessages(prev => {
           const updated = prev.slice(0, editedMsgIndex);
           const editedMsg = { ...prev[editedMsgIndex], content: editedContent, is_edited: true };
           return [...updated, editedMsg];
         });
+        // M6 T6.8: 移除被截断消息关联的 suggestion cards（避免孤儿卡片）
+        if (removedMsgIds.size > 0) {
+          setSuggestions((prev) => prev.filter((s) => !s.messageId || !removedMsgIds.has(s.messageId)));
+          // 同步清理 undoQueue 中被移除卡片相关的 toast
+          setUndoQueue((prev) => prev.filter((t) => {
+            const card = suggestionsRef.current.find((s) => s.id === t.suggestionId);
+            return !card || !card.messageId || !removedMsgIds.has(card.messageId);
+          }));
+        }
       }
       
       // 3. 创建临时 AI 回复
@@ -735,6 +819,7 @@ export function AgentPanel({
       let buffer = "";
       let fullContent = "";
       let currentRoute = "";
+      const cardSummaries: string[] = [];  // M6 T6.6b: 累积卡片摘要（与 handleSend 对齐）
 
       const PRODUCE_ROUTES = ["intent", "research", "design_inner", "produce_inner", 
                                "design_outer", "produce_outer", "evaluate",
@@ -798,7 +883,7 @@ export function AgentPanel({
                   prev.map(m => m.id === tempAiMsg.id ? { ...m, content: `✅ ${tn} 完成。${sm ? "\n" + sm : ""}` } : m)
                 );
               } else if (data.type === "suggestion_card") {
-                console.log("[AgentPanel] Suggestion card (edit):", data.id, data.target_field, "→ msg:", tempAiMsg.id);
+                console.log("[AgentPanel] Suggestion card (edit):", data.id, data.target_field, "→ msg:", tempAiMsg.id, "mode:", chatMode);
                 const newCard: SuggestionCardData = {
                   id: data.id,
                   target_field: data.target_field,
@@ -810,11 +895,15 @@ export function AgentPanel({
                   group_summary: data.group_summary,
                   status: "pending",
                   messageId: tempAiMsg.id,  // 关联到产生此卡片的 AI 消息
+                  mode: chatMode,           // 记录产生此卡片的 Agent 模式（M1.5 mode 隔离）
                 };
                 setSuggestions((prev) => [...prev, newCard]);
+                // M6 T6.6b: 累积卡片摘要（与 handleSend 对齐）
+                cardSummaries.push(data.summary || data.target_field);
+                const summaryText = cardSummaries.map((s, i) => `${i + 1}. **${s}**`).join("\n");
                 setMessages(prev =>
                   prev.map(m => m.id === tempAiMsg.id
-                    ? { ...m, content: `✏️ 修改建议已生成：**${data.summary}**` }
+                    ? { ...m, content: `✏️ 修改建议已生成：\n${summaryText}` }
                     : m)
                 );
               } else if (data.type === "modify_confirm_needed") {
@@ -887,8 +976,8 @@ export function AgentPanel({
     setSuggestions((prev) =>
       prev.map((s) => s.id === suggestionId ? { ...s, status, entity_id: undoInfo?.entity_id, version_id: undoInfo?.version_id } : s)
     );
-    // 推入生命周期事件（Layer 3）
-    const card = suggestions.find((s) => s.id === suggestionId);
+    // M6 T6.3: 从 ref 读取最新 suggestions（避免闭包捕获过期值）
+    const card = suggestionsRef.current.find((s) => s.id === suggestionId);
     const fieldName = card?.target_field || "unknown";
     if (status === "accepted") {
       pendingEventsRef.current.push(`[用户已接受对「${fieldName}」的修改建议 #${suggestionId.slice(0, 8)}，内容已更新]`);
@@ -896,21 +985,24 @@ export function AgentPanel({
       pendingEventsRef.current.push(`[用户已拒绝对「${fieldName}」的修改建议 #${suggestionId.slice(0, 8)}，内容未变更]`);
     }
     // 接受时显示 Undo Toast（仅当 version_id 有效时才可撤回）
+    // M6 T6.7: 追加到 undoQueue（FIFO），避免覆盖前一张的 undo 机会
     if (status === "accepted" && undoInfo && undoInfo.version_id) {
-      setUndoToast({
+      setUndoQueue((prev) => [...prev, {
         entityId: undoInfo.entity_id,
         versionId: undoInfo.version_id,
         targetField: card?.target_field || "",
         suggestionId,
-      });
+      }]);
     }
-  }, [suggestions]);
+  }, []);  // M6: 不再依赖 suggestions（从 ref 读取）
 
   const handleSuggestionFollowUp = useCallback((card: SuggestionCardData) => {
-    // 推入追问事件（Layer 3）
+    // M6 T6.5: 记录追问源卡片 ID，新卡片到达后标记旧卡片为 superseded
+    followUpSourceRef.current = card.id;
+    // 推入追问事件（Layer 3）— M6 T6.3: 从 ref 读取 suggestions
     if (card.group_id) {
       // Group 追问：上下文包含整组信息
-      const groupCards = suggestions.filter((s) => s.group_id === card.group_id);
+      const groupCards = suggestionsRef.current.filter((s) => s.group_id === card.group_id);
       const cardSummaries = groupCards.map((c) => `「${c.target_field}」: ${c.summary}`).join("; ");
       pendingEventsRef.current.push(
         `[用户正在对修改建议组 (${groupCards.length} 项: ${cardSummaries}) 进行追问，组摘要: ${card.summary}]`
@@ -924,12 +1016,14 @@ export function AgentPanel({
       setInput(`关于「${card.target_field}」的修改建议，`);
     }
     inputRef.current?.focus();
-  }, [suggestions]);
+  }, []);  // M6: 不再依赖 suggestions（从 ref 读取）
 
   const handleUndoComplete = useCallback((suggestionId: string) => {
+    // M6 T6.3: 从 ref 读取 suggestions（避免闭包捕获过期值）
+    const currentSuggestions = suggestionsRef.current;
     // 推入撤回事件（Layer 3）
     // suggestionId 可能是单 card_id 或 group_id
-    const card = suggestions.find((s) => s.id === suggestionId);
+    const card = currentSuggestions.find((s) => s.id === suggestionId);
     if (card) {
       // 单 card 撤回
       const fieldName = card.target_field || "unknown";
@@ -939,7 +1033,7 @@ export function AgentPanel({
       );
     } else {
       // 可能是 group_id — 撤回整组
-      const groupCards = suggestions.filter((s) => s.group_id === suggestionId && s.status === "accepted");
+      const groupCards = currentSuggestions.filter((s) => s.group_id === suggestionId && s.status === "accepted");
       if (groupCards.length > 0) {
         const fieldNames = groupCards.map((c) => `「${c.target_field}」`).join("、");
         pendingEventsRef.current.push(`[用户已撤回对 ${fieldNames} 的${groupCards.length}项关联修改，内容已回滚到修改前版本]`);
@@ -949,9 +1043,26 @@ export function AgentPanel({
         );
       }
     }
-    setUndoToast(null);
+    // M6 T6.7: 从队列移除当前 toast（shift 到下一个）
+    setUndoQueue((prev) => prev.filter((t) => t.suggestionId !== suggestionId));
     if (onContentUpdate) onContentUpdate();
-  }, [onContentUpdate, suggestions]);
+
+    // M6 T6.4: 持久化撤回状态到后端（前端 rollback 已完成，此处仅更新 metadata）
+    if (projectId) {
+      fetch(`${API_BASE}/api/agent/confirm-suggestion`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: projectId,
+          suggestion_id: suggestionId,
+          action: "undo",
+        }),
+      }).catch((err) => {
+        // 不阻断 UX：rollback 本身已完成，状态持久化失败仅 warn
+        console.warn("[handleUndoComplete] undo 状态持久化失败:", err);
+      });
+    }
+  }, [onContentUpdate, projectId]);  // M6: 不再依赖 suggestions（从 ref 读取）
 
   const handleToolCall = async (toolId: string) => {
     if (!projectId) return;
@@ -1084,9 +1195,9 @@ export function AgentPanel({
               onCopy={() => handleCopy(msg.content)}
             />
             {/* 此消息关联的 Suggestion Cards — inline 渲染在消息正下方 */}
-            {/* 所有 card 独立渲染（含 group_id 的也独立渲染，每个可单独确认） */}
+            {/* 按 mode 隔离：只渲染当前模式产生的卡片（M1.5 修复跨模式泄漏） */}
             {suggestions
-              .filter((card) => card.messageId === msg.id)
+              .filter((card) => card.messageId === msg.id && (!card.mode || card.mode === chatMode))
               .map((card) => (
                 <div key={card.id} className="mt-2">
                   <SuggestionCard
@@ -1101,10 +1212,13 @@ export function AgentPanel({
           </div>
         ))}
 
-        {/* 无关联消息的 Suggestion Cards（兜底：如从历史恢复的无 messageId 卡片） */}
+        {/* 无关联消息的 Suggestion Cards（兜底：当前 mode 的、messageId 无法匹配的卡片） */}
+        {/* M1.5: 增加 mode 过滤，避免切换模式时其他 mode 的卡片从兜底区泄漏 */}
         {suggestions
           .filter(
-            (card) => !card.messageId || !messages.some((m) => m.id === card.messageId)
+            (card) =>
+              (!card.mode || card.mode === chatMode) &&
+              (!card.messageId || !messages.some((m) => m.id === card.messageId))
           )
           .map((card) => (
             <div key={card.id} className="mt-2">
@@ -1128,19 +1242,28 @@ export function AgentPanel({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Undo Toast */}
-      {undoToast && (
-        <div className="px-4 py-2 border-t border-surface-3">
-          <UndoToast
-            entityId={undoToast.entityId}
-            versionId={undoToast.versionId}
-            targetField={undoToast.targetField}
-            onUndo={() => handleUndoComplete(undoToast.suggestionId)}
-            onExpire={() => setUndoToast(null)}
-            rollbackTargets={undoToast.rollbackTargets}
-          />
-        </div>
-      )}
+      {/* Undo Toast — M6 T6.7: 队列模式，显示队首 toast + 剩余数量 */}
+      {undoQueue.length > 0 && (() => {
+        const current = undoQueue[0];
+        return (
+          <div className="px-4 py-2 border-t border-surface-3">
+            <UndoToast
+              key={current.suggestionId}  /* key 确保切换时重新挂载、重置计时 */
+              entityId={current.entityId}
+              versionId={current.versionId}
+              targetField={current.targetField}
+              onUndo={() => handleUndoComplete(current.suggestionId)}
+              onExpire={() => setUndoQueue((prev) => prev.slice(1))}
+              rollbackTargets={current.rollbackTargets}
+            />
+            {undoQueue.length > 1 && (
+              <div className="text-xs text-zinc-500 mt-1 text-center">
+                还有 {undoQueue.length - 1} 项修改可撤回
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* 输入区 */}
       <div className="p-4 border-t border-surface-3">

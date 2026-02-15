@@ -38,6 +38,9 @@ export default function WorkspacePage() {
   
   // 全局搜索
   const [showSearch, setShowSearch] = useState(false);
+  
+  // M3: Eval 诊断→Agent 修改桥接（中栏组件设置消息，右栏 AgentPanel 消费）
+  const [pendingAgentMessage, setPendingAgentMessage] = useState<string | null>(null);
 
   // 点击外部关闭下拉菜单
   useEffect(() => {
@@ -70,11 +73,15 @@ export default function WorkspacePage() {
     requestNotificationPermission();
   }, []);
 
-  // 加载当前项目的内容块 & 记住选中项目
+  // 项目切换时：记住选中项目 & 重置工作区状态
+  // 原则：项目是数据隔离的最高边界，切换项目 = 重置一切工作区状态
   useEffect(() => {
     if (currentProject) {
       localStorage.setItem("lastProjectId", currentProject.id);
     }
+    // 清除旧项目残留状态 —— 新项目的数据会由各自的 useEffect 重新加载
+    setSelectedBlock(null);
+    setAllBlocks([]);
   }, [currentProject?.id]);
 
   const loadProjects = async () => {
@@ -573,11 +580,12 @@ export default function WorkspacePage() {
                   setBlocksRefreshKey(prev => prev + 1);
                 }
               }}
+              onSendToAgent={setPendingAgentMessage}
             />
           }
           rightPanel={
             <AgentPanel
-              key={refreshKey}  // 触发刷新
+              key={`${currentProject?.id || "none"}-${refreshKey}`}  // 项目切换时销毁重建，refreshKey 保留阶段推进刷新
               projectId={currentProject?.id || null}
               currentPhase={currentProject?.current_phase}
               allBlocks={allBlocks}
@@ -589,6 +597,8 @@ export default function WorkspacePage() {
                   setBlocksRefreshKey(prev => prev + 1);
                 }
               }}
+              externalMessage={pendingAgentMessage}
+              onExternalMessageConsumed={() => setPendingAgentMessage(null)}
             />
           }
         />

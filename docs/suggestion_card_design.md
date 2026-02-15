@@ -1378,6 +1378,36 @@ Agent: [文字] "好的，我看了场景库的内容，建议如下修改："
 
 ---
 
+### M1.5: Suggestion Card 健壮性修复（优先级 P0）
+
+**目标**：修复 M1/M2 上线后发现的三个结构性问题，使 Suggestion Card 在实际使用中可靠工作。
+
+**问题诊断**：
+
+| # | 现象 | 根因 | 修复思路 |
+|---|------|------|---------|
+| 1 | Agent 锚点匹配失败（anchor_not_found） | `edit_engine.py` 使用 `str.find()` 精确匹配，LLM 生成的 anchor 常有微小偏差（空白、标点、措辞） | 在 edit_engine 增加归一化匹配和模糊匹配 fallback 链 |
+| 2 | 拒绝的卡片堆叠在对话底部 | 切换模式后卡片 messageId 引用断裂，落入孤儿卡片兜底渲染区 | suggestions 按 mode 隔离渲染，消除跨模式孤儿卡片 |
+| 3 | 切换模式时卡片重复 | `suggestions` state 跨模式共享但 `messages` 按 mode 过滤；`PENDING_SUGGESTIONS` 全局不按 mode 隔离 | 前端 suggestions 增加 mode 字段按模式过滤；后端 `<active_suggestions>` 按 mode 过滤 |
+
+**设计决策**：
+- 拒绝/已应用的卡片**不收起、不移除**：它们是用户的参考资产，跟随对话自然滚动上去，只变灰。
+- 修复必须符合现有架构：不引入新的数据表、新的 API、新的状态管理模式。
+
+**范围**：
+- 后端 `edit_engine.py`：锚点匹配 fallback 链（归一化 → 模糊匹配）
+- 前端 `agent-panel.tsx`：suggestions 按 mode 过滤渲染，消除孤儿卡片兜底
+- 前端 `suggestion-card.tsx`：`SuggestionCardData` 增加 `mode` 字段
+- 后端 `orchestrator.py`：`<active_suggestions>` 按当前 mode 过滤
+
+**验收标准**：
+1. propose_edit 的 anchor 在轻微空白/标点偏差时仍能匹配成功
+2. 切换模式时，只显示当前模式产生的卡片
+3. 拒绝的卡片变灰但保留在原消息下方，随对话滚动上去
+4. `<active_suggestions>` 只展示当前 mode 的 pending 卡片
+
+---
+
 ### M3: Eval Report 桥接（优先级 P1）
 
 **目标**：Eval Report 的诊断结果可以一键发送到 Agent 对话，触发 Suggestion Card 或 SuggestionGroup。
@@ -1417,6 +1447,40 @@ Agent: [文字] "好的，我看了场景库的内容，建议如下修改："
 - 后端：`pending_suggestions` 从内存字典迁移到 DB 表
 - 前端：可选的 Suggestion 历史面板
 - 数据：关联 ChatMessage，作为消息的附属数据
+
+---
+
+### M6: Suggestion Card 生命周期闭环修复（优先级 P0-P1）
+
+**目标**：修复 M1-M2 上线后发现的状态持久化缺失和生命周期断裂问题，确保用户操作（接受/拒绝/撤回/追问）后的状态在刷新后仍然准确。
+
+**问题诊断**：
+
+| # | 现象 | 根因 | 修复思路 |
+|---|------|------|---------|
+| 1 | 接受/拒绝后刷新页面，卡片状态回到 pending | `_persist_card_status` 依赖 `PENDING_SUGGESTIONS` 中的 `message_id`，而该字段在 SSE 流结束后才回写；若用户在此之前操作或 `message_id` 未正确传递，更新静默跳过 | `_persist_card_status` 增加 DB 回退查找：`message_id` 缺失时按 `project_id` + `card_id` 搜索近期消息 |
+| 2 | 撤回后刷新页面，卡片状态回到 accepted | 前端 `handleUndoComplete` 仅更新本地 state，未调用后端持久化 | 扩展 confirm-suggestion API 支持 `action: "undo"`，前端撤回成功后调用 |
+| 3 | 追问生成新卡片后，旧卡片未标记为 superseded | `handleSuggestionFollowUp` 仅注入上下文，无追踪机制将新旧卡片关联 | 前端记录追问源卡片 ID，新卡片到达时标记旧卡片为 superseded 并持久化 |
+| 4 | `handleSuggestionStatusChange` 中 `suggestions` 闭包过期 | `useCallback` 捕获了旧的 `suggestions` 引用，操作多张卡片时读到过时数据 | 使用 `suggestionsRef` 镜像最新 state，回调中从 ref 读取 |
+| 5 | 多张卡片生成时 AI 消息气泡文本被覆盖 | 每次收到 `suggestion_card` SSE 事件都替换气泡内容 | 累积卡片摘要列表，而非每次替换 |
+
+**设计决策**：
+- 所有修复复用现有架构（confirm-suggestion API、message_metadata、pendingEventsRef），不引入新的数据表或状态管理模式。
+- `undo` 作为 confirm-suggestion 的第四种 action（与 accept/reject/partial 并列），遵循已有 API 契约。
+- 追问→superseded 在前端用 ref 追踪，不需要后端改动（backend 无需知道 supersedes 关系，只需持久化状态变更）。
+- stale closure 通过 `suggestionsRef` 修复，这是 React 中处理回调闭包的标准模式。
+
+**范围**：
+- 后端 `api/agent.py`：`_persist_card_status` 增加 DB fallback + confirm-suggestion 支持 `undo` action
+- 前端 `agent-panel.tsx`：`handleUndoComplete` 调用 API + `suggestionsRef` 修复闭包 + 追问源追踪 + 气泡文本累积
+- 无新文件、新组件、新数据表
+
+**验收标准**：
+1. 接受/拒绝卡片后刷新页面，卡片状态正确保持
+2. 撤回卡片后刷新页面，卡片显示为"已撤回"
+3. 追问生成新卡片后，旧卡片自动标记为 superseded
+4. 连续操作多张卡片时，每次操作读到的状态都是最新的
+5. 多张卡片生成时，AI 消息气泡正确显示所有卡片摘要
 
 ---
 
@@ -1585,18 +1649,96 @@ Agent: [文字] "好的，我看了场景库的内容，建议如下修改："
   - critic 模式 prompt 添加"NEVER 调用 run_evaluation"限制
   - 已更新数据库中 critic 模式的 system_prompt
 
+### M1.5: Suggestion Card 健壮性修复
+
+#### 后端
+
+- [x] **T1.5.1** `edit_engine.py`：锚点匹配 fallback 链
+  - 第一优先：精确 `str.find()`（现有行为）
+  - 第二优先：归一化匹配（折叠空白、统一中英文标点后精确匹配）
+  - 第三优先：`difflib.SequenceMatcher` 滑窗模糊匹配（阈值 0.85）
+  - changes 中新增 `match_method` 字段（`"exact" | "normalized" | "fuzzy"`）
+  - 模糊匹配时 log warning，便于后续优化
+
+- [x] **T1.5.2** `orchestrator.py`：`<active_suggestions>` 按当前 mode 过滤
+  - `build_system_prompt` 中读取 `PENDING_SUGGESTIONS` 时，按 `source_mode == state["mode"]` 过滤
+  - 只向当前 mode 的 Agent 展示该 mode 产生的 pending 卡片
+
+#### 前端
+
+- [x] **T1.5.3** `suggestion-card.tsx`：`SuggestionCardData` 增加 `mode` 字段
+  - 类型：`mode?: string`
+
+- [x] **T1.5.4** `agent-panel.tsx`：suggestions 按 mode 隔离渲染
+  - 创建卡片时记录 `mode: chatMode`
+  - inline 渲染和兜底渲染均增加 `card.mode === chatMode` 过滤
+  - 移除无条件的孤儿卡片兜底区域（此前是跨模式泄漏的根源）
+
+### M6: 生命周期闭环修复
+
+#### 后端
+
+- [x] **T6.1** `api/agent.py`：`_persist_card_status` 增加 DB 回退查找
+  - 当 `card_data.get("message_id")` 为空时，按 `project_id` 搜索近期 assistant 消息的 `message_metadata.suggestion_cards`
+  - 找到包含该 `card_id` 的消息后正常更新状态
+  - 解决 SSE 流未结束时用户操作导致的 race condition
+
+- [x] **T6.2** `api/agent.py`：confirm-suggestion 支持 `action: "undo"`
+  - undo 不操作 DB 内容（前端已调用 rollback API 回滚了内容）
+  - 仅更新 `PENDING_SUGGESTIONS` 状态 + 持久化 "undone" 到 `message_metadata`
+  - 返回 `{success: true, message: "已标记为撤回"}`
+
+#### 前端
+
+- [x] **T6.3** `agent-panel.tsx`：`suggestionsRef` 修复 stale closure
+  - 新增 `const suggestionsRef = useRef(suggestions)` + `useEffect` 同步
+  - `handleSuggestionStatusChange`/`handleSuggestionFollowUp`/`handleUndoComplete` 从 ref 读取
+
+- [x] **T6.4** `agent-panel.tsx`：`handleUndoComplete` 持久化撤回状态
+  - 撤回成功后调用 `confirm-suggestion` API（action: "undo"）
+  - 失败时仅 console.warn（不阻断 UX，撤回本身已完成）
+
+- [x] **T6.5** `agent-panel.tsx`：追问→superseded 闭环
+  - 新增 `followUpSourceRef = useRef<string | null>(null)`
+  - `handleSuggestionFollowUp` 时记录 `followUpSourceRef.current = card.id`
+  - SSE 收到新 `suggestion_card` 时，若 `followUpSourceRef.current` 有值且新卡片 target_field 相同，标记旧卡片为 superseded
+  - 持久化 superseded 状态（调用 confirm-suggestion API action: "undo"，实际复用为状态更新）
+
+- [x] **T6.6** `agent-panel.tsx`：多卡片时 AI 气泡文本累积（handleSend）
+  - 使用局部变量 `cardSummaries: string[]` 累积每次 `suggestion_card` 事件的 summary
+  - 气泡内容改为 `"✏️ 修改建议已生成：\n" + cardSummaries.map(...).join("\n")`
+
+- [x] **T6.7** `agent-panel.tsx`：UndoToast 多卡片排队
+  - `undoToast` 从 `useState<... | null>` 改为 `useState<UndoToastData[]>([])`（FIFO 队列）
+  - 渲染队列中第一个 toast（`key={suggestionId}` 确保切换时重新挂载重置计时）；onExpire/onUndo 后 shift 到下一个
+  - 队列长度 > 1 时显示"还有 N 项修改可撤回"提示
+  - 避免连续接受多张卡片时前一张的 undo 机会被覆盖
+
+- [x] **T6.8** `agent-panel.tsx`：编辑/重试时清理关联卡片
+  - `handleSaveEdit` 截断消息后，收集被截断消息 ID，同步移除关联的 suggestion cards 和 undoQueue 条目
+  - `handleRetry` 通过 `loadHistory` 重建 suggestions 状态，无需额外处理
+  - 避免编辑后出现孤儿卡片或与新回复内容冲突的旧卡片
+
+- [x] **T6.6b** `agent-panel.tsx`：handleSaveEdit 多卡片气泡文本累积
+  - 与 T6.6 对齐：handleSaveEdit 的 `suggestion_card` 事件处理也使用 `cardSummaries` 局部变量
+  - 气泡格式统一为编号列表：`"✏️ 修改建议已生成：\n1. **摘要1**\n2. **摘要2**"`
+
 ### M3: Eval Report 桥接
 
-- [ ] **T3.1** 在 `EvalReportPanel` 的综合诊断区域添加"让 Agent 修改"按钮
-- [ ] **T3.2** 点击按钮后，构造消息文本（包含诊断内容）发送到 Agent Panel
-- [ ] **T3.3** Agent Panel 接收消息后正常走 Agent 对话流（自然触发 propose_edit / propose_edit_group）
+- [x] **T3.1** 在 `EvalReportPanel` 的综合诊断区域添加"让 Agent 修改"按钮
+  - `eval-field-editors.tsx`: `EvalFieldProps` 增加 `onSendToAgent` 可选 prop，`EvalReportPanel` 诊断区渲染按钮
+- [x] **T3.2** 点击按钮后，构造消息文本（包含诊断内容）发送到 Agent Panel
+  - 通信链: `EvalReportPanel` → `EvalPhasePanel` → `ContentPanel` → `WorkspacePage`（state lift: `pendingAgentMessage`）→ `AgentPanel`
+  - 各层组件增加 `onSendToAgent` prop 透传；`ContentBlockEditor` 同步支持（Path 2: 用户直接选中 eval_report 块时同样可用）
+- [x] **T3.3** Agent Panel 接收消息后正常走 Agent 对话流（自然触发 propose_edit）
+  - `agent-panel.tsx`: 新增 `externalMessage` + `onExternalMessageConsumed` props；useEffect 监听 externalMessage 变化后自动调用 handleSend
 
 ### M4: Inline AI 操作
 
-- [ ] **T4.1** ContentBlockEditor 中添加 floating toolbar（选中文本时出现）
-- [ ] **T4.2** toolbar 按钮：AI 改写 / AI 扩展 / AI 精简
-- [ ] **T4.3** 点击后调用轻量级 API → 返回 diff 预览 → 编辑器内 inline 展示
-- [ ] **T4.4** 接受/拒绝交互
+- [x] **T4.1** ContentBlockEditor 中添加 floating toolbar（选中文本时出现）
+- [x] **T4.2** toolbar 按钮：AI 改写 / AI 扩展 / AI 精简
+- [x] **T4.3** 点击后调用轻量级 API → 返回 diff 预览 → 编辑器内 inline 展示
+- [x] **T4.4** 接受/拒绝交互
 
 ---
 
@@ -1613,6 +1755,15 @@ Agent: [文字] "好的，我看了场景库的内容，建议如下修改："
 | SuggestionGroup 中部分 Card 执行成功、部分失败 | 数据不一致 | Confirm API 使用数据库事务，全部成功或全部回滚；返回 partial result 让用户知晓 |
 | 追问循环过多（用户反复追问不满意） | Agent 消耗大量 token | 追问深度超过 3 轮时，Agent 建议用户"直接编辑内容块"或"重新描述需求" |
 | Undo Toast 过期后用户才想撤回 | 用户找不到撤回入口 | Toast 中提示"也可通过版本历史面板撤回"；Card 的"已应用"状态旁显示"在版本历史中查看"链接 |
+| **[已实现]** LLM anchor 微小偏差导致 anchor_not_found | 锚点空白/标点/措辞与原文不完全一致，`str.find()` 直接失败 | M1.5 T1.5.1：edit_engine 增加归一化 + 模糊匹配 fallback 链 |
+| **[已实现]** 切换模式时 suggestions 跨模式泄漏 | cards 的 messageId 引用断裂，落入孤儿兜底区产生"重复" | M1.5 T1.5.3/T1.5.4：suggestions 增加 mode 字段，渲染按 chatMode 过滤 |
+| **[已实现]** `<active_suggestions>` 全局不按 mode 隔离 | 其他 mode 的 pending 卡片污染当前 mode 的 Agent 认知 | M1.5 T1.5.2：按 source_mode 过滤 |
+| **[已修复]** 卡片状态持久化 race condition | 用户操作时 `message_id` 未回写到 `PENDING_SUGGESTIONS`，`_persist_card_status` 静默跳过 | M6 T6.1：增加 DB 回退查找 |
+| **[已修复]** Undo 状态未持久化 | 前端 `handleUndoComplete` 仅更新 local state，刷新后丢失 | M6 T6.2+T6.4：扩展 confirm API + 前端调用 |
+| **[已修复]** 追问后旧卡片未标记 superseded | 追问仅注入上下文，无旧→新关联机制 | M6 T6.5：前端 ref 追踪 + 状态更新 |
+| **[已修复]** useCallback 闭包捕获过期 suggestions | 连续操作多张卡片时读到旧数据，Layer 3 事件丢失字段名 | M6 T6.3：`suggestionsRef` 镜像模式 |
+| **[发现]** 连续接受多卡片时前一张 undo 机会被覆盖 | `undoToast` 为单值 state，第二次 accept 替换掉第一次的 toast | M6 T6.7：undoToast 改为 FIFO 队列 |
+| **[发现]** 编辑/重试后孤儿卡片残留 | 消息被截断但关联 suggestion cards 未清理，出现不可操作的孤儿卡片 | M6 T6.8：编辑/重试时同步清理 suggestions |
 
 ---
 
