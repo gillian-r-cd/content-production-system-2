@@ -408,8 +408,8 @@ def seed_default_data():
 - 有问必答：用户问任何问题，直接回答，不绕弯子。不确定时给出最可能的理解，附带简短确认。
 
 修改规则：
-- 用户要求修改内容时，DEFAULT 使用 propose_edit 展示修改方案。
-- 用户说"直接改"时才用 modify_field。
+- 用户要求修改内容时，ALWAYS 使用 propose_edit 展示修改方案。
+- 用户要求"重写""整体调整"时用 rewrite_field。
 - 完成修改提案后，简要告知用户可以确认、拒绝或追问。""",
                 ),
                 AgentMode(
@@ -433,7 +433,7 @@ def seed_default_data():
 修改规则：
 - 策略分析阶段以文本讨论为主，不急于修改内容。
 - 当分析产出了具体可操作的修改建议时，使用 propose_edit 提出修改方案。
-- 方向性选择未确定前，NEVER 使用 propose_edit 或 modify_field。""",
+- 方向性选择未确定前，NEVER 使用 propose_edit 或 rewrite_field。""",
                 ),
                 AgentMode(
                     id=generate_uuid(),
@@ -458,7 +458,12 @@ def seed_default_data():
 - 发现具体可操作的改进点时，使用 propose_edit 提出修改方案，让创作者决定是否采纳。
 - 先完成整体评审，再集中提出修改建议。不要边评边改。
 - 评审反馈中有多处改进点时，可以对同一字段发起包含多个 edit 的 propose_edit。
-- 用户明确说"直接改"时才用 modify_field。""",
+- 用户要求"重写"整篇内容时用 rewrite_field。
+
+工具限制（CRITICAL）：
+- NEVER 调用 run_evaluation。你是审稿人，用 read_field 读内容后直接给出文本分析和反馈。
+- run_evaluation 是 Eval V2 多角色模拟流水线（消耗大量 token），不是审稿人的工具。
+- 你的审查方式是：read_field 读取内容 → 分析优缺点 → 文本反馈 → 如有具体改进点用 propose_edit。""",
                 ),
                 AgentMode(
                     id=generate_uuid(),
@@ -482,7 +487,7 @@ def seed_default_data():
 修改规则：
 - 读者模式以反馈体验为主，一般不直接提出修改。
 - 只有当创作者明确要求"根据你的反馈帮我改"时，才使用 propose_edit。
-- NEVER 主动使用 modify_field —— 你是读者，不是编辑。""",
+- NEVER 主动使用 rewrite_field —— 你是读者，不是编辑。""",
                 ),
                 AgentMode(
                     id=generate_uuid(),

@@ -1,8 +1,8 @@
 // frontend/components/suggestion-card.tsx
-// 功能: Suggestion Card 组件 — Agent 修改建议的展示与交互
-// 主要组件: SuggestionCard, UndoToast
+// 功能: Suggestion Card / SuggestionGroup 组件 — Agent 修改建议的展示与交互
+// 主要组件: SuggestionCard, SuggestionGroup, UndoToast
 // 数据结构: SuggestionCardData (pending/accepted/rejected/superseded/undone)
-// 交互: 应用(confirm API) / 拒绝(confirm API) / 追问(注入上下文)
+// 交互: 应用(confirm API) / 拒绝(confirm API) / 追问(注入上下文) / 部分应用(partial)
 
 "use client";
 
@@ -27,6 +27,8 @@ export interface SuggestionCardData {
   group_id?: string;
   group_summary?: string;
   status: SuggestionStatus;
+  // 关联的 AI 消息 ID — 用于在消息流中 inline 渲染卡片
+  messageId?: string;
   // Undo 信息（confirm API 返回后填充）
   entity_id?: string;
   version_id?: string;
@@ -42,15 +44,22 @@ interface SuggestionCardProps {
 
 // ============== Undo Toast ==============
 
+export interface RollbackTarget {
+  entity_id: string;
+  version_id: string;
+}
+
 interface UndoToastProps {
   entityId: string;
   versionId: string;
   targetField: string;
   onUndo: () => void;
   onExpire: () => void;
+  /** Group 全部撤回时使用：多个 rollback 目标 */
+  rollbackTargets?: RollbackTarget[];
 }
 
-export function UndoToast({ entityId, versionId, targetField, onUndo, onExpire }: UndoToastProps) {
+export function UndoToast({ entityId, versionId, targetField, onUndo, onExpire, rollbackTargets }: UndoToastProps) {
   const [remaining, setRemaining] = useState(15);
   const [loading, setLoading] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -60,7 +69,8 @@ export function UndoToast({ entityId, versionId, targetField, onUndo, onExpire }
       setRemaining((prev) => {
         if (prev <= 1) {
           if (timerRef.current) clearInterval(timerRef.current);
-          onExpire();
+          // 异步调用 onExpire，避免在 setState updater 内触发父组件 setState
+          setTimeout(onExpire, 0);
           return 0;
         }
         return prev - 1;
@@ -76,13 +86,27 @@ export function UndoToast({ entityId, versionId, targetField, onUndo, onExpire }
     setLoading(true);
     if (timerRef.current) clearInterval(timerRef.current);
     try {
-      const resp = await fetch(`${API_BASE}/api/versions/${entityId}/rollback/${versionId}`, {
-        method: "POST",
-      });
-      if (resp.ok) {
+      // 如果有多个 rollback 目标（Group 全部撤回），并行回滚
+      const targets = rollbackTargets && rollbackTargets.length > 0
+        ? rollbackTargets.filter((t) => t.version_id)
+        : versionId ? [{ entity_id: entityId, version_id: versionId }] : [];
+
+      const results = await Promise.allSettled(
+        targets.map((t) =>
+          fetch(`${API_BASE}/api/versions/${t.entity_id}/rollback/${t.version_id}`, {
+            method: "POST",
+          })
+        )
+      );
+
+      const allOk = results.every((r) => r.status === "fulfilled" && (r.value as Response).ok);
+      if (allOk) {
         onUndo();
       } else {
-        console.error("Rollback failed:", await resp.text());
+        const failed = results.filter((r) => r.status === "rejected" || !(r.value as Response).ok);
+        console.error(`Rollback: ${results.length - failed.length}/${results.length} succeeded`);
+        // 部分成功也执行 onUndo（用户可通过版本历史面板处理剩余的）
+        onUndo();
       }
     } catch (e) {
       console.error("Rollback error:", e);
@@ -272,6 +296,259 @@ export function SuggestionCard({ data, projectId, onStatusChange, onFollowUp, on
             仍然应用此版本
           </button>
         </div>
+      )}
+    </div>
+  );
+}
+
+// ============== SuggestionGroup ==============
+
+interface SuggestionGroupProps {
+  groupId: string;
+  groupSummary: string;
+  cards: SuggestionCardData[];
+  projectId: string;
+  onStatusChange: (id: string, status: SuggestionStatus, undoInfo?: { entity_id: string; version_id: string }) => void;
+  onFollowUp: (data: SuggestionCardData) => void;
+  onContentUpdate?: () => void;
+  // 批量操作：全部应用/全部拒绝后回调（携带多个 undoInfo）
+  onGroupApplied?: (results: Array<{ card_id: string; entity_id: string; version_id: string }>) => void;
+}
+
+export function SuggestionGroup({
+  groupId,
+  groupSummary,
+  cards,
+  projectId,
+  onStatusChange,
+  onFollowUp,
+  onContentUpdate,
+  onGroupApplied,
+}: SuggestionGroupProps) {
+  const [selected, setSelected] = useState<Record<string, boolean>>(() => {
+    const init: Record<string, boolean> = {};
+    cards.forEach((c) => { init[c.id] = true; });
+    return init;
+  });
+  const [loading, setLoading] = useState(false);
+
+  const pendingCards = cards.filter((c) => c.status === "pending");
+  const allDone = pendingCards.length === 0;
+  const selectedCount = pendingCards.filter((c) => selected[c.id]).length;
+
+  const toggleCard = (cardId: string) => {
+    setSelected((prev) => ({ ...prev, [cardId]: !prev[cardId] }));
+  };
+
+  // 批量应用（partial: 仅勾选的 card）
+  const handleGroupAccept = useCallback(async () => {
+    if (loading) return;
+    const toApply = pendingCards.filter((c) => selected[c.id]);
+    if (toApply.length === 0) return;
+    setLoading(true);
+
+    try {
+      const resp = await fetch(`${API_BASE}/api/agent/confirm-suggestion`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: projectId,
+          suggestion_id: groupId,
+          action: toApply.length === pendingCards.length ? "accept" : "partial",
+          accepted_card_ids: toApply.map((c) => c.id),
+        }),
+      });
+
+      if (!resp.ok) {
+        console.error("Group confirm failed:", await resp.text());
+        return;
+      }
+
+      const result = await resp.json();
+      if (result.success && result.applied_cards) {
+        // 逐 card 更新状态
+        for (const applied of result.applied_cards) {
+          onStatusChange(applied.card_id, "accepted", {
+            entity_id: applied.entity_id,
+            version_id: applied.version_id,
+          });
+        }
+        // 未勾选的 card 保持 pending
+        if (onContentUpdate) onContentUpdate();
+        if (onGroupApplied) onGroupApplied(result.applied_cards);
+      }
+    } catch (e) {
+      console.error("Group confirm error:", e);
+    } finally {
+      setLoading(false);
+    }
+  }, [loading, pendingCards, selected, projectId, groupId, onStatusChange, onContentUpdate, onGroupApplied]);
+
+  // 全部拒绝
+  const handleGroupReject = useCallback(async () => {
+    if (loading) return;
+    setLoading(true);
+
+    try {
+      const resp = await fetch(`${API_BASE}/api/agent/confirm-suggestion`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: projectId,
+          suggestion_id: groupId,
+          action: "reject",
+        }),
+      });
+
+      if (!resp.ok) {
+        console.error("Group reject failed:", await resp.text());
+        return;
+      }
+
+      const result = await resp.json();
+      if (result.success) {
+        pendingCards.forEach((c) => onStatusChange(c.id, "rejected"));
+      }
+    } catch (e) {
+      console.error("Group reject error:", e);
+    } finally {
+      setLoading(false);
+    }
+  }, [loading, pendingCards, projectId, groupId, onStatusChange]);
+
+  // 追问：基于整组
+  const handleGroupFollowUp = useCallback(() => {
+    // 用第一个 pending card 的信息 + 整组摘要
+    const firstCard = pendingCards[0] || cards[0];
+    if (firstCard) {
+      onFollowUp({
+        ...firstCard,
+        summary: groupSummary || firstCard.summary,
+      });
+    }
+  }, [pendingCards, cards, groupSummary, onFollowUp]);
+
+  return (
+    <div className="rounded-lg border border-purple-500/30 bg-surface-2 p-4 my-2">
+      {/* Group 头部 */}
+      <div className="mb-3">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="text-xs px-2 py-0.5 bg-purple-900/30 text-purple-300 rounded">
+            {cards.length} 项关联修改
+          </span>
+        </div>
+        {groupSummary && (
+          <p className="text-sm text-zinc-300">{groupSummary}</p>
+        )}
+      </div>
+
+      {/* 逐 Card 展示（带勾选框） */}
+      <div className="space-y-2">
+        {cards.map((card) => (
+          <div key={card.id} className="flex items-start gap-2">
+            {/* 勾选框：仅 pending 状态可勾选 */}
+            {card.status === "pending" ? (
+              <label className="flex items-center mt-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={selected[card.id] ?? true}
+                  onChange={() => toggleCard(card.id)}
+                  className="w-4 h-4 rounded border-zinc-600 bg-surface-3 text-purple-500 focus:ring-purple-500/50"
+                />
+              </label>
+            ) : (
+              <div className="w-4 mt-3" />
+            )}
+            {/* 简化版 Card（不含独立按钮，按钮在 Group 底部统一管理） */}
+            <div className="flex-1">
+              <GroupItemCard data={card} />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Group 底部操作按钮 — 仅有 pending cards 时显示 */}
+      {!allDone && (
+        <div className="flex gap-2 mt-4 pt-3 border-t border-surface-3">
+          <button
+            onClick={handleGroupAccept}
+            disabled={loading || selectedCount === 0}
+            className="px-3 py-1.5 text-xs bg-green-600/80 hover:bg-green-600 text-white rounded transition-colors disabled:opacity-50"
+          >
+            {loading ? "处理中..." : selectedCount === pendingCards.length
+              ? `✅ 全部应用 (${selectedCount})`
+              : `✅ 应用已选 (${selectedCount}/${pendingCards.length})`
+            }
+          </button>
+          <button
+            onClick={handleGroupReject}
+            disabled={loading}
+            className="px-3 py-1.5 text-xs bg-surface-4 hover:bg-zinc-600 text-zinc-300 rounded transition-colors disabled:opacity-50"
+          >
+            ❌ 全部拒绝
+          </button>
+          <button
+            onClick={handleGroupFollowUp}
+            disabled={loading}
+            className="px-3 py-1.5 text-xs bg-surface-4 hover:bg-zinc-600 text-zinc-300 rounded transition-colors disabled:opacity-50"
+          >
+            💬 追问
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============== GroupItemCard (Group 内的简化单 Card) ==============
+
+function GroupItemCard({ data }: { data: SuggestionCardData }) {
+  const statusStyles: Record<SuggestionStatus, string> = {
+    pending: "border-l-2 border-l-blue-500/50 bg-surface-1",
+    accepted: "border-l-2 border-l-green-500/50 bg-surface-1 opacity-80",
+    rejected: "border-l-2 border-l-zinc-600/50 bg-surface-1 opacity-50",
+    superseded: "border-l-2 border-l-zinc-600/50 bg-surface-1 opacity-60",
+    undone: "border-l-2 border-l-zinc-600/50 bg-surface-1 opacity-50",
+  };
+
+  const statusLabels: Record<SuggestionStatus, string> = {
+    pending: "",
+    accepted: "✓ 已应用",
+    rejected: "已拒绝",
+    superseded: "↪ 已替代",
+    undone: "↩ 已撤回",
+  };
+
+  return (
+    <div className={cn("rounded p-3 my-1 transition-all", statusStyles[data.status])}>
+      <div className="flex items-start justify-between mb-1">
+        <div>
+          <span className="text-sm font-medium text-zinc-200">{data.summary}</span>
+          <span className="text-xs text-zinc-500 ml-2">
+            {data.target_field} · {data.edits_count} 处修改
+          </span>
+        </div>
+        {data.status !== "pending" && (
+          <span className="text-xs text-zinc-500">{statusLabels[data.status]}</span>
+        )}
+      </div>
+      {data.diff_preview && (
+        <div className="mt-1 p-2 bg-surface-2 rounded text-xs overflow-x-auto max-h-40 overflow-y-auto">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            rehypePlugins={[rehypeRaw]}
+            components={{
+              del: ({ children }) => <del className="bg-red-900/30 text-red-300 line-through">{children}</del>,
+              ins: ({ children }) => <ins className="bg-green-900/30 text-green-300 no-underline">{children}</ins>,
+              p: ({ children }) => <p className="mb-0.5 last:mb-0">{children}</p>,
+            }}
+          >
+            {data.diff_preview}
+          </ReactMarkdown>
+        </div>
+      )}
+      {data.reason && (
+        <p className="text-xs text-zinc-500 mt-1">原因: {data.reason}</p>
       )}
     </div>
   );

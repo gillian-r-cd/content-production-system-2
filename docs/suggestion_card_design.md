@@ -420,25 +420,26 @@ Agent 响应:
 │  <identity> Mode Prompt + propose_edit 修改规则                 │
 │  <action_guide> 用户意图 -> 工具选择决策树                       │
 │  <modification_rules> CRITICAL: propose_edit 为默认修改方式     │
-│  <disambiguation> 消歧规则（含 propose_edit vs modify_field）   │
+│  <disambiguation> 消歧规则（含 propose_edit vs rewrite_field）  │
+│  <active_suggestions> 待确认的修改建议状态（Layer 3 上下文）      │
 │  <project_context> 索引 + 记忆 + 阶段状态                      │
 └───────────┬────────────────────────────────────────────────────┘
             │ 注入
             ▼
 ┌────────────────────────────────────────────────────────────────┐
 │                    Agent LLM (via bind_tools)                  │
-│  在对话中自主判断 → 调用 propose_edit / modify_field / 文本回复   │
+│  在对话中自主判断 → 调用 propose_edit / rewrite_field / 文本回复   │
 │  多字段时：一次响应中发出多个 propose_edit（同一 group_id）        │
 └───┬──────────────────────────┬─────────────────────────────────┘
-    │ propose_edit             │ modify_field (保留)
+    │ propose_edit             │ rewrite_field (重命名)
     ▼                          ▼
 ┌─────────────────────┐  ┌──────────────────────┐
-│  propose_edit @tool  │  │  modify_field @tool   │
-│  (新增)              │  │  (改造)                │
+│  propose_edit @tool  │  │  rewrite_field @tool  │
+│  局部编辑建议        │  │  (原 modify_field)     │
 │                      │  │                       │
-│  1. 读取目标内容块    │  │  保留直接执行能力       │
-│  2. 调用 edit_engine │  │  (用户确认后由         │
-│     .apply_edits()   │  │   confirm API 调用)   │
+│  1. 读取目标内容块    │  │  全文重写（风格调整、   │
+│  2. 调用 edit_engine │  │  大范围改写等场景）     │
+│     .apply_edits()   │  │  直接写 DB，不走确认   │
 │  3. 调用 edit_engine │  │                       │
 │     .generate_       │  │                       │
 │      revision_md()   │  │                       │
@@ -496,11 +497,11 @@ Agent 响应:
 | 现有组件 | 与 Suggestion Card 的关系 | 改动程度 |
 |---------|--------------------------|---------|
 | `edit_engine.py` | **复用**。`apply_edits()` 和 `generate_revision_markdown()` 是 `propose_edit` 的核心依赖 | 无改动 |
-| `modify_field` tool | **保留但降级**。从"Agent 主动调用的修改工具"变为"确认后的执行工具"或"用户明确要求跳过确认时的快速通道" | 小改 |
+| `modify_field` → `rewrite_field` | **重命名+重定位**。从"通用修改"变为"全文重写"。消除与 `propose_edit` 的命名歧义，让 LLM 从工具名就能区分"局部编辑"和"全文重写" | 中改（重命名） |
 | `version_service.py` | **复用 + 微改**。`save_content_version()` 需改为返回 `version_id`（当前返回 None） | 一行改动 |
 | `api/versions.py` | **复用**。Undo 直接调用已有的 `rollback_version` 端点 | 无改动 |
 | `orchestrator.py` system prompt | **重构**。XML 标签分区 + 优先级标记 + 行动指南 + 修改确认模型 + 反模式库（详见第六章） | 大改 |
-| `agent_tools.py` docstrings | **改造**。所有工具统一为标准模板（何时用/何时不用/典型用法），重点改造 modify_field 和新增 propose_edit（详见 6.6 节） | 中改 |
+| `agent_tools.py` docstrings | **改造**。所有工具统一为标准模板（何时用/何时不用/典型用法），重点改造 rewrite_field（原 modify_field）和新增 propose_edit（详见 6.6 节） | 中改 |
 | Mode Prompts (`init_db.py`) | **更新**。5 个预置模式各增加 propose_edit 修改规则和推理策略（详见 6.7 节） | 小改 |
 | `agent.py` SSE stream | **扩展**。`on_tool_end` 中增加 `propose_edit` 的特殊处理，发送 `suggestion_card` SSE 事件 | 小改 |
 | `agent-panel.tsx` | **扩展**。新增 `SuggestionCard`、`SuggestionGroup` 组件，追问交互，Undo Toast | 中改（新增组件） |
@@ -510,61 +511,80 @@ Agent 响应:
 ### 4.2 与 Tool Call 架构的关系
 
 ```
-                  现有架构                          Suggestion Card 如何融入
+                  旧架构                           新架构（重命名后）
                   ──────                          ─────────────────────
 
     LLM                                    LLM
      │                                      │
      ├─ 调用 modify_field → 直接执行        ├─ 调用 propose_edit → 生成预览（不执行）
-     │                                      │    └─ 多字段: 多次调用同 group_id
-     │                                      ├─ 调用 modify_field → 直接执行（保留快速通道）
+     │   （命名歧义：和 propose_edit        │    └─ 多字段: 多次调用同 group_id
+     │    都有"修改"语义）                   ├─ 调用 rewrite_field → 全文重写（直接执行）
      ├─ 调用 generate_field_content → 执行  ├─ 调用 generate_field_content → 执行
      ├─ 调用 query_field → 查询             ├─ 调用 query_field → 查询
      └─ ...                                 └─ ...
 
-    关系：propose_edit 是 AGENT_TOOLS 的新成员，和其他 tool 同级。
-    它不在 modify_field "之上"或"之下"——它是一个独立的工具。
-    LLM 通过 system prompt 中的规则和 docstring 来判断何时调用哪个。
+    核心变化：modify_field 重命名为 rewrite_field。
+    "propose_edit"（局部编辑）和"rewrite_field"（全文重写）——名字本身就传达不同语义。
+    LLM 不再需要复杂规则来区分"编辑"和"重写"。
 ```
 
-**核心架构决策**：`propose_edit` 是一个 **平级的 @tool**，不是 `modify_field` 的包装层。
+**核心架构决策**：`propose_edit` 和 `rewrite_field` 是 **语义正交的平级 @tool**。
 
 理由：
-1. 保持 Tool Calling 架构的扁平性——LLM 直接看到所有工具，通过 docstring 区分。
-2. 不引入层级关系——不需要"先 propose 再 modify"的强制流程，因为有些场景（如用户说"直接改，不用确认"）可以跳过 propose。
-3. 让 LLM 的判断成为唯一的路由机制——这与现有架构的"LLM 驱动路由"理念一致。
+1. 保持 Tool Calling 架构的扁平性——LLM 直接看到所有工具，通过名字和 docstring 区分。
+2. 命名本身消除歧义——"propose_edit"（提出编辑建议）和"rewrite_field"（重写整块内容）天然不同，LLM 无需复杂规则。
+3. 覆盖不同修改粒度——局部编辑（anchor-based）走 `propose_edit`，全文重写（LLM 重新生成）走 `rewrite_field`。
+
+**卡片粒度原则**（每次 `propose_edit` 调用 = 一张卡片 = 用户的一个独立决策单元）：
+- 多条逻辑独立的建议，即使针对同一字段，也必须分多次调用 `propose_edit`，让用户可以分别接受/拒绝。
+- 只有当多条 edits 之间存在逻辑依赖（如改了标题就必须同步改正文引用）时，才合并到一次调用。
+- 这条规则通过 `propose_edit` 的 docstring 和 System Prompt 的 `<action_guide>`/`<modification_rules>` 共同传达给 LLM。
 
 ---
 
-## 五、`modify_field` 的改造
+## 五、`modify_field` → `rewrite_field` 的重命名与重定位
 
-现有的 `modify_field` 不会被移除，但需要调整定位：
+### 5.1 为什么重命名而不是删除
 
-### 5.1 当前问题
+`modify_field` 和 `propose_edit` 的命名歧义是 LLM 工具选择错误的根源。两者都带有"修改"语义，LLM 在面对"帮我改一下"时无法稳定区分。
 
-```python
-# 现状：modify_field 直接全文覆写，无确认
-_save_version(db, entity.id, current_content, "agent")
-entity.content = new_content       # ← 直接写 DB
-db.commit()                         # ← 不可逆
-return _json_ok(field_name, "applied", f"已修改「{field_name}」")
-```
+重命名为 `rewrite_field` 从根本上消除歧义：
+- `propose_edit` = 局部编辑建议（anchor-based，需确认）
+- `rewrite_field` = 全文重写（LLM 重新生成整篇内容，直接执行）
 
-### 5.2 改造后的角色分工
+这不是 prompt 层的"请用 A 不要用 B"，而是让两个工具的**名字本身**就传达截然不同的语义。LLM 不需要复杂规则就能区分"编辑"和"重写"。
+
+### 5.2 重命名后的角色分工
 
 | 场景 | 使用的工具 | 理由 |
 |------|-----------|------|
-| Agent 自主判断需要修改 | `propose_edit` | 展示意图，等待确认 |
-| 用户说"直接帮我改" | `modify_field` | 用户明确授权，跳过确认 |
+| Agent 自主判断需要局部修改 | `propose_edit` | 展示 diff 预览，等待确认 |
+| 用户说"帮我改一下 XX" | `propose_edit` | 默认修改路径，始终走确认 |
 | 用户确认 Suggestion Card | Confirm API → `edit_engine.apply_edits()` | 按确认的编辑操作执行 |
-| 大范围重写（整块内容） | `modify_field` 或 `generate_field_content` | anchor-based edits 不适用于全文重写 |
+| 全文重写 / 风格调整 / 大范围改写 | `rewrite_field` | anchor-based edits 不适用于全文重写 |
+| 用户说"重写""从头写""整体调整语气" | `rewrite_field` | 全文重新生成 |
+| 内容块为空，首次生成 | `generate_field_content` | 不是修改，是生成 |
 
-### 5.3 `modify_field` 的具体改动
+### 5.3 `rewrite_field` 的具体改动
 
-1. **System Prompt 更新**：按照第六章 System Prompt 工程方案，使用 XML 标签重构 system prompt，在 `<modification_rules>` 中引导 Agent 优先使用 `propose_edit`，只在用户明确要求"直接改"时使用 `modify_field`。
-2. **工具 Docstring 更新**：按照 6.6 节标准模板，增加 CRITICAL 标记和 vs `propose_edit` 消歧（详见 6.6 节 modify_field docstring 草案）。
-3. **工具本身不变**：`modify_field` 的实现逻辑保持现状（LLM 生成全文 → 覆写 DB）。它作为"快速通道"保留。
-4. **删除 orchestrator.py 中关于 `need_confirm` 的虚假描述**：当前 system prompt 第 249-253 行描述了从未实现的 `need_confirm` 流程，应删除并替换为 `<modification_rules>` 区块。
+1. **函数重命名**：`modify_field` → `rewrite_field`（`agent_tools.py`）
+2. **Docstring 重写**：明确为"全文重写"语义，不再与局部修改混淆
+3. **System Prompt 更新**：`<action_guide>` 和 `<modification_rules>` 中用 `rewrite_field` 替代 `modify_field`，强调两者的语义差异
+4. **前端更新**：`TOOL_NAMES`、`TOOL_DESCS`、`route_map` 等全部更新
+5. **Mode Prompts 更新**：5 个预置模式中的 `modify_field` 引用全部替换
+6. **工具本身不变**：实现逻辑保持现状（LLM 生成全文 → 保存版本 → 覆写 DB）
+
+### 5.4 涉及文件清单
+
+| 文件 | 改动 |
+|------|------|
+| `backend/core/agent_tools.py` | 函数名 + docstring + AGENT_TOOLS + PRODUCE_TOOLS |
+| `backend/core/orchestrator.py` | system prompt 全部引用 |
+| `backend/api/agent.py` | route_map + SSE 特殊处理分支 |
+| `backend/api/settings.py` | 默认工具列表 |
+| `backend/scripts/init_db.py` | 5 个 mode prompt |
+| `frontend/components/agent-panel.tsx` | TOOL_NAMES + TOOL_DESCS + fallback + TOOL_INSTRUCTIONS |
+| `cursorrule.md` | Agent 工具清单 |
 
 ---
 
@@ -613,8 +633,12 @@ CRITICAL: 修改操作的确认模型
 
 <disambiguation>
 关键消歧规则
-（保留现有的 4 条消歧，增加 propose_edit vs modify_field）
+（保留现有的 4 条消歧，增加 propose_edit vs rewrite_field）
 </disambiguation>
+
+<active_suggestions>
+当前待确认的修改建议状态（动态段落，从 PENDING_SUGGESTIONS 构建）
+</active_suggestions>
 
 <project_context>
 当前组、组状态、创作者信息
@@ -645,7 +669,7 @@ CRITICAL: 修改操作的确认模型
 **具体规则分配**：
 
 CRITICAL（3 条，少而精——标记太多会稀释优先级）：
-1. 修改内容块时，DEFAULT 使用 propose_edit 展示修改预览。仅当用户明确说"直接改""不用确认"时才使用 modify_field。
+1. 修改已有内容块时，ALWAYS 使用 propose_edit 展示修改预览。`rewrite_field` 仅用于全文重写/风格调整等 anchor-based 不适用的场景。
 2. propose_edit 中的 anchor 必须是原文中精确存在的文本片段。不确定时先用 read_field 查看原文。
 3. 不要猜测内容块名称。不确定时查看项目内容块索引。
 
@@ -655,14 +679,15 @@ ALWAYS（4 条）：
 3. 用完整的中文句子回复，使用正常标点。可用 Markdown 格式。
 4. 工具执行完成后，用简洁的中文告知结果。
 
-NEVER（4 条）：
-1. 不要在用户没有要求修改时自主调用 modify_field 或 propose_edit。
+NEVER（5 条）：
+1. 不要在用户没有要求修改时自主调用 rewrite_field 或 propose_edit。
 2. 不要在只有模糊方向（如"可能需要改进"）时输出 propose_edit——先文本讨论，明确后再 propose。
 3. 不要在意图分析流程中把用户对问题的回答当成操作指令。
 4. 不要在回复中复述记忆内容。
+5. 不要在文本回复中输出完整的内容草稿、改写版本或 diff 格式。有具体内容版本时必须通过 propose_edit 呈现。
 
 DEFAULT（2 条）：
-1. 修改操作走 propose_edit 确认流程（可被"直接改"覆盖）。
+1. 修改操作走 propose_edit 确认流程。全文重写走 rewrite_field。
 2. 不确定内容块是否为空时，先 read_field 确认。
 
 ### 6.4 行动指南（替代"你的能力"）
@@ -678,11 +703,12 @@ DEFAULT（2 条）：
 根据用户的意图选择正确的行动。
 
 ### 用户想修改内容
-CRITICAL: 修改已有内容时，DEFAULT 使用 propose_edit 展示修改预览。
+CRITICAL: 修改已有内容时，ALWAYS 使用 propose_edit 展示修改预览。
 - 用户说"帮我改一下 XX" -> propose_edit（展示修改建议，等用户确认）
-- 用户说"直接改""不用确认""直接帮我修改" -> modify_field（跳过确认）
+- 用户说"把XX改成YY" -> propose_edit（有具体修改意图）
+- 用户说"suggestion card""修改建议""给我看看修改方案" -> propose_edit
 - 内容块为空 -> generate_field_content（不是修改，是首次生成）
-- 用户说"重写""从头写" -> generate_field_content 或 modify_field（全文替换）
+- 用户说"重写""从头写""整体调整语气" -> rewrite_field（全文重写）
 - 用户提供了完整的替换内容 -> update_field
 
 ### 用户想了解内容
@@ -730,7 +756,7 @@ CRITICAL: 修改已有内容时，DEFAULT 使用 propose_edit 展示修改预览
 | 首次生成（空内容块） | 低风险 | 立即执行 | -- |
 | 结构变更（增删块/组） | 中风险 | 立即执行（用户已显式请求） | -- |
 | 推进阶段 | 低风险 | 立即执行 | -- |
-| **修改已有内容** | **高风险** | **propose_edit（展示 diff 预览）** | 用户说"直接改" -> modify_field |
+| **修改已有内容** | **高风险** | **propose_edit（展示 diff 预览）** | 全文重写 -> rewrite_field |
 | 覆写已有内容 | 高风险 | propose_edit 或询问 | 用户提供完整文本 -> update_field |
 
 **核心原则**：修改已有内容的决策权属于用户。Agent 的角色是提供高质量的修改建议，不是替用户做决策。
@@ -781,7 +807,7 @@ Args:
 | 工具 | 现状评级 | 改造要点 |
 |------|---------|---------|
 | `propose_edit` | 新增 | 完整模板，含 edits 格式示例、anchor 精确性要求、错误用法 |
-| `modify_field` | 中等 | 增加 CRITICAL 标记和 vs propose_edit 消歧 |
+| `rewrite_field`(原 modify_field) | 中改 | 重命名 + docstring 重写，明确为"全文重写"语义 |
 | `generate_field_content` | 中等 | 增加"何时不使用"（已有内容时不用） |
 | `update_field` | 中等 | 增加典型用法示例 |
 | `query_field` | 中等 | 已有消歧，补充"何时不使用" |
@@ -808,8 +834,8 @@ Args:
 何时不使用:
 - 还在讨论方向，不确定该怎么改 -> 文本对话
 - 有多种修改方向需要用户选择 -> 文本对话，列出选项
-- 修改范围太大（整篇重写） -> generate_field_content
-- 用户说"直接改，不用确认" -> modify_field
+- 修改范围太大（整篇重写/风格调整） -> rewrite_field
+- 内容块为空需首次生成 -> generate_field_content
 
 错误用法:
 - 用户说"你觉得场景库怎么样？" -> 不要 propose_edit，这是讨论不是修改请求
@@ -838,33 +864,31 @@ Args:
 """
 ```
 
-**重点改造 2：`modify_field` docstring 草案**：
+**重点改造 2：`rewrite_field` docstring 草案**（原 `modify_field`）：
 
 ```python
-"""修改指定内容块的已有内容。直接执行修改，不走确认流程。
+"""重写整个内容块。用 LLM 重新生成全文内容，直接写入数据库。
 
-CRITICAL: 大多数修改场景应优先使用 propose_edit（展示修改预览供用户确认）。
-仅在以下情况使用 modify_field:
-- 用户明确说"直接改""不用确认""帮我直接修改"
-- 大范围重写（anchor-based edits 不适用）
+适用于 anchor-based 局部编辑无法覆盖的场景：全文重写、风格/语气调整、大范围改写。
 
 何时使用:
-- 用户说"直接帮我改 XX，不用确认"
-- 用户要求大范围重写某个内容块
+- 用户说"重写""从头写""整体调整语气""改成更口语化的风格"
+- 修改范围覆盖整篇内容（不适合用 anchor 逐一定位）
+- 用户要求大范围改变写作风格或结构
 
 何时不使用:
-- Agent 自主判断需要修改 -> propose_edit
-- 用户只说"帮我改一下" -> propose_edit（默认走确认）
-- 创建新内容块 -> manage_architecture
+- 局部修改（改一段、改一句） -> propose_edit
+- 用户说"帮我改一下" -> propose_edit（默认走确认）
 - 内容块为空需首次生成 -> generate_field_content
+- 创建新内容块 -> manage_architecture
 
 典型用法:
-- "@场景库 直接帮我把5个改成7个" -> modify_field("场景库", "把5个模块改成7个")
-- "参考 @用户画像 直接修改 @场景库" -> modify_field("场景库", "修改", ["用户画像"])
+- "把 @场景库 整个重写，风格更活泼一些" -> rewrite_field("场景库", "重写，风格更活泼")
+- "参考 @用户画像 重写 @传播策略" -> rewrite_field("传播策略", "重写", ["用户画像"])
 
 Args:
-    field_name: 要修改的目标内容块名称
-    instruction: 用户的具体修改指令
+    field_name: 要重写的目标内容块名称
+    instruction: 用户的具体重写指令
     reference_fields: 需要参考的其他内容块名称列表
 """
 ```
@@ -878,8 +902,8 @@ Args:
 在行为原则末尾增加：
 ```
 修改规则：
-- 用户要求修改内容时，DEFAULT 使用 propose_edit 展示修改方案。
-- 用户说"直接改"时才用 modify_field。
+- 用户要求修改内容时，ALWAYS 使用 propose_edit 展示修改方案。
+- 用户要求"重写""整体调整"时用 rewrite_field。
 - 完成修改提案后，简要告知用户可以确认、拒绝或追问。
 ```
 
@@ -982,15 +1006,15 @@ ALWAYS: 以下为摘要索引。需要完整内容时用 read_field 读取。
    正确: 回复"你希望往哪个方向加强？比如增加数据支撑、讲一个故事、还是提出一个引发好奇的问题？"
    原因: "有点弱"是评价，不是修改指令。用户还没决定"往哪个方向改"。
 
-2. 跳过确认直接修改:
+2. 把局部修改当成重写:
    用户: "帮我改一下场景库"
-   错误: 调用 modify_field 直接生成新内容覆写
+   错误: 调用 rewrite_field 重写整篇内容
    正确: 调用 propose_edit 展示具体的修改建议和 diff 预览
-   原因: "帮我改一下"没有说"直接改不用确认"。DEFAULT 走 propose_edit。
+   原因: "帮我改一下"是局部修改，不是全文重写。
 
 3. 猜测内容块名称:
    用户: "修改那个关于场景的内容"
-   错误: modify_field("场景分析", ...)（猜测了名称，实际可能叫"场景库"）
+   错误: propose_edit(target_field="场景分析", ...)（猜测了名称，实际可能叫"场景库"）
    正确: 查看索引确认，或回复"你指的是'场景库'还是'场景分析'？"
    原因: 用错名称会导致找不到内容块。
 
@@ -1202,12 +1226,105 @@ Agent 自然地响应：可能输出文本 + 新的 `propose_edit` 调用。新 
 
 ---
 
+## 八-B、Suggestion 生命周期上下文（Layer 3）
+
+### 问题
+
+Agent 能通过 `propose_edit` 输出修改建议，但**不知道用户对建议做了什么**。当用户接受、拒绝或撤回一个建议后，Agent 的对话历史中只有原始的 ToolMessage，没有后续的操作结果。这导致：
+
+1. Agent 不知道用户拒绝了哪个建议（可能重复提出同样的修改）
+2. Agent 不知道用户撤回了哪个修改（可能基于已回滚的内容继续讨论）
+3. Agent 无法迭代（"把刚才那个建议里的某个词换掉"需要 Agent 知道"刚才的建议"是什么）
+
+### 设计原则
+
+不引入新的架构机制——完全复用现有的两条上下文管道：
+
+| 数据类型 | 映射到 | 管道 |
+|---------|--------|------|
+| 瞬时事件（用户接受/拒绝/撤回） | `followup_context` | 前端累积 → 后端注入 SystemMessage |
+| 当前状态（待确认的建议列表） | `build_system_prompt` 动态段落 | 每轮重建，从 `PENDING_SUGGESTIONS` 读取 |
+
+### 实现方案
+
+#### A. 事件队列（前端 → 后端）
+
+前端新增 `pendingEventsRef`（替代原来只用于追问的 `followUpContextRef`）：
+
+```typescript
+const pendingEventsRef = useRef<string[]>([]);
+
+// handleSuggestionStatusChange 中
+if (status === "accepted") {
+  pendingEventsRef.current.push(
+    `[已应用] 用户接受了对「${card.target_field}」的修改（${card.summary}）。修改已写入内容块。`
+  );
+}
+if (status === "rejected") {
+  pendingEventsRef.current.push(
+    `[已拒绝] 用户拒绝了对「${card.target_field}」的修改（${card.summary}）。`
+  );
+}
+
+// handleUndoComplete 中
+pendingEventsRef.current.push(
+  `[已撤回] 用户撤回了对「${card.target_field}」的修改，内容已回滚到修改前版本。`
+);
+
+// handleSuggestionFollowUp 中
+pendingEventsRef.current.push(
+  `[追问] 用户正在对「${card.target_field}」的修改建议（${card.summary}）进行追问。`
+);
+
+// handleSend 中，序列化事件队列为 followup_context
+const events = pendingEventsRef.current;
+const followup = events.length > 0 ? events.join("\n") : undefined;
+pendingEventsRef.current = [];
+body.followup_context = followup;
+```
+
+后端无需改动——`followup_context` 已经作为 SystemMessage 注入在 HumanMessage 之前。
+
+#### B. 活跃建议状态（system prompt 动态段落）
+
+在 `build_system_prompt` 中新增 `<active_suggestions>` 段落，与 `<field_index>` 同级：
+
+```python
+from core.agent_tools import PENDING_SUGGESTIONS
+
+pending = [
+    f"- 「{c['target_field']}」: {c['summary']} (待确认)"
+    for sid, c in PENDING_SUGGESTIONS.items()
+    if c.get("status") == "pending"
+]
+suggestion_state_section = ""
+if pending:
+    suggestion_state_section = f"""<active_suggestions>
+当前有 {len(pending)} 条待确认的修改建议：
+{chr(10).join(pending)}
+提示：用户可能会对这些建议追问、要求调整或确认。如果用户说"可以""用这个"，可能指的是最近的待确认建议。
+</active_suggestions>"""
+```
+
+### 与现有上下文工程的对照
+
+| 已有模式 | 实现方式 | Suggestion 等价物 |
+|---------|---------|------------------|
+| `field_index_section` | system prompt 动态段落 | `<active_suggestions>` 段落 |
+| `followup_context` | 前端推、后端注入 SystemMessage | 事件队列（accept/reject/undo）|
+| `memory_context` | 持久化跨会话知识 | M2+ 可存"用户偏好：不喜欢太正式的措辞" |
+| ToolMessage in history | checkpoint 自动管理 | 已有——propose_edit 的结果自动在历史中 |
+
+**零架构变更，纯粹是给已有管道接新数据源。**
+
+---
+
 ## 九、Milestone 与优先级
 
 ### 修改原则
 
 1. **增量式改造**：每个 Milestone 都是独立可用的，不需要后续 Milestone 才能工作。
-2. **不破坏现有功能**：`modify_field` 保留，新增 `propose_edit`，两者共存。
+2. **不破坏现有功能**：`modify_field` 重命名为 `rewrite_field`（消除命名歧义），新增 `propose_edit`，两者语义正交共存。
 3. **从后端到前端**：先确保数据正确流通，再打磨 UI。
 4. **用户感知优先**：先做用户能直接感受到的改进（Suggestion Card UI），再做系统优化。
 
@@ -1385,9 +1502,12 @@ Agent: [文字] "好的，我看了场景库的内容，建议如下修改："
   - edits 格式示例和 anchor 精确性要求
   - 多字段修改的 group_id 用法
 
-- [x] **T1.15** 改造 `modify_field` 的 docstring（参照 6.6 节草案）
-  - 增加 CRITICAL 标记：大多数场景应优先使用 propose_edit
-  - 增加"何时不使用"段和 vs propose_edit 消歧
+- [x] **T1.15** 重命名 `modify_field` → `rewrite_field` 并重写 docstring（参照 6.6 节草案）
+  - 函数名、AGENT_TOOLS、PRODUCE_TOOLS、route_map、SSE 处理、前端映射全部更新
+  - docstring 明确为"全文重写"语义，与 propose_edit 语义正交
+  - cursorrule.md 工具清单同步更新
+  - init_db.py 中 5 个 Mode Prompt 的修改规则同步更新
+  - orchestrator.py 中 system prompt 全面更新为 rewrite_field
 
 - [x] **T1.16** 统一其他工具的 docstring 为标准模板（参照 6.6 节）
   - 优先改造弱项：manage_persona、read_field、advance_to_phase、manage_skill
@@ -1400,38 +1520,70 @@ Agent: [文字] "好的，我看了场景库的内容，建议如下修改："
   - reader: 增加读者视角的 propose_edit 使用引导
   - creative: 增加发散-收敛的 propose_edit 使用模式
 
-- [ ] **T1.18** 测试 Agent 在不同场景下的行为
-  - "帮我改一下场景库" → 应 propose_edit
-  - "你觉得场景库怎么样？" → 应文本回复
-  - "直接改，不用确认" → 应 modify_field
-  - "我觉得开头有点弱" → 应文本讨论（不是立即 propose_edit）
-  - Critic 模式下的评价 → 有具体改进建议时应 propose_edit
-  - 追问后 → 应生成新的 propose_edit 替代旧 Card
+- [x] **T1.18** 实现 Suggestion 生命周期上下文（Layer 3）
+  - 前端: `followUpContextRef` → `pendingEventsRef` 事件队列（accept/reject/undo/followup 事件）
+  - 前端: `handleSend` 中序列化事件队列为 `followup_context`，发送后清空
+  - 后端: `build_system_prompt` 新增 `<active_suggestions>` 动态段落
+  - 后端: 从 `PENDING_SUGGESTIONS` 读取当前项目的待确认建议列表
+  - 已验证: 有待确认卡片时注入，空缓存时不注入
 
-### M2: SuggestionGroup + 部分接受
+- [x] **T1.19** 测试 Agent 在不同场景下的行为
+  - ✅ "帮我改一下场景库" → propose_edit（已实测）
+  - ✅ "重写 @新内容块，写成可爱风，仅保留一段" → rewrite_field（已实测，截图确认）
+  - ✅ "第一句话不够可爱，改一下" → propose_edit 触发（已实测）
+  - ✅ 接受/拒绝后 → Layer 3 事件注入正常（代码验证 + 实测）
+  - ✅ Undo Toast → 修复了 setState-during-render 错误（setTimeout 异步化）
+  - ✅ Connection Error → max_retries=3 自动重试（减少瞬时故障）
+  - ✅ 工具 Schema 完整：propose_edit（EditOperation 数组）、rewrite_field 正确
+  - ✅ System Prompt 7 段 XML 结构完整，所有规则就位
+  - ⚠️ 持续观察：Critic 模式、多轮追问、"我觉得开头有点弱"等边界场景需更多实测
 
-- [ ] **T2.1** 后端 `propose_edit` 支持 `group_id` 和 `group_summary` 参数
-  - group_id 非空时，将 Card 缓存在 Group 结构中
-  - 返回 JSON 中包含 group_id 信息
+### M2: 多字段修改 + 独立确认
 
-- [ ] **T2.2** 前端新增 SuggestionGroup 组件
-  - 检测多个 suggestion_card 事件是否共享 group_id
-  - 共享时聚合为 SuggestionGroup 渲染
-  - 显示 group_summary + 逐 Card diff + 逐 Card 勾选
+> **设计变更（2026-02-15）**：原 SuggestionGroup 聚合 UI 经用户实测反馈"太不好读，做不到每个修改单独确认"，
+> 已改为**所有 Card 独立渲染**（每个有自己的 应用/拒绝/追问 按钮），取消 UI 层的聚合分组。
+> `group_id` 仍作为后端元数据保留（Confirm API 支持按 group 批量操作），但前端不再使用 SuggestionGroup 组件。
 
-- [ ] **T2.3** Confirm API 支持 `partial` action + `accepted_card_ids`
+- [x] **T2.1** 后端 `propose_edit` 支持 `group_id` 和 `group_summary` 参数
+  - group_id 非空时，已缓存在 Card 字典中
+  - 返回 JSON 和 SSE 事件中均包含 group_id/group_summary 信息
+  - 已在 M1 中随 propose_edit 一起实现
+
+- [x] ~~**T2.2** 前端新增 SuggestionGroup 组件~~ → 已废弃
+  - ~~`suggestion-card.tsx` 新增 `SuggestionGroup` 和 `GroupItemCard` 组件~~
+  - **当前方案**：所有 Card 独立渲染为 SuggestionCard，不按 group_id 聚合
+  - `SuggestionGroup` 和 `GroupItemCard` 组件代码保留但不再使用
+  - `agent-panel.tsx` 中移除了分组逻辑和 `SuggestionGroup` import
+
+- [x] **T2.3** Confirm API 支持 `partial` action + `accepted_card_ids`
+  - `ConfirmSuggestionRequest` 新增 `accepted_card_ids` 字段
+  - `suggestion_id` 支持 card_id 或 group_id 两种模式
+  - `accept`: 应用所有相关 card
+  - `partial`: 仅应用 `accepted_card_ids` 中指定的 card
+  - `reject`: 拒绝所有相关 card
   - 返回 `applied_cards` 列表（仅已应用的）
 
-- [ ] **T2.4** SuggestionGroup 的 Undo Toast
-  - "已应用 N 项修改 [↩ 全部撤回]"
-  - 全部撤回时并行调用回滚 API
+- [x] **T2.4** UndoToast 支持多目标回滚
+  - `UndoToast` 新增 `rollbackTargets?: RollbackTarget[]` 属性
+  - `Promise.allSettled` 并行回滚所有目标
+  - 部分失败也执行 onUndo（用户可通过版本历史面板补救）
 
-- [ ] **T2.5** system prompt 更新：引导 Agent 在多字段修改时使用 group_id
-  - 在 propose_edit 使用规则中补充"多字段修改"段落
+- [x] **T2.5** system prompt 更新：引导 Agent 在多字段修改时对每个字段分别 propose_edit
+  - `<action_guide>` 新增"多字段关联修改"段落
+  - 每个字段独立 propose_edit，用户逐个确认
+  - 不再要求使用 group_id（简化 Agent 决策）
 
-- [ ] **T2.6** SuggestionGroup 的追问
-  - 追问上下文包含整个 Group 的 cards 信息
-  - Agent 可局部重新 propose（仅替代被质疑的字段）
+- [x] **T2.6** 追问和撤回支持
+  - `handleSuggestionFollowUp` 注入 card 上下文信息
+  - `handleUndoComplete` 支持撤回
+  - 追问预填："关于这组修改建议，"
+
+- [x] **T2.7** run_evaluation 限制（新增）
+  - `run_evaluation` docstring 更新：CRITICAL 限制，必须用户提供 field_names
+  - 运行时安全检查：field_names 为空时直接返回提示
+  - system prompt `<action_guide>` 明确区分"审查/检查质量"和"Eval V2 模拟流水线"
+  - critic 模式 prompt 添加"NEVER 调用 run_evaluation"限制
+  - 已更新数据库中 critic 模式的 system_prompt
 
 ### M3: Eval Report 桥接
 
@@ -1454,7 +1606,7 @@ Agent: [文字] "好的，我看了场景库的内容，建议如下修改："
 |------|------|---------|
 | LLM 输出的 anchor 定位不准 | edit 失败（anchor_not_found） | `propose_edit` 返回失败时，fallback 为全文 diff（`generate_revision_markdown` 只需 old/new） |
 | Agent 过度使用 propose_edit（每句话都出 Card） | 用户体验差 | `<action_guide>` 反模式 #1（把讨论当修改请求）+ NEVER 规则 + 测试 |
-| Agent 从不使用 propose_edit（总是 modify_field） | Suggestion Card 形同虚设 | `<modification_rules>` CRITICAL 规则 + modify_field docstring 中的 CRITICAL 警告 + mode prompt 引导 |
+| Agent 混淆 propose_edit 和 rewrite_field | 局部修改时错用全文重写 | 两个工具名字本身语义正交（"编辑" vs "重写"），docstring 互不交叉。重命名从根本上消除歧义 |
 | Agent 把讨论当成修改请求 | 用户觉得 Agent 过于激进 | `<action_guide>` 反模式库 #1 + propose_edit docstring "错误用法"段 |
 | 内存缓存丢失（服务重启） | 未确认的 Suggestion 消失 | M1 可接受（丢失后用户重新触发）；M5 迁移到 DB |
 | Diff 渲染在长文本下性能差 | 前端卡顿 | 限制 diff_preview 长度，超长时只展示摘要 + "查看完整对比" |

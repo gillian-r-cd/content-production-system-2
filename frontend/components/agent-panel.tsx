@@ -16,7 +16,7 @@ import { settingsAPI } from "@/lib/api";
 import { Square } from "lucide-react";
 import { MemoryPanel } from "./memory-panel";
 import { SuggestionCard, UndoToast } from "./suggestion-card";
-import type { SuggestionCardData, SuggestionStatus } from "./suggestion-card";
+import type { SuggestionCardData, SuggestionStatus, RollbackTarget } from "./suggestion-card";
 
 // 统一的可引用项（兼容 Field 和 ContentBlock）
 interface MentionItem {
@@ -37,7 +37,7 @@ interface AgentPanelProps {
 // 工具名称映射（匹配后端 AGENT_TOOLS 的 tool.name）
 const TOOL_NAMES: Record<string, string> = {
   propose_edit: "修改建议",
-  modify_field: "修改内容块",
+  rewrite_field: "重写内容块",
   generate_field_content: "生成内容块",
   query_field: "查询内容块",
   read_field: "读取内容块",
@@ -57,7 +57,7 @@ const TOOL_NAMES: Record<string, string> = {
 
 const TOOL_DESCS: Record<string, string> = {
   propose_edit: "向用户展示修改建议和diff预览",
-  modify_field: "修改指定内容块的已有内容",
+  rewrite_field: "重写整个内容块（全文重写/风格调整）",
   generate_field_content: "为指定内容块生成新内容",
   query_field: "查询内容块状态信息",
   read_field: "读取内容块完整原始内容",
@@ -99,9 +99,11 @@ export function AgentPanel({
     versionId: string;
     targetField: string;
     suggestionId: string;
+    /** Group 全部撤回用: 多个 rollback 目标 */
+    rollbackTargets?: RollbackTarget[];
   } | null>(null);
-  // 追问上下文: 当用户点击追问按钮时存储，下次发送消息时注入
-  const followUpContextRef = useRef<{ cardId: string; targetField: string; summary: string } | null>(null);
+  // Suggestion 生命周期事件队列: accept/reject/undo/followup 事件在此积累，下次发送消息时序列化注入
+  const pendingEventsRef = useRef<string[]>([]);
 
   // 加载可用 Agent 模式
   useEffect(() => {
@@ -222,7 +224,7 @@ export function AgentPanel({
         console.error("加载工具列表失败:", err);
         setAvailableTools([
           { id: "propose_edit", name: "修改建议", desc: "向用户展示修改建议和diff预览" },
-          { id: "modify_field", name: "修改内容块", desc: "修改指定内容块的已有内容" },
+          { id: "rewrite_field", name: "重写内容块", desc: "重写整个内容块（全文重写/风格调整）" },
           { id: "generate_field_content", name: "生成内容块", desc: "为指定内容块生成新内容" },
           { id: "query_field", name: "查询内容块", desc: "查询内容块状态信息" },
           { id: "read_field", name: "读取内容块", desc: "读取内容块完整原始内容" },
@@ -399,11 +401,10 @@ export function AgentPanel({
         mode: chatMode,
       };
 
-      // 追问上下文注入（T1.11）
-      if (followUpContextRef.current) {
-        const ctx = followUpContextRef.current;
-        requestBody.followup_context = `[用户正在对 Suggestion #${ctx.cardId.slice(0, 8)} 进行追问，目标字段: ${ctx.targetField}，原建议: ${ctx.summary}]`;
-        followUpContextRef.current = null; // 用完即清
+      // Suggestion 生命周期上下文注入（Layer 3）
+      if (pendingEventsRef.current.length > 0) {
+        requestBody.followup_context = pendingEventsRef.current.join("\n");
+        pendingEventsRef.current = []; // 发送后清空
       }
 
       // 使用流式 API（传递 current_phase 确保后端使用正确的阶段）
@@ -430,7 +431,7 @@ export function AgentPanel({
       // 后端使用的阶段名称（兼容旧 route 事件）
       const PRODUCE_ROUTES = ["intent", "research", "design_inner", "produce_inner", 
                                "design_outer", "produce_outer", "evaluate",
-                               "generate_field", "modify"];
+                               "generate_field", "rewrite"];
 
       while (true) {
         const { done, value } = await reader.read();
@@ -460,7 +461,7 @@ export function AgentPanel({
                   "produce_outer": "🖼️ 正在生产外延内容...",
                   "evaluate": "📋 正在执行评估...",
                   "generate_field": "⚙️ 正在生成内容块...",
-                  "modify": "✏️ 正在修改内容...",
+                  "rewrite": "✏️ 正在重写内容...",
                   "suggest": "✏️ 正在生成修改建议...",
                   "generic_research": "🔍 正在进行深度调研...",
                   "advance_phase": "⏭️ 正在推进组...",
@@ -512,8 +513,8 @@ export function AgentPanel({
                   )
                 );
               } else if (data.type === "suggestion_card") {
-                // Suggestion Card（propose_edit 工具输出）
-                console.log("[AgentPanel] Suggestion card:", data.id, data.target_field);
+                // Suggestion Card（propose_edit 工具输出）— 关联到当前 AI 消息
+                console.log("[AgentPanel] Suggestion card:", data.id, data.target_field, "→ msg:", tempAiMsg.id);
                 const newCard: SuggestionCardData = {
                   id: data.id,
                   target_field: data.target_field,
@@ -524,13 +525,14 @@ export function AgentPanel({
                   group_id: data.group_id,
                   group_summary: data.group_summary,
                   status: "pending",
+                  messageId: tempAiMsg.id,  // 关联到产生此卡片的 AI 消息
                 };
                 setSuggestions((prev) => [...prev, newCard]);
-                // 更新 AI 气泡显示简要提示
+                // 更新 AI 气泡显示简要提示（卡片会 inline 渲染在此消息下方）
                 setMessages((prev) =>
                   prev.map((m) =>
                     m.id === tempAiMsg.id
-                      ? { ...m, content: `✏️ 修改建议已生成：**${data.summary}**\n\n请查看下方的修改预览卡片。` }
+                      ? { ...m, content: `✏️ 修改建议已生成：**${data.summary}**` }
                       : m
                   )
                 );
@@ -582,6 +584,12 @@ export function AgentPanel({
                     return { ...m, id: data.message_id, content: finalContent };
                   })
                 );
+                // 同步更新关联的 SuggestionCard 的 messageId（temp → 真实 ID）
+                if (data.message_id && data.message_id !== tempAiMsg.id) {
+                  setSuggestions((prev) =>
+                    prev.map((s) => s.messageId === tempAiMsg.id ? { ...s, messageId: data.message_id } : s)
+                  );
+                }
                 sendNotification(
                   isProducing ? "内容生成完成" : "Agent 回复完成",
                   isProducing ? "内容已生成完毕，点击查看" : "Agent 已完成回复，点击查看"
@@ -730,7 +738,7 @@ export function AgentPanel({
 
       const PRODUCE_ROUTES = ["intent", "research", "design_inner", "produce_inner", 
                                "design_outer", "produce_outer", "evaluate",
-                               "generate_field", "modify"];
+                               "generate_field", "rewrite"];
 
       while (true) {
         const { done, value } = await reader.read();
@@ -757,7 +765,7 @@ export function AgentPanel({
                   "intent": "🔍 正在分析意图...",
                   "research": "📊 正在进行消费者调研...",
                   "generate_field": "⚙️ 正在生成内容块...",
-                  "modify": "✏️ 正在修改内容...",
+                  "rewrite": "✏️ 正在重写内容...",
                   "suggest": "✏️ 正在生成修改建议...",
                   "evaluate": "📋 正在执行评估...",
                   "advance_phase": "⏭️ 正在推进组...",
@@ -790,7 +798,7 @@ export function AgentPanel({
                   prev.map(m => m.id === tempAiMsg.id ? { ...m, content: `✅ ${tn} 完成。${sm ? "\n" + sm : ""}` } : m)
                 );
               } else if (data.type === "suggestion_card") {
-                console.log("[AgentPanel] Suggestion card (tool):", data.id, data.target_field);
+                console.log("[AgentPanel] Suggestion card (edit):", data.id, data.target_field, "→ msg:", tempAiMsg.id);
                 const newCard: SuggestionCardData = {
                   id: data.id,
                   target_field: data.target_field,
@@ -801,11 +809,12 @@ export function AgentPanel({
                   group_id: data.group_id,
                   group_summary: data.group_summary,
                   status: "pending",
+                  messageId: tempAiMsg.id,  // 关联到产生此卡片的 AI 消息
                 };
                 setSuggestions((prev) => [...prev, newCard]);
                 setMessages(prev =>
                   prev.map(m => m.id === tempAiMsg.id
-                    ? { ...m, content: `✏️ 修改建议已生成：**${data.summary}**\n\n请查看下方的修改预览卡片。` }
+                    ? { ...m, content: `✏️ 修改建议已生成：**${data.summary}**` }
                     : m)
                 );
               } else if (data.type === "modify_confirm_needed") {
@@ -834,6 +843,12 @@ export function AgentPanel({
                     return { ...m, id: data.message_id, content: fc };
                   })
                 );
+                // 同步更新关联的 SuggestionCard 的 messageId（temp → 真实 ID）
+                if (data.message_id && data.message_id !== tempAiMsg.id) {
+                  setSuggestions((prev) =>
+                    prev.map((s) => s.messageId === tempAiMsg.id ? { ...s, messageId: data.message_id } : s)
+                  );
+                }
               }
             } catch (e) {}
           }
@@ -872,9 +887,16 @@ export function AgentPanel({
     setSuggestions((prev) =>
       prev.map((s) => s.id === suggestionId ? { ...s, status, entity_id: undoInfo?.entity_id, version_id: undoInfo?.version_id } : s)
     );
+    // 推入生命周期事件（Layer 3）
+    const card = suggestions.find((s) => s.id === suggestionId);
+    const fieldName = card?.target_field || "unknown";
+    if (status === "accepted") {
+      pendingEventsRef.current.push(`[用户已接受对「${fieldName}」的修改建议 #${suggestionId.slice(0, 8)}，内容已更新]`);
+    } else if (status === "rejected") {
+      pendingEventsRef.current.push(`[用户已拒绝对「${fieldName}」的修改建议 #${suggestionId.slice(0, 8)}，内容未变更]`);
+    }
     // 接受时显示 Undo Toast（仅当 version_id 有效时才可撤回）
     if (status === "accepted" && undoInfo && undoInfo.version_id) {
-      const card = suggestions.find((s) => s.id === suggestionId);
       setUndoToast({
         entityId: undoInfo.entity_id,
         versionId: undoInfo.version_id,
@@ -885,24 +907,51 @@ export function AgentPanel({
   }, [suggestions]);
 
   const handleSuggestionFollowUp = useCallback((card: SuggestionCardData) => {
-    // 存储追问上下文，下次发送时注入
-    followUpContextRef.current = {
-      cardId: card.id,
-      targetField: card.target_field,
-      summary: card.summary,
-    };
-    // 预填输入框
-    setInput(`关于「${card.target_field}」的修改建议，`);
+    // 推入追问事件（Layer 3）
+    if (card.group_id) {
+      // Group 追问：上下文包含整组信息
+      const groupCards = suggestions.filter((s) => s.group_id === card.group_id);
+      const cardSummaries = groupCards.map((c) => `「${c.target_field}」: ${c.summary}`).join("; ");
+      pendingEventsRef.current.push(
+        `[用户正在对修改建议组 (${groupCards.length} 项: ${cardSummaries}) 进行追问，组摘要: ${card.summary}]`
+      );
+      setInput(`关于这组修改建议，`);
+    } else {
+      // 单 Card 追问
+      pendingEventsRef.current.push(
+        `[用户正在对「${card.target_field}」的修改建议 #${card.id.slice(0, 8)} 进行追问，原建议摘要: ${card.summary}]`
+      );
+      setInput(`关于「${card.target_field}」的修改建议，`);
+    }
     inputRef.current?.focus();
-  }, []);
+  }, [suggestions]);
 
   const handleUndoComplete = useCallback((suggestionId: string) => {
-    setSuggestions((prev) =>
-      prev.map((s) => s.id === suggestionId ? { ...s, status: "undone" as SuggestionStatus } : s)
-    );
+    // 推入撤回事件（Layer 3）
+    // suggestionId 可能是单 card_id 或 group_id
+    const card = suggestions.find((s) => s.id === suggestionId);
+    if (card) {
+      // 单 card 撤回
+      const fieldName = card.target_field || "unknown";
+      pendingEventsRef.current.push(`[用户已撤回对「${fieldName}」的修改 #${suggestionId.slice(0, 8)}，内容已回滚到修改前版本]`);
+      setSuggestions((prev) =>
+        prev.map((s) => s.id === suggestionId ? { ...s, status: "undone" as SuggestionStatus } : s)
+      );
+    } else {
+      // 可能是 group_id — 撤回整组
+      const groupCards = suggestions.filter((s) => s.group_id === suggestionId && s.status === "accepted");
+      if (groupCards.length > 0) {
+        const fieldNames = groupCards.map((c) => `「${c.target_field}」`).join("、");
+        pendingEventsRef.current.push(`[用户已撤回对 ${fieldNames} 的${groupCards.length}项关联修改，内容已回滚到修改前版本]`);
+        const groupCardIds = new Set(groupCards.map((c) => c.id));
+        setSuggestions((prev) =>
+          prev.map((s) => groupCardIds.has(s.id) ? { ...s, status: "undone" as SuggestionStatus } : s)
+        );
+      }
+    }
     setUndoToast(null);
     if (onContentUpdate) onContentUpdate();
-  }, [onContentUpdate]);
+  }, [onContentUpdate, suggestions]);
 
   const handleToolCall = async (toolId: string) => {
     if (!projectId) return;
@@ -911,7 +960,7 @@ export function AgentPanel({
     // 把工具 ID 翻译为自然语言指令，通过 Agent 流式对话发送
     // 这样 Agent 有上下文、有流式进度，比直接调 /tool 好得多
     const TOOL_INSTRUCTIONS: Record<string, string> = {
-      modify_field: "请帮我修改内容块。",
+      rewrite_field: "请帮我重写内容块。",
       generate_field_content: "请帮我生成当前内容块的内容。",
       query_field: "请查询当前内容块的状态。",
       read_field: "请读取当前内容块的内容。",
@@ -1022,35 +1071,52 @@ export function AgentPanel({
         )}
 
         {messages.map((msg) => (
-          <MessageBubble
-            key={msg.id}
-            message={msg}
-            isEditing={editingMessageId === msg.id}
-            editContent={editContent}
-            onEditContentChange={setEditContent}
-            onEdit={() => handleEdit(msg)}
-            onSaveEdit={handleSaveEdit}
-            onCancelEdit={() => setEditingMessageId(null)}
-            onRetry={() => handleRetry(msg.id)}
-            onCopy={() => handleCopy(msg.content)}
-          />
+          <div key={msg.id}>
+            <MessageBubble
+              message={msg}
+              isEditing={editingMessageId === msg.id}
+              editContent={editContent}
+              onEditContentChange={setEditContent}
+              onEdit={() => handleEdit(msg)}
+              onSaveEdit={handleSaveEdit}
+              onCancelEdit={() => setEditingMessageId(null)}
+              onRetry={() => handleRetry(msg.id)}
+              onCopy={() => handleCopy(msg.content)}
+            />
+            {/* 此消息关联的 Suggestion Cards — inline 渲染在消息正下方 */}
+            {/* 所有 card 独立渲染（含 group_id 的也独立渲染，每个可单独确认） */}
+            {suggestions
+              .filter((card) => card.messageId === msg.id)
+              .map((card) => (
+                <div key={card.id} className="mt-2">
+                  <SuggestionCard
+                    data={card}
+                    projectId={projectId || ""}
+                    onStatusChange={handleSuggestionStatusChange}
+                    onFollowUp={handleSuggestionFollowUp}
+                    onContentUpdate={onContentUpdate}
+                  />
+                </div>
+              ))}
+          </div>
         ))}
 
-        {/* Suggestion Cards */}
-        {suggestions.length > 0 && (
-          <div className="space-y-2">
-            {suggestions.map((card) => (
+        {/* 无关联消息的 Suggestion Cards（兜底：如从历史恢复的无 messageId 卡片） */}
+        {suggestions
+          .filter(
+            (card) => !card.messageId || !messages.some((m) => m.id === card.messageId)
+          )
+          .map((card) => (
+            <div key={card.id} className="mt-2">
               <SuggestionCard
-                key={card.id}
                 data={card}
                 projectId={projectId || ""}
                 onStatusChange={handleSuggestionStatusChange}
                 onFollowUp={handleSuggestionFollowUp}
                 onContentUpdate={onContentUpdate}
               />
-            ))}
-          </div>
-        )}
+            </div>
+          ))}
 
         {sending && (
           <div className="flex items-center gap-2 text-zinc-500">
@@ -1071,6 +1137,7 @@ export function AgentPanel({
             targetField={undoToast.targetField}
             onUndo={() => handleUndoComplete(undoToast.suggestionId)}
             onExpire={() => setUndoToast(null)}
+            rollbackTargets={undoToast.rollbackTargets}
           />
         </div>
       )}

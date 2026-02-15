@@ -24,10 +24,20 @@ import json
 import logging
 from typing import Optional, List, Annotated
 
+from pydantic import BaseModel, Field
 from langchain_core.tools import tool, InjectedToolArg
 from langchain_core.runnables import RunnableConfig
 
 logger = logging.getLogger("agent_tools")
+
+
+# ============== Pydantic 模型（让 bind_tools 生成精确 JSON Schema） ==============
+
+class EditOperation(BaseModel):
+    """单条编辑操作"""
+    type: str = Field(description="操作类型: replace | insert_after | delete")
+    anchor: str = Field(description="原文中精确存在的文本片段，用于定位修改位置。必须是原文的精确子串。")
+    new_text: str = Field(description="替换后的新文本。delete 操作时传空字符串 ''。")
 
 
 # ============== 辅助函数 ==============
@@ -103,12 +113,18 @@ async def propose_edit(
     target_field: str,
     summary: str,
     reason: str,
-    edits: list[dict],
+    edits: List[EditOperation],
     group_id: str = "",
     group_summary: str = "",
     *, config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
     """向用户提出内容修改建议，展示修改预览供用户确认。不会直接执行修改。
+
+    CRITICAL 粒度规则: 每次调用产生一张 SuggestionCard = 用户的一个独立决策单元。
+    - 多条逻辑独立的建议，即使针对同一内容块，也应分多次调用（每次一张卡片），让用户可以分别接受/拒绝。
+    - 只有当多条 edits 之间存在逻辑依赖（如改了标题就必须同步改正文引用）时，才合并到一次调用。
+    - 典型示例: 你有3条独立改进建议 → 调用3次 propose_edit，每次1-2个 edits → 用户看到3张可独立操作的卡片。
+    - 反例: 把3条独立建议塞进1次调用的 edits 列表 → 用户只能整体接受/拒绝，失去细粒度控制。
 
     何时使用:
     - 你分析后认为某个内容块需要修改，且有具体的修改方案
@@ -120,30 +136,15 @@ async def propose_edit(
     - 还在讨论方向，不确定该怎么改 -> 文本对话
     - 有多种修改方向需要用户选择 -> 文本对话，列出选项
     - 修改范围太大（整篇重写） -> generate_field_content
-    - 用户说"直接改，不用确认" -> modify_field
-
-    错误用法:
-    - 用户说"你觉得场景库怎么样？" -> 不要 propose_edit，这是讨论不是修改请求
-    - 你只有模糊方向如"可能需要改进" -> 不要 propose_edit，先明确具体改什么
-    - anchor 写成"大概是第三段" -> anchor 必须是原文中精确存在的文本
-
-    多字段修改:
-    - 当多个字段的修改有共同原因时，使用相同的 group_id
-    - 首次调用提供 group_summary
-    - 彼此独立的修改不用 group_id
-
-    edits 格式:
-      [{"type": "replace", "anchor": "原文中精确存在的文本", "new_text": "替换后的文本"}]
-      [{"type": "insert_after", "anchor": "定位锚点", "new_text": "插入的内容"}]
-      [{"type": "delete", "anchor": "要删除的文本", "new_text": ""}]
+    - 全文重写、风格调整 -> rewrite_field
 
     CRITICAL: anchor 必须是目标内容块中精确存在的文本片段。不确定时先用 read_field 查看原文。
 
     Args:
         target_field: 目标内容块名称
-        summary: 一句话描述修改内容（如"加强开头的吸引力"）
-        reason: 修改原因（如"当前开头过于平淡，缺少 hook"）
-        edits: 编辑操作列表，格式见上
+        summary: 一句话描述这张卡片的修改内容（如"加强开头的吸引力"）
+        reason: 这张卡片的修改原因（如"当前开头过于平淡，缺少 hook"）
+        edits: 这张卡片包含的编辑操作（通常1-2个紧密相关的操作）
         group_id: 多字段修改的组 ID（可选）
         group_summary: 整组修改的总体说明（仅首次调用时提供）
     """
@@ -161,8 +162,11 @@ async def propose_edit(
         if not original_content.strip():
             return _json_err(f"内容块「{target_field}」为空，请使用 generate_field_content 生成内容")
 
+        # Pydantic 模型转 dict 供 edit_engine 使用
+        edits_dicts = [e.model_dump() for e in edits]
+
         # 调用 edit_engine 生成预览
-        modified_content, changes = apply_edits(original_content, edits)
+        modified_content, changes = apply_edits(original_content, edits_dicts)
 
         # 检查是否有任何编辑成功应用
         applied = [c for c in changes if c["status"] == "applied"]
@@ -189,7 +193,7 @@ async def propose_edit(
             "target_entity_id": entity.id,
             "summary": summary,
             "reason": reason,
-            "edits": edits,
+            "edits": edits_dicts,
             "changes": changes,
             "diff_preview": diff_preview,
             "original_content": original_content,
@@ -226,49 +230,44 @@ async def propose_edit(
         db.close()
 
 
-# ============== 1. modify_field ==============
+# ============== 1. rewrite_field (原 modify_field) ==============
 
 @tool
-async def modify_field(
+async def rewrite_field(
     field_name: str,
     instruction: str,
     reference_fields: Optional[List[str]] = None,
     *, config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
-    """直接修改内容块，跳过确认流程。仅限用户明确说"直接改"时使用。
+    """重写整个内容块。用 LLM 重新生成全文内容，直接写入数据库。
 
-    CRITICAL: 调用此工具前必须确认用户消息中包含"直接""不用确认""直接改"等明确跳过确认的表述。
-    如果用户只说"帮我改一下""修改一下""改改"但没有"直接"二字，必须使用 propose_edit。
+    适用于 anchor-based 局部编辑无法覆盖的场景：全文重写、风格/语气调整、大范围改写。
 
-    何时使用（必须同时满足）:
-    1. 用户消息包含"直接改""不用确认""直接修改""别问我直接改"等明确跳过确认的关键词
-    2. 修改目标明确
+    何时使用:
+    - 用户说"重写""从头写""整体调整语气""改成更口语化的风格"
+    - 修改范围覆盖整篇内容（不适合用 anchor 逐一定位）
+    - 用户要求大范围改变写作风格或结构
 
     何时不使用:
-    - 用户说"帮我改一下" -> propose_edit（没说"直接"）
-    - 用户说"把字母改成数字" -> propose_edit（没说"直接"）
-    - 用户说"修改建议""suggestion card" -> propose_edit
-    - Agent 自主判断需要修改 -> propose_edit
-    - 创建新内容块 -> manage_architecture
+    - 局部修改（改一段、改一句、改几个词） -> propose_edit
+    - 用户说"帮我改一下" -> propose_edit（默认走确认流程）
     - 内容块为空需首次生成 -> generate_field_content
+    - 创建新内容块 -> manage_architecture
 
     典型用法:
-    - "@场景库 直接帮我把5个改成7个" -> modify_field（包含"直接"）
-    - "不用确认，直接改 @场景库" -> modify_field（包含"直接""不用确认"）
-
-    反例（不应使用 modify_field）:
-    - "帮我改一下 @场景库 的开头" -> propose_edit（没说"直接"）
-    - "把 @课程内容 的字母改成数字" -> propose_edit（没说"直接"）
+    - "把 @场景库 整个重写，风格更活泼一些" -> rewrite_field("场景库", "重写，风格更活泼")
+    - "参考 @用户画像 重写 @传播策略" -> rewrite_field("传播策略", "重写", ["用户画像"])
+    - "把 @开头 改成更口语化的风格" -> rewrite_field("开头", "改成口语化风格")
 
     Args:
-        field_name: 要修改的目标内容块名称
-        instruction: 用户的具体修改指令
+        field_name: 要重写的目标内容块名称
+        instruction: 用户的具体重写指令
         reference_fields: 需要参考的其他内容块名称列表
     """
-    return await _modify_field_impl(field_name, instruction, reference_fields or [], config)
+    return await _rewrite_field_impl(field_name, instruction, reference_fields or [], config)
 
 
-async def _modify_field_impl(
+async def _rewrite_field_impl(
     field_name: str,
     instruction: str,
     reference_fields: List[str],
@@ -317,7 +316,7 @@ async def _modify_field_impl(
         # 截断检测：如果 finish_reason == "length"，说明输出被截断，不保存
         finish_reason = (response.response_metadata or {}).get("finish_reason", "stop")
         if finish_reason == "length":
-            logger.warning(f"[modify_field] 输出被截断（finish_reason=length），不保存，内容 {len(new_content)} 字")
+            logger.warning(f"[rewrite_field] 输出被截断（finish_reason=length），不保存，内容 {len(new_content)} 字")
             return _json_err(f"修改内容被截断（{len(new_content)} 字），内容过长。建议拆分内容块或使用更简洁的指令。")
 
         _save_version(db, entity.id, current_content, "agent")
@@ -325,11 +324,11 @@ async def _modify_field_impl(
         _set_content_status(entity)
         db.commit()
 
-        logger.info(f"[modify_field] 已修改「{field_name}」, {len(new_content)} 字")
-        return _json_ok(field_name, "applied", f"已修改「{field_name}」")
+        logger.info(f"[rewrite_field] 已重写「{field_name}」, {len(new_content)} 字")
+        return _json_ok(field_name, "applied", f"已重写「{field_name}」")
 
     except Exception as e:
-        logger.error(f"modify_field error: {e}", exc_info=True)
+        logger.error(f"rewrite_field error: {e}", exc_info=True)
         db.rollback()
         return _json_err(str(e))
     finally:
@@ -352,7 +351,7 @@ async def generate_field_content(
     - 用户说"生成XX""帮我写XX"（且内容块当前为空或需全部替换）
 
     何时不使用:
-    - 内容块已有内容，只需局部修改 → propose_edit（默认）或 modify_field（用户说"直接改"）
+    - 内容块已有内容，只需局部修改 → propose_edit（默认）或 rewrite_field（全文重写）
     - 用户想看已有内容 → read_field
     - 用户想改项目结构 → manage_architecture
 
@@ -464,7 +463,7 @@ async def query_field(
     何时不使用:
     - 需要获取原文用于 propose_edit 的 anchor 定位 → read_field
     - 用户明确说"让我看看原文" → read_field
-    - 用户想修改内容 → propose_edit 或 modify_field
+    - 用户想修改内容 → propose_edit 或 rewrite_field
 
     典型场景:
     - "@逐字稿1 这个怎么样" → query_field("逐字稿1", "这个怎么样")
@@ -517,7 +516,7 @@ def read_field(field_name: str, config: Annotated[RunnableConfig, InjectedToolAr
 
     何时不使用:
     - 用户想让你分析/总结/评价内容 → query_field（会用 LLM 分析后回答）
-    - 用户想修改内容 → propose_edit 或 modify_field（它们内部会自动读取）
+    - 用户想修改内容 → propose_edit 或 rewrite_field（它们内部会自动读取）
     - 只需要看摘要 → 直接看 field_index 中的摘要即可
 
     Args:
@@ -546,7 +545,7 @@ def update_field(field_name: str, content: str, config: Annotated[RunnableConfig
     - 用户粘贴了一段内容说"把XX替换成这个"
 
     何时不使用:
-    - 局部修改 → propose_edit（默认）或 modify_field（用户说"直接改"）
+    - 局部修改 → propose_edit（默认）或 rewrite_field（全文重写）
     - 让 AI 生成内容 → generate_field_content
     - Agent 自主判断需要更新 → propose_edit
 
@@ -594,7 +593,7 @@ def manage_architecture(
     - 用户说"帮我加一个XX""删掉XX""把XX移到YY组"
 
     何时不使用:
-    - 改内容块里的文字 → propose_edit 或 modify_field
+    - 改内容块里的文字 → propose_edit 或 rewrite_field
     - 生成内容 → generate_field_content
     - 推进项目阶段 → advance_to_phase
 
@@ -667,7 +666,7 @@ def advance_to_phase(target_phase: str = "", *, config: Annotated[RunnableConfig
     - 当前组的内容已完成，用户准备进入下一阶段
 
     何时不使用:
-    - 用户想修改当前组的内容 → propose_edit 或 modify_field
+    - 用户想修改当前组的内容 → propose_edit 或 rewrite_field
     - 用户想添加新组 → manage_architecture("add_phase", ...)
     - 用户只是在讨论流程，还没决定推进 → 文本对话
 
@@ -719,7 +718,7 @@ async def run_research(
     何时不使用:
     - 用户想管理已有的消费者画像 → manage_persona
     - 用户想查看已有的调研报告 → read_field("消费者调研")
-    - 用户在讨论内容修改 → propose_edit 或 modify_field
+    - 用户在讨论内容修改 → propose_edit 或 rewrite_field
 
     典型场景:
     - "开始消费者调研" → run_research("消费者调研", "consumer")
@@ -805,7 +804,7 @@ async def manage_persona(
     - 用户说"删掉这个画像" → delete
 
     何时不使用:
-    - 用户在讨论内容修改 → propose_edit 或 modify_field
+    - 用户在讨论内容修改 → propose_edit 或 rewrite_field
     - 用户想看消费者调研报告 → read_field("消费者调研")
     - 用户说"帮我做消费者调研" → run_research
 
@@ -856,27 +855,43 @@ async def run_evaluation(
     grader_name: Optional[str] = None,
     *, config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
-    """对项目内容执行质量评估，生成评估报告。
+    """运行 Eval V2 多角色模拟评估流水线（高成本操作：多轮 LLM 对话 × 多角色并行）。
 
-    何时使用:
-    - 用户说"评估一下""检查内容质量""评价XX"
-    - 内容生成完成后，用户想知道质量如何
+    CRITICAL: 此工具会启动完整的 Eval V2 流水线（教练审查 + 编辑审查 + 专家审查 + 消费者多轮对话 + 销售多轮对话），
+    消耗大量 token 且执行时间长。结果数据设计为在 EvalPanel 中展示，Agent 只返回简短摘要。
+
+    何时使用（必须同时满足以下全部条件）:
+    1. 用户明确说出"评估""运行评估""跑一下评估"等指向 Eval V2 流水线的关键词
+    2. 用户提供了明确的评估目标字段名称（field_names 不能为空）
+    3. 用户知道这是一个模拟评估流水线（区别于"审查""批评""看看质量"）
 
     何时不使用:
-    - 内容块还没有生成内容（空的内容块无法评估）→ 先 generate_field_content
-    - 用户想修改内容 → propose_edit 或 modify_field
+    - 用户说"审查一下""帮我看看质量""检查一下" → 直接用 read_field + 文本分析（这是审稿/批评，不是 Eval V2）
+    - 用户说"评价一下" 但没有指定具体字段名 → 先询问要评估哪些字段
+    - critic/审稿人模式下做内容审查 → 用 read_field 读内容后直接给出文本反馈
+    - 内容块还没有生成内容 → 先 generate_field_content
+    - 用户想修改内容 → propose_edit 或 rewrite_field
     - 用户只是想看内容 → read_field 或 query_field
 
-    典型场景:
-    - "评估一下" → run_evaluation()（全量评估）
-    - "评价一下场景库" → run_evaluation(field_names=["场景库"])
+    反例（NEVER 这样做）:
+    - 审稿人模式下用户说"帮我审查一下内容" → NEVER 调用 run_evaluation（应该用 read_field + 文本分析）
+    - 用户说"看看这个内容怎么样" → NEVER 调用 run_evaluation（应该用 query_field 或 read_field）
+    - 用户说"评估一下" 但没说具体评估什么字段 → 先询问，NEVER 直接调用
+
+    典型用法（注意：必须有用户明确指定的 field_names）:
+    - "对场景库运行评估" → run_evaluation(field_names=["场景库"])
     - "用原创性 grader 评价场景库" → run_evaluation(field_names=["场景库"], grader_name="原创性")
 
     Args:
-        field_names: 要评估的内容块名称列表。为空时评估全部有内容的内容块。
+        field_names: 要评估的内容块名称列表。CRITICAL: 必须由用户明确提供，不能为空。
         grader_name: 指定使用的评估维度/Grader 名称。为空时使用全部评估维度。
     """
-    return await _run_evaluation_impl(field_names or [], grader_name, config)
+    # 运行时安全检查：必须提供 field_names
+    if not field_names:
+        return ("⚠️ 请指定要评估的内容块名称。run_evaluation 是 Eval V2 多角色模拟流水线（高成本），"
+                "需要用户明确指定评估目标。\n\n"
+                "如果你只是想审查/检查内容质量，请使用 read_field 读取内容后直接给出分析反馈。")
+    return await _run_evaluation_impl(field_names, grader_name, config)
 
 
 async def _run_evaluation_impl(
@@ -953,7 +968,7 @@ async def generate_outline(topic: str = "", *, config: Annotated[RunnableConfig,
     - 项目初期需要内容架构规划
 
     何时不使用:
-    - 用户想修改已有内容 → propose_edit 或 modify_field
+    - 用户想修改已有内容 → propose_edit 或 rewrite_field
     - 用户想改项目结构（增删内容块）→ manage_architecture
     - 用户想生成具体内容块的内容 → generate_field_content
 
@@ -1011,7 +1026,7 @@ async def manage_skill(
     - 用户说"用XX风格帮我写/改" → manage_skill("apply", "XX", "目标内容块")
 
     何时不使用:
-    - 用户想修改内容但没提到特定风格 → propose_edit 或 modify_field
+    - 用户想修改内容但没提到特定风格 → propose_edit 或 rewrite_field
     - 用户想从零生成内容 → generate_field_content
     - 用户在讨论风格方向但还没确定 → 文本对话
 
@@ -1132,7 +1147,7 @@ async def read_mode_history(
 # 所有工具列表 — 注册到 Agent Graph 的 bind_tools()
 AGENT_TOOLS = [
     propose_edit,
-    modify_field,
+    rewrite_field,
     generate_field_content,
     query_field,
     read_field,
@@ -1150,7 +1165,7 @@ AGENT_TOOLS = [
 # 这些工具执行后表示产生了内容块更新，前端需要刷新
 # 注意: propose_edit 不在此列 — 它只生成预览，不写 DB
 PRODUCE_TOOLS = {
-    "modify_field",
+    "rewrite_field",
     "generate_field_content",
     "update_field",
 }

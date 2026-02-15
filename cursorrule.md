@@ -61,7 +61,8 @@
 
 | 工具 | 用途 |
 |------|------|
-| `modify_field` | 修改已有内容块（当前为全文覆写，待迁移到 Suggestion Card） |
+| `rewrite_field` | 全文重写已有内容块（风格调整/大范围改写；原 modify_field） |
+| `propose_edit` | 局部编辑建议（anchor-based diff 预览，需用户确认） |
 | `generate_field_content` | 为空白内容块生成内容 |
 | `query_field` | 查询字段内容（带 LLM 摘要） |
 | `read_field` | 读取字段完整原始内容 |

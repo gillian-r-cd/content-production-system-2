@@ -105,7 +105,7 @@ def get_agent_settings(db: Session = Depends(get_db)):
             id=generate_uuid(),
             name="default",
             tools=[
-                "modify_field", "generate_field_content", "query_field",
+                "rewrite_field", "propose_edit", "generate_field_content", "query_field",
                 "read_field", "update_field", "manage_architecture",
                 "advance_to_phase", "run_research", "manage_persona",
                 "run_evaluation", "generate_outline", "manage_skill",
