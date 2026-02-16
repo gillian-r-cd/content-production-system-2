@@ -84,8 +84,8 @@ class ProjectField(BaseModel):
             "example": None,
         }
     )
-    # 是否需要人工确认（False = 依赖满足后自动生成，默认不需要确认）
-    need_review: Mapped[bool] = mapped_column(default=False)
+    # 是否需要人工确认（True = 需要人工确认后才生成，默认需要确认，避免自动执行浪费 token）
+    need_review: Mapped[bool] = mapped_column(default=True)
     generation_log_id: Mapped[Optional[str]] = mapped_column(
         String(36), nullable=True
     )

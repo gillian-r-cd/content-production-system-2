@@ -9,7 +9,6 @@ LangGraph 工具包
 
 from core.tools.deep_research import (
     deep_research,
-    quick_research,
     ResearchReport,
     ConsumerPersona,
     PersonaBasicInfo,
@@ -104,7 +103,6 @@ from core.tools.eval_engine import (
 __all__ = [
     # DeepResearch
     "deep_research",
-    "quick_research",
     "ResearchReport",
     "ConsumerPersona",
     "PersonaBasicInfo",

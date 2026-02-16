@@ -124,10 +124,20 @@ def build_system_prompt(state: AgentState) -> str:
             try:
                 project = db.query(Project).filter(Project.id == project_id).first()
                 if project:
+                    from core.phase_config import PHASE_DISPLAY_NAMES
                     ps = project.phase_status or {}
                     po = project.phase_order or []
                     current_status = ps.get(current_phase, "pending")
-                    phase_context = f"组状态: {current_status}\n项目组顺序: {' → '.join(po)}"
+                    # 显示 "code(显示名)" 格式，帮助 Agent 正确映射用户口语到内部 code
+                    phase_labels = [
+                        f"{code}({PHASE_DISPLAY_NAMES.get(code, code)})"
+                        for code in po
+                    ]
+                    phase_context = (
+                        f"组状态: {current_status}\n"
+                        f"项目组顺序: {' → '.join(phase_labels)}\n"
+                        f"注意: manage_architecture 的 phase 参数支持内部 code 或中文显示名（如 \"research\" 或 \"消费者调研\" 均可）"
+                    )
             finally:
                 db.close()
         except Exception as e:
@@ -452,6 +462,23 @@ CRITICAL: 不要在讨论中输出"当前建议文案是：..."这样的完整�
 """
 
 
+# ============== Token 计数（兼容 OpenRouter 模型名） ==============
+
+def _count_tokens_approx(messages: list) -> int:
+    """
+    近似 token 计数，兼容任意模型名（OpenRouter、Anthropic 等）。
+    使用 tiktoken 的 cl100k_base 编码（GPT-4 系列通用），
+    对非 OpenAI 模型也是合理近似，精度足够用于 trim_messages 裁剪决策。
+    """
+    import tiktoken
+    enc = tiktoken.get_encoding("cl100k_base")
+    total = 0
+    for msg in messages:
+        content = msg.content if isinstance(msg.content, str) else str(msg.content)
+        total += len(enc.encode(content, disallowed_special=())) + 4  # 4 tokens overhead per message
+    return total
+
+
 # ============== 节点函数 ==============
 
 async def agent_node(state: AgentState, config: RunnableConfig) -> dict:
@@ -484,10 +511,13 @@ async def agent_node(state: AgentState, config: RunnableConfig) -> dict:
     system_prompt = build_system_prompt(state)
 
     # Token 预算管理：保留最近消息，裁剪过早历史
+    # 注意: token_counter 不能直接用 llm，因为 ChatOpenAI 的 tiktoken
+    # 不认识 OpenRouter 模型名（如 anthropic/claude-opus-4.6）。
+    # 改用通用 tiktoken 编码作为近似计数，精度足够用于裁剪决策。
     trimmed = trim_messages(
         state["messages"],
         max_tokens=100_000,      # 为 system prompt (~5K) + 回复 (~10K) 预留
-        token_counter=llm,       # 使用 LLM 内置 token 计数
+        token_counter=_count_tokens_approx,  # 兼容任意模型名
         strategy="last",         # 保留最新消息
         start_on="human",        # 确保从 HumanMessage 开始
         include_system=False,    # system prompt 由我们单独管理

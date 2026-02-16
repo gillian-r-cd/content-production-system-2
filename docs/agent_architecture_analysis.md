@@ -33,8 +33,7 @@ backend/core/tools/
 
 | 工具 | 函数 | 功能 | 是否有架构感知 |
 |------|------|------|---------------|
-| **深度调研** | `deep_research(query, intent, use_ddg)` | 使用 DuckDuckGo + Jina Reader 进行消费者调研 | ❌ 否 |
-| **快速调研** | `quick_research(query, intent)` | 仅使用 LLM 进行快速调研 | ❌ 否 |
+| **深度调研** | `deep_research(query, intent, research_type)` | 使用 Tavily Search API 进行深度调研（消费者/通用） | ❌ 否 |
 | **字段生成** | `generate_field(field, context)` | 根据提示词生成字段内容 | ❌ 否 |
 | **流式生成** | `generate_field_stream(field, context)` | 流式输出字段内容 | ❌ 否 |
 | **并行生成** | `generate_fields_parallel(fields, context)` | 批量并行生成多个字段 | ❌ 否 |
@@ -188,7 +187,7 @@ Agent 通过 `orchestrator.py` 运行，完全没有访问 `ContentBlock` 表的
 │                    阶段节点                            │
 ├───────────────────────────────────────────────────────┤
 │ intent_analysis_node  →  无工具调用                   │
-│ research_node         →  deep_research / quick_research│
+│ research_node         →  deep_research                 │
 │ design_inner_node     →  无工具调用                   │
 │ produce_inner_node    →  generate_field               │
 │ design_outer_node     →  无工具调用                   │

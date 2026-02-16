@@ -275,7 +275,7 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
                       <label className="flex items-center gap-2 text-xs text-zinc-400">
                         <input
                           type="checkbox"
-                          checked={field.need_review || false}
+                          checked={field.need_review !== false}
                           onChange={(e) => updateField(pIdx, fIdx, "need_review", e.target.checked)}
                         />
                         需要人工确认

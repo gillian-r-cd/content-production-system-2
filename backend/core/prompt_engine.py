@@ -256,7 +256,7 @@ class PromptEngine:
 1. 3个方案要有明显差异（如：模块化 vs 线性 vs 场景驱动）
 2. 每个方案5-10个字段
 3. 字段依赖关系要合理（depends_on 填写依赖的字段id）
-4. need_review=true 表示重要字段需要人工确认
+4. need_review 默认为 true（需人工确认后才生成），仅对确定可自动执行的字段设为 false
 5. 紧扣用户痛点和项目意图""",
 
         "produce_inner": """【创作者特质】

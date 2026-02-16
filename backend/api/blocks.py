@@ -66,7 +66,7 @@ class BlockCreate(BaseModel):
     constraints: Optional[Dict] = None
     depends_on: List[str] = Field(default_factory=list)
     special_handler: Optional[str] = None
-    need_review: bool = False
+    need_review: bool = True
     order_index: Optional[int] = None
     pre_questions: List[str] = Field(default_factory=list)  # 生成前提问
 
@@ -1338,9 +1338,9 @@ def _field_template_to_blocks(field_template: "FieldTemplate", project_id: str) 
             "pre_questions": field.get("pre_questions", []),
             "depends_on": field.get("depends_on", []),
             "constraints": field.get("constraints", {}),
-            "need_review": field.get("need_review", False),
+            "need_review": field.get("need_review", True),
             "status": (
-                ("in_progress" if field.get("need_review", False) else "completed")
+                ("in_progress" if field.get("need_review", True) else "completed")
                 if template_content else "pending"
             ),
         }
@@ -1469,7 +1469,7 @@ def migrate_project_to_blocks(
             ai_prompt=field.ai_prompt or "",
             constraints=field.constraints or {},
             depends_on=[],  # 稍后更新
-            need_review=getattr(field, 'need_review', False),
+            need_review=getattr(field, 'need_review', True),
         )
         db.add(field_block)
     

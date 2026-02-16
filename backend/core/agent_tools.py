@@ -732,7 +732,7 @@ async def run_research(
 
 
 async def _run_research_impl(query: str, research_type: str, config: RunnableConfig) -> str:
-    from core.tools.deep_research import deep_research, quick_research
+    from core.tools.deep_research import deep_research
     from core.tools.architecture_reader import get_intent_and_research
     from core.models import Project
     from core.models.content_block import ContentBlock
@@ -744,16 +744,11 @@ async def _run_research_impl(query: str, research_type: str, config: RunnableCon
         deps = get_intent_and_research(project_id)
         intent = deps.get("intent", query)
 
-        if research_type == "consumer":
-            report = await deep_research(
-                query=query or "目标消费者深度调研",
-                intent=intent,
-            )
-        else:
-            report = await deep_research(
-                query=query,
-                intent=intent,
-            )
+        report = await deep_research(
+            query=query or ("目标消费者深度调研" if research_type == "consumer" else query),
+            intent=intent,
+            research_type=research_type,
+        )
 
         report_json = report.model_dump_json(indent=2, ensure_ascii=False)
         saved = False

@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 from core.database import get_db
 from core.models import Project
 from core.models.content_block import ContentBlock
-from core.phase_config import PHASE_DISPLAY_NAMES
+from core.phase_config import PHASE_DISPLAY_NAMES, PHASE_ALIAS
 
 
 class ArchitectureOperation(str, Enum):
@@ -45,6 +45,30 @@ class OperationResult:
     operation: str
     affected_ids: List[str] = field(default_factory=list)
     error: Optional[str] = None
+
+
+def _resolve_phase_code(phase: str, phase_order: List[str]) -> Optional[str]:
+    """将 phase 参数（可能是内部 code、display_name 或 alias）解析为内部 code。
+    
+    解析优先级:
+    1. 完全匹配 phase_order 中的 code（如 "research"）
+    2. PHASE_ALIAS 匹配（display_name→code，如 "消费者调研"→"research"）
+    3. PHASE_DISPLAY_NAMES 反查（如 display_name 值 → code）
+    
+    返回 None 表示无法解析。
+    """
+    # 1. 已经是有效的内部 code
+    if phase in phase_order:
+        return phase
+    # 2. PHASE_ALIAS（包含 display_name→code 和用户自定义别名→code）
+    resolved = PHASE_ALIAS.get(phase)
+    if resolved and resolved in phase_order:
+        return resolved
+    # 3. PHASE_DISPLAY_NAMES 反查（遍历，兜底）
+    for code, display in PHASE_DISPLAY_NAMES.items():
+        if display == phase and code in phase_order:
+            return code
+    return None
 
 
 # ============== 阶段操作 ==============
@@ -351,13 +375,16 @@ def add_field(
                 error="Project not found"
             )
         
-        if phase not in project.phase_order:
+        # 解析 phase 参数：支持内部 code、display_name、alias
+        resolved_phase = _resolve_phase_code(phase, project.phase_order)
+        if not resolved_phase:
             return OperationResult(
                 success=False,
-                message=f"阶段 '{phase}' 不存在",
+                message=f"阶段 '{phase}' 不存在（已尝试别名解析）",
                 operation="add_field",
                 error="Phase not found"
             )
+        phase = resolved_phase
         
         # 检查字段是否已存在（在 ContentBlock 中查找）
         existing = db.query(ContentBlock).filter(
@@ -394,7 +421,7 @@ def add_field(
                 ContentBlock.deleted_at == None,  # noqa: E711
             ).count()
         
-        # 创建 ContentBlock
+        # 创建 ContentBlock（默认 need_review=True，新建块需人工确认后才生成）
         block = ContentBlock(
             id=str(uuid.uuid4()),
             project_id=project_id,
@@ -407,6 +434,7 @@ def add_field(
             ai_prompt=ai_prompt,
             depends_on=depends_on or [],
             constraints={},
+            need_review=True,
         )
         db.add(block)
         
@@ -611,13 +639,16 @@ def move_field(
                 error="Project not found"
             )
         
-        if target_phase not in project.phase_order:
+        # 解析 target_phase 参数：支持内部 code、display_name、alias
+        resolved_phase = _resolve_phase_code(target_phase, project.phase_order)
+        if not resolved_phase:
             return OperationResult(
                 success=False,
-                message=f"目标阶段「{target_phase}」不存在",
+                message=f"目标阶段「{target_phase}」不存在（已尝试别名解析）",
                 operation="move_field",
                 error="Target phase not found"
             )
+        target_phase = resolved_phase
         
         # 查找 ContentBlock 字段
         block = db.query(ContentBlock).filter(

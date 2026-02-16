@@ -1,21 +1,42 @@
 # Content Production System - 环境变量配置
 # 复制此文件为 .env 并填写实际值
 
-# ========== OpenAI API ==========
-# 必填: 你的OpenAI API Key
+# ========== LLM API ==========
+# 支持 OpenAI 直连 和 OpenRouter (OpenAI 兼容接口)
+#
+# --- 方式一: OpenAI 直连 ---
+# OPENAI_API_KEY=sk-xxxx
+# OPENAI_API_BASE=
+# OPENAI_MODEL=gpt-5.1
+# OPENAI_MINI_MODEL=gpt-4o-mini
+#
+# --- 方式二: OpenRouter ---
+# OPENAI_API_KEY=sk-or-v1-xxxx
+# OPENAI_API_BASE=https://openrouter.ai/api/v1
+# OPENAI_MODEL=anthropic/claude-sonnet-4
+# OPENAI_MINI_MODEL=openai/gpt-4o-mini
+#
+# 注意: 通过 OpenRouter 使用时，模型名需用 OpenRouter 格式 (provider/model)
+# 完整模型列表: https://openrouter.ai/models
+# Agent 核心依赖 tool calling，请选择支持 tool use 的模型
+
+# 必填: API Key (OpenAI 或 OpenRouter)
 OPENAI_API_KEY=sk-xxxx
 
-# 可选: OpenAI组织ID (如有)
+# 可选: OpenAI组织ID (OpenRouter 时留空)
 OPENAI_ORG_ID=
 
-# 可选: 默认模型 (推荐gpt-4o)
+# 可选: 默认模型
 OPENAI_MODEL=gpt-5.1
 
 # 可选: 轻量模型 (用于摘要、分类等，降低成本)
 OPENAI_MINI_MODEL=gpt-4o-mini
 
-# 可选: API Base URL (如使用代理)
+# 可选: API Base URL (OpenRouter 填 https://openrouter.ai/api/v1)
 OPENAI_API_BASE=
+
+# ========== Tavily Search API (DeepResearch) ==========
+TAVILY_API_KEY=
 
 # ========== 数据库 ==========
 # SQLite数据库路径 (相对于backend目录)
@@ -27,5 +48,3 @@ BACKEND_PORT=8000
 
 # 开发模式
 DEBUG=true
-
-

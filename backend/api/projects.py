@@ -1,7 +1,10 @@
 # backend/api/projects.py
-# 功能: 项目管理API
-# 主要路由: CRUD操作、版本管理、导入导出
-# 数据结构: ProjectCreate, ProjectUpdate, ProjectResponse
+# 功能: 项目管理API — CRUD、版本管理、完整导入/导出、复制、全局搜索替换
+# 主要路由: CRUD, /export, /import, /duplicate, /versions, /search, /replace
+# 导出/导入范围: Project, CreatorProfile, ContentBlock, ProjectField, ChatMessage,
+#   ContentVersion, BlockHistory, SimulationRecord, EvalRun/Task/Trial,
+#   MemoryItem, Grader, GenerationLog(可选)
+# 数据结构: ProjectCreate, ProjectUpdate, ProjectResponse, ProjectImportRequest
 
 """
 项目管理 API
@@ -166,7 +169,7 @@ def delete_project(
 
     按依赖顺序删除：先删子表/关联表，再删主表。
     """
-    from core.models import ProjectField, ContentBlock, BlockHistory
+    from core.models import ProjectField, ContentBlock, BlockHistory, MemoryItem
     from core.models.chat_history import ChatMessage
     from core.models.generation_log import GenerationLog
     from core.models.simulation_record import SimulationRecord
@@ -174,6 +177,7 @@ def delete_project(
     from core.models.eval_task import EvalTask
     from core.models.eval_trial import EvalTrial
     from core.models.content_version import ContentVersion
+    from core.models.grader import Grader
     
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
@@ -212,6 +216,12 @@ def delete_project(
     # 删除关联的模拟记录
     db.query(SimulationRecord).filter(SimulationRecord.project_id == project_id).delete()
     
+    # 删除项目记忆（仅项目级记忆，全局记忆不删）
+    db.query(MemoryItem).filter(MemoryItem.project_id == project_id).delete()
+    
+    # 删除项目专用评分器
+    db.query(Grader).filter(Grader.project_id == project_id).delete()
+    
     # 删除关联的内容块
     db.query(ContentBlock).filter(ContentBlock.project_id == project_id).delete()
     
@@ -241,10 +251,23 @@ def duplicate_project(
     - 所有字段 (ProjectField)
     - 所有内容块 (ContentBlock) — 灵活架构的核心数据
     - 所有对话记录 (ChatMessage)
+    - 所有内容版本 (ContentVersion)
+    - 所有块操作历史 (BlockHistory)
+    - 所有模拟记录 (SimulationRecord)
+    - 所有评估数据 (EvalRun/EvalTask/EvalTrial)
+    - 所有项目记忆 (MemoryItem)
+    - 所有项目专用评分器 (Grader)
     """
-    from core.models import ProjectField
+    from core.models import ProjectField, MemoryItem
     from core.models.chat_history import ChatMessage
     from core.models.content_block import ContentBlock
+    from core.models.content_version import ContentVersion
+    from core.models.block_history import BlockHistory
+    from core.models.simulation_record import SimulationRecord
+    from core.models.eval_run import EvalRun
+    from core.models.eval_task import EvalTask
+    from core.models.eval_trial import EvalTrial
+    from core.models.grader import Grader
     
     # 获取原项目
     old_project = db.query(Project).filter(Project.id == project_id).first()
@@ -296,7 +319,7 @@ def duplicate_project(
             pre_answers=old_field.pre_answers.copy() if old_field.pre_answers else {},
             dependencies=old_field.dependencies.copy() if old_field.dependencies else {"depends_on": [], "dependency_type": "all"},
             constraints=old_field.constraints.copy() if hasattr(old_field, 'constraints') and old_field.constraints else None,
-            need_review=old_field.need_review if hasattr(old_field, 'need_review') else False,
+            need_review=old_field.need_review if hasattr(old_field, 'need_review') else True,
             order=old_field.order if hasattr(old_field, 'order') else 0,
             digest=old_field.digest if hasattr(old_field, 'digest') else None,
         )
@@ -377,6 +400,175 @@ def duplicate_project(
         )
         db.add(new_msg)
     
+    # ---- 复制内容版本 (ContentVersion) ----
+    # 合并 block + field 的 ID 映射用于版本查找
+    all_id_mapping = {**block_id_mapping, **field_id_mapping}
+    all_old_ids = list(all_id_mapping.keys())
+    if all_old_ids:
+        old_versions = db.query(ContentVersion).filter(
+            ContentVersion.block_id.in_(all_old_ids),
+        ).order_by(ContentVersion.version_number).all()
+        for old_ver in old_versions:
+            new_ver = ContentVersion(
+                id=generate_uuid(),
+                block_id=all_id_mapping.get(old_ver.block_id, old_ver.block_id),
+                version_number=old_ver.version_number,
+                content=old_ver.content,
+                source=old_ver.source,
+                source_detail=old_ver.source_detail,
+            )
+            db.add(new_ver)
+    
+    # ---- 复制块操作历史 (BlockHistory) ----
+    old_history = db.query(BlockHistory).filter(
+        BlockHistory.project_id == old_project.id,
+    ).order_by(BlockHistory.created_at).all()
+    for old_hist in old_history:
+        # 映射快照中的 ID
+        import copy
+        snap = copy.deepcopy(old_hist.block_snapshot) if old_hist.block_snapshot else {}
+        if snap.get("id"):
+            snap["id"] = block_id_mapping.get(snap["id"], snap["id"])
+        if snap.get("parent_id"):
+            snap["parent_id"] = block_id_mapping.get(snap["parent_id"], snap["parent_id"])
+        children_snaps = copy.deepcopy(old_hist.children_snapshots) if old_hist.children_snapshots else []
+        for cs in children_snaps:
+            if cs.get("id"):
+                cs["id"] = block_id_mapping.get(cs["id"], cs["id"])
+            if cs.get("parent_id"):
+                cs["parent_id"] = block_id_mapping.get(cs["parent_id"], cs["parent_id"])
+        new_hist = BlockHistory(
+            id=generate_uuid(),
+            project_id=new_project.id,
+            action=old_hist.action,
+            block_id=block_id_mapping.get(old_hist.block_id, old_hist.block_id),
+            block_snapshot=snap,
+            children_snapshots=children_snaps,
+            undone=old_hist.undone,
+        )
+        db.add(new_hist)
+    
+    # ---- 复制模拟记录 (SimulationRecord) ----
+    old_sims = db.query(SimulationRecord).filter(
+        SimulationRecord.project_id == old_project.id,
+    ).all()
+    for old_sim in old_sims:
+        new_sim = SimulationRecord(
+            id=generate_uuid(),
+            project_id=new_project.id,
+            simulator_id=old_sim.simulator_id,
+            target_field_ids=[all_id_mapping.get(fid, fid) for fid in (old_sim.target_field_ids or [])],
+            persona=old_sim.persona.copy() if old_sim.persona else {},
+            interaction_log=old_sim.interaction_log.copy() if old_sim.interaction_log else [],
+            feedback=old_sim.feedback.copy() if old_sim.feedback else {},
+            status=old_sim.status,
+        )
+        db.add(new_sim)
+    
+    # ---- 复制评估数据 (EvalRun/EvalTask/EvalTrial) ----
+    old_runs = db.query(EvalRun).filter(
+        EvalRun.project_id == old_project.id,
+    ).all()
+    run_id_mapping = {}
+    for old_run in old_runs:
+        new_run_id = generate_uuid()
+        run_id_mapping[old_run.id] = new_run_id
+        new_run = EvalRun(
+            id=new_run_id,
+            project_id=new_project.id,
+            name=old_run.name,
+            config=old_run.config.copy() if old_run.config else {},
+            status=old_run.status,
+            summary=old_run.summary,
+            overall_score=old_run.overall_score,
+            role_scores=old_run.role_scores.copy() if old_run.role_scores else {},
+            trial_count=old_run.trial_count,
+            content_block_id=block_id_mapping.get(old_run.content_block_id) if old_run.content_block_id else None,
+        )
+        db.add(new_run)
+    
+    old_run_ids = list(run_id_mapping.keys())
+    task_id_mapping = {}
+    if old_run_ids:
+        old_tasks = db.query(EvalTask).filter(
+            EvalTask.eval_run_id.in_(old_run_ids),
+        ).all()
+        for old_task in old_tasks:
+            new_task_id = generate_uuid()
+            task_id_mapping[old_task.id] = new_task_id
+            new_task = EvalTask(
+                id=new_task_id,
+                eval_run_id=run_id_mapping.get(old_task.eval_run_id, old_task.eval_run_id),
+                name=old_task.name,
+                simulator_type=old_task.simulator_type,
+                interaction_mode=old_task.interaction_mode,
+                simulator_config=old_task.simulator_config.copy() if old_task.simulator_config else {},
+                persona_config=old_task.persona_config.copy() if old_task.persona_config else {},
+                target_block_ids=[block_id_mapping.get(bid, bid) for bid in (old_task.target_block_ids or [])],
+                grader_config=old_task.grader_config.copy() if old_task.grader_config else {},
+                order_index=old_task.order_index,
+                status=old_task.status,
+            )
+            db.add(new_task)
+        
+        old_trials = db.query(EvalTrial).filter(
+            EvalTrial.eval_run_id.in_(old_run_ids),
+        ).all()
+        for old_trial in old_trials:
+            new_trial = EvalTrial(
+                id=generate_uuid(),
+                eval_run_id=run_id_mapping.get(old_trial.eval_run_id, old_trial.eval_run_id),
+                eval_task_id=task_id_mapping.get(old_trial.eval_task_id, old_trial.eval_task_id),
+                role=old_trial.role,
+                role_config=old_trial.role_config.copy() if old_trial.role_config else {},
+                interaction_mode=old_trial.interaction_mode,
+                input_block_ids=[block_id_mapping.get(bid, bid) for bid in (old_trial.input_block_ids or [])],
+                persona=old_trial.persona.copy() if old_trial.persona else {},
+                nodes=old_trial.nodes.copy() if old_trial.nodes else [],
+                result=old_trial.result.copy() if old_trial.result else {},
+                grader_outputs=old_trial.grader_outputs.copy() if old_trial.grader_outputs else [],
+                llm_calls=old_trial.llm_calls.copy() if old_trial.llm_calls else [],
+                overall_score=old_trial.overall_score,
+                status=old_trial.status,
+                error=old_trial.error,
+                tokens_in=old_trial.tokens_in,
+                tokens_out=old_trial.tokens_out,
+                cost=old_trial.cost,
+            )
+            db.add(new_trial)
+    
+    # ---- 复制项目记忆 (MemoryItem) ----
+    old_memories = db.query(MemoryItem).filter(
+        MemoryItem.project_id == old_project.id,
+    ).order_by(MemoryItem.created_at).all()
+    for old_mem in old_memories:
+        new_mem = MemoryItem(
+            id=generate_uuid(),
+            project_id=new_project.id,
+            content=old_mem.content,
+            source_mode=old_mem.source_mode,
+            source_phase=old_mem.source_phase,
+            related_blocks=old_mem.related_blocks.copy() if old_mem.related_blocks else [],
+        )
+        db.add(new_mem)
+    
+    # ---- 复制项目专用评分器 (Grader) ----
+    old_graders = db.query(Grader).filter(
+        Grader.project_id == old_project.id,
+    ).all()
+    for old_grader in old_graders:
+        new_grader = Grader(
+            id=generate_uuid(),
+            name=old_grader.name,
+            grader_type=old_grader.grader_type,
+            prompt_template=old_grader.prompt_template,
+            dimensions=old_grader.dimensions.copy() if old_grader.dimensions else [],
+            scoring_criteria=old_grader.scoring_criteria.copy() if old_grader.scoring_criteria else {},
+            is_preset=old_grader.is_preset,
+            project_id=new_project.id,
+        )
+        db.add(new_grader)
+    
     db.commit()
     db.refresh(new_project)
     
@@ -450,7 +642,7 @@ def create_new_version(
             pre_answers=old_field.pre_answers.copy() if old_field.pre_answers else {},
             dependencies=old_field.dependencies.copy() if old_field.dependencies else {"depends_on": [], "dependency_type": "all"},
             constraints=old_field.constraints.copy() if hasattr(old_field, 'constraints') and old_field.constraints else None,
-            need_review=old_field.need_review if hasattr(old_field, 'need_review') else False,
+            need_review=old_field.need_review if hasattr(old_field, 'need_review') else True,
             order=old_field.order if hasattr(old_field, 'order') else 0,
             digest=old_field.digest if hasattr(old_field, 'digest') else None,
         )
@@ -543,16 +735,18 @@ def export_project(
     导出项目完整数据（JSON）
 
     包含：项目本身、内容块、字段、对话记录、版本历史、
-    模拟记录、评估记录（V2）、生成日志（可选）
+    模拟记录、评估记录（V2）、记忆条目、评分器、生成日志（可选）
     """
     from core.models import (
         ProjectField, ContentBlock, GenerationLog,
         SimulationRecord,
         EvalRun, EvalTask, EvalTrial,
+        MemoryItem,
     )
     from core.models.chat_history import ChatMessage
     from core.models.content_version import ContentVersion
     from core.models.block_history import BlockHistory
+    from core.models.grader import Grader
 
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
@@ -646,6 +840,22 @@ def export_project(
         ).all()
         trials_data = [_ser(t) for t in trials]
 
+    # MemoryItems（项目级记忆）
+    from sqlalchemy import or_
+    memories = db.query(MemoryItem).filter(
+        or_(
+            MemoryItem.project_id == project_id,
+            MemoryItem.project_id.is_(None),  # 全局记忆也导出，导入时按原 project_id 还原
+        )
+    ).order_by(MemoryItem.created_at).all()
+    memories_data = [_ser(m) for m in memories]
+
+    # Graders（项目专用评分器）
+    graders = db.query(Grader).filter(
+        Grader.project_id == project_id,
+    ).all()
+    graders_data = [_ser(g) for g in graders]
+
     # GenerationLogs（可选，可能很大）
     logs_data = []
     if include_logs:
@@ -655,7 +865,7 @@ def export_project(
         logs_data = [_ser(l) for l in logs]
 
     return {
-        "export_version": "1.0",
+        "export_version": "2.0",
         "exported_at": datetime.now().isoformat(),
         "project": project_data,
         "creator_profile": creator_profile_data,
@@ -668,6 +878,8 @@ def export_project(
         "eval_runs": eval_runs_data,
         "eval_tasks": tasks_data,
         "eval_trials": trials_data,
+        "memory_items": memories_data,
+        "graders": graders_data,
         "generation_logs": logs_data,
     }
 
@@ -693,14 +905,36 @@ def import_project(
         ProjectField, ContentBlock, GenerationLog,
         SimulationRecord,
         EvalRun, EvalTask, EvalTrial,
+        MemoryItem,
     )
     from core.models.chat_history import ChatMessage
     from core.models.content_version import ContentVersion
     from core.models.block_history import BlockHistory
+    from core.models.grader import Grader
 
     data = request.data
     if "project" not in data:
         raise HTTPException(status_code=400, detail="缺少 project 字段")
+
+    def _parse_dt(val) -> Optional[datetime]:
+        """解析 ISO datetime 字符串，失败返回 None（让 DB 用 default）"""
+        if not val:
+            return None
+        if isinstance(val, datetime):
+            return val
+        try:
+            return datetime.fromisoformat(str(val))
+        except (ValueError, TypeError):
+            return None
+
+    def _set_timestamps(obj, data_dict: dict):
+        """从导出数据中恢复 created_at / updated_at 时间戳"""
+        ca = _parse_dt(data_dict.get("created_at"))
+        ua = _parse_dt(data_dict.get("updated_at"))
+        if ca:
+            obj.created_at = ca
+        if ua:
+            obj.updated_at = ua
 
     # ============ ID 映射 ============
     id_map: Dict[str, str] = {}
@@ -746,14 +980,9 @@ def import_project(
                     id=new_cp_id,
                     name=cp_data.get("name", "导入的创作者"),
                     description=cp_data.get("description", ""),
-                    style_tags=cp_data.get("style_tags", []),
-                    tone=cp_data.get("tone", ""),
-                    values=cp_data.get("values", []),
-                    target_audience=cp_data.get("target_audience", ""),
-                    content_principles=cp_data.get("content_principles", []),
-                    brand_voice=cp_data.get("brand_voice", ""),
-                    avoid_patterns=cp_data.get("avoid_patterns", []),
+                    traits=cp_data.get("traits", {}),
                 )
+                _set_timestamps(cp, cp_data)
                 db.add(cp)
 
         # ============ 2. 项目 ============
@@ -775,6 +1004,7 @@ def import_project(
             use_deep_research=proj_data.get("use_deep_research", True),
             use_flexible_architecture=True,  # P0-1: 统一为 True
         )
+        _set_timestamps(new_project, proj_data)
         db.add(new_project)
 
         # ============ 3. ContentBlocks ============
@@ -805,10 +1035,11 @@ def import_project(
                 pre_answers=b.get("pre_answers", {}),
                 depends_on=_map_list(b.get("depends_on", [])),
                 special_handler=b.get("special_handler"),
-                need_review=b.get("need_review", False),
+                need_review=b.get("need_review", True),
                 is_collapsed=b.get("is_collapsed", False),
                 digest=b.get("digest"),
             )
+            _set_timestamps(new_block, b)
             db.add(new_block)
 
         # ============ 4. ProjectFields ============
@@ -837,10 +1068,11 @@ def import_project(
                 pre_answers=f.get("pre_answers", {}),
                 dependencies=new_deps,
                 constraints=f.get("constraints", {}),
-                need_review=f.get("need_review", False),
+                need_review=f.get("need_review", True),
                 order=f.get("order", 0),
                 digest=f.get("digest"),
             )
+            _set_timestamps(new_field, f)
             db.add(new_field)
 
         # ============ 5. ChatMessages ============
@@ -860,6 +1092,7 @@ def import_project(
                 message_metadata=m.get("message_metadata", {}),
                 parent_message_id=_map_id(m.get("parent_message_id")),
             )
+            _set_timestamps(new_msg, m)
             db.add(new_msg)
 
         # ============ 6. ContentVersions ============
@@ -873,6 +1106,7 @@ def import_project(
                 source=v.get("source", "manual"),
                 source_detail=v.get("source_detail"),
             )
+            _set_timestamps(new_ver, v)
             db.add(new_ver)
 
         # ============ 7. BlockHistory ============
@@ -900,6 +1134,7 @@ def import_project(
                 children_snapshots=children_snaps,
                 undone=h.get("undone", False),
             )
+            _set_timestamps(new_hist, h)
             db.add(new_hist)
 
         # ============ 8. SimulationRecords ============
@@ -915,6 +1150,7 @@ def import_project(
                 feedback=s.get("feedback", {}),
                 status=s.get("status", "completed"),
             )
+            _set_timestamps(new_sim, s)
             db.add(new_sim)
 
         # ============ 9. EvalRuns + Tasks + Trials ============
@@ -932,6 +1168,7 @@ def import_project(
                 trial_count=run.get("trial_count", 0),
                 content_block_id=_map_id(run.get("content_block_id")),
             )
+            _set_timestamps(new_run, run)
             db.add(new_run)
 
         for task in data.get("eval_tasks", []):
@@ -949,6 +1186,7 @@ def import_project(
                 order_index=task.get("order_index", 0),
                 status=task.get("status", "completed"),
             )
+            _set_timestamps(new_task, task)
             db.add(new_task)
 
         for trial in data.get("eval_trials", []):
@@ -973,7 +1211,41 @@ def import_project(
                 tokens_out=trial.get("tokens_out", 0),
                 cost=trial.get("cost", 0.0),
             )
+            _set_timestamps(new_trial, trial)
             db.add(new_trial)
+
+        # ============ 10. MemoryItems ============
+        for mem in data.get("memory_items", []):
+            old_id = mem.get("id", "")
+            # 全局记忆（project_id 为 None）保持全局；项目记忆映射到新项目
+            old_mem_proj_id = mem.get("project_id")
+            new_mem_proj_id = new_proj_id if old_mem_proj_id else None
+            new_mem = MemoryItem(
+                id=_new_id(old_id),
+                project_id=new_mem_proj_id,
+                content=mem.get("content", ""),
+                source_mode=mem.get("source_mode", "assistant"),
+                source_phase=mem.get("source_phase", ""),
+                related_blocks=mem.get("related_blocks", []),
+            )
+            _set_timestamps(new_mem, mem)
+            db.add(new_mem)
+
+        # ============ 10b. Graders（项目专用） ============
+        for g in data.get("graders", []):
+            old_id = g.get("id", "")
+            new_grader = Grader(
+                id=_new_id(old_id),
+                name=g.get("name", ""),
+                grader_type=g.get("grader_type", "content_only"),
+                prompt_template=g.get("prompt_template", ""),
+                dimensions=g.get("dimensions", []),
+                scoring_criteria=g.get("scoring_criteria", {}),
+                is_preset=g.get("is_preset", False),
+                project_id=new_proj_id,  # 导入时关联到新项目
+            )
+            _set_timestamps(new_grader, g)
+            db.add(new_grader)
 
         # ============ 11. GenerationLogs ============
         for log in data.get("generation_logs", []):
@@ -994,6 +1266,7 @@ def import_project(
                 status=log.get("status", "success"),
                 error_message=log.get("error_message", ""),
             )
+            _set_timestamps(new_log, log)
             db.add(new_log)
 
         db.commit()
@@ -1009,6 +1282,8 @@ def import_project(
                 "content_versions": len(data.get("content_versions", [])),
                 "simulation_records": len(data.get("simulation_records", [])),
                 "eval_runs": len(data.get("eval_runs", [])),
+                "memory_items": len(data.get("memory_items", [])),
+                "graders": len(data.get("graders", [])),
                 "generation_logs": len(data.get("generation_logs", [])),
             },
         }

@@ -118,8 +118,8 @@ class ContentBlock(BaseModel):
         String(50), nullable=True
     )
     
-    # 控制
-    need_review: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 控制（默认 True：新建内容块需要人工确认后才生成，避免自动执行浪费 token）
+    need_review: Mapped[bool] = mapped_column(Boolean, default=True)
     is_collapsed: Mapped[bool] = mapped_column(Boolean, default=False)
     
     # 内容摘要（digest_service 自动生成，用于内容块索引）

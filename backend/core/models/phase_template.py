@@ -157,10 +157,10 @@ class PhaseTemplate(BaseModel):
                     "pre_questions": field.get("pre_questions", []),
                     "depends_on": field.get("depends_on", []),
                     "constraints": field.get("constraints", {}),
-                    "need_review": field.get("need_review", False),
+                    "need_review": field.get("need_review", True),
                     # 有预置内容：need_review=True → in_progress(待确认)，否则 completed
                     "status": (
-                        ("in_progress" if field.get("need_review", False) else "completed")
+                        ("in_progress" if field.get("need_review", True) else "completed")
                         if template_content else "pending"
                     ),
                 }

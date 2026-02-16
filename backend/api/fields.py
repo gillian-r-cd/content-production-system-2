@@ -72,7 +72,7 @@ class FieldCreate(BaseModel):
     pre_questions: List[str] = []
     dependencies: dict = {"depends_on": [], "dependency_type": "all"}
     constraints: Optional[dict] = None  # 字段生产约束
-    need_review: bool = False  # 是否需要人工确认（默认不需要，关键节点可开启）
+    need_review: bool = True  # 是否需要人工确认（默认需要确认，避免自动执行浪费 token）
     template_id: Optional[str] = None
 
 
@@ -102,7 +102,7 @@ class FieldResponse(BaseModel):
     pre_answers: dict
     dependencies: dict
     constraints: Optional[dict] = None  # 字段生产约束
-    need_review: bool = False  # 是否需要人工确认（默认不需要）
+    need_review: bool = True  # 是否需要人工确认（默认需要确认）
     template_id: Optional[str]
     created_at: str
     updated_at: str
@@ -656,7 +656,7 @@ def _field_to_response(
         pre_answers=field.pre_answers or {},
         dependencies=field.dependencies or {"depends_on": [], "dependency_type": "all"},
         constraints=field.constraints if hasattr(field, 'constraints') else None,
-        need_review=field.need_review if hasattr(field, 'need_review') else False,
+        need_review=field.need_review if hasattr(field, 'need_review') else True,
         template_id=field.template_id,
         created_at=field.created_at.isoformat() if field.created_at else "",
         updated_at=field.updated_at.isoformat() if field.updated_at else "",

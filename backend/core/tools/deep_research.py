@@ -1,6 +1,6 @@
 # backend/core/tools/deep_research.py
 # 功能: DeepResearch工具，基于 Tavily Search API 的深度调研
-# 主要函数: deep_research(), quick_research(), search_tavily()
+# 主要函数: deep_research(), search_tavily(), plan_search_queries(), synthesize_report()
 # 数据结构: ResearchReport, ConsumerPersona, PersonaBasicInfo, ConsumerProfileInfo
 
 """
@@ -119,31 +119,55 @@ def search_tavily(query: str, max_results: int = 5) -> List[dict]:
         return []
 
 
-async def plan_search_queries(query: str, intent: str) -> List[str]:
+async def plan_search_queries(query: str, intent: str, research_type: str = "consumer") -> List[str]:
     """
     使用 LLM 规划搜索查询（中文优先，针对项目意图）
     
     Args:
         query: 调研主题
         intent: 项目意图
+        research_type: "consumer"（消费者调研）或 "generic"（通用深度调研）
     
     Returns:
         搜索查询列表（3-5个）
     """
-    messages = [
-        SystemMessage(content="""你是一个搜索策略专家。你的任务是生成有效的搜索查询词，帮助了解特定项目的目标用户群体。
+    if research_type == "consumer":
+        system_content = """你是一个搜索策略专家。你的任务是生成有效的搜索查询词，帮助了解特定项目的目标用户群体。
 
 规则：
 1. 搜索词必须针对项目的目标用户、痛点、需求，而不是搜"消费者调研方法"这种方法论
 2. 搜索词要具体、有行业针对性
 3. 可以使用中文或英文搜索词（选择能获得更好结果的语言）
 4. 每个搜索词要从不同角度切入：用户画像、痛点、竞品、行业趋势、真实案例
-5. 生成5个搜索词，每行一个，不要编号"""),
-        HumanMessage(content=f"""项目意图:
+5. 生成5个搜索词，每行一个，不要编号"""
+        human_content = f"""项目意图:
 {intent}
 
+调研主题: {query}
+
 请为这个项目生成5个针对性的搜索查询词，用于了解它的目标受众是谁、有什么痛点和需求。
-注意不要搜"如何做消费者调研"这种方法论，而要搜实际的用户群体信息。"""),
+注意不要搜"如何做消费者调研"这种方法论，而要搜实际的用户群体信息。"""
+    else:
+        system_content = """你是一个搜索策略专家。你的任务是生成有效的搜索查询词，帮助深入了解特定主题。
+
+规则：
+1. 搜索词必须直接针对调研主题本身，而不是搜"如何调研"这种方法论
+2. 搜索词要具体、有行业针对性
+3. 可以使用中文或英文搜索词（选择能获得更好结果的语言）
+4. 每个搜索词要从不同角度切入：市场现状、竞争格局、行业趋势、关键玩家、技术发展、用户反馈
+5. 生成5个搜索词，每行一个，不要编号"""
+        human_content = f"""项目意图:
+{intent}
+
+调研主题: {query}
+
+请为这个调研主题生成5个针对性的搜索查询词。
+从多个角度覆盖：市场规模、竞争格局、行业趋势、关键参与者、最新发展等。
+注意不要搜"如何做调研"这种方法论，而要搜主题本身的实际信息。"""
+
+    messages = [
+        SystemMessage(content=system_content),
+        HumanMessage(content=human_content),
     ]
     
     response = await llm.ainvoke(messages)
@@ -234,6 +258,7 @@ async def deep_research(
     query: str,
     intent: str,
     max_sources: int = 10,
+    research_type: str = "consumer",
 ) -> ResearchReport:
     """
     执行深度调研（Tavily Search API）
@@ -247,12 +272,13 @@ async def deep_research(
         query: 调研主题
         intent: 项目意图
         max_sources: 最大信息源数量
+        research_type: "consumer"（消费者调研）或 "generic"（通用深度调研）
     
     Returns:
         ResearchReport
     """
     # 1. 规划搜索查询
-    search_queries = await plan_search_queries(query, intent)
+    search_queries = await plan_search_queries(query, intent, research_type)
     if not search_queries:
         # 降级：如果 LLM 未能生成查询词，使用意图中的关键信息
         search_queries = [intent[:100]]
@@ -282,8 +308,12 @@ async def deep_research(
     print(f"[DeepResearch] unique_results数量: {len(unique_results)}, URLs: {[r.get('url','')[:50] for r in unique_results[:3]]}")
 
     if not unique_results:
-        print("[DeepResearch] 警告：搜索未返回任何结果，降级到 quick_research")
-        return await quick_research(query, intent)
+        raise ValueError(
+            "Tavily 搜索未返回任何结果。"
+            "可能原因: 1) 搜索查询词与主题不匹配 "
+            "2) Tavily API 配额耗尽 3) 网络问题。"
+            "请稍后重试或调整调研主题。"
+        )
     
     report = await synthesize_report(unique_results, query, intent)
 
@@ -297,46 +327,5 @@ async def deep_research(
     print(f"[DeepResearch] 搜索查询: {search_queries}")
     print(f"[DeepResearch] 来源URLs: {[r.get('url','') for r in unique_results[:5]]}")
     print(f"[DeepResearch] 内容总长度: {len(combined_content)} 字符")
-    
-    return report
-
-
-async def quick_research(
-    query: str,
-    intent: str,
-) -> ResearchReport:
-    """
-    快速调研（不使用搜索，直接由LLM生成）
-    
-    Args:
-        query: 调研主题
-        intent: 项目意图
-    
-    Returns:
-        ResearchReport
-    """
-    messages = [
-        SystemMessage(content="""你是一个资深的用户研究专家。请基于你的知识，为以下项目生成消费者调研报告。
-
-注意：这是基于通用知识的推测（非实时搜索），建议后续补充真实调研数据。
-由于没有网络搜索来源，请勿添加引用标注。
-
-输出JSON格式，包含以下字段：
-- summary: 总体概述（200字以内）
-- consumer_profile: 消费者画像对象 {age_range, occupation, characteristics, behaviors}
-- pain_points: 核心痛点列表（3-5个）
-- value_propositions: 价值主张列表（3-5个）
-- personas: 3个典型用户小传，每个包含 {name, basic_info: {age, gender, city, occupation, income_level}, background, pain_points}
-- sources: 空列表（因为未使用网络搜索）"""),
-        HumanMessage(content=f"""# 调研主题
-{query}
-
-# 项目意图
-{intent}
-
-请生成调研报告："""),
-    ]
-    
-    report = await llm.with_structured_output(ResearchReport).ainvoke(messages)
     
     return report
