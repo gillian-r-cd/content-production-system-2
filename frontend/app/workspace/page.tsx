@@ -562,7 +562,6 @@ export default function WorkspacePage() {
                     content: "",
                     status: "in_progress",
                     ai_prompt: "",
-                    constraints: {},
                     depends_on: [],
                     special_handler: newPhase,
                     pre_questions: [],

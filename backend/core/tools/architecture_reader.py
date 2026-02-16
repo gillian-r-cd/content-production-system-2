@@ -269,7 +269,6 @@ def get_field_content(project_id: str, field_name: str, db: Optional[Session] = 
             "status": block.status,
             "content": block.content,
             "ai_prompt": block.ai_prompt,
-            "constraints": block.constraints,
             "dependencies": {"depends_on": block.depends_on or []},
             "need_review": block.need_review,
             "source": "content_block",

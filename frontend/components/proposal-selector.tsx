@@ -26,7 +26,6 @@ interface ProposalField {
   depends_on: string[];
   order: number;
   need_review: boolean;
-  constraints?: Record<string, any>;
   pre_questions?: string[];
 }
 
@@ -690,7 +689,6 @@ export function ProposalSelector({
           block_type: "field",
           ai_prompt: pField.ai_prompt || "",
           need_review: pField.need_review !== false,
-          constraints: pField.constraints || {},
         });
         if (pField.id) proposalToRealId[pField.id] = created.id;
         proposalToRealId[pField.name] = created.id;

@@ -23,7 +23,6 @@ import {
   Square,
   MessageSquarePlus,
   Workflow,
-  SlidersHorizontal,
   ShieldCheck,
   Zap,
   Pencil,
@@ -156,14 +155,12 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
   const [editedName, setEditedName] = useState(block.name);
   const [editedContent, setEditedContent] = useState(block.content || "");
   const [showPromptModal, setShowPromptModal] = useState(false);
-  const [showConstraintsModal, setShowConstraintsModal] = useState(false);
   const [showDependencyModal, setShowDependencyModal] = useState(false);
   
   
   // 编辑状态
   const [editedPrompt, setEditedPrompt] = useState(block.ai_prompt || "");
   const [savedPrompt, setSavedPrompt] = useState(block.ai_prompt || ""); // 本地追踪已保存的提示词
-  const [editedConstraints, setEditedConstraints] = useState(block.constraints || {});
   const [selectedDependencies, setSelectedDependencies] = useState<string[]>(block.depends_on || []);
   const [aiPromptPurpose, setAiPromptPurpose] = useState("");
   const [generatingPrompt, setGeneratingPrompt] = useState(false);
@@ -247,7 +244,6 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
     setEditedName(block.name);
     setEditedPrompt(block.ai_prompt || "");
     setSavedPrompt(block.ai_prompt || "");
-    setEditedConstraints(block.constraints || {});
     setSelectedDependencies(block.depends_on || []);
     setPreAnswers(block.pre_answers || {});
     // M4: 切换 block 或内容变化时清空 inline edit 状态
@@ -355,14 +351,13 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         if (showPromptModal) setShowPromptModal(false);
-        else if (showConstraintsModal) setShowConstraintsModal(false);
         else if (showDependencyModal) setShowDependencyModal(false);
         else if (versionWarning) setVersionWarning(null);
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [showPromptModal, showConstraintsModal, showDependencyModal, versionWarning]);
+  }, [showPromptModal, showDependencyModal, versionWarning]);
 
   // 保存内容
   const handleSaveContent = async () => {
@@ -413,18 +408,6 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
     } catch (err) {
       console.error("保存提示词失败:", err);
       alert("保存提示词失败: " + (err instanceof Error ? err.message : "未知错误"));
-    }
-  };
-
-  // 保存约束
-  const handleSaveConstraints = async () => {
-    try {
-      await blockAPI.update(block.id, { constraints: editedConstraints });
-      setShowConstraintsModal(false);
-      onUpdate?.();
-    } catch (err) {
-      console.error("保存约束失败:", err);
-      alert("保存约束失败: " + (err instanceof Error ? err.message : "未知错误"));
     }
   };
 
@@ -750,20 +733,6 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
             {savedPrompt ? "已配置提示词" : "未配置提示词"}
           </button>
           
-          {/* 约束配置 */}
-          <button
-            onClick={() => setShowConstraintsModal(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs border border-surface-4 bg-surface-2 text-zinc-400 hover:bg-surface-3 rounded-lg transition-colors"
-          >
-            <SlidersHorizontal className="w-3.5 h-3.5" />
-            约束配置
-            {block.constraints?.max_length && (
-              <span className="ml-1 px-1.5 py-0.5 bg-surface-3 rounded text-zinc-500">
-                ≤{block.constraints.max_length}字
-              </span>
-            )}
-          </button>
-          
           {/* 依赖配置 */}
           <button
             onClick={() => setShowDependencyModal(true)}
@@ -1019,101 +988,6 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
               </button>
               <button
                 onClick={handleSavePrompt}
-                className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-700 text-white rounded-lg"
-              >
-                保存
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 约束配置弹窗 */}
-      {showConstraintsModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div className="w-full max-w-lg bg-surface-1 border border-surface-3 rounded-xl shadow-2xl">
-            <div className="px-5 py-4 border-b border-surface-3 flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-zinc-200">约束配置</h3>
-              <button 
-                onClick={() => setShowConstraintsModal(false)}
-                className="p-1 text-zinc-500 hover:text-zinc-300"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="p-5 space-y-4">
-              {/* 最大字数 */}
-              <div>
-                <label className="block text-sm font-medium text-zinc-300 mb-1">最大字数</label>
-                <input
-                  type="number"
-                  value={editedConstraints.max_length || ""}
-                  onChange={(e) => setEditedConstraints({
-                    ...editedConstraints,
-                    max_length: e.target.value ? parseInt(e.target.value) : null
-                  })}
-                  className="w-full bg-surface-2 border border-surface-3 rounded-lg px-3 py-2 text-zinc-200 focus:outline-none focus:ring-2 focus:ring-brand-500"
-                  placeholder="不限制"
-                />
-              </div>
-              
-              {/* 输出格式 */}
-              <div>
-                <label className="block text-sm font-medium text-zinc-300 mb-1">输出格式</label>
-                <select
-                  value={editedConstraints.output_format || "markdown"}
-                  onChange={(e) => setEditedConstraints({
-                    ...editedConstraints,
-                    output_format: e.target.value
-                  })}
-                  className="w-full bg-surface-2 border border-surface-3 rounded-lg px-3 py-2 text-zinc-200 focus:outline-none focus:ring-2 focus:ring-brand-500"
-                >
-                  <option value="markdown">Markdown</option>
-                  <option value="plain_text">纯文本</option>
-                  <option value="json">JSON</option>
-                  <option value="list">列表</option>
-                </select>
-              </div>
-              
-              {/* 结构模板 */}
-              <div>
-                <label className="block text-sm font-medium text-zinc-300 mb-1">结构模板</label>
-                <input
-                  type="text"
-                  value={editedConstraints.structure || ""}
-                  onChange={(e) => setEditedConstraints({
-                    ...editedConstraints,
-                    structure: e.target.value || null
-                  })}
-                  className="w-full bg-surface-2 border border-surface-3 rounded-lg px-3 py-2 text-zinc-200 focus:outline-none focus:ring-2 focus:ring-brand-500"
-                  placeholder="如：标题 + 正文 + 总结"
-                />
-              </div>
-              
-              {/* 示例 */}
-              <div>
-                <label className="block text-sm font-medium text-zinc-300 mb-1">输出示例</label>
-                <textarea
-                  value={editedConstraints.example || ""}
-                  onChange={(e) => setEditedConstraints({
-                    ...editedConstraints,
-                    example: e.target.value || null
-                  })}
-                  rows={3}
-                  className="w-full bg-surface-2 border border-surface-3 rounded-lg px-3 py-2 text-zinc-200 focus:outline-none focus:ring-2 focus:ring-brand-500 resize-none"
-                  placeholder="提供一个期望输出的示例..."
-                />
-              </div>
-            </div>
-            <div className="px-5 py-4 border-t border-surface-3 flex justify-end gap-3">
-              <button
-                onClick={() => setShowConstraintsModal(false)}
-                className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-200"
-              >
-                取消
-              </button>
-              <button
-                onClick={handleSaveConstraints}
                 className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-700 text-white rounded-lg"
               >
                 保存

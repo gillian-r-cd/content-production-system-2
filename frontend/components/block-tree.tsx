@@ -40,7 +40,6 @@ interface FieldTemplate {
     content?: string;          // 预置内容（模板自带的初始内容）
     depends_on?: string[];
     need_review?: boolean;
-    constraints?: any;
     special_handler?: string;
     pre_questions?: string[];  // 生成前提问
   }[];
@@ -184,7 +183,6 @@ function BlockNode({
           ai_prompt: field.ai_prompt || "",
           depends_on: mappedDependsOn,
           need_review: field.need_review !== undefined ? field.need_review : true,
-          constraints: field.constraints || {},
           special_handler: field.special_handler || null,
           pre_questions: field.pre_questions || [],  // 传递生成前提问
         });

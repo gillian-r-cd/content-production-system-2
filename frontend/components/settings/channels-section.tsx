@@ -5,7 +5,7 @@
 
 import { useState } from "react";
 import { settingsAPI } from "@/lib/api";
-import { FormField, KeyValueEditor } from "./shared";
+import { FormField } from "./shared";
 
 export function ChannelsSection({ channels, onRefresh }: { channels: any[]; onRefresh: () => void }) {
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -23,7 +23,7 @@ export function ChannelsSection({ channels, onRefresh }: { channels: any[]; onRe
 
   const handleCreate = () => {
     setIsCreating(true);
-    setEditForm({ name: "", description: "", platform: "social", prompt_template: "", constraints: {} });
+    setEditForm({ name: "", description: "", platform: "social", prompt_template: "" });
   };
 
   const handleEdit = (channel: any) => {
@@ -112,15 +112,6 @@ export function ChannelsSection({ channels, onRefresh }: { channels: any[]; onRe
             placeholder="请将以下内容改编为适合小红书的格式，要求：&#10;1. 标题吸引人&#10;2. 使用合适的表情符号&#10;3. 控制在 500 字以内..."
             rows={5}
             className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 text-sm"
-          />
-        </FormField>
-
-        <FormField label="内容约束" hint="定义这个渠道的内容限制，如字数、格式等">
-          <KeyValueEditor
-            value={editForm.constraints || {}}
-            onChange={(v) => setEditForm({ ...editForm, constraints: v })}
-            keyPlaceholder="约束名，如：max_length"
-            valuePlaceholder="约束值，如：500"
           />
         </FormField>
 

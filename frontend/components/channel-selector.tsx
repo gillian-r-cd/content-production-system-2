@@ -177,10 +177,6 @@ export function ChannelSelector({
 内容形式：${channel.content_form}
 渠道特点：${channel.reason}`,
           need_review: true,
-          constraints: {
-            max_length: 2000,
-            output_format: "text",
-          },
         });
       }
 

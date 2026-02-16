@@ -543,39 +543,16 @@ class PromptEngine:
         # 添加字段基本信息
         parts.append(f"# 当前要生成的字段\n字段名称：{field.name}")
         
-        # 添加字段约束（非常重要！）
-        constraints = field.constraints or {}
-        constraints_lines = []
-        
-        if constraints.get("max_length"):
-            constraints_lines.append(f"- 字数限制：不超过 {constraints['max_length']} 字")
-        
-        # 输出格式处理
-        output_format = constraints.get("output_format", "markdown")
-        if output_format == "markdown":
-            constraints_lines.append("- 输出格式：**Markdown 富文本**")
-            constraints_lines.append("  - 必须使用标准 Markdown 语法")
-            constraints_lines.append("  - 标题使用 # ## ### 格式")
-            constraints_lines.append("  - 表格必须包含表头分隔行（如 | --- | --- |）")
-            constraints_lines.append("  - **表格每行列数必须与表头一致**，不得多出或缺少列")
-            constraints_lines.append("  - 若一个单元格需要包含多条内容，请用 <br> 换行，不要增加 | 列分隔符")
-            constraints_lines.append("  - 列表使用 - 或 1. 格式")
-            constraints_lines.append("  - 重点内容使用 **粗体** 或 *斜体*")
-        elif output_format:
-            format_names = {
-                "plain_text": "纯文本（不使用任何格式化符号）",
-                "json": "JSON 格式（必须是有效的 JSON）",
-                "list": "列表格式（每行一项）"
-            }
-            constraints_lines.append(f"- 输出格式：{format_names.get(output_format, output_format)}")
-        
-        if constraints.get("structure"):
-            constraints_lines.append(f"- 结构要求：{constraints['structure']}")
-        if constraints.get("example"):
-            constraints_lines.append(f"- 参考示例：\n{constraints['example']}")
-        
-        if constraints_lines:
-            parts.append(f"# 生成约束（必须严格遵守！）\n" + "\n".join(constraints_lines))
+        # 固定 Markdown 输出格式指令（前端统一使用 ReactMarkdown 渲染）
+        parts.append(
+            "# 输出格式（必须遵守）\n"
+            "使用 Markdown 格式输出。\n"
+            "- 标题使用 # ## ### 格式\n"
+            "- 列表使用 - 或 1. 格式\n"
+            "- 重点内容使用 **粗体** 或 *斜体*\n"
+            "- 表格必须包含表头分隔行（如 | --- | --- |），且每行列数与表头一致\n"
+            "- 若一个单元格需要多条内容，用 <br> 换行，不要增加 | 列分隔符"
+        )
         
         # 添加字段特定的AI提示词（核心指令）
         if field.ai_prompt and field.ai_prompt.strip() and field.ai_prompt != "请在这里编写生成提示词...":

@@ -26,13 +26,6 @@ export interface Project {
   updated_at: string;
 }
 
-export interface FieldConstraints {
-  max_length?: number | null;      // 最大字数
-  output_format?: string;           // 输出格式: markdown / plain_text / json / list
-  structure?: string | null;        // 结构模板
-  example?: string | null;          // 示例输出
-}
-
 /** @deprecated P0-1: 统一使用 ContentBlock，此接口仅保留供 FieldCard（经典视图）编译通过 */
 export interface Field {
   id: string;
@@ -49,7 +42,7 @@ export interface Field {
     depends_on: string[];
     dependency_type: string;
   };
-  constraints?: FieldConstraints;   // 字段生产约束
+  constraints?: Record<string, any>;   // 字段生产约束
   need_review: boolean;             // 是否需要人工确认（false = 自动生成）
   template_id: string | null;
   version_warning?: string;         // 版本变更警告（更新时返回）
@@ -604,7 +597,7 @@ export interface ContentBlock {
   content: string;
   status: "pending" | "in_progress" | "completed" | "failed";
   ai_prompt?: string;
-  constraints?: FieldConstraints;
+  constraints?: Record<string, any>;
   depends_on?: string[];
   special_handler: string | null;
   pre_questions?: string[];
@@ -670,7 +663,7 @@ export const blockAPI = {
     block_type?: string;
     content?: string;
     ai_prompt?: string;
-    constraints?: FieldConstraints;
+    constraints?: Record<string, any>;
     depends_on?: string[];
     special_handler?: string | null;
     pre_questions?: string[];
@@ -689,7 +682,7 @@ export const blockAPI = {
     content: string;
     status: string;
     ai_prompt: string;
-    constraints: FieldConstraints;
+    constraints: Record<string, any>;
     depends_on: string[];
     pre_questions: string[];
     pre_answers: Record<string, string>;

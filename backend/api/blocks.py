@@ -42,36 +42,15 @@ def _save_content_version(block: ContentBlock, source: str, db: Session, source_
 router = APIRouter(prefix="/api/blocks", tags=["content-blocks"])
 
 
-def _build_constraints_text(constraints: Optional[Dict]) -> str:
-    """构建约束文本，强调 Markdown 格式"""
-    lines = []
-    
-    if constraints:
-        if constraints.get("max_length"):
-            lines.append(f"- 字数限制：不超过 {constraints['max_length']} 字")
-        
-        output_format = constraints.get("output_format", "markdown")
-    else:
-        output_format = "markdown"
-    
-    if output_format == "markdown":
-        lines.append("- 输出格式：**Markdown 富文本**")
-        lines.append("  - 必须使用标准 Markdown 语法")
-        lines.append("  - 标题使用 # ## ### 格式")
-        lines.append("  - 表格必须包含表头分隔行（如 | --- | --- |）")
-        lines.append("  - **表格每行列数必须与表头一致**，不得多出或缺少列")
-        lines.append("  - 若一个单元格需要包含多条内容，请用 <br> 换行，不要增加 | 列分隔符")
-        lines.append("  - 列表使用 - 或 1. 格式")
-        lines.append("  - 重点内容使用 **粗体** 或 *斜体*")
-    elif output_format:
-        format_map = {
-            "plain_text": "纯文本（不使用任何格式化符号）",
-            "json": "JSON 格式（必须是有效的 JSON）",
-            "list": "列表格式（每行一项）",
-        }
-        lines.append(f"- 输出格式：{format_map.get(output_format, output_format)}")
-    
-    return "\n".join(lines)
+# 所有内容块生成时注入的 Markdown 格式指令（系统级约束，非用户配置）
+# 前端统一使用 ReactMarkdown 渲染，因此输出格式固定为 Markdown。
+MARKDOWN_FORMAT_INSTRUCTIONS = """# 输出格式（必须遵守）
+使用 Markdown 格式输出。
+- 标题使用 # ## ### 格式
+- 列表使用 - 或 1. 格式
+- 重点内容使用 **粗体** 或 *斜体*
+- 表格必须包含表头分隔行（如 | --- | --- |），且每行列数与表头一致
+- 若一个单元格需要多条内容，用 <br> 换行，不要增加 | 列分隔符"""
 
 
 # ========== Pydantic 模型 ==========
@@ -938,8 +917,6 @@ async def generate_block_content(
         creator_profile=creator_profile_text,
     )
     
-    constraints_text = _build_constraints_text(block.constraints)
-    
     # 构建预提问答案文本
     pre_answers_text = ""
     if block.pre_answers:
@@ -953,7 +930,6 @@ async def generate_block_content(
     has_placeholders = (
         "{creator_profile}" in ai_prompt
         or "{dependencies}" in ai_prompt
-        or "{constraints}" in ai_prompt
     )
     
     if has_placeholders:
@@ -961,10 +937,10 @@ async def generate_block_content(
         system_prompt = ai_prompt
         system_prompt = system_prompt.replace("{creator_profile}", creator_profile_text or "（暂无创作者特质）")
         system_prompt = system_prompt.replace("{dependencies}", dependency_content or "（无依赖内容）")
-        system_prompt = system_prompt.replace("{constraints}", constraints_text)
         system_prompt += pre_answers_text
+        system_prompt += f"\n\n---\n{MARKDOWN_FORMAT_INSTRUCTIONS}"
     else:
-        # 旧格式兼容：引擎拼接各段
+        # 标准格式：引擎拼接各段
         system_prompt = f"""{gc.to_prompt()}
 
 ---
@@ -976,8 +952,7 @@ async def generate_block_content(
 {f'---{chr(10)}# 参考内容{chr(10)}{dependency_content}' if dependency_content else ''}
 
 ---
-# 生成约束（必须严格遵守！）
-{constraints_text}
+{MARKDOWN_FORMAT_INSTRUCTIONS}
 """
     
     # 调用 AI
@@ -1033,9 +1008,9 @@ async def generate_block_content(
             "block_id": block.id,
             "content": response.content,
             "status": block.status,
-            "tokens_in": response.tokens_in,
-            "tokens_out": response.tokens_out,
-            "cost": response.cost,
+            "tokens_in": usage.get("input_tokens", 0),
+            "tokens_out": usage.get("output_tokens", 0),
+            "cost": 0.0,
         }
         
     except Exception as e:
@@ -1088,9 +1063,6 @@ async def generate_block_content_stream(
     
     gc = GoldenContext(creator_profile=creator_profile_text)
     
-    # 构建约束文本
-    constraints_text = _build_constraints_text(block.constraints)
-    
     # 构建预提问答案文本
     pre_answers_text = ""
     if block.pre_answers:
@@ -1110,8 +1082,7 @@ async def generate_block_content_stream(
 {f'---{chr(10)}# 参考内容{chr(10)}{dependency_content}' if dependency_content else ''}
 
 ---
-# 生成约束（必须严格遵守！）
-{constraints_text}
+{MARKDOWN_FORMAT_INSTRUCTIONS}
 """
     
     from core.llm import llm

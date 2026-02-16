@@ -322,7 +322,6 @@ def add_field(
     name: str,
     ai_prompt: str = "",
     depends_on: Optional[List[str]] = None,
-    constraints: Optional[Dict[str, Any]] = None,
     db: Optional[Session] = None,
 ) -> OperationResult:
     """
@@ -334,7 +333,6 @@ def add_field(
         name: 字段名称
         ai_prompt: AI 生成提示词
         depends_on: 依赖字段列表
-        constraints: 约束条件
         db: 数据库会话
     
     Returns:
@@ -408,7 +406,7 @@ def add_field(
             status="pending",
             ai_prompt=ai_prompt,
             depends_on=depends_on or [],
-            constraints=constraints or {},
+            constraints={},
         )
         db.add(block)
         
@@ -510,7 +508,7 @@ def update_field(
     Args:
         project_id: 项目ID
         field_name: 字段名称
-        updates: 更新内容 {name, ai_prompt, depends_on, constraints, content}
+        updates: 更新内容 {name, ai_prompt, depends_on, content}
         db: 数据库会话
     
     Returns:
@@ -556,9 +554,6 @@ def update_field(
         if "depends_on" in updates:
             block.depends_on = updates["depends_on"]
             updated_attrs.append("依赖")
-        if "constraints" in updates:
-            block.constraints = updates["constraints"]
-            updated_attrs.append("约束")
         if "content" in updates:
             block.content = updates["content"]
             updated_attrs.append("内容")
@@ -745,7 +740,6 @@ async def modify_architecture(
             name=params.get("name", ""),
             ai_prompt=params.get("ai_prompt", ""),
             depends_on=params.get("depends_on"),
-            constraints=params.get("constraints"),
             db=db,
         )
     
