@@ -108,13 +108,21 @@ export function AgentPanel({
     /** Group 全部撤回用: 多个 rollback 目标 */
     rollbackTargets?: RollbackTarget[];
   }[]>([]);
-  // Suggestion 生命周期事件队列: accept/reject/undo/followup 事件在此积累，下次发送消息时序列化注入
+  // Suggestion 生命周期事件队列: accept/reject/undo 事件在此积累，下次发送消息时序列化注入
   const pendingEventsRef = useRef<string[]>([]);
   // M6 T6.3: suggestionsRef 镜像 suggestions state，供 useCallback 闭包读取最新值
   const suggestionsRef = useRef<SuggestionCardData[]>(suggestions);
   useEffect(() => { suggestionsRef.current = suggestions; }, [suggestions]);
   // M6 T6.5: 追问源卡片 ID，新卡片到达后标记旧卡片为 superseded
+  // M7: 赋值时机从"点击追问时"改为"发送时"（由 T7.4 控制）
   const followUpSourceRef = useRef<string | null>(null);
+  // M7 T7.1: 追问目标（UI 驱动），非空时输入框上方显示追问标签
+  const [followUpTarget, setFollowUpTarget] = useState<{
+    cardId: string;
+    targetField: string;
+    summary: string;
+    groupId?: string;
+  } | null>(null);
 
   // 加载可用 Agent 模式
   useEffect(() => {
@@ -444,6 +452,26 @@ export function AgentPanel({
         mode: chatMode,
       };
 
+      // M7 T7.4: 追问上下文注入 — 发送时生成，而非点击追问时
+      if (followUpTarget) {
+        if (followUpTarget.groupId) {
+          // Group 追问：上下文包含整组信息
+          const groupCards = suggestionsRef.current.filter((s) => s.group_id === followUpTarget.groupId);
+          const cardSummaries = groupCards.map((c) => `「${c.target_field}」: ${c.summary}`).join("; ");
+          pendingEventsRef.current.push(
+            `[用户正在对修改建议组 (${groupCards.length} 项: ${cardSummaries}) 进行追问，组摘要: ${followUpTarget.summary}]`
+          );
+        } else {
+          // 单 Card 追问
+          pendingEventsRef.current.push(
+            `[用户正在对「${followUpTarget.targetField}」的修改建议 #${followUpTarget.cardId.slice(0, 8)} 进行追问，原建议摘要: ${followUpTarget.summary}]`
+          );
+        }
+        // M7: ref 赋值从点击时延迟到发送时，确保 SSE supersede 匹配的 ref 始终对应最近一次发送
+        followUpSourceRef.current = followUpTarget.cardId;
+        setFollowUpTarget(null);  // 清空 UI 标签
+      }
+
       // Suggestion 生命周期上下文注入（Layer 3）
       if (pendingEventsRef.current.length > 0) {
         requestBody.followup_context = pendingEventsRef.current.join("\n");
@@ -652,6 +680,8 @@ export function AgentPanel({
                     prev.map((s) => s.messageId === tempAiMsg.id ? { ...s, messageId: data.message_id } : s)
                   );
                 }
+                // M7 T7.5: 流结束后清空 followUpSourceRef（AI 回复纯文字没有新卡片时避免残留）
+                followUpSourceRef.current = null;
                 sendNotification(
                   isProducing ? "内容生成完成" : "Agent 回复完成",
                   isProducing ? "内容已生成完毕，点击查看" : "Agent 已完成回复，点击查看"
@@ -796,7 +826,23 @@ export function AgentPanel({
         current_phase: currentPhase || undefined,
         mode: chatMode,
       };
-      // Layer 3: 注入积累的 Suggestion 生命周期事件（与 handleSend 对齐）
+      // M7 T7.4: 追问上下文注入（与 handleSend 对齐）
+      if (followUpTarget) {
+        if (followUpTarget.groupId) {
+          const groupCards = suggestionsRef.current.filter((s) => s.group_id === followUpTarget.groupId);
+          const cardSummaries = groupCards.map((c) => `「${c.target_field}」: ${c.summary}`).join("; ");
+          pendingEventsRef.current.push(
+            `[用户正在对修改建议组 (${groupCards.length} 项: ${cardSummaries}) 进行追问，组摘要: ${followUpTarget.summary}]`
+          );
+        } else {
+          pendingEventsRef.current.push(
+            `[用户正在对「${followUpTarget.targetField}」的修改建议 #${followUpTarget.cardId.slice(0, 8)} 进行追问，原建议摘要: ${followUpTarget.summary}]`
+          );
+        }
+        followUpSourceRef.current = followUpTarget.cardId;
+        setFollowUpTarget(null);
+      }
+      // Layer 3: 注入积累的 Suggestion 生命周期事件
       if (pendingEventsRef.current.length > 0) {
         editRequestBody.followup_context = pendingEventsRef.current.join("\n");
         pendingEventsRef.current = [];
@@ -894,6 +940,30 @@ export function AgentPanel({
                   messageId: tempAiMsg.id,  // 关联到产生此卡片的 AI 消息
                   mode: chatMode,           // 记录产生此卡片的 Agent 模式（M1.5 mode 隔离）
                 };
+
+                // M7: supersede 逻辑（与 handleSend 对齐）
+                const sourceCardId = followUpSourceRef.current;
+                if (sourceCardId) {
+                  const sourceCard = suggestionsRef.current.find((s) => s.id === sourceCardId);
+                  if (sourceCard && sourceCard.target_field === data.target_field) {
+                    setSuggestions((prev) =>
+                      prev.map((s) => s.id === sourceCardId ? { ...s, status: "superseded" as SuggestionStatus } : s)
+                    );
+                    if (projectId) {
+                      fetch(`${API_BASE}/api/agent/confirm-suggestion`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          project_id: projectId,
+                          suggestion_id: sourceCardId,
+                          action: "supersede",
+                        }),
+                      }).catch(() => {});
+                    }
+                  }
+                  followUpSourceRef.current = null;
+                }
+
                 setSuggestions((prev) => [...prev, newCard]);
                 // M6 T6.6b: 累积卡片摘要（与 handleSend 对齐）
                 cardSummaries.push(data.summary || data.target_field);
@@ -928,6 +998,8 @@ export function AgentPanel({
                     prev.map((s) => s.messageId === tempAiMsg.id ? { ...s, messageId: data.message_id } : s)
                   );
                 }
+                // M7 T7.5: 流结束后清空 followUpSourceRef
+                followUpSourceRef.current = null;
               }
             } catch (e) {}
           }
@@ -987,26 +1059,15 @@ export function AgentPanel({
   }, []);  // M6: 不再依赖 suggestions（从 ref 读取）
 
   const handleSuggestionFollowUp = useCallback((card: SuggestionCardData) => {
-    // M6 T6.5: 记录追问源卡片 ID，新卡片到达后标记旧卡片为 superseded
-    followUpSourceRef.current = card.id;
-    // 推入追问事件（Layer 3）— M6 T6.3: 从 ref 读取 suggestions
-    if (card.group_id) {
-      // Group 追问：上下文包含整组信息
-      const groupCards = suggestionsRef.current.filter((s) => s.group_id === card.group_id);
-      const cardSummaries = groupCards.map((c) => `「${c.target_field}」: ${c.summary}`).join("; ");
-      pendingEventsRef.current.push(
-        `[用户正在对修改建议组 (${groupCards.length} 项: ${cardSummaries}) 进行追问，组摘要: ${card.summary}]`
-      );
-      setInput(`关于这组修改建议，`);
-    } else {
-      // 单 Card 追问
-      pendingEventsRef.current.push(
-        `[用户正在对「${card.target_field}」的修改建议 #${card.id.slice(0, 8)} 进行追问，原建议摘要: ${card.summary}]`
-      );
-      setInput(`关于「${card.target_field}」的修改建议，`);
-    }
+    // M7 T7.3: 只设置 followUpTarget，其余逻辑（ref 赋值、事件注入）延迟到发送时（T7.4）
+    setFollowUpTarget({
+      cardId: card.id,
+      targetField: card.target_field,
+      summary: card.summary,
+      groupId: card.group_id,
+    });
     inputRef.current?.focus();
-  }, []);  // M6: 不再依赖 suggestions（从 ref 读取）
+  }, []);
 
   const handleUndoComplete = useCallback((suggestionId: string) => {
     // M6 T6.3: 从 ref 读取 suggestions（避免闭包捕获过期值）
@@ -1300,6 +1361,23 @@ export function AgentPanel({
             </div>
           )}
 
+          {/* M7 T7.2: 追问标签条 — 与输入框视觉一体 */}
+          {followUpTarget && (
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-surface-3 border border-surface-3 border-b-0 rounded-t-lg text-sm">
+              <span className="text-zinc-400">💬 追问：</span>
+              <span className="text-zinc-200 truncate">
+                「{followUpTarget.targetField}」{followUpTarget.summary}
+              </span>
+              <button
+                onClick={() => setFollowUpTarget(null)}
+                className="ml-auto text-zinc-500 hover:text-zinc-300 shrink-0 px-1"
+                title="取消追问"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
           <div className="flex gap-2 items-end">
             <textarea
               ref={inputRef}
@@ -1309,7 +1387,10 @@ export function AgentPanel({
               placeholder={projectId ? `输入消息... 使用 @ 引用内容块${mentionItems.length > 0 ? ` (${mentionItems.length}个可用)` : ""}` : "请先选择项目"}
               disabled={!projectId || sending}
               rows={1}
-              className="flex-1 px-4 py-2 bg-surface-2 border border-surface-3 rounded-lg text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:opacity-50 resize-none overflow-hidden"
+              className={cn(
+                "flex-1 px-4 py-2 bg-surface-2 border border-surface-3 text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:opacity-50 resize-none overflow-hidden",
+                followUpTarget ? "rounded-b-lg rounded-t-none" : "rounded-lg"
+              )}
               style={{ minHeight: "40px", maxHeight: "160px" }}
             />
             {sending ? (

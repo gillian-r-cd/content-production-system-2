@@ -1484,6 +1484,99 @@ Agent: [文字] "好的，我看了场景库的内容，建议如下修改："
 
 ---
 
+### M6b: 状态持久化核心缺陷修复（优先级 P0）
+
+**目标**：修复 M6 实现中发现的两个底层缺陷，使卡片状态（accepted/rejected/undone/superseded）在刷新页面后正确保持。
+
+**问题诊断**：
+
+M6 的 `_persist_card_status` 实现存在两个相互独立的缺陷，导致状态变更**从未真正写入数据库**。
+
+| # | 现象 | 根因 | 修复思路 |
+|---|------|------|---------|
+| 1 | accept/reject 后刷新，卡片回到 pending | `_persist_card_status` 先通过 `msg.message_metadata.get("suggestion_cards", [])` 获取 list 引用，然后 in-place 修改 `c["status"]`。这同时修改了 SQLAlchemy 缓存的"已提交值"。随后 `{**msg.message_metadata, "suggestion_cards": cards_in_meta}` 创建的新 dict 与已被污染的旧值内容相同，SQLAlchemy `==` 比较认为无变化，**不发出 UPDATE 语句** | `import copy; meta = copy.deepcopy(msg.message_metadata)` — 在任何修改之前深拷贝，确保新旧值不共享引用 |
+| 2 | undo/supersede 返回 404 | `accept`/`reject` 时已将卡片从 `PENDING_SUGGESTIONS` pop 掉。后续 `undo`（撤回已应用的修改）或 `supersede`（追问替代旧卡片）调用 confirm-suggestion 时，`PENDING_SUGGESTIONS.get(id)` 返回 None，group 搜索也无结果，触发 404 | 对 undo/supersede action，当 `PENDING_SUGGESTIONS` 找不到卡片时，直接按 `project_id` + `card_id` 搜索 DB 消息元数据并更新状态，不依赖内存缓存 |
+
+**设计决策**：
+- 不改架构，仅修正 `_persist_card_status` 的实现缺陷。
+- `copy.deepcopy` 是 SQLAlchemy JSON 列变更检测的标准解法（与 `flag_modified` 相比更安全，不依赖 ORM 内部 API）。
+- undo/supersede 的 DB 直接搜索路径与 M6 T6.1 的 orphan 回退逻辑一致，只是触发条件不同。
+
+**范围**：
+- 后端 `api/agent.py`：
+  - `_persist_card_status`：deepcopy 修复
+  - `confirm_suggestion`：undo/supersede 不依赖 PENDING_SUGGESTIONS
+
+**验收标准**：
+1. accept 后刷新页面，卡片保持 "已应用" 状态
+2. reject 后刷新页面，卡片保持 "已拒绝" 状态
+3. undo 后刷新页面，卡片保持 "已撤回" 状态
+4. 追问产生新卡片后刷新页面，旧卡片保持 "已被新建议替代" 状态
+
+---
+
+### M7: 追问机制结构化重构（优先级 P1）
+
+**目标**：将追问绑定从散落在三处的隐式状态（`followUpSourceRef` + `pendingEventsRef` + 输入框文字）收拢为一个显式的 `followUpTarget` state，同时驱动 UI 标签和后端上下文注入，消除多卡片追问的歧义。
+
+**问题诊断**：
+
+| # | 现象 | 根因 | 修复思路 |
+|---|------|------|---------|
+| 1 | 连续点两张卡的"追问"，第一张的追踪被覆盖 | `followUpSourceRef` 是单值 ref，第二次覆盖第一次 | 改为 `followUpTarget` state，点击时只设 UI 绑定，发送时才写入追踪 ref |
+| 2 | 追问事件在点击时推入 `pendingEventsRef`，未发送就积两条 | 事件生成时机过早（点击时），应在确定时（发送时） | 追问事件延迟到 `handleSend` 时根据 `followUpTarget` 一次性生成 |
+| 3 | 输入框被塞入前缀文字，用户无法区分系统标记和可编辑内容 | `setInput("关于「...」")` 混淆了"绑定"和"输入" | 绑定信息移到输入框上方的结构化标签，输入框保持干净 |
+| 4 | 用户无法取消追问 | `followUpSourceRef` 在点击时立即设置，删除输入文字不影响 ref | 标签可点 ╳ 关闭，同时清空 `followUpTarget` |
+| 5 | supersede 匹配时机不可控，同字段多方案有误匹配风险 | ref 在点击时就设置，与实际发送之间有时间差和操作差 | ref 仅在发送时从 `followUpTarget.cardId` 写入，保证与用户实际发出的消息一一对应 |
+
+**核心设计**：
+
+追问本质上是一次**带上下文的普通对话**——AI 自行判断是否需要再出一张卡片。追问后 AI 可能：
+- 回复纯文字（讨论/解释）→ 旧卡片保持 pending，用户仍可应用/拒绝/继续追问
+- 输出新的 `propose_edit` → 旧卡片被 supersede
+
+两种响应都合理，系统不强制某一种。
+
+状态分两层，各有明确的生命周期：
+- `followUpTarget`（React state）：驱动 UI 标签。点击"追问"时设置，发送或用户取消时清空。
+- `followUpSourceRef`（useRef）：驱动 SSE supersede 匹配。仅在 `handleSend` 时从 `followUpTarget.cardId` 写入，新卡片到达或流结束时清空。
+
+这样解耦了"用户看到什么"（state → 标签）和"系统追踪什么"（ref → supersede），且两者都有明确的设置/清空时机，不会出现"用户已取消追问但系统仍在追踪"或"用户换了追问目标但系统还追踪旧的"的不一致。
+
+**UI 变更**：
+
+```
+┌─────────────────────────────────────────────────┐
+│ 💬 追问：「新内容块」补充"变化×应舍弃"象限的例子  ╳ │
+├─────────────────────────────────────────────────┤
+│ 你说的例子能不能更具体一点？比如...               │
+│                                          [发送]  │
+└─────────────────────────────────────────────────┘
+```
+
+- 输入框上方显示结构化标签（`followUpTarget` 非空时）
+- 标签内容 = `card.target_field` + `card.summary`（卡片已有信息，无需额外数据）
+- 点 ╳ 取消追问，清空 `followUpTarget`，输入框内容保留
+- 发送后标签自动消失
+- 输入框不再自动填充文字前缀——用户直接写追问内容
+
+**依赖**：M6（生命周期闭环）已完成。无后端改动。
+
+**范围**：
+- 前端 `agent-panel.tsx`：`followUpTarget` state + 输入区域标签 + `handleSend`/`handleSaveEdit` 逻辑
+- 前端 `suggestion-card.tsx`：无改动（`onFollowUp(data)` 接口不变，只是调用方行为变了）
+- 后端：无改动（`followup_context` 机制不变，`followUpSourceRef` supersede 逻辑复用）
+
+**验收标准**：
+1. 点击追问后，输入框上方出现结构化标签（含卡片标题和摘要）
+2. 点击标签的 ╳ 按钮可取消追问，标签消失，输入框内容不受影响
+3. 连续点两张卡的追问，标签更新为最后一张，`pendingEventsRef` 无追问事件累积
+4. 发送追问消息后，标签自动消失
+5. 追问后 AI 回复纯文字时，旧卡片保持 pending
+6. 追问后 AI 输出新卡片且 `target_field` 匹配时，旧卡片标记为 superseded
+
+---
+
 ## 十、实施 Todo List
 
 ### M1: Suggestion Card 核心通路 + Undo
@@ -1723,6 +1816,20 @@ Agent: [文字] "好的，我看了场景库的内容，建议如下修改："
   - 与 T6.6 对齐：handleSaveEdit 的 `suggestion_card` 事件处理也使用 `cardSummaries` 局部变量
   - 气泡格式统一为编号列表：`"✏️ 修改建议已生成：\n1. **摘要1**\n2. **摘要2**"`
 
+### M6b: 状态持久化核心缺陷修复
+
+#### 后端
+
+- [x] **T6b.1** `api/agent.py`：`_persist_card_status` 使用 `copy.deepcopy` 防止 SQLAlchemy 脏检测失效
+  - 在读取 `msg.message_metadata` 后立即深拷贝，断开新旧值的引用共享
+  - 修改只在深拷贝的副本上进行，`msg.message_metadata = 副本` 确保 SQLAlchemy 检测到变更
+  - 这是状态持久化失败的直接根因
+
+- [x] **T6b.2** `api/agent.py`：`confirm_suggestion` 对 undo/supersede 不依赖 `PENDING_SUGGESTIONS`
+  - accept/reject 已将卡片从 `PENDING_SUGGESTIONS` pop 掉，后续 undo/supersede 找不到 → 404
+  - 修复：当 `PENDING_SUGGESTIONS` 找不到卡片且 action 为 undo/supersede 时，直接按 project_id + card_id 搜索 DB 消息元数据并更新状态
+  - 复用 `_persist_card_status` 的 DB 回退搜索逻辑
+
 ### M3: Eval Report 桥接
 
 - [x] **T3.1** 在 `EvalReportPanel` 的综合诊断区域添加"让 Agent 修改"按钮
@@ -1739,6 +1846,59 @@ Agent: [文字] "好的，我看了场景库的内容，建议如下修改："
 - [x] **T4.2** toolbar 按钮：AI 改写 / AI 扩展 / AI 精简
 - [x] **T4.3** 点击后调用轻量级 API → 返回 diff 预览 → 编辑器内 inline 展示
 - [x] **T4.4** 接受/拒绝交互
+
+### M7: 追问机制结构化重构
+
+#### 状态与 UI
+
+- [x] **T7.1** `agent-panel.tsx`：新增 `followUpTarget` state
+  - 类型：`{ cardId: string; targetField: string; summary: string; groupId?: string } | null`
+  - 初始值 `null`
+  - 保留 `followUpSourceRef`（仅改变赋值时机：从"点击追问时"改为"发送时"）
+
+- [x] **T7.2** `agent-panel.tsx`：输入框上方追问标签 UI
+  - `followUpTarget` 非空时，在 `<textarea>` 上方渲染标签条
+  - 内容：`💬 追问：「{targetField}」{summary}`
+  - 右侧 ╳ 按钮：`onClick={() => setFollowUpTarget(null)}`
+  - 样式：与输入框视觉一体（底部无圆角 + 共享边框），标签区背景略深
+  - `followUpTarget` 为 `null` 时标签条不渲染，输入框恢复正常圆角
+
+#### 逻辑重构
+
+- [x] **T7.3** `agent-panel.tsx`：重构 `handleSuggestionFollowUp`
+  - 改为只做一件事：`setFollowUpTarget({ cardId: card.id, targetField: card.target_field, summary: card.summary, groupId: card.group_id })`
+  - 删除 `followUpSourceRef.current = card.id`（移到 T7.4 发送时设置）
+  - 删除 `pendingEventsRef.current.push(...)` 追问事件（移到 T7.4 发送时生成）
+  - 删除 `setInput("关于「...」的修改建议，")`（输入框保持干净）
+  - Group 追问：`groupId` 非空，标签用 `card.summary`（即 groupSummary）
+  - 依赖：T7.1
+
+- [x] **T7.4** `agent-panel.tsx`：重构 `handleSend` / `handleSaveEdit` 的追问上下文生成
+  - 发送前检查 `followUpTarget`：
+    - 非空时：根据 `followUpTarget` 生成追问描述文本，合并到 `followup_context`
+    - 将 `followUpTarget.cardId` 写入 `followUpSourceRef.current`（供 SSE supersede 匹配）
+    - `setFollowUpTarget(null)` 清空 UI 标签
+  - 追问描述文本模板：
+    - 单卡：`[用户正在对「{targetField}」的修改建议 #{cardId.slice(0,8)} 进行追问，原建议摘要: {summary}]`
+    - 组：`[用户正在对修改建议组进行追问，组摘要: {summary}]`
+  - 与 `pendingEventsRef` 中的其他事件（accept/reject/undo）合并为最终 `followup_context`
+  - `handleSaveEdit` 同步处理（与 `handleSend` 对齐）
+  - 依赖：T7.1, T7.3
+
+- [x] **T7.5** SSE supersede 逻辑验证：已补充 `done` 事件清空 ref + `handleSaveEdit` supersede 逻辑
+  - 现有 SSE handler 已使用 `followUpSourceRef.current` 做 supersede 匹配
+  - T7.4 改变了 ref 的赋值时机（从点击时 → 发送时），但 SSE handler 逻辑不变
+  - 验证：追问发送后 AI 回复新卡片 → `followUpSourceRef` 有值 → supersede 正常触发
+  - 验证：追问发送后 AI 回复纯文字 → 流结束后 `followUpSourceRef` 被清空 → 无误触发
+  - 依赖：T7.4
+
+#### 清理
+
+- [x] **T7.6** 删除旧追问代码，确认无遗漏
+  - T7.3 已删除 `handleSuggestionFollowUp` 中的三行旧逻辑
+  - 确认 `SuggestionGroup.handleGroupFollowUp`（`suggestion-card.tsx`）调用 `onFollowUp(card)` 的接口不变——只是调用方（`agent-panel.tsx`）的处理逻辑变了
+  - 确认 `followUpSourceRef` 声明保留（仍用于 SSE supersede），仅删除 `handleSuggestionFollowUp` 中的赋值
+  - 依赖：T7.3, T7.4, T7.5
 
 ---
 
@@ -1764,6 +1924,10 @@ Agent: [文字] "好的，我看了场景库的内容，建议如下修改："
 | **[已修复]** useCallback 闭包捕获过期 suggestions | 连续操作多张卡片时读到旧数据，Layer 3 事件丢失字段名 | M6 T6.3：`suggestionsRef` 镜像模式 |
 | **[发现]** 连续接受多卡片时前一张 undo 机会被覆盖 | `undoToast` 为单值 state，第二次 accept 替换掉第一次的 toast | M6 T6.7：undoToast 改为 FIFO 队列 |
 | **[发现]** 编辑/重试后孤儿卡片残留 | 消息被截断但关联 suggestion cards 未清理，出现不可操作的孤儿卡片 | M6 T6.8：编辑/重试时同步清理 suggestions |
+| **[发现]** 多卡片追问绑定混乱 | `followUpSourceRef` 单值 ref + 点击时赋值 + 输入框文字混淆，连续追问时追踪错乱、事件累积 | M7：`followUpTarget` state 驱动 UI 标签，ref 延迟到发送时赋值 |
+| **[发现]** 追问后用户无法取消 | 绑定信息写在 ref 和 `pendingEventsRef` 中，删除输入文字无效 | M7 T7.2：结构化标签 ╳ 按钮清空 `followUpTarget` |
+| **[已修复]** `_persist_card_status` SQLAlchemy 脏检测失效 | `cards_in_meta` 是 `msg.message_metadata` 内部 list 的引用，in-place 修改 `c["status"]` 同时污染了 SQLAlchemy 缓存的"已提交值"，新旧值内容相同导致不发出 UPDATE | M6b T6b.1：`copy.deepcopy(msg.message_metadata)` 在修改前断开引用 |
+| **[已修复]** undo/supersede 在 accept 后 404 | accept/reject 从 PENDING_SUGGESTIONS pop 卡片，后续 undo/supersede 找不到 → 404 | M6b T6b.2：undo/supersede 不依赖 PENDING_SUGGESTIONS，直接搜索 DB 元数据 |
 
 ---
 

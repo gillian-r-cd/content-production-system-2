@@ -1112,7 +1112,12 @@ async def confirm_suggestion(
 
         M6 T6.1: 当 card_data 中缺少 message_id 时（SSE 流尚未结束/race condition），
         回退到按 project_id 搜索近期 assistant 消息的 suggestion_cards 元数据。
+
+        M6b T6b.1: 使用 copy.deepcopy 防止 in-place 修改污染 SQLAlchemy 的"已提交值"，
+        确保 msg.message_metadata 赋值时新旧值不同，触发 UPDATE。
         """
+        import copy
+
         # 收集需要更新的 message_id → card_ids 映射
         msg_card_map: dict[str, list[str]] = {}
         orphan_card_ids: list[str] = []
@@ -1158,14 +1163,21 @@ async def confirm_suggestion(
             msg = db.query(ChatMessage).filter(ChatMessage.id == mid).first()
             if not msg or not msg.message_metadata:
                 continue
-            cards_in_meta = msg.message_metadata.get("suggestion_cards", [])
+            # M6b 核心修复: deepcopy 断开引用，避免 in-place 修改污染 SQLAlchemy 已提交值
+            updated_meta = copy.deepcopy(msg.message_metadata)
+            cards_in_meta = updated_meta.get("suggestion_cards", [])
             cid_set = set(cids)
+            updated_count = 0
             for c in cards_in_meta:
                 if c.get("id") in cid_set:
                     c["status"] = new_status
-            # SQLAlchemy JSON 列需要显式标记为脏
-            updated_meta = {**msg.message_metadata, "suggestion_cards": cards_in_meta}
-            msg.message_metadata = updated_meta
+                    updated_count += 1
+            if updated_count > 0:
+                msg.message_metadata = updated_meta
+                logger.info(
+                    "[_persist_card_status] 更新 %d 张卡片状态为 %s (msg=%s)",
+                    updated_count, new_status, mid[:8],
+                )
 
     # 解析目标 cards: suggestion_id 可能是单个 card_id 或 group_id
     cards_to_process: list[tuple[str, dict]] = []  # [(card_id, card_data), ...]
@@ -1179,11 +1191,49 @@ async def confirm_suggestion(
         for cid, cdata in list(PENDING_SUGGESTIONS.items()):
             if cdata.get("group_id") == suggestion_id:
                 cards_to_process.append((cid, cdata))
-        if not cards_to_process:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Suggestion {suggestion_id} not found (may have expired or already processed)",
+
+    # --- undo / supersede: 仅持久化状态变更（不操作 DB 内容） ---
+    # M6b T6b.2: 这些 action 不需要 PENDING_SUGGESTIONS 中的 edits/content 数据，
+    # 只需要更新 message_metadata 中的 status 字段。
+    # accept/reject 已将卡片 pop 掉，所以 undo/supersede 经常找不到缓存。
+    # 此处直接按 card_id 搜索 DB 消息元数据并更新。
+    if request.action in ("undo", "supersede"):
+        status_map = {"undo": "undone", "supersede": "superseded"}
+        new_status = status_map[request.action]
+
+        if cards_to_process:
+            # 卡片仍在缓存（如 pending 状态的卡片被 supersede）
+            for cid, cdata in cards_to_process:
+                cdata["status"] = new_status
+                PENDING_SUGGESTIONS.pop(cid, None)
+            _persist_card_status(
+                [cid for cid, _ in cards_to_process],
+                new_status,
+                [cd for _, cd in cards_to_process],
             )
+        else:
+            # 卡片已从缓存 pop（accept/reject 后的 undo/supersede）
+            # 直接搜索 DB 更新 message_metadata
+            _persist_card_status(
+                [suggestion_id],
+                new_status,
+                [{}],  # 无 message_id，触发 DB 回退搜索
+            )
+
+        db.commit()
+        logger.info("[confirm-suggestion] %s card %s", request.action, suggestion_id[:8])
+        return ConfirmSuggestionResponse(
+            success=True,
+            applied_cards=[],
+            message=f"已标记为 {new_status}",
+        )
+
+    # --- accept / reject / partial 需要 PENDING_SUGGESTIONS 中的完整数据 ---
+    if not cards_to_process:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Suggestion {suggestion_id} not found (may have expired or already processed)",
+        )
 
     # --- reject: 标记所有相关 card 为已拒绝 ---
     if request.action == "reject":
@@ -1297,27 +1347,6 @@ async def confirm_suggestion(
             db.rollback()
             logger.error("[confirm-suggestion] 批量应用失败: %s", e, exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
-
-    # --- undo / supersede: 仅持久化状态变更（不操作 DB 内容） ---
-    # undo: 前端已调用 rollback API 回滚了内容，此处仅持久化 "undone" 状态
-    # supersede: 追问产生新卡片后，旧卡片标记为 "superseded"
-    if request.action in ("undo", "supersede"):
-        status_map = {"undo": "undone", "supersede": "superseded"}
-        new_status = status_map[request.action]
-        for cid, cdata in cards_to_process:
-            cdata["status"] = new_status
-        _persist_card_status(
-            [cid for cid, _ in cards_to_process],
-            new_status,
-            [cd for _, cd in cards_to_process],
-        )
-        db.commit()
-        logger.info("[confirm-suggestion] %s %d 张卡", request.action, len(cards_to_process))
-        return ConfirmSuggestionResponse(
-            success=True,
-            applied_cards=[],
-            message=f"已标记 {len(cards_to_process)} 张卡片为 {new_status}",
-        )
 
     raise HTTPException(status_code=400, detail=f"Unknown action: {request.action}")
 
