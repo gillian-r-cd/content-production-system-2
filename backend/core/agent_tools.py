@@ -100,6 +100,21 @@ def _set_content_status(entity) -> None:
         entity.status = "completed"
 
 
+# 使用结构化 JSON 内容的 special_handler 集合。
+# 这些内容块有专用 UI 和专用工具，不能被纯文本工具（rewrite_field / generate_field_content）覆写。
+_STRUCTURED_HANDLERS = frozenset({
+    "eval_persona_setup",   # 目标消费者画像 → manage_persona
+    "eval_task_config",     # 评估任务配置 → 前端专用 UI
+    "eval_report",          # 评估报告 → run_evaluation
+})
+
+
+def _is_structured_handler(entity) -> bool:
+    """判断内容块是否使用结构化 JSON 格式，不能被纯文本工具覆写。"""
+    handler = getattr(entity, "special_handler", None)
+    return handler in _STRUCTURED_HANDLERS
+
+
 # ============== Suggestion Card 缓存 ==============
 # M1: 内存字典缓存未确认的 SuggestionCard（M5 迁移到 DB）
 # key = suggestion_id (UUID), value = SuggestionCard dict
@@ -157,6 +172,13 @@ async def propose_edit(
         entity = _find_block(db, project_id, target_field)
         if not entity:
             return _json_err(f"找不到内容块「{target_field}」")
+
+        # 防护：结构化 special_handler 块不能被纯文本编辑
+        if _is_structured_handler(entity):
+            return _json_err(
+                f"内容块「{target_field}」是结构化数据块（{entity.special_handler}），"
+                f"不能使用 propose_edit 修改。请使用对应的专用工具。"
+            )
 
         original_content = entity.content or ""
         if not original_content.strip():
@@ -283,6 +305,13 @@ async def _rewrite_field_impl(
         if not entity:
             return _json_err(f"找不到内容块「{field_name}」")
 
+        # 防护：结构化 special_handler 块不能用纯文本重写，应使用专用工具
+        if _is_structured_handler(entity):
+            return _json_err(
+                f"内容块「{field_name}」是结构化数据块（{entity.special_handler}），"
+                f"不能使用 rewrite_field 修改。请使用对应的专用工具（如 manage_persona）。"
+            )
+
         current_content = entity.content or ""
         if not current_content.strip():
             return _json_err(f"内容块「{field_name}」为空，请使用 generate_field_content 生成内容")
@@ -382,6 +411,13 @@ async def _generate_field_impl(
         entity = _find_block(db, project_id, field_name)
         if not entity:
             return _json_err(f"找不到内容块「{field_name}」")
+
+        # 防护：结构化 special_handler 块不能用纯文本生成，应使用专用工具
+        if _is_structured_handler(entity):
+            return _json_err(
+                f"内容块「{field_name}」是结构化数据块（{entity.special_handler}），"
+                f"不能使用 generate_field_content 生成。请使用对应的专用工具（如 manage_persona）。"
+            )
 
         project = db.query(Project).filter(Project.id == project_id).first()
         creator_ctx = ""
@@ -563,13 +599,20 @@ def update_field(field_name: str, content: str, config: Annotated[RunnableConfig
         if not entity:
             return _json_err(f"找不到内容块「{field_name}」")
 
+        # 防护：结构化 special_handler 块不能被纯文本覆写
+        if _is_structured_handler(entity):
+            return _json_err(
+                f"内容块「{field_name}」是结构化数据块（{entity.special_handler}），"
+                f"不能使用 update_field 覆写。请使用对应的专用工具。"
+            )
+
         if entity.content and entity.content.strip():
             _save_version(db, entity.id, entity.content, "agent")
         entity.content = content
         _set_content_status(entity)
         db.commit()
 
-        return _json_ok(field_name, "updated", f"✅ 已更新「{field_name}」")
+        return _json_ok(field_name, "updated", f"已更新「{field_name}」")
     except Exception as e:
         db.rollback()
         return _json_err(str(e))

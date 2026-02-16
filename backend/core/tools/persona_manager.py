@@ -125,6 +125,27 @@ def _get_research_block(project_id: str, db: Session) -> Optional[ContentBlock]:
     ).first()
 
 
+def _get_persona_source(project_id: str, db: Session) -> Optional[ContentBlock]:
+    """获取 persona 存储源（统一入口）。
+    
+    优先级：
+    1. 消费者调研报告（research block）—— 调研数据中的 personas 字段
+    2. 目标消费者画像（eval_persona_setup block）—— 独立画像存储
+    
+    两者都存储 {"personas": [...]} 格式，CRUD 操作对两者兼容。
+    """
+    field = _get_research_field(project_id, db)
+    if field and field.content:
+        # research field 有内容才用它；空 research field 不如 persona block
+        return field
+    # research field 不存在或为空，回退到 persona block
+    persona_block = _get_persona_block(project_id, db)
+    if persona_block:
+        return persona_block
+    # 最后尝试空的 research field（可能有但无内容）
+    return field
+
+
 def _parse_personas(content: str) -> List[Persona]:
     """从调研报告内容中解析人物列表"""
     try:
@@ -179,19 +200,20 @@ def list_personas(
     project_id: str,
     db: Optional[Session] = None,
 ) -> PersonaResult:
-    """列出所有人物"""
+    """列出所有人物。从 research field 和 persona block 中聚合。"""
     if db is None:
         db = next(get_db())
     
-    field = _get_research_field(project_id, db)
-    if not field or not field.content:
+    # 从 persona source（research 或 persona block）读取
+    source = _get_persona_source(project_id, db)
+    if not source or not source.content:
         return PersonaResult(
             success=True,
             message="暂无人物",
             personas=[],
         )
     
-    personas = _parse_personas(field.content)
+    personas = _parse_personas(source.content)
     return PersonaResult(
         success=True,
         message=f"共 {len(personas)} 个人物",
@@ -204,16 +226,17 @@ def create_persona(
     persona_data: Dict[str, Any],
     db: Optional[Session] = None,
 ) -> PersonaResult:
-    """创建新人物"""
+    """创建新人物。支持 research field 或 persona block 作为存储。"""
     if db is None:
         db = next(get_db())
     
-    field = _get_research_field(project_id, db)
+    # 获取存储源：research field 或 persona block
+    field = _get_persona_source(project_id, db)
     if not field:
         return PersonaResult(
             success=False,
-            message="消费者调研报告不存在，请先完成调研",
-            error="Research field not found",
+            message="没有找到可存储画像的内容块（消费者调研报告或目标消费者画像都不存在）",
+            error="No persona storage block found",
         )
     
     try:
@@ -231,7 +254,7 @@ def create_persona(
         
         personas.append(new_persona)
         _save_personas(field, personas, db)
-        # 同步到 ContentBlock
+        # 同步到所有相关 ContentBlock
         _sync_personas_to_blocks(project_id, personas, db)
         db.commit()
         
@@ -259,12 +282,12 @@ def update_persona(
     if db is None:
         db = next(get_db())
     
-    field = _get_research_field(project_id, db)
+    field = _get_persona_source(project_id, db)
     if not field:
         return PersonaResult(
             success=False,
-            message="消费者调研报告不存在",
-            error="Research field not found",
+            message="没有找到可存储画像的内容块",
+            error="No persona storage block found",
         )
     
     try:
@@ -340,12 +363,12 @@ def delete_persona(
     if db is None:
         db = next(get_db())
     
-    field = _get_research_field(project_id, db)
+    field = _get_persona_source(project_id, db)
     if not field:
         return PersonaResult(
             success=False,
-            message="消费者调研报告不存在",
-            error="Research field not found",
+            message="没有找到可存储画像的内容块",
+            error="No persona storage block found",
         )
     
     try:
@@ -384,7 +407,7 @@ async def generate_persona(
     persona_hint: str = "",
     db: Optional[Session] = None,
 ) -> PersonaResult:
-    """根据提示生成新人物"""
+    """根据提示生成新人物。支持无调研报告场景（从 persona block 读取已有画像）。"""
     if db is None:
         db = next(get_db())
     
@@ -402,13 +425,13 @@ async def generate_persona(
     intent_research = get_intent_and_research(project_id, db)
     intent = intent_research.get("intent", "")
     
-    # 获取现有人物作为参考
-    field = _get_research_field(project_id, db)
+    # 获取现有人物作为参考（统一从 persona source 读取）
+    source = _get_persona_source(project_id, db)
     existing_personas = []
     consumer_profile = {}
-    if field and field.content:
+    if source and source.content:
         try:
-            data = json.loads(field.content)
+            data = json.loads(source.content)
             existing_personas = data.get("personas", [])
             consumer_profile = data.get("consumer_profile", {})
         except:
