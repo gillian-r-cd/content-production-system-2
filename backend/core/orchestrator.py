@@ -172,6 +172,9 @@ def build_system_prompt(state: AgentState) -> str:
                 # M1.5: 只展示当前 mode 产生的 pending 卡片，避免跨模式认知污染
                 if card.get("source_mode", "assistant") != current_mode:
                     continue
+                # 只展示 pending 状态的卡片（undone/superseded/accepted/rejected 不应出现）
+                if card.get("status", "pending") != "pending":
+                    continue
                 target = card.get("target_field", "?")
                 summary = card.get("summary", "")
                 items.append(f"  - #{sid[:8]}: 目标字段「{target}」，摘要: {summary}")

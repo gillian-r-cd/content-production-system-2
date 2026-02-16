@@ -590,7 +590,7 @@ export function AgentPanel({
                         body: JSON.stringify({
                           project_id: projectId,
                           suggestion_id: sourceCardId,
-                          action: "undo",  // 复用 undo action 持久化非 pending 状态
+                          action: "supersede",  // 使用正确的 action，后端映射为 "superseded" 状态
                         }),
                       }).catch(() => {});
                     }
@@ -606,17 +606,6 @@ export function AgentPanel({
                   prev.map((m) =>
                     m.id === tempAiMsg.id
                       ? { ...m, content: `✏️ 修改建议已生成：\n${summaryText}` }
-                      : m
-                  )
-                );
-              } else if (data.type === "modify_confirm_needed") {
-                // 修改确认（需要用户确认的修改）— 旧流程兼容
-                console.log("[AgentPanel] Modify confirm needed:", data.target_field);
-                const summary = data.summary || "修改建议已生成";
-                setMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === tempAiMsg.id
-                      ? { ...m, content: `✏️ **${data.target_field}** 修改方案：\n\n${summary}\n\n请在左侧工作台查看并确认修改。` }
                       : m
                   )
                 );
@@ -731,6 +720,8 @@ export function AgentPanel({
     setSending(true);
     try {
       await agentAPI.retryMessage(messageId);
+      // 清除 undoQueue: loadHistory 会重建 suggestions，旧的 undo toast 不再有效
+      setUndoQueue([]);
       await loadHistory();
     } catch (err) {
       console.error("重试失败:", err);
@@ -797,17 +788,23 @@ export function AgentPanel({
       };
       setMessages(prev => [...prev, tempAiMsg]);
       
-      // 4. 使用流式 API 重新发送（包含 current_phase）
+      // 4. 使用流式 API 重新发送（包含 current_phase + Layer 3 事件）
+      const editRequestBody: Record<string, unknown> = {
+        project_id: projectId,
+        message: editedContent,
+        references,
+        current_phase: currentPhase || undefined,
+        mode: chatMode,
+      };
+      // Layer 3: 注入积累的 Suggestion 生命周期事件（与 handleSend 对齐）
+      if (pendingEventsRef.current.length > 0) {
+        editRequestBody.followup_context = pendingEventsRef.current.join("\n");
+        pendingEventsRef.current = [];
+      }
       const response = await fetch(`${API_BASE}/api/agent/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          project_id: projectId,
-          message: editedContent,
-          references,
-          current_phase: currentPhase || undefined,
-          mode: chatMode,
-        }),
+        body: JSON.stringify(editRequestBody),
       });
 
       if (!response.ok) throw new Error(`Stream failed: ${response.status}`);
@@ -904,13 +901,6 @@ export function AgentPanel({
                 setMessages(prev =>
                   prev.map(m => m.id === tempAiMsg.id
                     ? { ...m, content: `✏️ 修改建议已生成：\n${summaryText}` }
-                    : m)
-                );
-              } else if (data.type === "modify_confirm_needed") {
-                const summary = data.summary || "修改建议已生成";
-                setMessages(prev =>
-                  prev.map(m => m.id === tempAiMsg.id
-                    ? { ...m, content: `✏️ **${data.target_field}** 修改方案：\n\n${summary}\n\n请在左侧工作台查看并确认修改。` }
                     : m)
                 );
               } else if (data.type === "token") {
@@ -1071,6 +1061,7 @@ export function AgentPanel({
     // 把工具 ID 翻译为自然语言指令，通过 Agent 流式对话发送
     // 这样 Agent 有上下文、有流式进度，比直接调 /tool 好得多
     const TOOL_INSTRUCTIONS: Record<string, string> = {
+      propose_edit: "请帮我看看当前内容有什么可以改进的，用修改建议卡片展示。",
       rewrite_field: "请帮我重写内容块。",
       generate_field_content: "请帮我生成当前内容块的内容。",
       query_field: "请查询当前内容块的状态。",

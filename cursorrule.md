@@ -100,13 +100,14 @@
 
 ## 当前开发重点（Suggestion Card）
 
-正在设计和实施的核心改进是 **Suggestion Card 修改闭环**：
+核心改进 **Suggestion Card 修改闭环** 已实现（M1/M1.5/M2/M3/M4/M6 已完成）：
 
-1. Agent 输出修改建议时，使用 `propose_edit` 工具（待实现）
-2. 前端以 Suggestion Card 形式展示 diff
-3. 用户可以"应用 / 拒绝 / 追问"
-4. 应用后保存版本快照，支持 15 秒 Undo Toast 和完整版本回滚
-5. 多字段修改以 SuggestionGroup 形式聚合展示
+1. Agent 输出修改建议时，使用 `propose_edit` 工具（已实现）
+2. 前端以 SuggestionCard 形式展示 diff 预览（已实现）
+3. 用户可以"应用 / 拒绝 / 追问"（已实现）
+4. 应用后保存版本快照，支持 15 秒 Undo Toast 和完整版本回滚（已实现）
+5. 多字段修改每个字段独立 SuggestionCard（已实现，SuggestionGroup UI 已废弃）
+6. 卡片状态持久化、追问→superseded 闭环、stale closure 修复（M6 已完成）
 
 详见 `docs/suggestion_card_design.md`
 
