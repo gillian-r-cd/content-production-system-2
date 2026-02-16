@@ -82,6 +82,8 @@ export function ContentBlockCard({
   const [savedPrompt, setSavedPrompt] = useState(block.ai_prompt || ""); // 本地追踪已保存的提示词
   const [editedConstraints, setEditedConstraints] = useState(block.constraints || {});
   const [selectedDependencies, setSelectedDependencies] = useState<string[]>(block.depends_on || []);
+  const [aiPromptPurpose, setAiPromptPurpose] = useState("");
+  const [generatingPrompt, setGeneratingPrompt] = useState(false);
   
   // 生成前提问答案
   const [preAnswers, setPreAnswers] = useState<Record<string, string>>(block.pre_answers || {});
@@ -225,6 +227,25 @@ export function ContentBlockCard({
     } catch (err) {
       console.error("保存提示词失败:", err);
       alert("保存提示词失败: " + (err instanceof Error ? err.message : "未知错误"));
+    }
+  };
+
+  // AI 生成提示词
+  const handleGeneratePrompt = async () => {
+    if (!aiPromptPurpose.trim()) return;
+    setGeneratingPrompt(true);
+    try {
+      const result = await blockAPI.generatePrompt({
+        purpose: aiPromptPurpose,
+        field_name: block.name,
+        project_id: projectId || "",
+      });
+      setEditedPrompt(result.prompt);
+      setAiPromptPurpose("");
+    } catch (e: any) {
+      alert("生成提示词失败: " + (e.message || "未知错误"));
+    } finally {
+      setGeneratingPrompt(false);
     }
   };
 
@@ -803,7 +824,7 @@ export function ContentBlockCard({
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="p-5">
+            <div className="p-5 space-y-4">
               <textarea
                 value={editedPrompt}
                 onChange={(e) => setEditedPrompt(e.target.value)}
@@ -811,9 +832,42 @@ export function ContentBlockCard({
                 className="w-full bg-surface-2 border border-surface-3 rounded-lg p-4 text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-brand-500 resize-none"
                 placeholder="输入 AI 生成此内容块时使用的提示词..."
               />
-              <p className="mt-2 text-xs text-zinc-500">
+              <p className="text-xs text-zinc-500">
                 提示词会与项目上下文（创作者特质、意图、用户画像）一起发送给 AI，用于生成内容。
               </p>
+
+              {/* 🤖 用 AI 生成提示词 */}
+              <div className="p-3 bg-surface-2/50 border border-surface-3 rounded-lg">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-xs text-zinc-400">🤖 用 AI 生成提示词</span>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={aiPromptPurpose}
+                    onChange={(e) => setAiPromptPurpose(e.target.value)}
+                    placeholder="简述内容块目的，如：介绍产品核心卖点"
+                    className="flex-1 px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && aiPromptPurpose.trim() && !generatingPrompt) {
+                        handleGeneratePrompt();
+                      }
+                    }}
+                  />
+                  <button
+                    onClick={handleGeneratePrompt}
+                    disabled={!aiPromptPurpose.trim() || generatingPrompt}
+                    className="px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 whitespace-nowrap"
+                  >
+                    {generatingPrompt ? (
+                      <>
+                        <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                        生成中...
+                      </>
+                    ) : "AI 生成"}
+                  </button>
+                </div>
+              </div>
             </div>
             <div className="px-5 py-4 border-t border-surface-3 flex justify-end gap-3">
               <button

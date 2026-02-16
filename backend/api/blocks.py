@@ -1690,8 +1690,17 @@ async def generate_ai_prompt(
         HumanMessage(content=user_msg),
     ]
     
-    response = await llm.ainvoke(messages)
+    try:
+        response = await llm.ainvoke(messages)
+    except Exception as llm_err:
+        raise HTTPException(status_code=502, detail=f"LLM 调用失败: {str(llm_err)[:200]}")
+    
     generated_prompt = response.content.strip()
+    
+    # 从 AIMessage.usage_metadata 提取 token 用量（langchain 标准字段）
+    usage = getattr(response, "usage_metadata", None) or {}
+    tokens_in = usage.get("input_tokens", 0) or 0
+    tokens_out = usage.get("output_tokens", 0) or 0
     
     # 4. 记录日志
     gen_log = GenerationLog(
@@ -1702,10 +1711,10 @@ async def generate_ai_prompt(
         model=settings.openai_model,
         prompt_input=f"[System]\n{system_content}\n\n[User]\n{user_msg}",
         prompt_output=generated_prompt,
-        tokens_in=response.tokens_in if hasattr(response, 'tokens_in') else 0,
-        tokens_out=response.tokens_out if hasattr(response, 'tokens_out') else 0,
-        duration_ms=response.duration_ms if hasattr(response, 'duration_ms') else 0,
-        cost=response.cost if hasattr(response, 'cost') else 0.0,
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+        duration_ms=0,
+        cost=0.0,
         status="success",
     )
     db.add(gen_log)
@@ -1714,5 +1723,5 @@ async def generate_ai_prompt(
     return {
         "prompt": generated_prompt,
         "model": settings.openai_model,
-        "tokens_used": (response.tokens_in or 0) + (response.tokens_out or 0),
+        "tokens_used": tokens_in + tokens_out,
     }
