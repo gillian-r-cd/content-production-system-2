@@ -26,6 +26,14 @@ from core.models.content_version import ContentVersion, VERSION_SOURCES
 from core.models.eval_run import EvalRun, EVAL_ROLES, EVAL_RUN_STATUS
 from core.models.eval_task import EvalTask, SIMULATOR_TYPES, INTERACTION_MODES, GRADER_TYPES, EVAL_TASK_STATUS
 from core.models.eval_trial import EvalTrial, EVAL_TRIAL_STATUS
+from core.models.eval_v2 import (
+    EvalTaskV2,
+    EvalTrialConfigV2,
+    EvalTrialResultV2,
+    TaskAnalysisV2,
+    EVAL_V2_TASK_STATUS,
+    EVAL_V2_FORM_TYPES,
+)
 from core.models.grader import Grader, GRADER_TYPE_CHOICES, PRESET_GRADERS
 from core.models.agent_mode import AgentMode
 from core.models.memory_item import MemoryItem
@@ -72,6 +80,12 @@ __all__ = [
     "EVAL_TASK_STATUS",
     "EvalTrial",
     "EVAL_TRIAL_STATUS",
+    "EvalTaskV2",
+    "EvalTrialConfigV2",
+    "EvalTrialResultV2",
+    "TaskAnalysisV2",
+    "EVAL_V2_TASK_STATUS",
+    "EVAL_V2_FORM_TYPES",
     
     # 评分器（Grader）
     "Grader",

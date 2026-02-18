@@ -19,14 +19,110 @@ from core.models import (
     FieldTemplate,
     Channel,
     Simulator,
+    Grader,
     GenerationLog,
     SystemPrompt,
     AgentSettings,
     generate_uuid,
 )
+from core.models.grader import PRESET_GRADERS
 
 
 router = APIRouter()
+
+EVAL_PROMPT_PRESETS = [
+    {
+        "name": "探索规划提示词",
+        "phase": "eval_experience_plan",
+        "description": "消费体验步骤1：规划阅读顺序与目标",
+        "content": "你是一位真实消费者。\n\n【你的身份】\n{persona}\n\n{probe_section}\n\n请基于以下章节列表制定探索计划：\n{block_list}\n\n请输出 JSON：{\"plan\":[{\"block_id\":\"id\",\"reason\":\"...\"}],\"overall_goal\":\"...\"}",
+    },
+    {
+        "name": "逐块探索提示词",
+        "phase": "eval_experience_per_block",
+        "description": "消费体验步骤2：逐块评价",
+        "content": "你是一位真实消费者。\n\n【你的身份】\n{persona}\n\n{probe_section}\n\n【之前的阅读记忆】\n{exploration_memory}\n\n【当前章节】\n{block_title}\n{block_content}\n\n输出 JSON：{\"concern_match\":\"...\",\"discovery\":\"...\",\"doubt\":\"...\",\"missing\":\"...\",\"feeling\":\"...\",\"score\":1}",
+    },
+    {
+        "name": "探索总结提示词",
+        "phase": "eval_experience_summary",
+        "description": "消费体验步骤3：综合总结",
+        "content": "你是一位真实消费者。\n\n【你的身份】\n{persona}\n\n{probe_section}\n\n以下是逐块结果：\n{all_block_results}\n\n输出 JSON：{\"overall_impression\":\"...\",\"concerns_addressed\":[],\"concerns_unaddressed\":[],\"would_recommend\":false,\"summary\":\"...\"}",
+    },
+    {
+        "name": "场景角色A提示词",
+        "phase": "eval_scenario_role_a",
+        "description": "场景模拟角色A模板",
+        "content": "{persona}\n\n你掌握以下内容：\n{content}\n\n{probe_section}\n\n规则：每次回复不超过50字。基于内容回答，不编造信息。",
+    },
+    {
+        "name": "场景角色B提示词",
+        "phase": "eval_scenario_role_b",
+        "description": "场景模拟角色B模板",
+        "content": "{persona}\n\n{probe_section}\n\n规则：每次回复不超过50字。带着顾虑主动追问，不轻易被说服。",
+    },
+    {
+        "name": "跨Trial分析提示词",
+        "phase": "eval_cross_trial_analysis",
+        "description": "Task级跨Trial模式分析模板",
+        "content": "请分析以下Task下所有Trial结果：\n{all_trial_results}\n\n输出 JSON：{\"patterns\":[],\"suggestions\":[],\"strengths\":[],\"summary\":\"...\"}",
+    },
+]
+
+EVAL_SIMULATOR_PRESETS = [
+    {
+        "name": "预置-直接判定模拟器",
+        "description": "assessment 形态占位模拟器（主要由 Grader 执行）",
+        "simulator_type": "expert",
+        "interaction_type": "reading",
+        "interaction_mode": "review",
+        "prompt_template": "你是评估辅助角色。请按规则返回结构化结果。",
+        "secondary_prompt": "",
+        "grader_template": "",
+        "evaluation_dimensions": ["结构合理性", "语言质量", "信息准确性", "可读性"],
+        "feedback_mode": "structured",
+        "max_turns": 1,
+    },
+    {
+        "name": "预置-视角审查模拟器",
+        "description": "review 形态默认模拟器",
+        "simulator_type": "editor",
+        "interaction_type": "reading",
+        "interaction_mode": "review",
+        "prompt_template": "你是一位专业审查者，请基于内容给出结构化审查反馈。",
+        "secondary_prompt": "",
+        "grader_template": "",
+        "evaluation_dimensions": ["策略清晰度", "问题严重度", "可执行性"],
+        "feedback_mode": "structured",
+        "max_turns": 1,
+    },
+    {
+        "name": "预置-消费体验模拟器",
+        "description": "experience 形态默认模拟器",
+        "simulator_type": "consumer",
+        "interaction_type": "exploration",
+        "interaction_mode": "review",
+        "prompt_template": "你是消费者，按探索流程输出分块反馈。",
+        "secondary_prompt": "",
+        "grader_template": "",
+        "evaluation_dimensions": ["需求匹配度", "信息完整性", "价值感知", "内容结构"],
+        "feedback_mode": "structured",
+        "max_turns": 1,
+    },
+    {
+        "name": "预置-场景对话模拟器",
+        "description": "scenario 形态默认模拟器（双角色对话）",
+        "simulator_type": "seller",
+        "interaction_type": "dialogue",
+        "interaction_mode": "scenario",
+        "prompt_template": "你是场景角色A。每次回复不超过50字。",
+        "secondary_prompt": "你是场景角色B。每次回复不超过50字。",
+        "grader_template": "",
+        "evaluation_dimensions": ["价值传达", "需求匹配", "异议处理", "信任建立"],
+        "feedback_mode": "structured",
+        "max_turns": 5,
+    },
+]
 
 
 # ============== System Prompts ==============
@@ -47,6 +143,19 @@ class SystemPromptResponse(BaseModel):
     created_at: str
 
     model_config = {"from_attributes": True}
+
+
+class EvalPromptUpdate(BaseModel):
+    name: Optional[str] = None
+    content: Optional[str] = None
+    description: Optional[str] = None
+
+
+class EvalPresetSyncResponse(BaseModel):
+    imported_graders: int
+    updated_graders: int
+    imported_simulators: int
+    updated_simulators: int
 
 
 @router.get("/system-prompts", response_model=list[SystemPromptResponse])
@@ -74,6 +183,50 @@ def update_system_prompt(
     db.commit()
     db.refresh(prompt)
     return _to_prompt_response(prompt)
+
+
+@router.get("/eval-prompts", response_model=list[SystemPromptResponse])
+def list_eval_prompts(db: Session = Depends(get_db)):
+    """获取评估提示词模板，若不存在则自动初始化预置模板。"""
+    _ensure_eval_prompt_presets(db)
+    rows = (
+        db.query(SystemPrompt)
+        .filter(SystemPrompt.phase.like("eval_%"))
+        .order_by(SystemPrompt.phase.asc())
+        .all()
+    )
+    return [_to_prompt_response(p) for p in rows]
+
+
+@router.put("/eval-prompts/{prompt_id}", response_model=SystemPromptResponse)
+def update_eval_prompt(prompt_id: str, update: EvalPromptUpdate, db: Session = Depends(get_db)):
+    """更新评估提示词模板。"""
+    prompt = db.query(SystemPrompt).filter(SystemPrompt.id == prompt_id, SystemPrompt.phase.like("eval_%")).first()
+    if not prompt:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    update_data = update.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(prompt, key, value)
+    db.commit()
+    db.refresh(prompt)
+    return _to_prompt_response(prompt)
+
+
+@router.post("/eval-presets/sync", response_model=EvalPresetSyncResponse)
+def sync_eval_presets(db: Session = Depends(get_db)):
+    """
+    同步 Eval 预置模板（Grader + Simulator），幂等可重复执行。
+    """
+    imported_graders, updated_graders = _sync_preset_graders(db)
+    imported_simulators, updated_simulators = _sync_preset_simulators(db)
+    db.commit()
+    return EvalPresetSyncResponse(
+        imported_graders=imported_graders,
+        updated_graders=updated_graders,
+        imported_simulators=imported_simulators,
+        updated_simulators=updated_simulators,
+    )
 
 
 # ============== Agent Settings ==============
@@ -624,6 +777,96 @@ def export_logs(
 
 
 # ============== Helpers ==============
+
+def _ensure_eval_prompt_presets(db: Session) -> None:
+    changed = False
+    for preset in EVAL_PROMPT_PRESETS:
+        existing = db.query(SystemPrompt).filter(SystemPrompt.phase == preset["phase"]).first()
+        if existing:
+            continue
+        db.add(SystemPrompt(
+            id=generate_uuid(),
+            name=preset["name"],
+            phase=preset["phase"],
+            content=preset["content"],
+            description=preset["description"],
+        ))
+        changed = True
+    if changed:
+        db.commit()
+
+
+def _sync_preset_graders(db: Session) -> tuple[int, int]:
+    imported = 0
+    updated = 0
+    for item in PRESET_GRADERS:
+        name = item.get("name", "")
+        if not name:
+            continue
+        existing = db.query(Grader).filter(Grader.name == name, Grader.is_preset == True).first()  # noqa: E712
+        if existing:
+            existing.grader_type = item.get("grader_type", existing.grader_type)
+            existing.prompt_template = item.get("prompt_template", existing.prompt_template)
+            existing.dimensions = item.get("dimensions", existing.dimensions)
+            existing.scoring_criteria = item.get("scoring_criteria", existing.scoring_criteria)
+            existing.is_preset = True
+            existing.project_id = None
+            updated += 1
+            continue
+        db.add(Grader(
+            id=generate_uuid(),
+            name=name,
+            grader_type=item.get("grader_type", "content_only"),
+            prompt_template=item.get("prompt_template", ""),
+            dimensions=item.get("dimensions", []),
+            scoring_criteria=item.get("scoring_criteria", {}),
+            is_preset=True,
+            project_id=None,
+        ))
+        imported += 1
+    return imported, updated
+
+
+def _sync_preset_simulators(db: Session) -> tuple[int, int]:
+    imported = 0
+    updated = 0
+    for item in EVAL_SIMULATOR_PRESETS:
+        name = item.get("name", "")
+        if not name:
+            continue
+        existing = db.query(Simulator).filter(Simulator.name == name, Simulator.is_preset == True).first()  # noqa: E712
+        if existing:
+            existing.description = item.get("description", existing.description)
+            existing.simulator_type = item.get("simulator_type", existing.simulator_type)
+            existing.interaction_type = item.get("interaction_type", existing.interaction_type)
+            existing.interaction_mode = item.get("interaction_mode", existing.interaction_mode)
+            existing.prompt_template = item.get("prompt_template", existing.prompt_template)
+            existing.secondary_prompt = item.get("secondary_prompt", existing.secondary_prompt)
+            existing.grader_template = item.get("grader_template", existing.grader_template)
+            existing.evaluation_dimensions = item.get("evaluation_dimensions", existing.evaluation_dimensions)
+            existing.feedback_mode = item.get("feedback_mode", existing.feedback_mode)
+            existing.max_turns = item.get("max_turns", existing.max_turns)
+            existing.is_preset = True
+            updated += 1
+            continue
+        db.add(Simulator(
+            id=generate_uuid(),
+            name=name,
+            description=item.get("description", ""),
+            simulator_type=item.get("simulator_type", "custom"),
+            interaction_type=item.get("interaction_type", "reading"),
+            interaction_mode=item.get("interaction_mode", "review"),
+            prompt_template=item.get("prompt_template", ""),
+            secondary_prompt=item.get("secondary_prompt", ""),
+            grader_template=item.get("grader_template", ""),
+            evaluation_dimensions=item.get("evaluation_dimensions", []),
+            feedback_mode=item.get("feedback_mode", "structured"),
+            max_turns=item.get("max_turns", 10),
+            is_preset=True,
+        ))
+        imported += 1
+    return imported, updated
+
 
 def _to_prompt_response(p: SystemPrompt) -> SystemPromptResponse:
     return SystemPromptResponse(

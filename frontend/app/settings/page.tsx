@@ -15,10 +15,11 @@ import { PhaseTemplatesSection } from "@/components/settings/phase-templates-sec
 import { ChannelsSection } from "@/components/settings/channels-section";
 import { SimulatorsSection } from "@/components/settings/simulators-section";
 import { GradersSection } from "@/components/settings/graders-section";
+import { EvalPromptsSection } from "@/components/settings/eval-prompts-section";
 import { AgentSettingsSection } from "@/components/settings/agent-settings-section";
 import { LogsSection } from "@/components/settings/logs-section";
 
-type Tab = "prompts" | "profiles" | "templates" | "phase_templates" | "channels" | "simulators" | "graders" | "agent" | "logs";
+type Tab = "prompts" | "profiles" | "templates" | "phase_templates" | "channels" | "simulators" | "graders" | "eval_prompts" | "agent" | "logs";
 
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<Tab>("prompts");
@@ -29,6 +30,7 @@ export default function SettingsPage() {
   const [graders, setGraders] = useState<GraderData[]>([]);
   const [logs, setLogs] = useState<any[]>([]);
   const [prompts, setPrompts] = useState<any[]>([]);
+  const [evalPrompts, setEvalPrompts] = useState<any[]>([]);
   const [agentSettings, setAgentSettings] = useState<any>(null);
   const [phaseTemplates, setPhaseTemplates] = useState<PhaseTemplate[]>([]);
   const [loading, setLoading] = useState(true);
@@ -62,6 +64,9 @@ export default function SettingsPage() {
         case "graders":
           setGraders(await graderAPI.list());
           break;
+        case "eval_prompts":
+          setEvalPrompts(await settingsAPI.listEvalPrompts());
+          break;
         case "agent":
           setAgentSettings(await settingsAPI.getAgentSettings());
           break;
@@ -84,6 +89,7 @@ export default function SettingsPage() {
     { id: "channels", label: "渠道管理", icon: "📢" },
     { id: "simulators", label: "模拟器", icon: "🎭" },
     { id: "graders", label: "评分器", icon: "⚖️" },
+    { id: "eval_prompts", label: "评估提示词", icon: "🧪" },
     { id: "agent", label: "Agent设置", icon: "🤖" },
     { id: "logs", label: "调试日志", icon: "📊" },
   ];
@@ -131,6 +137,7 @@ export default function SettingsPage() {
               {activeTab === "channels" && <ChannelsSection channels={channels} onRefresh={loadData} />}
               {activeTab === "simulators" && <SimulatorsSection simulators={simulators} onRefresh={loadData} />}
               {activeTab === "graders" && <GradersSection graders={graders} onRefresh={loadData} />}
+              {activeTab === "eval_prompts" && <EvalPromptsSection prompts={evalPrompts} onRefresh={loadData} />}
               {activeTab === "agent" && <AgentSettingsSection settings={agentSettings} onRefresh={loadData} />}
               {activeTab === "logs" && <LogsSection logs={logs} onRefresh={loadData} />}
             </>

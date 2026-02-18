@@ -1,5 +1,8 @@
 # 内容评估体系 (Eval System) 设计文档
 
+> 2026-02-19 更新说明：本文保留历史设计语境；当前线上实现以 `eval_v2_redesign.md` 为准。
+> 关键差异：`EvalRun` 旧链路已降级为兼容层，主链路为 `Project -> EvalTaskV2 -> EvalTrialConfigV2 -> EvalTrialResultV2`。
+
 ## 一、设计理念
 
 ### 核心问题
@@ -68,33 +71,37 @@
 
 ---
 
-## 五、数据模型
+## 五、数据模型（已更新为 V2 主链路）
 
-### EvalRun（评估运行）
 ```python
-EvalRun:
-  project_id          # 关联项目
-  name                # 评估名称
-  config              # 运行配置 (model, max_turns, etc.)
-  status              # pending/running/completed/failed
-  summary             # AI 综合诊断
-  overall_score       # 综合评分
-  trial_count         # Trial 总数
-```
+EvalTaskV2:
+  project_id
+  name
+  description
+  status
+  latest_batch_id
+  latest_scores
+  latest_overall
 
-### EvalTrial（评估试验）
-```python
-EvalTrial:
-  eval_run_id         # 关联 EvalRun
-  role                # 角色类型 (coach/editor/expert/consumer/seller)
-  role_config         # 角色配置 (系统提示词等)
-  input_block_ids[]   # 评估的内容块 ID
-  persona             # 使用的人物画像 (消费者/销售角色)
-  interaction_mode    # review/dialogue/scenario
-  nodes[]             # 交互节点列表
-  result              # 评分结果
-  grader_outputs[]    # Grader 输出
-  status              # pending/running/completed/failed
+EvalTrialConfigV2:
+  task_id
+  form_type           # assessment/review/experience/scenario
+  target_block_ids[]
+  grader_ids[]
+  repeat_count
+  probe
+  form_config
+
+EvalTrialResultV2:
+  task_id
+  trial_config_id
+  batch_id
+  repeat_index
+  process
+  grader_results
+  dimension_scores
+  overall_score
+  llm_calls
 ```
 
 ---

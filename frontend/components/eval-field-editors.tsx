@@ -16,7 +16,7 @@ import type { ContentBlock, EvalConfig, LLMCall, GraderData } from "@/lib/api";
 import {
   Users, Plus, Trash2, Play, SlidersHorizontal, ChevronDown, ChevronRight,
   Eye, Save, RefreshCw, BarChart3, FileText, MessageSquare,
-  AlertTriangle, CheckCircle, XCircle, Clock, Zap, Download, Pencil,
+  AlertTriangle, CheckCircle, XCircle, Clock, Zap, Download, Pencil, Sparkles,
 } from "lucide-react";
 
 
@@ -31,8 +31,10 @@ interface EvalFieldProps {
 }
 
 interface PersonaData {
+  id?: string;
   name: string;
   background: string;
+  prompt?: string;
   pain_points?: string[];
   source?: string;
   block_id?: string;
@@ -125,6 +127,30 @@ export function EvalPersonaSetup({ block, projectId, onUpdate }: EvalFieldProps)
     } finally { setLoading(false); }
   };
 
+  const generateWithAI = async () => {
+    setLoading(true);
+    try {
+      const avoidNames = personas.map((p) => p.name).filter(Boolean);
+      const resp = await evalAPI.generatePersona(projectId, avoidNames);
+      const p = resp.persona;
+      const generated: PersonaData = {
+        id: `ai_${Date.now()}`,
+        name: p.name || "新画像",
+        background: p.prompt || "",
+        prompt: p.prompt || "",
+        pain_points: [],
+        source: "ai",
+      };
+      setPersonas([...personas, generated]);
+      setEditingIdx(personas.length);
+      sendNotification("AI 画像已生成，请确认后保存", "success");
+    } catch (e: any) {
+      sendNotification("AI 生成失败: " + e.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const addPersona = () => {
     setPersonas([...personas, { name: "新消费者画像", background: "", pain_points: [] }]);
     setEditingIdx(personas.length);
@@ -167,6 +193,11 @@ export function EvalPersonaSetup({ block, projectId, onUpdate }: EvalFieldProps)
           目标消费者画像
         </h3>
         <div className="flex gap-2">
+          <button onClick={generateWithAI} disabled={loading}
+            className={`${BTN_PRIMARY} bg-brand-500/15 text-brand-300 hover:bg-brand-500/25 border border-brand-500/30`}>
+            <Sparkles className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+            AI 生成画像
+          </button>
           <button onClick={loadFromResearch} disabled={loading}
             className={`${BTN_PRIMARY} bg-blue-500/15 text-blue-400 hover:bg-blue-500/25 border border-blue-500/30`}>
             <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />

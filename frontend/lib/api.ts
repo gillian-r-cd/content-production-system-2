@@ -401,6 +401,20 @@ export const settingsAPI = {
       method: "PUT",
       body: JSON.stringify(data),
     }),
+  listEvalPrompts: () =>
+    fetchAPI<any[]>("/api/settings/eval-prompts"),
+  updateEvalPrompt: (id: string, data: any) =>
+    fetchAPI<any>(`/api/settings/eval-prompts/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+  syncEvalPresets: () =>
+    fetchAPI<{
+      imported_graders: number;
+      updated_graders: number;
+      imported_simulators: number;
+      updated_simulators: number;
+    }>("/api/settings/eval-presets/sync", { method: "POST" }),
 
   // Creator Profiles
   listCreatorProfiles: () =>
@@ -1017,53 +1031,97 @@ export const evalAPI = {
   // Config
   getConfig: (): Promise<EvalConfig> => fetchAPI("/api/eval/config"),
   getPersonas: (projectId: string) => fetchAPI("/api/eval/personas/" + projectId),
-
-  // EvalRun CRUD
-  listRuns: (projectId: string): Promise<EvalRun[]> => fetchAPI("/api/eval/runs/" + projectId),
-  createRun: (data: { project_id: string; name?: string }): Promise<EvalRun> =>
-    fetchAPI("/api/eval/runs", { method: "POST", body: JSON.stringify(data) }),
-  getRun: (runId: string): Promise<EvalRun> => fetchAPI("/api/eval/run/" + runId),
-  updateRun: (runId: string, data: any): Promise<EvalRun> =>
-    fetchAPI("/api/eval/run/" + runId, { method: "PUT", body: JSON.stringify(data) }),
-  deleteRun: (runId: string) =>
-    fetchAPI("/api/eval/run/" + runId, { method: "DELETE" }),
-
-  // EvalTask CRUD
-  listTasks: (runId: string): Promise<EvalTask[]> => fetchAPI("/api/eval/run/" + runId + "/tasks"),
-  createTask: (runId: string, data: Partial<EvalTask>): Promise<EvalTask> =>
-    fetchAPI("/api/eval/run/" + runId + "/tasks", { method: "POST", body: JSON.stringify(data) }),
-  updateTask: (taskId: string, data: Partial<EvalTask>): Promise<EvalTask> =>
-    fetchAPI("/api/eval/task/" + taskId, { method: "PUT", body: JSON.stringify(data) }),
-  deleteTask: (taskId: string) =>
-    fetchAPI("/api/eval/task/" + taskId, { method: "DELETE" }),
-  batchCreateTasks: (data: { project_id: string; eval_run_id: string; template: string; persona_ids?: string[] }) =>
-    fetchAPI("/api/eval/run/" + data.eval_run_id + "/batch-tasks", { method: "POST", body: JSON.stringify(data) }),
-
-  // Execute
-  executeRun: (runId: string) =>
-    fetchAPI("/api/eval/run/" + runId + "/execute", { method: "POST" }),
-  executeTask: (taskId: string): Promise<EvalTrial> =>
-    fetchAPI("/api/eval/task/" + taskId + "/execute", { method: "POST" }),
-
-  // Trials
-  getTrials: (runId: string): Promise<EvalTrial[]> => fetchAPI("/api/eval/run/" + runId + "/trials"),
-  getTrial: (trialId: string): Promise<EvalTrial> => fetchAPI("/api/eval/trial/" + trialId),
-
-  // Diagnosis
-  runDiagnosis: (runId: string) =>
-    fetchAPI("/api/eval/run/" + runId + "/diagnose", { method: "POST" }),
-
-  // Legacy: full regression in one call
-  runEval: (data: any): Promise<EvalRun> =>
-    fetchAPI("/api/eval/run", { method: "POST", body: JSON.stringify(data) }),
-
-  // Run a single trial
-  runSingleTrial: (data: any): Promise<any> =>
-    fetchAPI("/api/eval/trial/run", { method: "POST", body: JSON.stringify(data) }),
+  generatePersona: (projectId: string, avoidNames: string[] = []) =>
+    fetchAPI<{ persona: { name: string; prompt: string } }>("/api/eval/personas/generate", {
+      method: "POST",
+      body: JSON.stringify({ project_id: projectId, avoid_names: avoidNames }),
+    }),
+  generatePrompt: (promptType: string, context: Record<string, any> = {}) =>
+    fetchAPI<{ generated_prompt: string }>("/api/eval/prompts/generate", {
+      method: "POST",
+      body: JSON.stringify({ prompt_type: promptType, context }),
+    }),
 
   // Generate for ContentBlock
   generateForBlock: (blockId: string) =>
     fetchAPI("/api/eval/generate-for-block/" + blockId, { method: "POST" }),
+};
+
+// ============== Eval V2 (Task 容器 + TrialConfig) API ==============
+
+export interface EvalV2TrialConfig {
+  id?: string;
+  name: string;
+  form_type: "assessment" | "review" | "experience" | "scenario";
+  target_block_ids: string[];
+  grader_ids: string[];
+  grader_weights?: Record<string, number>;
+  repeat_count: number;
+  probe?: string;
+  form_config?: Record<string, any>;
+  order_index?: number;
+}
+
+export interface EvalV2Task {
+  id: string;
+  project_id: string;
+  name: string;
+  description: string;
+  order_index: number;
+  status: string;
+  content_hash: string;
+  last_executed_at: string;
+  latest_scores: Record<string, any>;
+  latest_overall: number | null;
+  latest_batch_id: string;
+  trial_configs: EvalV2TrialConfig[];
+}
+
+export const evalV2API = {
+  listTasks: (projectId: string) =>
+    fetchAPI<{ tasks: EvalV2Task[] }>(`/api/eval/tasks/${projectId}`),
+  createTask: (projectId: string, data: {
+    name: string;
+    description?: string;
+    order_index?: number;
+    trial_configs: EvalV2TrialConfig[];
+  }) =>
+    fetchAPI<EvalV2Task>(`/api/eval/tasks/${projectId}`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  updateTask: (taskId: string, data: {
+    name?: string;
+    description?: string;
+    order_index?: number;
+    trial_configs?: EvalV2TrialConfig[];
+  }) =>
+    fetchAPI<EvalV2Task>(`/api/eval/task/${taskId}/v2`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+  deleteTask: (taskId: string) =>
+    fetchAPI<{ message: string }>(`/api/eval/task/${taskId}`, { method: "DELETE" }),
+  executeTask: (taskId: string) =>
+    fetchAPI<any>(`/api/eval/task/${taskId}/execute`, { method: "POST" }),
+  executeAll: (projectId: string) =>
+    fetchAPI<any>(`/api/eval/tasks/${projectId}/execute-all`, { method: "POST" }),
+  taskTrials: (taskId: string) =>
+    fetchAPI<{ trials: any[] }>(`/api/eval/task/${taskId}/trials`),
+  taskLatest: (taskId: string) =>
+    fetchAPI<any>(`/api/eval/task/${taskId}/latest`),
+  taskReport: (projectId: string) =>
+    fetchAPI<{ tasks: any[] }>(`/api/eval/tasks/${projectId}/report`),
+  executionReport: (projectId: string) =>
+    fetchAPI<{ executions: any[] }>(`/api/eval/tasks/${projectId}/executions`),
+  runTaskDiagnosis: (taskId: string) =>
+    fetchAPI<any>(`/api/eval/task/${taskId}/diagnose`, { method: "POST" }),
+  runTaskDiagnosisForBatch: (taskId: string, batchId: string) =>
+    fetchAPI<any>(`/api/eval/task/${taskId}/diagnose?batch_id=${encodeURIComponent(batchId)}`, { method: "POST" }),
+  getTaskDiagnosis: (taskId: string, batchId?: string) =>
+    fetchAPI<any>(`/api/eval/task/${taskId}/diagnosis${batchId ? `?batch_id=${encodeURIComponent(batchId)}` : ""}`),
+  taskBatch: (taskId: string, batchId: string) =>
+    fetchAPI<any>(`/api/eval/task/${taskId}/batch/${batchId}`),
 };
 
 

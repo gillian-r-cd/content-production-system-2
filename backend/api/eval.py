@@ -23,9 +23,11 @@ EvalRun → EvalTask[] → EvalTrial[]
 import json
 import asyncio
 from typing import Optional, List
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel as PydanticBase
 from sqlalchemy.orm import Session
+from langchain_core.messages import SystemMessage, HumanMessage
 
 from core.database import get_db
 from core.models import (
@@ -35,6 +37,10 @@ from core.models import (
     EvalRun,
     EvalTask,
     EvalTrial,
+    EvalTaskV2,
+    EvalTrialConfigV2,
+    EvalTrialResultV2,
+    TaskAnalysisV2,
     EVAL_ROLES,
     SIMULATOR_TYPES,
     INTERACTION_MODES,
@@ -49,7 +55,17 @@ from core.tools.eval_engine import (
     format_trial_result_markdown,
     format_diagnosis_markdown,
     TrialResult,
+    run_individual_grader,
 )
+from core.tools.eval_v2_service import (
+    compute_content_hash,
+    compute_weighted_grader_score,
+    aggregate_task_scores,
+)
+from core.tools.eval_v2_executor import run_experience_trial
+from core.models.grader import Grader
+from core.llm import get_chat_model
+from core.config import settings
 
 
 router = APIRouter(prefix="/api/eval", tags=["eval"])
@@ -159,7 +175,87 @@ class EvalTrialResponse(PydanticBase):
     model_config = {"from_attributes": True}
 
 
+# ============== Eval V2 (Task 容器 + TrialConfig) Schemas ==============
+
+class GeneratePersonaRequest(PydanticBase):
+    project_id: str
+    avoid_names: List[str] = []
+
+
+class GeneratePromptRequest(PydanticBase):
+    prompt_type: str
+    context: dict = {}
+
+
+class CreatePersonaRequest(PydanticBase):
+    name: str
+    prompt: str
+    source: str = "manual"
+
+
+class UpdatePersonaRequest(PydanticBase):
+    name: Optional[str] = None
+    prompt: Optional[str] = None
+    source: Optional[str] = None
+
+
+class TrialConfigPayload(PydanticBase):
+    name: str
+    form_type: str = "assessment"   # assessment | review | experience | scenario
+    target_block_ids: List[str] = []
+    grader_ids: List[str] = []
+    grader_weights: dict = {}
+    repeat_count: int = 1
+    probe: str = ""
+    form_config: dict = {}
+    order_index: int = 0
+
+
+class CreateTaskV2Request(PydanticBase):
+    name: str
+    description: str = ""
+    order_index: int = 0
+    trial_configs: List[TrialConfigPayload]
+
+
+class UpdateTaskV2Request(PydanticBase):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    order_index: Optional[int] = None
+    trial_configs: Optional[List[TrialConfigPayload]] = None
+
 # ============== Config Routes ==============
+
+@router.post("/personas/generate")
+async def generate_eval_persona(request: GeneratePersonaRequest, db: Session = Depends(get_db)):
+    """AI 生成人物画像（项目级）。"""
+    project = db.query(Project).filter(Project.id == request.project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    intent = _get_project_intent(project, db)
+    existing = _get_project_personas_from_research(project.id, db)
+    existing_names = [p.get("name", "") for p in existing if isinstance(p, dict) and p.get("name")]
+    avoid_names = list(dict.fromkeys([*(request.avoid_names or []), *existing_names]))
+
+    generated = await _generate_persona_with_llm(
+        project_name=project.name,
+        project_intent=intent,
+        existing_names=avoid_names,
+    )
+    return {"persona": generated}
+
+
+@router.post("/prompts/generate")
+async def generate_eval_prompt(request: GeneratePromptRequest):
+    """统一 AI 生成提示词接口（仅生成，不做优化）。"""
+    prompt_type = (request.prompt_type or "").strip()
+    if not prompt_type:
+        raise HTTPException(status_code=400, detail="prompt_type 不能为空")
+
+    generated_prompt = await _generate_prompt_with_llm(prompt_type=prompt_type, context=request.context or {})
+    return {"generated_prompt": generated_prompt}
+
 
 @router.get("/config")
 def get_eval_config():
@@ -177,6 +273,304 @@ def get_project_personas(project_id: str, db: Session = Depends(get_db)):
     """获取项目的消费者画像（来自消费者调研 ContentBlock）"""
     personas = _get_project_personas_from_research(project_id, db)
     return {"personas": personas}
+
+
+@router.post("/personas/{project_id}")
+def create_project_persona(project_id: str, request: CreatePersonaRequest, db: Session = Depends(get_db)):
+    """创建项目画像（写入 eval_persona_setup ContentBlock）。"""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    block = _get_or_create_eval_persona_block(project_id, db)
+    personas = _read_personas_from_block(block)
+    new_persona = {
+        "id": f"p_{generate_uuid().replace('-', '')[:12]}",
+        "name": request.name.strip(),
+        "prompt": request.prompt.strip(),
+        "source": request.source or "manual",
+    }
+    if not new_persona["name"] or not new_persona["prompt"]:
+        raise HTTPException(status_code=400, detail="画像名称和提示词不能为空")
+
+    personas.append(new_persona)
+    _write_personas_to_block(block, personas)
+    db.commit()
+    return {"persona": new_persona}
+
+
+@router.put("/persona/{persona_id}")
+def update_project_persona(persona_id: str, request: UpdatePersonaRequest, db: Session = Depends(get_db)):
+    """更新项目画像（在所有项目的 eval_persona_setup 中按 persona_id 查找并更新）。"""
+    blocks = db.query(ContentBlock).filter(
+        ContentBlock.special_handler == "eval_persona_setup",
+        ContentBlock.deleted_at == None,  # noqa: E711
+    ).all()
+    for block in blocks:
+        personas = _read_personas_from_block(block)
+        hit = next((p for p in personas if str(p.get("id", "")) == persona_id), None)
+        if not hit:
+            continue
+
+        if request.name is not None:
+            hit["name"] = request.name.strip()
+        if request.prompt is not None:
+            hit["prompt"] = request.prompt.strip()
+        if request.source is not None:
+            hit["source"] = request.source
+        if not hit.get("name") or not hit.get("prompt"):
+            raise HTTPException(status_code=400, detail="画像名称和提示词不能为空")
+
+        _write_personas_to_block(block, personas)
+        db.commit()
+        return {"persona": hit}
+    raise HTTPException(status_code=404, detail="Persona not found")
+
+
+@router.delete("/persona/{persona_id}")
+def delete_project_persona(persona_id: str, db: Session = Depends(get_db)):
+    """删除项目画像（在所有项目的 eval_persona_setup 中按 persona_id 删除）。"""
+    blocks = db.query(ContentBlock).filter(
+        ContentBlock.special_handler == "eval_persona_setup",
+        ContentBlock.deleted_at == None,  # noqa: E711
+    ).all()
+    for block in blocks:
+        personas = _read_personas_from_block(block)
+        filtered = [p for p in personas if str(p.get("id", "")) != persona_id]
+        if len(filtered) == len(personas):
+            continue
+        _write_personas_to_block(block, filtered)
+        db.commit()
+        return {"message": "已删除"}
+    raise HTTPException(status_code=404, detail="Persona not found")
+
+
+# ============== Eval V2 Task CRUD (新链路) ==============
+
+@router.get("/tasks/{project_id}")
+def list_eval_v2_tasks(project_id: str, db: Session = Depends(get_db)):
+    tasks = (
+        db.query(EvalTaskV2)
+        .filter(EvalTaskV2.project_id == project_id)
+        .order_by(EvalTaskV2.order_index, EvalTaskV2.created_at)
+        .all()
+    )
+    return {"tasks": [_serialize_task_v2(t) for t in tasks]}
+
+
+@router.post("/tasks/{project_id}")
+def create_eval_v2_task(project_id: str, request: CreateTaskV2Request, db: Session = Depends(get_db)):
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if not request.trial_configs:
+        raise HTTPException(status_code=400, detail="创建 Task 时必须至少包含一个 Trial 配置")
+
+    task = EvalTaskV2(
+        id=generate_uuid(),
+        project_id=project_id,
+        name=request.name,
+        description=request.description,
+        order_index=request.order_index,
+        status="pending",
+    )
+    db.add(task)
+    db.flush()
+    _replace_trial_configs_v2(task.id, request.trial_configs, db)
+    db.commit()
+    db.refresh(task)
+    return _serialize_task_v2(task)
+
+
+@router.put("/task/{task_id}/v2")
+def update_eval_v2_task(task_id: str, request: UpdateTaskV2Request, db: Session = Depends(get_db)):
+    task = db.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="EvalTask not found")
+
+    if request.name is not None:
+        task.name = request.name
+    if request.description is not None:
+        task.description = request.description
+    if request.order_index is not None:
+        task.order_index = request.order_index
+
+    if request.trial_configs is not None:
+        if not request.trial_configs:
+            raise HTTPException(status_code=400, detail="Task 至少需要一个 Trial 配置")
+        _replace_trial_configs_v2(task.id, request.trial_configs, db)
+
+    task.status = "pending"
+    db.commit()
+    db.refresh(task)
+    return _serialize_task_v2(task)
+
+
+@router.post("/tasks/{project_id}/execute-all")
+async def execute_eval_v2_all_tasks(project_id: str, db: Session = Depends(get_db)):
+    tasks = (
+        db.query(EvalTaskV2)
+        .filter(EvalTaskV2.project_id == project_id)
+        .order_by(EvalTaskV2.order_index, EvalTaskV2.created_at)
+        .all()
+    )
+    if not tasks:
+        raise HTTPException(status_code=400, detail="当前项目没有可执行的 Eval Task")
+
+    executed = []
+    failed = []
+    for t in tasks:
+        try:
+            out = await _execute_task_v2(t.id, db)
+            executed.append({"task_id": t.id, "batch_id": out.get("batch_id"), "overall": out.get("overall")})
+        except Exception as e:
+            failed.append({"task_id": t.id, "error": str(e)})
+    return {"executed": executed, "failed": failed}
+
+
+@router.get("/tasks/{project_id}/report")
+def get_eval_v2_report(project_id: str, db: Session = Depends(get_db)):
+    tasks = (
+        db.query(EvalTaskV2)
+        .filter(EvalTaskV2.project_id == project_id)
+        .order_by(EvalTaskV2.updated_at.desc())
+        .all()
+    )
+    rows = []
+    for t in tasks:
+        rows.append({
+            "id": t.id,
+            "name": t.name,
+            "status": t.status,
+            "latest_batch_id": t.latest_batch_id,
+            "latest_overall": t.latest_overall,
+            "latest_scores": t.latest_scores or {},
+            "last_executed_at": t.last_executed_at.isoformat() if t.last_executed_at else "",
+        })
+    return {"tasks": rows}
+
+
+@router.get("/tasks/{project_id}/executions")
+def get_eval_v2_executions(project_id: str, db: Session = Depends(get_db)):
+    """
+    报告页扁平执行记录：一条记录 = 一个 task 的一个 batch 执行。
+    """
+    tasks = db.query(EvalTaskV2).filter(EvalTaskV2.project_id == project_id).all()
+    if not tasks:
+        return {"executions": []}
+
+    task_map = {t.id: t for t in tasks}
+    rows = (
+        db.query(EvalTrialResultV2)
+        .filter(EvalTrialResultV2.project_id == project_id)
+        .order_by(EvalTrialResultV2.created_at.desc())
+        .all()
+    )
+    grouped = {}
+    for r in rows:
+        key = (r.task_id, r.batch_id)
+        grouped.setdefault(key, []).append(r)
+
+    executions = []
+    for (task_id, batch_id), batch_rows in grouped.items():
+        task = task_map.get(task_id)
+        if not task:
+            continue
+        aggregate_input = [
+            {"overall_score": x.overall_score, "dimension_scores": x.dimension_scores or {}}
+            for x in batch_rows
+            if x.status == "completed"
+        ]
+        agg = aggregate_task_scores(aggregate_input)
+        executed_at = max((x.created_at for x in batch_rows if x.created_at), default=None)
+        executions.append({
+            "task_id": task.id,
+            "task_name": task.name,
+            "batch_id": batch_id,
+            "overall": (agg.get("overall") or {}).get("mean") if agg.get("overall") else None,
+            "scores": agg,
+            "trial_count": len(batch_rows),
+            "status": "completed" if any(x.status == "completed" for x in batch_rows) else "failed",
+            "executed_at": executed_at.isoformat() if executed_at else "",
+        })
+
+    executions.sort(key=lambda x: x.get("executed_at", ""), reverse=True)
+    return {"executions": executions}
+
+
+@router.get("/task/{task_id}/trials")
+def get_eval_v2_task_trials(task_id: str, db: Session = Depends(get_db)):
+    task = db.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
+    if not task:
+        # 兼容旧接口：按 eval_task_id 查询旧 Trial
+        old_rows = (
+            db.query(EvalTrial)
+            .filter(EvalTrial.eval_task_id == task_id)
+            .order_by(EvalTrial.created_at.desc())
+            .all()
+        )
+        return {"trials": [_to_trial_response(t).model_dump() for t in old_rows]}
+
+    rows = (
+        db.query(EvalTrialResultV2)
+        .filter(EvalTrialResultV2.task_id == task_id)
+        .order_by(EvalTrialResultV2.created_at.desc())
+        .all()
+    )
+    return {"trials": [_serialize_trial_result_v2(r) for r in rows]}
+
+
+@router.get("/task/{task_id}/latest")
+def get_eval_v2_task_latest(task_id: str, db: Session = Depends(get_db)):
+    task = db.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="EvalTask not found")
+
+    if not task.latest_batch_id:
+        return {"task": _serialize_task_v2(task), "trials": []}
+
+    return get_eval_v2_task_batch(task_id, task.latest_batch_id, db)
+
+
+@router.get("/task/{task_id}/batch/{batch_id}")
+def get_eval_v2_task_batch(task_id: str, batch_id: str, db: Session = Depends(get_db)):
+    task = db.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="EvalTask not found")
+    rows = (
+        db.query(EvalTrialResultV2)
+        .filter(
+            EvalTrialResultV2.task_id == task_id,
+            EvalTrialResultV2.batch_id == batch_id,
+        )
+        .order_by(EvalTrialResultV2.created_at.asc())
+        .all()
+    )
+    q = db.query(TaskAnalysisV2).filter(TaskAnalysisV2.task_id == task_id, TaskAnalysisV2.batch_id == batch_id)
+    analysis = q.order_by(TaskAnalysisV2.created_at.desc()).first()
+    return {
+        "task": _serialize_task_v2(task),
+        "batch_id": batch_id,
+        "trials": [_serialize_trial_result_v2(r) for r in rows],
+        "analysis": _serialize_task_analysis_v2(analysis) if analysis else None,
+    }
+
+
+@router.get("/task/{task_id}/diagnosis")
+def get_eval_v2_task_diagnosis(task_id: str, batch_id: Optional[str] = None, db: Session = Depends(get_db)):
+    task = db.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="EvalTask not found")
+
+    q = db.query(TaskAnalysisV2).filter(TaskAnalysisV2.task_id == task_id)
+    target_batch_id = batch_id or task.latest_batch_id
+    if target_batch_id:
+        q = q.filter(TaskAnalysisV2.batch_id == target_batch_id)
+    analysis = q.order_by(TaskAnalysisV2.created_at.desc()).first()
+    if not analysis:
+        return {"analysis": None}
+    return {"analysis": _serialize_task_analysis_v2(analysis)}
 
 
 # ============== EvalRun CRUD ==============
@@ -300,6 +694,34 @@ def create_eval_task(run_id: str, request: CreateEvalTaskRequest, db: Session = 
 @router.put("/task/{task_id}", response_model=EvalTaskResponse)
 def update_eval_task(task_id: str, request: UpdateEvalTaskRequest, db: Session = Depends(get_db)):
     """更新 Task 配置"""
+    # 新链路优先：如果是 EvalTaskV2，则走 V2 更新逻辑
+    task_v2 = db.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
+    if task_v2:
+        update_data = request.model_dump(exclude_unset=True)
+        if "name" in update_data:
+            task_v2.name = update_data["name"]
+        # 旧 schema 无 description/trial_configs，此端点仅做最小兼容更新
+        if "order_index" in update_data and update_data["order_index"] is not None:
+            task_v2.order_index = int(update_data["order_index"])
+        task_v2.status = "pending"
+        db.commit()
+        db.refresh(task_v2)
+        return EvalTaskResponse(
+            id=task_v2.id,
+            eval_run_id="",
+            name=task_v2.name or "",
+            simulator_type="mixed",
+            interaction_mode="mixed",
+            simulator_config={},
+            persona_config={},
+            target_block_ids=[],
+            grader_config={},
+            order_index=task_v2.order_index or 0,
+            status=task_v2.status or "pending",
+            error=task_v2.last_error or "",
+            created_at=task_v2.created_at.isoformat() if task_v2.created_at else "",
+        )
+
     task = db.query(EvalTask).filter(EvalTask.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="EvalTask not found")
@@ -317,6 +739,15 @@ def update_eval_task(task_id: str, request: UpdateEvalTaskRequest, db: Session =
 
 @router.delete("/task/{task_id}")
 def delete_eval_task(task_id: str, db: Session = Depends(get_db)):
+    task_v2 = db.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
+    if task_v2:
+        db.query(EvalTrialResultV2).filter(EvalTrialResultV2.task_id == task_id).delete()
+        db.query(EvalTrialConfigV2).filter(EvalTrialConfigV2.task_id == task_id).delete()
+        db.query(TaskAnalysisV2).filter(TaskAnalysisV2.task_id == task_id).delete()
+        db.delete(task_v2)
+        db.commit()
+        return {"message": "已删除"}
+
     task = db.query(EvalTask).filter(EvalTask.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="EvalTask not found")
@@ -598,6 +1029,10 @@ async def execute_eval_run(run_id: str, db: Session = Depends(get_db)):
 @router.post("/task/{task_id}/execute")
 async def execute_single_task(task_id: str, db: Session = Depends(get_db)):
     """执行单个 Task"""
+    task_v2 = db.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
+    if task_v2:
+        return await _execute_task_v2(task_id, db)
+
     task = db.query(EvalTask).filter(EvalTask.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="EvalTask not found")
@@ -746,6 +1181,39 @@ async def run_diagnosis(run_id: str, db: Session = Depends(get_db)):
         "diagnosis": diagnosis,
         "llm_call": diag_call.to_dict() if diag_call else None,
     }
+
+
+@router.post("/task/{task_id}/diagnose")
+async def run_task_diagnosis(task_id: str, batch_id: Optional[str] = None, db: Session = Depends(get_db)):
+    """新链路：对单个 Task 的最新 batch 运行跨 Trial 分析。"""
+    task = db.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="EvalTask not found")
+    target_batch_id = batch_id or task.latest_batch_id
+    if not target_batch_id:
+        raise HTTPException(status_code=400, detail="Task 尚未执行，无法分析")
+
+    rows = (
+        db.query(EvalTrialResultV2)
+        .filter(
+            EvalTrialResultV2.task_id == task_id,
+            EvalTrialResultV2.batch_id == target_batch_id,
+            EvalTrialResultV2.status == "completed",
+        )
+        .all()
+    )
+    if not rows:
+        raise HTTPException(status_code=400, detail="当前 batch 没有可分析的 Trial 结果")
+
+    analysis = _build_task_analysis_from_trials(task, rows, target_batch_id)
+    db.query(TaskAnalysisV2).filter(
+        TaskAnalysisV2.task_id == task_id,
+        TaskAnalysisV2.batch_id == target_batch_id,
+    ).delete()
+    db.add(analysis)
+    db.commit()
+    db.refresh(analysis)
+    return {"analysis": _serialize_task_analysis_v2(analysis)}
 
 
 # ============== Legacy: Run Full Eval ==============
@@ -1412,6 +1880,64 @@ def _get_project_personas_from_research(project_id: str, db) -> list:
     return personas
 
 
+def _get_or_create_eval_persona_block(project_id: str, db) -> ContentBlock:
+    block = db.query(ContentBlock).filter(
+        ContentBlock.project_id == project_id,
+        ContentBlock.special_handler == "eval_persona_setup",
+        ContentBlock.deleted_at == None,  # noqa: E711
+    ).first()
+    if block:
+        return block
+    block = ContentBlock(
+        id=generate_uuid(),
+        project_id=project_id,
+        parent_id=None,
+        name="人物画像设置",
+        block_type="field",
+        content=json.dumps({"personas": []}, ensure_ascii=False, indent=2),
+        special_handler="eval_persona_setup",
+        status="completed",
+        order_index=99,
+    )
+    db.add(block)
+    db.flush()
+    return block
+
+
+def _read_personas_from_block(block: ContentBlock) -> list:
+    if not block or not block.content:
+        return []
+    try:
+        parsed = json.loads(block.content)
+    except Exception:
+        return _extract_personas_from_text(block.content)
+    if isinstance(parsed, dict):
+        personas = parsed.get("personas")
+        return personas if isinstance(personas, list) else []
+    if isinstance(parsed, list):
+        return parsed
+    return []
+
+
+def _write_personas_to_block(block: ContentBlock, personas: list) -> None:
+    clean = []
+    for p in personas:
+        if not isinstance(p, dict):
+            continue
+        name = str(p.get("name", "")).strip()
+        prompt = str(p.get("prompt", p.get("background", ""))).strip()
+        if not name or not prompt:
+            continue
+        clean.append({
+            "id": str(p.get("id", "")).strip() or f"p_{generate_uuid().replace('-', '')[:12]}",
+            "name": name,
+            "prompt": prompt,
+            "source": str(p.get("source", "manual") or "manual"),
+        })
+    block.content = json.dumps({"personas": clean, "source": "user_configured"}, ensure_ascii=False, indent=2)
+    block.status = "completed"
+
+
 def _get_persona_by_block_id(block_id: str, db) -> dict:
     """根据 block ID 获取 persona 信息"""
     block = db.query(ContentBlock).filter(
@@ -1466,6 +1992,104 @@ def _extract_personas_from_text(text: str) -> list:
     return personas
 
 
+async def _generate_persona_with_llm(project_name: str, project_intent: str, existing_names: List[str]) -> dict:
+    """调用 LLM 生成人物画像，失败时返回安全兜底。"""
+    names_text = ", ".join([n for n in existing_names if n]) or "（无）"
+    system_prompt = "你是一位人物画像设计专家，请严格输出 JSON，不要输出额外文字。"
+    user_prompt = f"""请为以下项目生成一个新的用户画像（避免与已有画像重复）：
+
+【项目名称】
+{project_name}
+
+【项目意图】
+{project_intent or "未提供"}
+
+【已有画像名称（避免重复）】
+{names_text}
+
+输出 JSON:
+{{"name":"画像名称","prompt":"完整画像提示词（包含身份、背景、核心需求、顾虑、决策标准）"}}"""
+    try:
+        model = get_chat_model(model=settings.openai_model, temperature=0.8)
+        response = await model.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
+        parsed = _parse_json_response(response.content if isinstance(response.content, str) else str(response.content))
+        name = str(parsed.get("name", "")).strip()
+        prompt = str(parsed.get("prompt", "")).strip()
+        if not name:
+            name = "新画像"
+        if not prompt:
+            prompt = f"你是{name}，请基于项目目标给出真实消费者视角反馈。"
+        return {"name": name, "prompt": prompt}
+    except Exception:
+        return {
+            "name": "新画像",
+            "prompt": "你是一个潜在消费者，关注内容是否真正解决你的核心问题、成本是否合理、执行是否可行。",
+        }
+
+
+async def _generate_prompt_with_llm(prompt_type: str, context: dict) -> str:
+    prompt_type_name = {
+        "persona": "人物画像提示词",
+        "consumer_prompt": "消费者提示词",
+        "representative_prompt": "内容方提示词",
+        "seller_prompt": "卖方提示词",
+        "buyer_prompt": "买方提示词",
+        "reviewer_prompt": "审查角色提示词",
+        "grader_prompt": "评分器提示词",
+    }.get(prompt_type, prompt_type)
+    required_placeholders = _required_placeholders_for_prompt_type(prompt_type)
+    form_type_name = str(context.get("form_type", "通用评估"))
+    description = str(context.get("description", "")).strip()
+    project_context = str(context.get("project_context", "")).strip()
+
+    system_prompt = "你是一位提示词工程专家。请严格输出 JSON，不要输出额外文字。"
+    user_prompt = f"""请为以下评估场景生成提示词：
+
+【提示词类型】{prompt_type_name}
+【评估形态】{form_type_name}
+【角色/场景描述】{description or "未提供"}
+【项目背景】{project_context or "未提供"}
+【必须包含占位符】{", ".join(required_placeholders) if required_placeholders else "无"}
+
+要求：
+1) 角色定义清晰；
+2) 行为要求具体；
+3) 如果是评分场景，请包含评分锚点；
+4) 包含结构化 JSON 输出格式说明；
+5) 保留必须占位符。
+
+输出 JSON:
+{{"generated_prompt":"完整提示词"}}"""
+    try:
+        model = get_chat_model(model=settings.openai_model, temperature=0.7)
+        response = await model.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
+        parsed = _parse_json_response(response.content if isinstance(response.content, str) else str(response.content))
+        generated = str(parsed.get("generated_prompt", "")).strip()
+        if generated:
+            return generated
+    except Exception:
+        pass
+
+    fallback = "你是评估专家。请基于提供内容执行评估，并严格输出 JSON 结果。"
+    for ph in required_placeholders:
+        if ph not in fallback:
+            fallback += f"\n{ph}"
+    return fallback
+
+
+def _required_placeholders_for_prompt_type(prompt_type: str) -> List[str]:
+    mapping = {
+        "persona": ["{persona}", "{probe_section}"],
+        "consumer_prompt": ["{persona}", "{content}"],
+        "representative_prompt": ["{content}", "{probe_section}"],
+        "seller_prompt": ["{persona}", "{content}", "{probe_section}"],
+        "buyer_prompt": ["{persona}", "{probe_section}"],
+        "reviewer_prompt": ["{content}", "{focus}"],
+        "grader_prompt": ["{content}"],
+    }
+    return mapping.get(prompt_type, [])
+
+
 def _find_sibling_by_handler(block, handler: str, db) -> ContentBlock:
     """找到同级（同 parent_id）的特定 handler 块"""
     return db.query(ContentBlock).filter(
@@ -1474,6 +2098,558 @@ def _find_sibling_by_handler(block, handler: str, db) -> ContentBlock:
         ContentBlock.special_handler == handler,
         ContentBlock.deleted_at == None,
     ).first()
+
+
+def _serialize_task_v2(task: EvalTaskV2) -> dict:
+    return {
+        "id": task.id,
+        "project_id": task.project_id,
+        "name": task.name,
+        "description": task.description or "",
+        "order_index": task.order_index,
+        "status": task.status,
+        "content_hash": task.content_hash or "",
+        "last_executed_at": task.last_executed_at.isoformat() if task.last_executed_at else "",
+        "latest_scores": task.latest_scores or {},
+        "latest_overall": task.latest_overall,
+        "latest_batch_id": task.latest_batch_id or "",
+        "trial_configs": [
+            {
+                "id": c.id,
+                "name": c.name,
+                "form_type": c.form_type,
+                "target_block_ids": c.target_block_ids or [],
+                "grader_ids": c.grader_ids or [],
+                "grader_weights": c.grader_weights or {},
+                "repeat_count": c.repeat_count,
+                "probe": c.probe or "",
+                "form_config": c.form_config or {},
+                "order_index": c.order_index,
+            }
+            for c in sorted(task.trial_configs or [], key=lambda x: x.order_index)
+        ],
+    }
+
+
+def _serialize_trial_result_v2(row: EvalTrialResultV2) -> dict:
+    return {
+        "id": row.id,
+        "task_id": row.task_id,
+        "trial_config_id": row.trial_config_id,
+        "project_id": row.project_id,
+        "batch_id": row.batch_id,
+        "repeat_index": row.repeat_index,
+        "form_type": row.form_type,
+        "process": row.process or [],
+        "grader_results": row.grader_results or [],
+        "dimension_scores": row.dimension_scores or {},
+        "overall_score": row.overall_score,
+        "llm_calls": row.llm_calls or [],
+        "tokens_in": row.tokens_in or 0,
+        "tokens_out": row.tokens_out or 0,
+        "cost": row.cost or 0.0,
+        "status": row.status,
+        "error": row.error or "",
+        "created_at": row.created_at.isoformat() if row.created_at else "",
+    }
+
+
+def _serialize_task_analysis_v2(analysis: TaskAnalysisV2) -> dict:
+    return {
+        "id": analysis.id,
+        "task_id": analysis.task_id,
+        "batch_id": analysis.batch_id,
+        "patterns": analysis.patterns or [],
+        "suggestions": analysis.suggestions or [],
+        "strengths": analysis.strengths or [],
+        "summary": analysis.summary or "",
+        "llm_calls": analysis.llm_calls or [],
+        "cost": analysis.cost or 0.0,
+        "created_at": analysis.created_at.isoformat() if analysis.created_at else "",
+    }
+
+
+def _replace_trial_configs_v2(task_id: str, trial_payloads: List[TrialConfigPayload], db: Session) -> None:
+    db.query(EvalTrialConfigV2).filter(EvalTrialConfigV2.task_id == task_id).delete()
+    for idx, tc in enumerate(trial_payloads):
+        row = EvalTrialConfigV2(
+            id=generate_uuid(),
+            task_id=task_id,
+            name=tc.name,
+            form_type=tc.form_type,
+            target_block_ids=tc.target_block_ids or [],
+            grader_ids=tc.grader_ids or [],
+            grader_weights=tc.grader_weights or {},
+            repeat_count=max(1, int(tc.repeat_count or 1)),
+            probe=tc.probe or "",
+            form_config=tc.form_config or {},
+            order_index=tc.order_index if tc.order_index is not None else idx,
+        )
+        db.add(row)
+
+
+def _collect_eval_texts_by_block_ids(project_id: str, target_block_ids: list, db: Session) -> tuple[str, list[str], list[str]]:
+    blocks_q = db.query(ContentBlock).filter(
+        ContentBlock.project_id == project_id,
+        ContentBlock.block_type == "field",
+        ContentBlock.deleted_at == None,  # noqa: E711
+    )
+    if target_block_ids:
+        blocks_q = blocks_q.filter(ContentBlock.id.in_(target_block_ids))
+    else:
+        blocks_q = blocks_q.filter(
+            (ContentBlock.special_handler == None) |  # noqa: E711
+            (~ContentBlock.special_handler.like("eval_%"))
+        )
+
+    blocks = blocks_q.order_by(ContentBlock.order_index.asc(), ContentBlock.created_at.asc()).all()
+    content_parts = []
+    names = []
+    raw_contents = []
+    for b in blocks:
+        if b.content and b.content.strip():
+            names.append(b.name)
+            raw_contents.append(b.content)
+            content_parts.append(f"## {b.name}\n{b.content}")
+    return "\n\n---\n\n".join(content_parts), names, raw_contents
+
+
+def _collect_eval_blocks_by_ids(project_id: str, target_block_ids: list, db: Session) -> List[dict]:
+    """收集可评估内容块，用于 Experience 分块探索。"""
+    blocks_q = db.query(ContentBlock).filter(
+        ContentBlock.project_id == project_id,
+        ContentBlock.block_type == "field",
+        ContentBlock.deleted_at == None,  # noqa: E711
+    )
+    if target_block_ids:
+        blocks_q = blocks_q.filter(ContentBlock.id.in_(target_block_ids))
+    else:
+        blocks_q = blocks_q.filter(
+            (ContentBlock.special_handler == None) |  # noqa: E711
+            (~ContentBlock.special_handler.like("eval_%"))
+        )
+    rows = blocks_q.order_by(ContentBlock.order_index.asc(), ContentBlock.created_at.asc()).all()
+    out = []
+    for r in rows:
+        content = (r.content or "").strip()
+        if not content:
+            continue
+        out.append({"id": r.id, "title": r.name, "content": content})
+    return out
+
+
+def _get_persona_map(project_id: str, db: Session) -> dict:
+    blocks = db.query(ContentBlock).filter(
+        ContentBlock.project_id == project_id,
+        ContentBlock.special_handler == "eval_persona_setup",
+        ContentBlock.deleted_at == None,  # noqa: E711
+    ).all()
+    out = {}
+    for pb in blocks:
+        if not pb.content:
+            continue
+        try:
+            data = json.loads(pb.content)
+            for p in data.get("personas", []):
+                pid = p.get("id")
+                if pid:
+                    out[pid] = p
+        except Exception:
+            continue
+    return out
+
+
+async def _run_selected_graders(
+    grader_ids: list,
+    content: str,
+    process: list,
+    fallback_grader_outputs: list,
+    db: Session,
+) -> tuple[list, list]:
+    """
+    运行选定 Grader（返回 grader_results, llm_calls）。
+    """
+    if not grader_ids:
+        # 兼容：无显式 grader_ids，回退引擎内建 grader 输出
+        mapped = []
+        for go in fallback_grader_outputs or []:
+            if not isinstance(go, dict):
+                continue
+            mapped.append({
+                "grader_id": go.get("grader_id", ""),
+                "grader_name": go.get("grader_name", go.get("grader_type", "默认评分器")),
+                "scores": go.get("scores", {}) or {},
+                "comments": go.get("comments", {}) or {},
+                "feedback": go.get("feedback", go.get("analysis", go.get("summary", ""))),
+            })
+        return mapped, []
+
+    process_transcript = ""
+    if process:
+        process_transcript = "\n".join(
+            f"[{n.get('role', '?')}] {n.get('content', '')}" for n in process if isinstance(n, dict)
+        )
+
+    graders = db.query(Grader).filter(Grader.id.in_(grader_ids)).all()
+    grader_map = {g.id: g for g in graders}
+    tasks = []
+    task_order = []
+    for gid in grader_ids:
+        g = grader_map.get(gid)
+        if not g:
+            continue
+        tasks.append(
+            run_individual_grader(
+                grader_name=g.name,
+                grader_type=g.grader_type,
+                prompt_template=g.prompt_template or "",
+                dimensions=g.dimensions or ["综合评价"],
+                content=content,
+                trial_result_data={},
+                process_transcript=process_transcript,
+            )
+        )
+        task_order.append(gid)
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    grader_results = []
+    llm_calls = []
+    for idx, res in enumerate(results):
+        if isinstance(res, Exception):
+            continue
+        go, go_call = res
+        gid = task_order[idx] if idx < len(task_order) else ""
+        grader_results.append({
+            "grader_id": gid,
+            "grader_name": go.get("grader_name", ""),
+            "scores": go.get("scores", {}) or {},
+            "comments": go.get("comments", {}) or {},
+            "feedback": go.get("feedback", ""),
+        })
+        if go_call:
+            llm_calls.append(go_call.to_dict() if hasattr(go_call, "to_dict") else go_call)
+    return grader_results, llm_calls
+
+
+async def _run_trial_config_once(
+    task: EvalTaskV2,
+    trial_cfg: EvalTrialConfigV2,
+    repeat_index: int,
+    batch_id: str,
+    persona_map: dict,
+    db: Session,
+) -> EvalTrialResultV2:
+    content_text, _, raw_contents = _collect_eval_texts_by_block_ids(
+        task.project_id, trial_cfg.target_block_ids or [], db
+    )
+    content_blocks = _collect_eval_blocks_by_ids(task.project_id, trial_cfg.target_block_ids or [], db)
+    if not content_text:
+        return EvalTrialResultV2(
+            id=generate_uuid(),
+            task_id=task.id,
+            trial_config_id=trial_cfg.id,
+            project_id=task.project_id,
+            batch_id=batch_id,
+            repeat_index=repeat_index,
+            form_type=trial_cfg.form_type,
+            status="failed",
+            error="没有可评估内容",
+        )
+
+    creator_profile = ""
+    project = db.query(Project).filter(Project.id == task.project_id).first()
+    if project:
+        creator_profile = _get_creator_profile(project, db)
+    intent = _get_project_intent(project, db) if project else ""
+
+    llm_calls = []
+    process = []
+    grader_results = []
+    dimension_scores = {}
+    overall_score = None
+    status = "completed"
+    error = ""
+    tokens_in = 0
+    tokens_out = 0
+    cost = 0.0
+
+    try:
+        form = trial_cfg.form_type
+        form_config = trial_cfg.form_config or {}
+        probe_text = trial_cfg.probe or form_config.get("probe", "")
+
+        if form == "assessment":
+            # 直接判定：只跑 Grader
+            grader_results, g_calls = await _run_selected_graders(
+                trial_cfg.grader_ids or [],
+                content_text,
+                [],
+                [],
+                db,
+            )
+            llm_calls.extend(g_calls)
+            overall_score, dimension_scores = compute_weighted_grader_score(
+                grader_results, trial_cfg.grader_weights or {}
+            )
+
+        elif form == "experience":
+            # Experience: 三步分块探索（规划 -> 逐块 -> 总结）
+            persona_id = form_config.get("persona_id")
+            p = persona_map.get(persona_id, {}) if persona_id else {}
+            persona_name = p.get("name", form_config.get("persona_name", "消费者"))
+            persona_prompt = p.get("prompt", form_config.get("persona_prompt", "你是一个真实消费者。"))
+            exp_result = await run_experience_trial(
+                persona_name=persona_name,
+                persona_prompt=persona_prompt,
+                probe=probe_text,
+                blocks=content_blocks,
+            )
+            process = exp_result.process or []
+            llm_calls.extend(exp_result.llm_calls or [])
+            if exp_result.error:
+                status = "failed"
+                error = exp_result.error
+
+            selected_graders, g_calls = await _run_selected_graders(
+                trial_cfg.grader_ids or [],
+                content_text,
+                process,
+                [],
+                db,
+            )
+            grader_results = selected_graders
+            llm_calls.extend(g_calls)
+            overall_score, dimension_scores = compute_weighted_grader_score(
+                grader_results, trial_cfg.grader_weights or {}
+            )
+            if overall_score is None:
+                # 无 Grader 时回退到分块探索均值
+                overall_score = exp_result.exploration_score
+                if overall_score is not None:
+                    dimension_scores = {"体验探索分": overall_score}
+
+        else:
+            # review / scenario 借助现有 run_task_trial
+            simulator_type = "coach"
+            interaction_mode = "review"
+            simulator_config = {}
+            persona = None
+
+            if form == "review":
+                interaction_mode = "review"
+                persona_id = form_config.get("persona_id")
+                reviewer = persona_map.get(persona_id, {}) if persona_id else {}
+                simulator_type = form_config.get("simulator_type", "editor")
+                persona = reviewer if reviewer else {"name": "审查角色", "prompt": form_config.get("system_prompt", "")}
+                simulator_config = {
+                    "system_prompt": form_config.get("system_prompt", reviewer.get("prompt", "")),
+                    "max_turns": 1,
+                }
+            elif form == "scenario":
+                interaction_mode = "scenario"
+                simulator_type = "seller"
+                role_a_id = form_config.get("role_a_persona_id")
+                role_b_id = form_config.get("role_b_persona_id")
+                role_a = persona_map.get(role_a_id, {}) if role_a_id else {}
+                role_b = persona_map.get(role_b_id, {}) if role_b_id else {}
+                persona = role_b if role_b else {"name": "角色B", "prompt": form_config.get("role_b_prompt", "")}
+                simulator_config = {
+                    "system_prompt": form_config.get("role_a_prompt", role_a.get("prompt", "")),
+                    "secondary_prompt": form_config.get("role_b_prompt", role_b.get("prompt", "")),
+                    "max_turns": int(form_config.get("max_turns", 5) or 5),
+                }
+
+            if probe_text:
+                origin = simulator_config.get("system_prompt", "")
+                simulator_config["system_prompt"] = (origin + f"\n\n【本次焦点】\n{probe_text}").strip()
+
+            trial = await run_task_trial(
+                simulator_type=simulator_type,
+                interaction_mode=interaction_mode,
+                content=content_text,
+                creator_profile=creator_profile,
+                intent=intent,
+                persona=persona,
+                simulator_config=simulator_config,
+                grader_config={"type": "content", "dimensions": []},
+            )
+
+            process = trial.nodes or []
+            llm_calls.extend(trial.llm_calls or [])
+            tokens_in += int(trial.tokens_in or 0)
+            tokens_out += int(trial.tokens_out or 0)
+            cost += float(trial.cost or 0.0)
+            if not trial.success:
+                status = "failed"
+                error = trial.error or "trial 执行失败"
+
+            selected_graders, g_calls = await _run_selected_graders(
+                trial_cfg.grader_ids or [],
+                content_text,
+                process,
+                trial.grader_outputs or [],
+                db,
+            )
+            grader_results = selected_graders
+            llm_calls.extend(g_calls)
+            overall_score, dimension_scores = compute_weighted_grader_score(
+                grader_results, trial_cfg.grader_weights or {}
+            )
+
+        content_hash = compute_content_hash(raw_contents)
+        task.content_hash = content_hash
+
+    except Exception as e:
+        status = "failed"
+        error = str(e)
+
+    # 汇总日志统计（部分 call 可能是 dict）
+    for c in llm_calls:
+        if isinstance(c, dict):
+            tokens_in += int(c.get("tokens_in", 0) or 0)
+            tokens_out += int(c.get("tokens_out", 0) or 0)
+            cost += float(c.get("cost", 0.0) or 0.0)
+
+    return EvalTrialResultV2(
+        id=generate_uuid(),
+        task_id=task.id,
+        trial_config_id=trial_cfg.id,
+        project_id=task.project_id,
+        batch_id=batch_id,
+        repeat_index=repeat_index,
+        form_type=trial_cfg.form_type,
+        process=process,
+        grader_results=grader_results,
+        dimension_scores=dimension_scores,
+        overall_score=overall_score,
+        llm_calls=llm_calls,
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+        cost=cost,
+        status=status,
+        error=error,
+    )
+
+
+async def _execute_task_v2(task_id: str, db: Session) -> dict:
+    task = db.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="EvalTask not found")
+
+    configs = (
+        db.query(EvalTrialConfigV2)
+        .filter(EvalTrialConfigV2.task_id == task_id)
+        .order_by(EvalTrialConfigV2.order_index.asc())
+        .all()
+    )
+    if not configs:
+        raise HTTPException(status_code=400, detail="Task 没有 Trial 配置")
+
+    task.status = "running"
+    task.last_error = ""
+    db.commit()
+
+    persona_map = _get_persona_map(task.project_id, db)
+    batch_id = generate_uuid()
+    run_rows = []
+
+    for cfg in configs:
+        repeats = max(1, int(cfg.repeat_count or 1))
+        for ridx in range(repeats):
+            row = await _run_trial_config_once(task, cfg, ridx, batch_id, persona_map, db)
+            db.add(row)
+            run_rows.append(row)
+
+    db.flush()
+
+    aggregate_input = [
+        {"overall_score": r.overall_score, "dimension_scores": r.dimension_scores or {}}
+        for r in run_rows
+        if r.status == "completed"
+    ]
+    agg = aggregate_task_scores(aggregate_input)
+    task.latest_scores = agg
+    task.latest_overall = (agg.get("overall") or {}).get("mean") if agg.get("overall") else None
+    task.latest_batch_id = batch_id
+    task.last_executed_at = datetime.now(timezone.utc)
+    task.status = "completed" if any(r.status == "completed" for r in run_rows) else "failed"
+    task.last_error = "; ".join([r.error for r in run_rows if r.error])[:2000]
+
+    db.commit()
+    db.refresh(task)
+
+    return {
+        "task": _serialize_task_v2(task),
+        "batch_id": batch_id,
+        "overall": task.latest_overall,
+        "trials": [_serialize_trial_result_v2(r) for r in run_rows],
+    }
+
+
+def _build_task_analysis_from_trials(task: EvalTaskV2, rows: List[EvalTrialResultV2], batch_id: str) -> TaskAnalysisV2:
+    # 规则化分析（避免额外 LLM 成本，先提供可靠可解释的结果）
+    dim_low_count = {}
+    feedback_lines = []
+    strengths = []
+    for r in rows:
+        dims = r.dimension_scores or {}
+        for dim, score in dims.items():
+            if isinstance(score, (int, float)) and score < 7:
+                dim_low_count[dim] = dim_low_count.get(dim, 0) + 1
+        for gr in r.grader_results or []:
+            fb = (gr or {}).get("feedback", "")
+            if fb:
+                feedback_lines.append(str(fb))
+            comments = (gr or {}).get("comments", {}) or {}
+            for k, v in comments.items():
+                if isinstance(v, str) and ("优点" in v or "清晰" in v or "准确" in v):
+                    strengths.append(f"{k}: {v[:80]}")
+
+    patterns = []
+    suggestions = []
+    total = max(1, len(rows))
+    for dim, cnt in sorted(dim_low_count.items(), key=lambda x: x[1], reverse=True):
+        severity = "high" if cnt / total >= 0.6 else "medium"
+        patterns.append({
+            "title": f"{dim} 在多个 Trial 中偏低",
+            "frequency": f"{cnt}/{total}",
+            "evidence": [f"{cnt} 次结果低于 7 分"],
+            "severity": severity,
+        })
+        suggestions.append({
+            "title": f"优先提升「{dim}」",
+            "severity": severity,
+            "detail": f"针对 {dim} 增加更具体的论据、结构化表达和可执行示例。",
+            "related_patterns": [f"{dim} 在多个 Trial 中偏低"],
+        })
+
+    if not patterns and feedback_lines:
+        patterns.append({
+            "title": "反馈聚焦在少数改进点",
+            "frequency": f"{len(feedback_lines)}/{total}",
+            "evidence": feedback_lines[:3],
+            "severity": "medium",
+        })
+        suggestions.append({
+            "title": "基于反馈逐条改写关键段落",
+            "severity": "medium",
+            "detail": "优先处理重复出现的负向反馈，逐条验证改写后分数变化。",
+            "related_patterns": ["反馈聚焦在少数改进点"],
+        })
+
+    summary = f"任务「{task.name}」共分析 {len(rows)} 条 Trial，识别到 {len(patterns)} 个共性模式。"
+
+    return TaskAnalysisV2(
+        id=generate_uuid(),
+        task_id=task.id,
+        batch_id=batch_id,
+        patterns=patterns,
+        suggestions=suggestions,
+        strengths=strengths[:8],
+        summary=summary,
+        llm_calls=[],
+        cost=0.0,
+    )
 
 
 def _to_run_response(r: EvalRun) -> EvalRunResponse:

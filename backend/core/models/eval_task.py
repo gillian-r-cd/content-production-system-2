@@ -230,3 +230,4 @@ class EvalTask(BaseModel):
         return type_info.get("system_prompt", "请评估以下内容。")
 
 
+
