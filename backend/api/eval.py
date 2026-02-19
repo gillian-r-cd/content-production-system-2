@@ -24,6 +24,7 @@ import json
 import asyncio
 import threading
 import hashlib
+import re
 from typing import Optional, List
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
@@ -2143,7 +2144,8 @@ def _get_project_intent(project, db) -> str:
         if parts:
             return "\n".join(parts)
     
-    return project.name or ""
+    # 没有意图内容时返回空，避免误将项目名当作项目意图注入评估上下文。
+    return ""
 
 
 def _get_project_personas_from_research(project_id: str, db) -> list:
@@ -2575,6 +2577,9 @@ def _serialize_task_v2(task: EvalTaskV2) -> dict:
 
 
 def _serialize_trial_result_v2(row: EvalTrialResultV2) -> dict:
+    grader_results = row.grader_results or []
+    evidence = _build_score_evidence(grader_results)
+    suggestions = _extract_independent_suggestions(grader_results)
     return {
         "id": row.id,
         "task_id": row.task_id,
@@ -2585,9 +2590,12 @@ def _serialize_trial_result_v2(row: EvalTrialResultV2) -> dict:
         "repeat_index": row.repeat_index,
         "form_type": row.form_type,
         "process": row.process or [],
-        "grader_results": row.grader_results or [],
+        "grader_results": grader_results,
         "dimension_scores": row.dimension_scores or {},
         "overall_score": row.overall_score,
+        "overall_comment": _build_trial_overall_comment(row.form_type, row.overall_score, evidence),
+        "score_evidence": evidence,
+        "improvement_suggestions": suggestions,
         "llm_calls": row.llm_calls or [],
         "tokens_in": row.tokens_in or 0,
         "tokens_out": row.tokens_out or 0,
@@ -2611,6 +2619,82 @@ def _serialize_task_analysis_v2(analysis: TaskAnalysisV2) -> dict:
         "cost": analysis.cost or 0.0,
         "created_at": analysis.created_at.isoformat() if analysis.created_at else "",
     }
+
+
+def _build_score_evidence(grader_results: list) -> list[dict]:
+    evidence_rows = []
+    for gr in grader_results:
+        if not isinstance(gr, dict):
+            continue
+        gname = str(gr.get("grader_name") or "评分器")
+        scores = gr.get("scores") or {}
+        comments = gr.get("comments") or {}
+        if not isinstance(scores, dict):
+            continue
+        for dim, score in scores.items():
+            dim_name = str(dim)
+            ev_text = ""
+            if isinstance(comments, dict):
+                ev_text = str(comments.get(dim_name) or "").strip()
+            if not ev_text:
+                ev_text = "未提供该维度评分依据。"
+            evidence_rows.append(
+                {
+                    "grader_name": gname,
+                    "dimension": dim_name,
+                    "score": score,
+                    "evidence": ev_text,
+                }
+            )
+    return evidence_rows
+
+
+def _build_trial_overall_comment(form_type: str, overall_score: Optional[float], evidence_rows: list[dict]) -> str:
+    if overall_score is None:
+        return "本 Trial 尚无可用总评（可能执行失败或未产出可评分结果）。"
+    summary = f"本 Trial 总体得分 {float(overall_score):.2f}/10。"
+    if evidence_rows:
+        top = evidence_rows[0]
+        summary += f" 主要评分依据来自「{top.get('grader_name', '评分器')}」在「{top.get('dimension', '综合')}」维度的判断。"
+    mode_hint = {
+        "assessment": "该形态为直接判定，重点依据内容质量评分。",
+        "review": "该形态为视角审查，重点依据角色视角下的内容判断。",
+        "experience": "该形态为消费体验，结合探索过程与内容结果综合判断。",
+        "scenario": "该形态为场景模拟，结合对话过程与内容结果综合判断。",
+    }.get(form_type, "")
+    if mode_hint:
+        summary += f" {mode_hint}"
+    return summary
+
+
+def _extract_independent_suggestions(grader_results: list) -> list[str]:
+    """
+    从 grader feedback 中提取“独立建议句”，与 Trial 总评分离。
+    """
+    keywords = ["建议", "应", "需要", "优化", "改", "补充", "删除", "避免", "修正", "调整", "简化", "明确"]
+    out = []
+    for gr in grader_results:
+        if not isinstance(gr, dict):
+            continue
+        feedback = str(gr.get("feedback") or "").strip()
+        if not feedback:
+            continue
+        parts = re.split(r"[\n。；;]", feedback)
+        for p in parts:
+            line = p.strip()
+            if len(line) < 6:
+                continue
+            if not any(k in line for k in keywords):
+                continue
+            out.append(line)
+    deduped = []
+    seen = set()
+    for x in out:
+        if x in seen:
+            continue
+        seen.add(x)
+        deduped.append(x)
+    return deduped[:8]
 
 
 def _replace_trial_configs_v2(task_id: str, trial_payloads: List[TrialConfigPayload], db: Session) -> None:
@@ -2728,11 +2812,7 @@ async def _run_selected_graders(
             })
         return mapped, []
 
-    process_transcript = ""
-    if process:
-        process_transcript = "\n".join(
-            f"[{n.get('role', '?')}] {n.get('content', '')}" for n in process if isinstance(n, dict)
-        )
+    process_transcript = _build_process_transcript(process)
 
     graders = db.query(Grader).filter(Grader.id.in_(grader_ids)).all()
     grader_map = {g.id: g for g in graders}
@@ -2773,6 +2853,66 @@ async def _run_selected_graders(
         if go_call:
             llm_calls.append(go_call.to_dict() if hasattr(go_call, "to_dict") else go_call)
     return grader_results, llm_calls
+
+
+def _build_process_transcript(process: list) -> str:
+    """
+    将 Trial 过程统一序列化为可读 transcript，供 content_and_process grader 使用。
+    兼容两类结构：
+    - 对话节点: {role, content, turn}
+    - 体验探索: {type: plan|per_block|summary, data: {...}}
+    """
+    if not process:
+        return ""
+    lines = []
+    for idx, node in enumerate(process):
+        if not isinstance(node, dict):
+            lines.append(f"[step_{idx + 1}] {str(node)}")
+            continue
+        role = str(node.get("role") or "").strip()
+        content = str(node.get("content") or "").strip()
+        if role or content:
+            turn = node.get("turn")
+            turn_tag = f"#{turn}" if turn is not None else f"#{idx + 1}"
+            lines.append(f"[dialogue {turn_tag} {role or 'assistant'}] {content}")
+            continue
+
+        ntype = str(node.get("type") or "").strip()
+        if ntype == "plan":
+            data = node.get("data") or {}
+            goal = str(data.get("overall_goal") or "").strip()
+            lines.append(f"[experience 阶段1-规划] 目标: {goal or '未提供'}")
+            for pidx, p in enumerate(data.get("plan") or []):
+                if not isinstance(p, dict):
+                    continue
+                title = p.get("block_title") or p.get("block_id") or f"block_{pidx+1}"
+                reason = p.get("reason") or ""
+                expectation = p.get("expectation") or ""
+                lines.append(f"  - 先看 {title}; 原因: {reason}; 预期: {expectation}")
+            continue
+        if ntype == "per_block":
+            data = node.get("data") or {}
+            title = node.get("block_title") or node.get("block_id") or "未命名内容块"
+            lines.append(f"[experience 阶段2-逐块探索] {title}")
+            lines.append(
+                f"  discovery={data.get('discovery', '')}; doubt={data.get('doubt', '')}; "
+                f"missing={data.get('missing', '')}; feeling={data.get('feeling', '')}; score={data.get('score', '-')}"
+            )
+            continue
+        if ntype == "summary":
+            data = node.get("data") or {}
+            lines.append("[experience 阶段3-总结]")
+            lines.append(
+                f"  overall_impression={data.get('overall_impression', '')}; "
+                f"addressed={data.get('concerns_addressed', [])}; "
+                f"unaddressed={data.get('concerns_unaddressed', [])}; summary={data.get('summary', '')}"
+            )
+            continue
+
+        # 兜底：保留原始结构，确保过程不会丢。
+        lines.append(f"[process #{idx + 1}] {json.dumps(node, ensure_ascii=False)}")
+
+    return "\n".join(lines).strip()
 
 
 async def _run_trial_config_once(
@@ -2907,18 +3047,47 @@ async def _run_trial_config_once(
                 origin = simulator_config.get("system_prompt", "")
                 simulator_config["system_prompt"] = (origin + f"\n\n【本次焦点】\n{probe_text}").strip()
 
-            trial = await run_task_trial(
-                simulator_type=simulator_type,
-                interaction_mode=interaction_mode,
-                content=content_text,
-                creator_profile=creator_profile,
-                intent=intent,
-                persona=persona,
-                simulator_config=simulator_config,
-                grader_config={"type": "content", "dimensions": []},
-            )
+            fallback_note = None
+            try:
+                trial = await run_task_trial(
+                    simulator_type=simulator_type,
+                    interaction_mode=interaction_mode,
+                    content=content_text,
+                    creator_profile=creator_profile,
+                    intent=intent,
+                    persona=persona,
+                    simulator_config=simulator_config,
+                    grader_config={"type": "content", "dimensions": []},
+                )
+            except Exception as trial_err:
+                # 场景模拟兜底：若 seller 路径异常，回退到 consumer 对话，避免整条 Trial 直接失败。
+                if form == "scenario":
+                    fallback_persona = persona or {"name": "目标消费者", "background": "默认画像"}
+                    fallback_cfg = {
+                        "system_prompt": form_config.get("role_b_prompt", ""),
+                        "max_turns": int(form_config.get("max_turns", 5) or 5),
+                    }
+                    trial = await run_task_trial(
+                        simulator_type="consumer",
+                        interaction_mode="dialogue",
+                        content=content_text,
+                        creator_profile=creator_profile,
+                        intent=intent,
+                        persona=fallback_persona,
+                        simulator_config=fallback_cfg,
+                        grader_config={"type": "content", "dimensions": []},
+                    )
+                    fallback_note = {
+                        "type": "system_note",
+                        "stage": "兜底策略",
+                        "content": f"scenario 模式主路径失败，已回退到 dialogue 兜底执行: {str(trial_err)}",
+                    }
+                else:
+                    raise
 
             process = trial.nodes or []
+            if fallback_note:
+                process = [fallback_note, *process]
             llm_calls.extend(trial.llm_calls or [])
             tokens_in += int(trial.tokens_in or 0)
             tokens_out += int(trial.tokens_out or 0)

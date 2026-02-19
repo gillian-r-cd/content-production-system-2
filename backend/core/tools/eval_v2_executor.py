@@ -125,11 +125,16 @@ async def run_experience_trial(
 你面前有以下内容块：
 {block_list}
 
-请输出 JSON:
-{{"plan":[{{"block_id":"id","block_title":"标题","reason":"为什么先看","expectation":"期望找到什么"}}],"overall_goal":"1句话目标"}}"""
+请严格输出 JSON（不允许 Markdown/解释）:
+{{"plan":[{{"block_id":"id","block_title":"标题","reason":"为什么先看","expectation":"期望找到什么"}}],"overall_goal":"1句话目标"}}
+
+强约束：
+1) plan 必须包含 3-5 个步骤；若内容块少于3个，则全部列出且不得为空。
+2) 每个步骤都必须引用有效 block_id（来自上方列表），不得杜撰。
+3) 如果无法判断优先级，也必须给出默认顺序，不能省略步骤。"""
     plan_data, plan_call = await _call_json(plan_system, plan_user, "experience_plan", temperature=0.7)
     llm_calls.append(plan_call)
-    process.append({"type": "plan", "data": plan_data})
+    process.append({"type": "plan", "stage": "阶段1-探索规划", "data": plan_data})
 
     block_map = {b["id"]: b for b in normalized_blocks}
     ordered_blocks = []
@@ -160,8 +165,13 @@ async def run_experience_trial(
 内容：
 {block["content"]}
 
-请输出 JSON:
-{{"concern_match":"...","discovery":"...","doubt":"...","missing":"...","feeling":"作为{persona_name}的感受","score":1-10}}"""
+请严格输出 JSON（不允许 Markdown/解释）:
+{{"concern_match":"...","discovery":"...","doubt":"...","missing":"...","feeling":"作为{persona_name}的感受","score":1-10}}
+
+强约束：
+1) score 必须是 1-10 的整数；不确定时给保守分并在 doubt 说明原因。
+2) missing 必须是可执行的补充项（具体到信息/案例/步骤），禁止抽象空话。
+3) discovery / doubt 需要基于当前内容块证据，不得脱离文本臆测。"""
         per_data, per_call = await _call_json(per_system, per_user, f"experience_per_block_{idx + 1}", temperature=0.7)
         llm_calls.append(per_call)
         per_block_results.append({
@@ -171,6 +181,7 @@ async def run_experience_trial(
         })
         process.append({
             "type": "per_block",
+            "stage": "阶段2-逐块探索",
             "block_id": block["id"],
             "block_title": block["title"],
             "data": per_data,
@@ -189,11 +200,16 @@ async def run_experience_trial(
 以下是你逐块探索结果：
 {all_block_results}
 
-请输出 JSON:
-{{"overall_impression":"...","concerns_addressed":[],"concerns_unaddressed":[],"would_recommend":true,"summary":"作为{persona_name}的总体评价"}}"""
+请严格输出 JSON（不允许 Markdown/解释）:
+{{"overall_impression":"...","concerns_addressed":[],"concerns_unaddressed":[],"would_recommend":true,"summary":"作为{persona_name}的总体评价"}}
+
+强约束：
+1) concerns_addressed / concerns_unaddressed 的每一项，都必须能在逐块结果中找到依据。
+2) summary 必须明确包含“是否推荐 + 推荐条件/不推荐原因”，不得只写笼统结论。
+3) 如果信息不足，必须在 concerns_unaddressed 中明确指出缺口。"""
     summary_data, summary_call = await _call_json(summary_system, summary_user, "experience_summary", temperature=0.6)
     llm_calls.append(summary_call)
-    process.append({"type": "summary", "data": summary_data})
+    process.append({"type": "summary", "stage": "阶段3-总体总结", "data": summary_data})
 
     scores = []
     for item in per_block_results:

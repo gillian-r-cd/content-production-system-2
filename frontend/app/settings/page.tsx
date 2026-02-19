@@ -6,7 +6,7 @@
 
 import { useState, useEffect } from "react";
 import { settingsAPI, graderAPI, phaseTemplateAPI } from "@/lib/api";
-import type { CreatorProfile, GraderData, PhaseTemplate } from "@/lib/api";
+import type { AgentSettingsData, CreatorProfile, GraderData, PhaseTemplate } from "@/lib/api";
 
 import { SystemPromptsSection } from "@/components/settings/system-prompts-section";
 import { ProfilesSection } from "@/components/settings/profiles-section";
@@ -20,18 +20,43 @@ import { AgentSettingsSection } from "@/components/settings/agent-settings-secti
 import { LogsSection } from "@/components/settings/logs-section";
 
 type Tab = "prompts" | "profiles" | "templates" | "phase_templates" | "channels" | "simulators" | "graders" | "eval_prompts" | "agent" | "logs";
+type SystemPromptItem = { id: string; name: string; phase: string; content?: string };
+type EvalPromptItem = {
+  id: string;
+  phase: string;
+  name?: string;
+  description?: string;
+  content?: string;
+};
+type FieldTemplateItem = {
+  id: string;
+  name: string;
+  description?: string;
+  category?: string;
+  fields?: Array<{
+    name: string;
+    type?: string;
+    ai_prompt?: string;
+    content?: string;
+    pre_questions?: string[];
+    depends_on?: string[];
+  }>;
+};
+type ChannelItem = { id: string; name: string; description?: string; platform?: string; prompt_template?: string };
+type SimulatorItem = { id: string; name: string; interaction_type: string; description?: string; evaluation_dimensions?: string[] };
+type LogItem = { id: string; [key: string]: unknown };
 
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<Tab>("prompts");
   const [profiles, setProfiles] = useState<CreatorProfile[]>([]);
-  const [templates, setTemplates] = useState<any[]>([]);
-  const [channels, setChannels] = useState<any[]>([]);
-  const [simulators, setSimulators] = useState<any[]>([]);
+  const [templates, setTemplates] = useState<FieldTemplateItem[]>([]);
+  const [channels, setChannels] = useState<ChannelItem[]>([]);
+  const [simulators, setSimulators] = useState<SimulatorItem[]>([]);
   const [graders, setGraders] = useState<GraderData[]>([]);
-  const [logs, setLogs] = useState<any[]>([]);
-  const [prompts, setPrompts] = useState<any[]>([]);
-  const [evalPrompts, setEvalPrompts] = useState<any[]>([]);
-  const [agentSettings, setAgentSettings] = useState<any>(null);
+  const [logs, setLogs] = useState<LogItem[]>([]);
+  const [prompts, setPrompts] = useState<SystemPromptItem[]>([]);
+  const [evalPrompts, setEvalPrompts] = useState<EvalPromptItem[]>([]);
+  const [agentSettings, setAgentSettings] = useState<AgentSettingsData | null>(null);
   const [phaseTemplates, setPhaseTemplates] = useState<PhaseTemplate[]>([]);
   const [loading, setLoading] = useState(true);
 

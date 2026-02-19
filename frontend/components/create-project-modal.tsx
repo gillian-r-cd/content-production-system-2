@@ -20,6 +20,21 @@ interface TemplateItem {
   fieldCount: number;
   contentCount: number; // 有预置内容的字段数
 }
+
+interface FieldTemplateLikeField {
+  name: string;
+  type?: string;
+  ai_prompt?: string;
+  content?: string;
+}
+
+interface FieldTemplateLike {
+  id: string;
+  name: string;
+  description?: string;
+  category?: string;
+  fields?: FieldTemplateLikeField[];
+}
 import { ChevronLeft, ChevronRight, Check, Folder, Lightbulb, Users, PlayCircle, BarChart3 } from "lucide-react";
 
 interface CreateProjectModalProps {
@@ -99,7 +114,7 @@ export function CreateProjectModal({
       // 同时加载 PhaseTemplate 和 FieldTemplate，统一展示
       const [phaseData, fieldData] = await Promise.all([
         phaseTemplateAPI.list().catch(() => [] as PhaseTemplate[]),
-        settingsAPI.listFieldTemplates().catch(() => [] as any[]),
+        settingsAPI.listFieldTemplates().catch(() => [] as FieldTemplateLike[]),
       ]);
 
       const items: TemplateItem[] = [];
@@ -139,7 +154,7 @@ export function CreateProjectModal({
               block_type: "phase",
               special_handler: null,
               order_index: 0,
-              default_fields: fields.map((f: any) => ({
+              default_fields: fields.map((f: FieldTemplateLikeField) => ({
                 name: f.name,
                 block_type: f.type || "field",
                 ai_prompt: f.ai_prompt,
@@ -149,7 +164,7 @@ export function CreateProjectModal({
           ],
           is_default: false,
           fieldCount: fields.length,
-          contentCount: fields.filter((f: any) => f.content).length,
+          contentCount: fields.filter((f: FieldTemplateLikeField) => f.content).length,
         });
       }
 

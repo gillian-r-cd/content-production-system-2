@@ -23,7 +23,7 @@ export function GradersSection({ graders, onRefresh }: { graders: GraderData[]; 
     try {
       const result = await graderAPI.exportAll();
       downloadJSON(result, `graders_${new Date().toISOString().split("T")[0]}.json`);
-    } catch (err) {
+    } catch {
       alert("导出失败");
     }
   };
@@ -33,12 +33,12 @@ export function GradersSection({ graders, onRefresh }: { graders: GraderData[]; 
       const result = await graderAPI.exportAll(id);
       const grader = graders.find(g => g.id === id);
       downloadJSON(result, `grader_${grader?.name || id}.json`);
-    } catch (err) {
+    } catch {
       alert("导出失败");
     }
   };
 
-  const handleImport = async (data: any[]) => {
+  const handleImport = async (data: unknown[]) => {
     await graderAPI.importAll(data);
     onRefresh();
   };
@@ -86,8 +86,8 @@ export function GradersSection({ graders, onRefresh }: { graders: GraderData[]; 
       }
       cancelEdit();
       onRefresh();
-    } catch (err: any) {
-      alert("保存失败: " + (err.message || "未知错误"));
+    } catch (err: unknown) {
+      alert("保存失败: " + (err instanceof Error ? err.message : "未知错误"));
     }
   };
 
@@ -96,8 +96,8 @@ export function GradersSection({ graders, onRefresh }: { graders: GraderData[]; 
     try {
       await graderAPI.delete(id);
       onRefresh();
-    } catch (err: any) {
-      alert("删除失败: " + (err.message || "预置评分器不可删除"));
+    } catch (err: unknown) {
+      alert("删除失败: " + (err instanceof Error ? err.message : "预置评分器不可删除"));
     }
   };
 

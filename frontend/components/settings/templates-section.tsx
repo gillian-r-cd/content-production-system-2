@@ -7,16 +7,40 @@ import { useState } from "react";
 import { settingsAPI } from "@/lib/api";
 import { FormField, TagInput, ImportExportButtons, SingleExportButton, downloadJSON } from "./shared";
 
-export function TemplatesSection({ templates, onRefresh }: { templates: any[]; onRefresh: () => void }) {
+interface TemplateField {
+  name: string;
+  type?: string;
+  ai_prompt?: string;
+  content?: string;
+  pre_questions?: string[];
+  depends_on?: string[];
+}
+
+interface FieldTemplateItem {
+  id: string;
+  name: string;
+  description?: string;
+  category?: string;
+  fields?: TemplateField[];
+}
+
+interface TemplateEditForm {
+  name: string;
+  description: string;
+  category: string;
+  fields: TemplateField[];
+}
+
+export function TemplatesSection({ templates, onRefresh }: { templates: FieldTemplateItem[]; onRefresh: () => void }) {
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState<any>({});
+  const [editForm, setEditForm] = useState<TemplateEditForm>({ name: "", description: "", category: "通用", fields: [] });
   const [isCreating, setIsCreating] = useState(false);
 
   const handleExportAll = async () => {
     try {
       const result = await settingsAPI.exportFieldTemplates();
       downloadJSON(result, `field_templates_${new Date().toISOString().split("T")[0]}.json`);
-    } catch (err) {
+    } catch {
       alert("导出失败");
     }
   };
@@ -26,12 +50,12 @@ export function TemplatesSection({ templates, onRefresh }: { templates: any[]; o
       const result = await settingsAPI.exportFieldTemplates(id);
       const template = templates.find(t => t.id === id);
       downloadJSON(result, `field_template_${template?.name || id}.json`);
-    } catch (err) {
+    } catch {
       alert("导出失败");
     }
   };
 
-  const handleImport = async (data: any[]) => {
+  const handleImport = async (data: unknown[]) => {
     await settingsAPI.importFieldTemplates(data);
     onRefresh();
   };
@@ -41,9 +65,14 @@ export function TemplatesSection({ templates, onRefresh }: { templates: any[]; o
     setEditForm({ name: "", description: "", category: "通用", fields: [] });
   };
 
-  const handleEdit = (template: any) => {
+  const handleEdit = (template: FieldTemplateItem) => {
     setEditingId(template.id);
-    setEditForm({ ...template });
+    setEditForm({
+      name: template.name || "",
+      description: template.description || "",
+      category: template.category || "通用",
+      fields: template.fields || [],
+    });
   };
 
   const handleSave = async () => {
@@ -66,7 +95,7 @@ export function TemplatesSection({ templates, onRefresh }: { templates: any[]; o
     try {
       await settingsAPI.deleteFieldTemplate(id);
       onRefresh();
-    } catch (err) {
+    } catch {
       alert("删除失败");
     }
   };
@@ -79,14 +108,14 @@ export function TemplatesSection({ templates, onRefresh }: { templates: any[]; o
     });
   };
 
-  const updateField = (index: number, key: string, value: any) => {
+  const updateField = (index: number, key: keyof TemplateField, value: unknown) => {
     const newFields = [...editForm.fields];
-    newFields[index] = { ...newFields[index], [key]: value };
+    newFields[index] = { ...newFields[index], [key]: value as never };
     setEditForm({ ...editForm, fields: newFields });
   };
 
   const removeField = (index: number) => {
-    const newFields = editForm.fields.filter((_: any, i: number) => i !== index);
+    const newFields = editForm.fields.filter((_, i: number) => i !== index);
     setEditForm({ ...editForm, fields: newFields });
   };
 
@@ -146,7 +175,7 @@ export function TemplatesSection({ templates, onRefresh }: { templates: any[]; o
             </div>
           ) : (
             <div className="space-y-4">
-              {(editForm.fields || []).map((field: any, index: number) => (
+              {(editForm.fields || []).map((field, index: number) => (
                 <div key={index} className="p-4 bg-surface-1 border border-surface-3 rounded-lg">
                   <div className="flex justify-between items-start mb-3">
                     <div className="flex items-center gap-2">
@@ -233,7 +262,7 @@ export function TemplatesSection({ templates, onRefresh }: { templates: any[]; o
                     <div className="mt-3">
                       <FormField label="依赖内容块" hint="选择这个内容块依赖的其他内容块（它们的内容会作为生成上下文）">
                         <div className="flex flex-wrap gap-2">
-                          {editForm.fields.slice(0, index).map((f: any, i: number) => (
+                          {editForm.fields.slice(0, index).map((f, i: number) => (
                             <label key={i} className="flex items-center gap-2 text-sm text-zinc-300">
                               <input
                                 type="checkbox"
@@ -301,9 +330,9 @@ export function TemplatesSection({ templates, onRefresh }: { templates: any[]; o
                       <span className="text-xs bg-surface-3 px-2 py-1 rounded-full text-zinc-400">{template.category}</span>
                     </div>
                     <p className="text-sm text-zinc-500 mt-1">{template.description}</p>
-                    {template.fields?.length > 0 && (
+                    {(template.fields || []).length > 0 && (
                       <div className="mt-3 flex flex-wrap gap-2">
-                        {template.fields.map((f: any, i: number) => (
+                        {(template.fields || []).map((f, i: number) => (
                           <span key={i} className="text-xs bg-brand-600/10 text-brand-400 px-2 py-1 rounded">
                             {f.name}
                           </span>

@@ -41,6 +41,11 @@ def test_eval_prompt_presets_seed_and_update(client):
     phases = {r["phase"] for r in rows}
     assert "eval_experience_plan" in phases
     assert "eval_scenario_role_a" in phases
+    by_phase = {r["phase"]: r for r in rows}
+    assert "plan 至少 3 步" in by_phase["eval_experience_plan"]["content"]
+    assert "score 必须是 1-10 的整数" in by_phase["eval_experience_per_block"]["content"]
+    assert "是否推荐 + 条件/原因" in by_phase["eval_experience_summary"]["content"]
+    assert "内容未覆盖" in by_phase["eval_scenario_role_a"]["content"]
 
     target = rows[0]
     updated = client.put(

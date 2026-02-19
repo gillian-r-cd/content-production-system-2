@@ -61,27 +61,14 @@ export function WorkspaceLayout({
   rightPanel,
 }: WorkspaceLayoutProps) {
   // --- 状态 ---
-  const [leftWidth, setLeftWidth] = useState(LEFT_DEFAULT);
-  const [rightWidth, setRightWidth] = useState(RIGHT_DEFAULT);
-  const [leftCollapsed, setLeftCollapsed] = useState(false);
-  const [rightCollapsed, setRightCollapsed] = useState(false);
-
-  // 首次从 localStorage 恢复
-  const initialized = useRef(false);
-  useEffect(() => {
-    if (initialized.current) return;
-    initialized.current = true;
-    const s = loadState();
-    setLeftWidth(s.lw);
-    setRightWidth(s.rw);
-    setLeftCollapsed(s.lc);
-    setRightCollapsed(s.rc);
-  }, []);
+  const [leftWidth, setLeftWidth] = useState(() => loadState().lw);
+  const [rightWidth, setRightWidth] = useState(() => loadState().rw);
+  const [leftCollapsed, setLeftCollapsed] = useState(() => loadState().lc);
+  const [rightCollapsed, setRightCollapsed] = useState(() => loadState().rc);
 
   // 持久化（debounced）
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (!initialized.current) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       saveState({ lw: leftWidth, rw: rightWidth, lc: leftCollapsed, rc: rightCollapsed });
@@ -111,7 +98,6 @@ export function WorkspaceLayout({
     document.body.style.cursor = "";
     document.body.style.userSelect = "";
     window.removeEventListener("mousemove", onMouseMove);
-    window.removeEventListener("mouseup", onMouseUp);
   }, [onMouseMove]);
 
   const startDrag = useCallback(
@@ -123,7 +109,7 @@ export function WorkspaceLayout({
       document.body.style.cursor = "col-resize";
       document.body.style.userSelect = "none";
       window.addEventListener("mousemove", onMouseMove);
-      window.addEventListener("mouseup", onMouseUp);
+      window.addEventListener("mouseup", onMouseUp, { once: true });
     },
     [leftWidth, rightWidth, onMouseMove, onMouseUp],
   );

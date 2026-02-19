@@ -54,3 +54,4 @@ def test_is_task_stale():
     assert not is_task_stale(old_hash, same_hash)
     assert is_task_stale(old_hash, new_hash)
 
+

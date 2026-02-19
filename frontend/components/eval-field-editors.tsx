@@ -63,10 +63,16 @@ interface TrialConfig {
   simulator_id?: string;            // 新: 关联后台配置的模拟器
   simulator_name?: string;          // 显示用
   interaction_mode: string;
-  persona_config: Record<string, any>;
+  persona_config: {
+    name?: string;
+    [key: string]: unknown;
+  };
   grader_ids: string[];             // 多个 Grader 评分器
   grader_names: string[];           // 显示用
-  simulator_config?: Record<string, any>;
+  simulator_config?: {
+    max_turns?: number;
+    [key: string]: unknown;
+  };
   order_index: number;
 }
 
@@ -75,11 +81,80 @@ interface TaskConfig {
   name: string;
   simulator_type: string;
   interaction_mode: string;
-  persona_config: Record<string, any>;
-  grader_config: Record<string, any>;
-  simulator_config?: Record<string, any>;
+  persona_config: {
+    name?: string;
+    [key: string]: unknown;
+  };
+  grader_config: Record<string, unknown>;
+  simulator_config?: {
+    max_turns?: number;
+    [key: string]: unknown;
+  };
   target_block_ids?: string[];
   order_index: number;
+}
+
+interface PersonasResponse {
+  personas: PersonaData[];
+}
+
+interface ProjectBlockTreeNode {
+  id: string;
+  name: string;
+  block_type?: string;
+  special_handler?: string;
+  children?: ProjectBlockTreeNode[];
+}
+
+interface ProjectBlockTreeResponse {
+  blocks?: ProjectBlockTreeNode[];
+}
+
+interface ReportGraderResult {
+  grader_name?: string;
+  grader_type?: string;
+  overall?: number | string | null;
+  scores?: Record<string, number | string>;
+  comments?: Record<string, string>;
+  feedback?: string;
+}
+
+interface ReportNode {
+  role?: string;
+  content?: string;
+  turn?: number;
+}
+
+interface ReportLLMCall {
+  step?: string;
+  tokens_in?: number;
+  tokens_out?: number;
+  duration_ms?: number;
+  cost?: number | string;
+  input?: { system_prompt?: string; user_message?: string };
+  output?: string;
+}
+
+interface ReportTrial {
+  status?: string;
+  error?: string;
+  cost?: number;
+  task_name?: string;
+  simulator_type?: string;
+  simulator_name?: string;
+  persona_name?: string;
+  interaction_mode?: string;
+  overall_score?: number | null;
+  grader_scores?: Record<string, number | string>;
+  grader_results?: ReportGraderResult[];
+  result?: { scores?: Record<string, number | string>; summary?: string };
+  nodes?: ReportNode[];
+  llm_calls?: ReportLLMCall[];
+}
+
+interface EvalReportData {
+  trials?: ReportTrial[];
+  diagnosis?: string;
 }
 
 
@@ -115,15 +190,15 @@ export function EvalPersonaSetup({ block, projectId, onUpdate }: EvalFieldProps)
   const loadFromResearch = async () => {
     setLoading(true);
     try {
-      const resp = await evalAPI.getPersonas(projectId) as any;
+      const resp = await evalAPI.getPersonas(projectId) as PersonasResponse;
       const fetched = resp.personas || [];
       if (fetched.length > 0) {
         setPersonas(fetched);
       } else {
         alert("调研中未找到画像，请先完成消费者调研或手动添加。");
       }
-    } catch (e: any) {
-      alert("加载失败: " + e.message);
+    } catch (e: unknown) {
+      alert("加载失败: " + getErrorMessage(e));
     } finally { setLoading(false); }
   };
 
@@ -144,8 +219,8 @@ export function EvalPersonaSetup({ block, projectId, onUpdate }: EvalFieldProps)
       setPersonas([...personas, generated]);
       setEditingIdx(personas.length);
       sendNotification("AI 画像已生成，请确认后保存", "success");
-    } catch (e: any) {
-      sendNotification("AI 生成失败: " + e.message, "error");
+    } catch (e: unknown) {
+      sendNotification("AI 生成失败: " + getErrorMessage(e), "error");
     } finally {
       setLoading(false);
     }
@@ -163,9 +238,9 @@ export function EvalPersonaSetup({ block, projectId, onUpdate }: EvalFieldProps)
     if (editingIdx === idx) setEditingIdx(null);
   };
 
-  const updatePersona = (idx: number, field: string, value: any) => {
+  const updatePersona = (idx: number, field: keyof PersonaData, value: string | string[]) => {
     const newP = [...personas];
-    (newP[idx] as any)[field] = value;
+    newP[idx] = { ...newP[idx], [field]: value };
     setPersonas(newP);
   };
 
@@ -177,8 +252,8 @@ export function EvalPersonaSetup({ block, projectId, onUpdate }: EvalFieldProps)
         status: "completed",
       });
       onUpdate?.();
-    } catch (e: any) {
-      alert("保存失败: " + e.message);
+    } catch (e: unknown) {
+      alert("保存失败: " + getErrorMessage(e));
     } finally { setSaving(false); }
   };
 
@@ -374,18 +449,18 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
   const _loadDeps = async () => {
     try {
       const [personaResp, graderList, blockTree, simList] = await Promise.all([
-        evalAPI.getPersonas(projectId).catch(() => ({ personas: [] })) as Promise<any>,
+        evalAPI.getPersonas(projectId).catch(() => ({ personas: [] } as PersonasResponse)),
         graderAPI.listForProject(projectId).catch(() => []),
-        blockAPI.getProjectBlocks(projectId).catch(() => ({ blocks: [] })),
+        blockAPI.getProjectBlocks(projectId).catch(() => ({ blocks: [] } as ProjectBlockTreeResponse)),
         settingsAPI.listSimulators().catch(() => []) as Promise<SimulatorData[]>,
-      ]);
+      ]) as [PersonasResponse, GraderData[], ProjectBlockTreeResponse, SimulatorData[]];
       setPersonas(personaResp.personas || []);
       setGraders(graderList);
       // 过滤掉"体验式"模拟器
       setSimulators((simList || []).filter((s: SimulatorData) => s.interaction_type !== "experience"));
       // 提取所有 field 类型的内容块作为可选内容块（P0-1: 统一使用 blockAPI）
       const fields: {id: string; name: string}[] = [];
-      const _flatten = (blocks: any[]) => {
+      const _flatten = (blocks: ProjectBlockTreeNode[]) => {
         for (const b of blocks) {
           if (b.block_type === "field" && !b.special_handler?.startsWith("eval_")) {
             fields.push({ id: b.id, name: b.name });
@@ -393,7 +468,7 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
           if (b.children) _flatten(b.children);
         }
       };
-      _flatten(blockTree.blocks || []);
+      _flatten((blockTree.blocks || []) as ProjectBlockTreeNode[]);
       setProjectBlocks(fields);
     } catch { /* ignore */ }
   };
@@ -468,7 +543,7 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
               simulator_id: sim.id,
               simulator_name: sim.name,
               interaction_mode: sim.interaction_mode || sim.interaction_type,
-              persona_config: persona,
+              persona_config: persona as unknown as TrialConfig["persona_config"],
               grader_ids: allGraderIds,
               grader_names: allGraderNames,
               simulator_config: { max_turns: sim.max_turns || 5 },
@@ -518,9 +593,9 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
     if (expandedTrial === idx) setExpandedTrial(null);
   };
 
-  const updateTrial = (idx: number, field: string, value: any) => {
+  const updateTrial = (idx: number, field: keyof TrialConfig, value: unknown) => {
     const newT = [...trials];
-    (newT[idx] as any)[field] = value;
+    newT[idx] = { ...newT[idx], [field]: value as never };
     setTrials(newT);
   };
 
@@ -569,8 +644,8 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
         status: "completed",
       });
       onUpdate?.();
-    } catch (e: any) {
-      alert("保存失败: " + e.message);
+    } catch (e: unknown) {
+      alert("保存失败: " + getErrorMessage(e));
     } finally { setSaving(false); }
   };
 
@@ -652,7 +727,7 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
                       </span>
                       {/* 交互模式 */}
                       <span className="text-xs px-2 py-0.5 rounded-md bg-surface-3 text-zinc-400">
-                        {INTERACTION_MODES_LOCAL[trial.interaction_mode]?.label || trial.interaction_mode}
+                        {INTERACTION_MODES_LOCAL[trial.interaction_mode || ""]?.label || trial.interaction_mode}
                       </span>
                       {/* 评分器 */}
                       {(trial.grader_names || []).length > 0 && (
@@ -987,7 +1062,7 @@ function scoreBg(score: number, max: number = 10): string {
 
 export function EvalReportPanel({ block, projectId, onUpdate, onSendToAgent }: EvalFieldProps) {
   const [executing, setExecuting] = useState(false);
-  const [reportData, setReportData] = useState<any>(null);
+  const [reportData, setReportData] = useState<EvalReportData | null>(null);
   const [expandedTrial, setExpandedTrial] = useState<number | null>(null);
   const [expandedLLMCall, setExpandedLLMCall] = useState<string | null>(null);
   const [expandedSection, setExpandedSection] = useState<Record<string, boolean>>({});
@@ -1083,9 +1158,9 @@ export function EvalReportPanel({ block, projectId, onUpdate, onSendToAgent }: E
     evalAPI.generateForBlock(block.id).then(() => {
       // 后端执行完成，刷新数据
       if (mountedRef.current) onUpdate?.();
-    }).catch((e: any) => {
+    }).catch((e: unknown) => {
       if (!mountedRef.current) return;
-      setPollError(e.message || "执行失败");
+      setPollError(getErrorMessage(e));
       setExecuting(false);
     });
   };
@@ -1097,17 +1172,17 @@ export function EvalReportPanel({ block, projectId, onUpdate, onSendToAgent }: E
   const trials = reportData?.trials || [];
 
   // 计算统计数据
-  const completedTrials = trials.filter((t: any) => t.status === "completed");
-  const failedTrials = trials.filter((t: any) => t.status === "failed");
-  const totalLLMCalls = trials.reduce((sum: number, t: any) => sum + (t.llm_calls?.length || 0), 0);
-  const totalCost = trials.reduce((sum: number, t: any) => sum + (t.cost || 0), 0);
+  const completedTrials = trials.filter((t: ReportTrial) => t.status === "completed");
+  const failedTrials = trials.filter((t: ReportTrial) => t.status === "failed");
+  const totalLLMCalls = trials.reduce((sum: number, t: ReportTrial) => sum + (t.llm_calls?.length || 0), 0);
+  const totalCost = trials.reduce((sum: number, t: ReportTrial) => sum + (t.cost || 0), 0);
 
   // 计算总分（所有 trial 的 overall_score 均分）
-  const scoredTrials = completedTrials.filter((t: any) => t.overall_score != null);
+  const scoredTrials = completedTrials.filter((t: ReportTrial) => t.overall_score != null);
   const avgScore = scoredTrials.length > 0
-    ? scoredTrials.reduce((sum: number, t: any) => sum + t.overall_score, 0) / scoredTrials.length
+    ? scoredTrials.reduce((sum: number, t: ReportTrial) => sum + (t.overall_score || 0), 0) / scoredTrials.length
     : null;
-  const belowStandard = scoredTrials.filter((t: any) => t.overall_score < 6).length;
+  const belowStandard = scoredTrials.filter((t: ReportTrial) => (t.overall_score || 0) < 6).length;
 
   return (
     <div className="space-y-5">
@@ -1239,7 +1314,7 @@ export function EvalReportPanel({ block, projectId, onUpdate, onSendToAgent }: E
               <span className="text-xs text-zinc-500">{scoredTrials.length} / {trials.length} 已评分</span>
             </div>
             <div className="space-y-2.5">
-              {trials.map((trial: any, idx: number) => {
+              {trials.map((trial: ReportTrial, idx: number) => {
                 const style = getSimStyle(null, trial.simulator_type);
                 const score = trial.overall_score;
                 const isBelowStd = score != null && score < 6;
@@ -1309,10 +1384,10 @@ export function EvalReportPanel({ block, projectId, onUpdate, onSendToAgent }: E
                       </div>
                     ) : hasGraders ? (
                       <div className="px-4 pb-3 -mt-1 flex flex-wrap gap-2">
-                        {graderEntries.map(([gName, gScore]: any) => (
+                        {graderEntries.map(([gName, gScore]) => (
                           <span key={gName} className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg border font-medium ${
-                            gScore >= 7 ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
-                              : gScore >= 6 ? "text-amber-400 bg-amber-500/10 border-amber-500/20"
+                            Number(gScore) >= 7 ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
+                              : Number(gScore) >= 6 ? "text-amber-400 bg-amber-500/10 border-amber-500/20"
                                 : "text-red-400 bg-red-500/10 border-red-500/20"
                           }`}>
                             ⚖️ {gName}
@@ -1345,7 +1420,7 @@ export function EvalReportPanel({ block, projectId, onUpdate, onSendToAgent }: E
                           {trial.simulator_name || trial.simulator_type}
                         </span>
                         <span className="px-1.5 py-0.5 rounded bg-surface-3">
-                          {INTERACTION_MODES_LOCAL[trial.interaction_mode]?.label || trial.interaction_mode}
+                          {INTERACTION_MODES_LOCAL[trial.interaction_mode || ""]?.label || trial.interaction_mode}
                         </span>
                         {trial.persona_name && <span>👤 {trial.persona_name}</span>}
                         <span>{trial.llm_calls?.length || 0} 次 LLM 调用</span>
@@ -1383,16 +1458,16 @@ export function EvalReportPanel({ block, projectId, onUpdate, onSendToAgent }: E
                     </h4>
                     {/* Grader 总览栏 */}
                     <div className="flex flex-wrap gap-3 mb-4">
-                      {trial.grader_results.map((gr: any, gi: number) => (
+                      {trial.grader_results.map((gr: ReportGraderResult, gi: number) => (
                         <div key={gi} className={`flex items-center gap-2 px-3 py-2 rounded-lg border ${
-                          gr.overall != null && gr.overall >= 7 ? "border-emerald-500/25 bg-emerald-500/5"
-                            : gr.overall != null && gr.overall >= 6 ? "border-amber-500/25 bg-amber-500/5"
+                          gr.overall != null && Number(gr.overall) >= 7 ? "border-emerald-500/25 bg-emerald-500/5"
+                            : gr.overall != null && Number(gr.overall) >= 6 ? "border-amber-500/25 bg-amber-500/5"
                               : gr.overall != null ? "border-red-500/25 bg-red-500/5"
                                 : "border-surface-3 bg-surface-2"
                         }`}>
                           <span className="text-xs text-zinc-400">{gr.grader_name || `评分器 ${gi + 1}`}</span>
                           {gr.overall != null && (
-                            <span className={`text-base font-bold ${scoreColor(gr.overall)}`}>
+                            <span className={`text-base font-bold ${scoreColor(Number(gr.overall))}`}>
                               {typeof gr.overall === 'number' ? gr.overall.toFixed(1) : gr.overall}
                             </span>
                           )}
@@ -1401,7 +1476,7 @@ export function EvalReportPanel({ block, projectId, onUpdate, onSendToAgent }: E
                     </div>
                     {/* Grader 详情卡片 */}
                     <div className="space-y-4">
-                      {trial.grader_results.map((gr: any, gi: number) => (
+                      {trial.grader_results.map((gr: ReportGraderResult, gi: number) => (
                         <div key={gi} className={`${CARD_INNER} p-4`}>
                           <div className="flex items-center justify-between mb-3">
                             <span className="text-sm font-medium text-zinc-200">
@@ -1413,7 +1488,7 @@ export function EvalReportPanel({ block, projectId, onUpdate, onSendToAgent }: E
                               </span>
                             </span>
                             {gr.overall != null && (
-                              <span className={`text-lg font-bold ${scoreColor(gr.overall)}`}>
+                              <span className={`text-lg font-bold ${scoreColor(Number(gr.overall))}`}>
                                 {typeof gr.overall === 'number' ? gr.overall.toFixed(1) : gr.overall}<span className="text-xs text-zinc-500">/10</span>
                               </span>
                             )}
@@ -1421,15 +1496,15 @@ export function EvalReportPanel({ block, projectId, onUpdate, onSendToAgent }: E
                           {/* 分维度评分条 + 评语 */}
                           {gr.scores && Object.keys(gr.scores).length > 0 && (
                             <div className="space-y-2.5">
-                              {Object.entries(gr.scores).map(([dim, score]: any) => (
+                              {Object.entries(gr.scores).map(([dim, score]) => (
                                 <div key={dim}>
                                   <div className="flex items-center gap-3">
                                     <span className="text-xs text-zinc-400 w-28 flex-shrink-0 truncate" title={dim}>{dim}</span>
                                     <div className="flex-1 bg-surface-3 rounded-full h-2.5 overflow-hidden">
-                                      <div className={`h-full rounded-full transition-all ${scoreBg(score)}`}
-                                        style={{ width: `${(score / 10) * 100}%` }} />
+                                      <div className={`h-full rounded-full transition-all ${scoreBg(Number(score))}`}
+                                        style={{ width: `${(Number(score) / 10) * 100}%` }} />
                                     </div>
-                                    <span className={`text-sm font-mono font-bold w-8 text-right ${scoreColor(score)}`}>{score}</span>
+                                    <span className={`text-sm font-mono font-bold w-8 text-right ${scoreColor(Number(score))}`}>{score}</span>
                                   </div>
                                   {/* 该维度的评语 */}
                                   {gr.comments && gr.comments[dim] && (
@@ -1456,12 +1531,12 @@ export function EvalReportPanel({ block, projectId, onUpdate, onSendToAgent }: E
                   <div className="px-5 py-4 bg-surface-1/50">
                     <h4 className="text-sm font-medium text-zinc-300 mb-3">📊 维度评分</h4>
                     <div className="space-y-2">
-                      {Object.entries(trial.result.scores).map(([dim, score]: any) => (
+                      {Object.entries(trial.result.scores).map(([dim, score]) => (
                         <div key={dim} className="flex items-center gap-3">
                           <span className="text-xs text-zinc-400 w-24 flex-shrink-0 truncate">{dim}</span>
                           <div className="flex-1 bg-surface-3 rounded-full h-2 overflow-hidden">
-                            <div className={`h-full rounded-full transition-all ${scoreBg(score)}`}
-                              style={{ width: `${(score / 10) * 100}%` }} />
+                            <div className={`h-full rounded-full transition-all ${scoreBg(Number(score))}`}
+                              style={{ width: `${(Number(score) / 10) * 100}%` }} />
                           </div>
                           <span className="text-xs font-mono text-zinc-300 w-6 text-right">{score}</span>
                         </div>
@@ -1482,7 +1557,7 @@ export function EvalReportPanel({ block, projectId, onUpdate, onSendToAgent }: E
                     </div>
                     {expandedSection[`nodes-${idx}`] && (
                       <div className="px-5 pb-4 space-y-2.5 max-h-[400px] overflow-y-auto">
-                        {trial.nodes.map((node: any, ni: number) => {
+                        {trial.nodes.map((node: ReportNode, ni: number) => {
                           // 根据 role 确定显示样式
                           const isLeft = node.role === "consumer" || node.role === "user";
                           const roleLabel = node.role === "consumer" ? `🗣 ${trial.persona_name || "消费者"}`
@@ -1530,7 +1605,7 @@ export function EvalReportPanel({ block, projectId, onUpdate, onSendToAgent }: E
                     </div>
                     {expandedSection[`llm-${idx}`] && (
                       <div className="px-5 pb-4 space-y-2">
-                        {trial.llm_calls.map((call: any, ci: number) => {
+                        {trial.llm_calls.map((call: ReportLLMCall, ci: number) => {
                           const callKey = `${idx}-${ci}`;
                           const isLLMExpanded = expandedLLMCall === callKey;
                           const stepLabel = call.step || `调用 ${ci + 1}`;
@@ -1651,6 +1726,11 @@ export function EvalReportPanel({ block, projectId, onUpdate, onSendToAgent }: E
       )}
     </div>
   );
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error ?? "未知错误");
 }
 
 

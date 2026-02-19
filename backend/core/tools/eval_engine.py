@@ -651,9 +651,10 @@ async def _run_dialogue(
 
 【回答规则】
 1. 严格基于内容回答，不要编造
-2. 如果内容中没有涉及，诚实说明
+2. 如果内容中没有涉及，必须明确回复“内容未覆盖”，禁止臆测
 3. 尽量引用内容中的原话或核心观点
-4. 回复简洁，不超过50字"""
+4. 每次回复推进一个决策节点（需求/异议/价值映射/决定）
+5. 回复简洁，不超过50字"""
 
     try:
         for turn in range(max_turns):
@@ -821,7 +822,11 @@ Phase 3 (第4-5轮): 匹配内容中的价值点到消费者需求
 Phase 4 (第6-7轮): 处理异议
 Phase 5 (最后): 总结价值，询问决定
 
-【行为要求】- 主动引导对话 - 引用具体信息 - 诚实但有说服力 - 每次发言不超过50字"""
+【行为要求】- 主动引导对话 - 引用具体信息 - 诚实但有说服力 - 每次发言不超过50字
+
+【强约束】
+1) 仅可使用给定内容进行价值陈述，若内容没有依据，不得补充“外部事实”。
+2) 每轮必须推进一个决策节点：需求确认/异议澄清/价值映射/促成决定。"""
 
     # 消费者方提示词：优先用后台配置的 secondary_prompt
     custom_secondary = config.get("secondary_prompt", "")
@@ -880,7 +885,7 @@ Phase 5 (最后): 总结价值，询问决定
         dim_str = ", ".join([f'"{d}": 分数(1-10)' for d in dimensions])
         
         eval_text, eval_call = await _call_llm(
-            "你是一位销售效果评估专家。请分析以下销售对话的效果。",
+            "你是一位销售效果评估专家。请分析以下销售对话的效果。先列证据，再给分。",
             f"""销售对话记录：
 {dialogue_transcript}
 
@@ -980,11 +985,12 @@ async def run_individual_grader(
     if raw_template:
         # 直接替换占位符
         system_prompt = raw_template
-        system_prompt = system_prompt.replace("{content}", content[:6000] if content else "（无内容）")
+        # 评估报告需要可追溯完整输入，禁止在此处截断内容。
+        system_prompt = system_prompt.replace("{content}", content if content else "（无内容）")
         
         # {process}: content_and_process 类型才填充，否则标注无
         if grader_type == "content_and_process" and process_transcript:
-            system_prompt = system_prompt.replace("{process}", process_transcript[:4000])
+            system_prompt = system_prompt.replace("{process}", process_transcript)
         else:
             system_prompt = system_prompt.replace("{process}", "（无互动过程）")
     else:
@@ -994,12 +1000,12 @@ async def run_individual_grader(
         
         process_section = ""
         if grader_type == "content_and_process" and process_transcript:
-            process_section = f"\n\n【互动过程记录】\n{process_transcript[:4000]}"
+            process_section = f"\n\n【互动过程记录】\n{process_transcript}"
         
         system_prompt = f"""你是「{grader_name}」，请对以下内容进行客观、严谨的评分。
 
 【被评估内容】
-{content[:6000] if content else '（无内容）'}{process_section}
+{content if content else '（无内容）'}{process_section}
 
 【评估维度】
 {chr(10).join([f'{i+1}. {d} (1-10)' for i, d in enumerate(dims)])}
@@ -1010,7 +1016,9 @@ async def run_individual_grader(
     # user_message: 简单指令即可，所有信息已在 system_prompt 中
     user_message = (
         "请根据上述要求进行评分，严格按照指定的 JSON 格式输出。"
-        "其中 feedback 只保留需要修改的要点和可执行改法，不要写正面表扬。"
+        "先给出每个维度的证据再评分，无证据不得给高分。"
+        "其中 feedback 只保留需要修改的要点和可执行改法，不要写正面表扬；"
+        "feedback 按独立建议句输出，每句只表达一个改动点。"
     )
 
     try:

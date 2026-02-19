@@ -77,18 +77,19 @@ export function ResearchPanel({
         consumer_profile: raw.consumer_profile || {},
         pain_points: raw.pain_points || raw.main_pain_points || [],
         value_propositions: raw.value_propositions || raw.value_proposition || [],
-        personas: (raw.personas || []).map((p: any, idx: number) => {
+        personas: (raw.personas || []).map((p: Record<string, unknown>, idx: number) => {
           // background 可能是 string 或 {story, context} 对象
           let bg = p.background || p.story || "";
           if (typeof bg === "object" && bg !== null) {
-            bg = bg.story || bg.context || JSON.stringify(bg);
+            const bgObject = bg as Record<string, unknown>;
+            bg = bgObject.story || bgObject.context || JSON.stringify(bgObject);
           }
           return {
             id: p.id || `persona_${idx}`,
             name: p.name || `用户 ${idx + 1}`,
             basic_info: p.basic_info || {},
             background: String(bg),
-            pain_points: Array.isArray(p.pain_points) ? p.pain_points.map((pt: any) => typeof pt === "string" ? pt : JSON.stringify(pt)) : [],
+            pain_points: Array.isArray(p.pain_points) ? p.pain_points.map((pt: unknown) => typeof pt === "string" ? pt : JSON.stringify(pt)) : [],
             selected: p.selected !== undefined ? p.selected : true,
           };
         }),
@@ -607,7 +608,7 @@ export function ResearchPanel({
           </>
         ) : (
           <p className="text-sm text-zinc-500 italic">
-            暂无参考来源。如需基于真实网络数据的调研，请在后台设置中配置 Tavily API Key，然后点击"重新生成消费者调研"。
+            暂无参考来源。如需基于真实网络数据的调研，请在后台设置中配置 Tavily API Key，然后点击&quot;重新生成消费者调研&quot;。
           </p>
         )}
       </section>

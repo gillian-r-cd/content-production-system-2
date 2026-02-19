@@ -52,5 +52,12 @@ async def test_run_experience_trial_three_steps(monkeypatch):
     assert any(p.get("type") == "plan" for p in result.process)
     assert len([p for p in result.process if p.get("type") == "per_block"]) == 2
     assert any(p.get("type") == "summary" for p in result.process)
+    assert any(p.get("stage") == "阶段1-探索规划" for p in result.process)
+    assert any(p.get("stage") == "阶段2-逐块探索" for p in result.process)
+    assert any(p.get("stage") == "阶段3-总体总结" for p in result.process)
     assert result.exploration_score == 7.0
+    # 提示词约束：确保核心强约束进入真实调用输入
+    assert "plan 必须包含 3-5 个步骤" in result.llm_calls[0]["input"]["user_message"]
+    assert "score 必须是 1-10 的整数" in result.llm_calls[1]["input"]["user_message"]
+    assert "每一项，都必须能在逐块结果中找到依据" in result.llm_calls[3]["input"]["user_message"]
 

@@ -409,11 +409,11 @@ export function ProposalSelector({
       }
 
       // 补全缺失的 id，避免 React key 冲突
-      const ensured = proposals.map((p: any, pi: number) => ({
+      const ensured = proposals.map((p: Proposal, pi: number) => ({
         ...p,
         id: p.id || genId(`proposal_${pi}`),
         fields: Array.isArray(p.fields)
-          ? p.fields.map((f: any, fi: number) => ({
+          ? p.fields.map((f: ProposalField, fi: number) => ({
               ...f,
               id: f.id || genId(`field_${pi}_${fi}`),
             }))
@@ -813,7 +813,7 @@ export function ProposalSelector({
           <div className="text-center py-8 text-zinc-500">
             <p className="text-sm">暂无方案。</p>
             <p className="text-xs mt-1 text-zinc-600">
-              在右侧对话框输入"开始"生成 AI 方案，或点击下方按钮手动添加。
+              在右侧对话框输入&quot;开始&quot;生成 AI 方案，或点击下方按钮手动添加。
             </p>
                 </div>
               )}
@@ -955,7 +955,7 @@ export function ProposalSelector({
                   {showTemplateImporter === proposal.id && (
                     <div className="px-3 pb-3">
                       <TemplateImporter
-                        onImportFields={(fields, _tplName) => importFieldsToProposal(proposal.id, fields)}
+                        onImportFields={(fields) => importFieldsToProposal(proposal.id, fields)}
                         onClose={() => setShowTemplateImporter(null)}
                       />
       </div>

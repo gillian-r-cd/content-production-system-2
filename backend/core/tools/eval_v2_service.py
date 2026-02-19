@@ -109,3 +109,4 @@ def is_task_stale(saved_hash: str, current_hash: str) -> bool:
         return False
     return saved_hash != current_hash
 
+

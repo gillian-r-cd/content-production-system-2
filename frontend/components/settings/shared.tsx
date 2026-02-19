@@ -10,7 +10,7 @@ import { Download, Upload } from "lucide-react";
 interface ImportExportButtonsProps {
   onExportAll: () => Promise<void>;
   onExportSingle?: (id: string) => Promise<void>;
-  onImport: (data: any[]) => Promise<void>;
+  onImport: (data: unknown[]) => Promise<void>;
   typeName: string;  // 如 "内容块模板"
 }
 
@@ -102,7 +102,7 @@ export function SingleExportButton({ onExport, title }: { onExport: () => Promis
 }
 
 // 下载 JSON 文件的工具函数
-export function downloadJSON(data: any, filename: string) {
+export function downloadJSON(data: unknown, filename: string) {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");

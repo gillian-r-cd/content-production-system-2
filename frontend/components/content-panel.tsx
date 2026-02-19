@@ -6,9 +6,8 @@
 
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
-import { PHASE_NAMES, PROJECT_PHASES } from "@/lib/utils";
-import { agentAPI, blockAPI } from "@/lib/api";
+import { PROJECT_PHASES } from "@/lib/utils";
+import { agentAPI } from "@/lib/api";
 import type { ContentBlock } from "@/lib/api";
 import { ContentBlockEditor } from "./content-block-editor";
 import { ContentBlockCard } from "./content-block-card";
@@ -33,7 +32,6 @@ interface ContentPanelProps {
 export function ContentPanel({
   projectId,
   currentPhase,
-  phaseStatus = {},
   selectedBlock,
   allBlocks = [],
   onFieldsChange,
@@ -41,8 +39,6 @@ export function ContentPanel({
   onBlockSelect,
   onSendToAgent,
 }: ContentPanelProps) {
-  const [isAdvancing, setIsAdvancing] = useState(false);
-
   const currentPhaseIndex = PROJECT_PHASES.indexOf(currentPhase);
   const isLastPhase = currentPhaseIndex === PROJECT_PHASES.length - 1;
   const nextPhase = isLastPhase ? null : PROJECT_PHASES[currentPhaseIndex + 1];
@@ -51,15 +47,12 @@ export function ContentPanel({
   const handleAdvancePhase = async () => {
     if (!projectId || !nextPhase) return;
     
-    setIsAdvancing(true);
     try {
       await agentAPI.advance(projectId);
       onPhaseAdvance?.();
     } catch (err) {
       console.error("进入下一组失败:", err);
       alert("进入下一组失败: " + (err instanceof Error ? err.message : "未知错误"));
-    } finally {
-      setIsAdvancing(false);
     }
   };
 
@@ -101,7 +94,7 @@ export function ContentPanel({
             <div className="text-6xl mb-4">💬</div>
             <h2 className="text-xl font-bold text-zinc-200 mb-2">意图分析</h2>
             <p className="text-zinc-400 max-w-md">
-              意图分析由 AI Agent 通过对话完成。请在右侧对话框中输入"开始"来启动意图分析流程。
+              意图分析由 AI Agent 通过对话完成。请在右侧对话框中输入&quot;开始&quot;来启动意图分析流程。
             </p>
             <p className="text-zinc-500 text-sm mt-4">
               Agent 会问你 3 个问题来了解你的项目意图。
@@ -115,9 +108,10 @@ export function ContentPanel({
     if (selectedPhase === "research") {
       const researchContent = selectedBlock.content?.trim();
       if (researchContent) {
+        let normalizedContent: string | null = null;
         try {
-          const parsed = JSON.parse(researchContent);
-          if (parsed && typeof parsed === "object" && (parsed.summary || parsed.consumer_profile || parsed.personas || parsed.pain_points)) {
+          const parsed = JSON.parse(researchContent) as Record<string, unknown>;
+          if (parsed && (parsed.summary || parsed.consumer_profile || parsed.personas || parsed.pain_points)) {
             const normalized = {
               summary: parsed.summary || "",
               consumer_profile: parsed.consumer_profile || {},
@@ -126,18 +120,21 @@ export function ContentPanel({
               personas: parsed.personas || [],
               sources: parsed.sources || [],
             };
-            return (
-              <ResearchPanel
-                projectId={projectId}
-                fieldId={selectedBlock.id}
-                content={JSON.stringify(normalized, null, 2)}
-                onUpdate={onFieldsChange}
-                onAdvance={handleAdvancePhase}
-              />
-            );
+            normalizedContent = JSON.stringify(normalized, null, 2);
           }
         } catch {
           // JSON 解析失败，用 ContentBlockEditor
+        }
+        if (normalizedContent) {
+          return (
+            <ResearchPanel
+              projectId={projectId}
+              fieldId={selectedBlock.id}
+              content={normalizedContent}
+              onUpdate={onFieldsChange}
+              onAdvance={handleAdvancePhase}
+            />
+          );
         }
         return (
           <ContentBlockEditor
@@ -154,7 +151,7 @@ export function ContentPanel({
             <div className="text-6xl mb-4">🔍</div>
             <h2 className="text-xl font-bold text-zinc-200 mb-2">消费者调研</h2>
             <p className="text-zinc-400 max-w-md">
-              消费者调研由 AI Agent 通过 DeepResearch 工具完成。请在右侧对话框中输入"开始调研"来启动。
+              消费者调研由 AI Agent 通过 DeepResearch 工具完成。请在右侧对话框中输入&quot;开始调研&quot;来启动。
             </p>
             <p className="text-zinc-500 text-sm mt-4">
               Agent 会基于你的意图分析结果，搜索相关信息并生成调研报告。
@@ -262,9 +259,10 @@ export function ContentPanel({
     
     // 消费者调研字段 - 检查是否有结构化内容
     if (handler === "consumer_research" || handler === "research") {
+      let normalizedContent: string | null = null;
       try {
-        const parsed = JSON.parse(selectedBlock.content || "{}");
-        if (parsed && typeof parsed === "object" && (parsed.summary || parsed.consumer_profile || parsed.personas || parsed.pain_points)) {
+        const parsed = JSON.parse(selectedBlock.content || "{}") as Record<string, unknown>;
+        if (parsed && (parsed.summary || parsed.consumer_profile || parsed.personas || parsed.pain_points)) {
           const normalized = {
             summary: parsed.summary || "",
             consumer_profile: parsed.consumer_profile || {},
@@ -273,86 +271,93 @@ export function ContentPanel({
             personas: parsed.personas || [],
             sources: parsed.sources || [],
           };
-          return (
-            <ResearchPanel
-              projectId={projectId}
-              fieldId={selectedBlock.id}
-              content={JSON.stringify(normalized, null, 2)}
-              onUpdate={onFieldsChange}
-              onAdvance={handleAdvancePhase}
-            />
-          );
+          normalizedContent = JSON.stringify(normalized, null, 2);
         }
       } catch {
         // JSON 解析失败，继续使用默认编辑器
+      }
+      if (normalizedContent) {
+        return (
+          <ResearchPanel
+            projectId={projectId}
+            fieldId={selectedBlock.id}
+            content={normalizedContent}
+            onUpdate={onFieldsChange}
+            onAdvance={handleAdvancePhase}
+          />
+        );
       }
     }
     
     // 内涵设计字段 - 使用 ProposalSelector
     if (handler === "design_inner") {
+      let hasProposals = false;
       try {
-        const parsed = JSON.parse(selectedBlock.content || "{}");
-        if (parsed.proposals && Array.isArray(parsed.proposals) && parsed.proposals.length > 0) {
-          return (
-            <div className="h-full flex flex-col">
-              <div className="p-4 border-b border-surface-3">
-                <h1 className="text-xl font-bold text-zinc-100">内涵设计</h1>
-                <p className="text-zinc-500 text-sm mt-1">
-                  选择一个方案，确认后将进入内涵生产阶段
-                </p>
-              </div>
-              <div className="flex-1 overflow-y-auto p-4">
-                <ProposalSelector
-                  projectId={projectId}
-                  fieldId={selectedBlock.id}
-                  content={selectedBlock.content}
-                  onConfirm={() => {
-                    onFieldsChange?.();
-                    onPhaseAdvance?.();
-                  }}
-                  onFieldsCreated={onFieldsChange}
-                  onSave={onFieldsChange}
-                />
-              </div>
-            </div>
-          );
-        }
+        const parsed = JSON.parse(selectedBlock.content || "{}") as { proposals?: unknown[] };
+        hasProposals = Array.isArray(parsed.proposals) && parsed.proposals.length > 0;
       } catch {
         // JSON 解析失败，使用默认编辑器
+      }
+      if (hasProposals) {
+        return (
+          <div className="h-full flex flex-col">
+            <div className="p-4 border-b border-surface-3">
+              <h1 className="text-xl font-bold text-zinc-100">内涵设计</h1>
+              <p className="text-zinc-500 text-sm mt-1">
+                选择一个方案，确认后将进入内涵生产阶段
+              </p>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4">
+              <ProposalSelector
+                projectId={projectId}
+                fieldId={selectedBlock.id}
+                content={selectedBlock.content}
+                onConfirm={() => {
+                  onFieldsChange?.();
+                  onPhaseAdvance?.();
+                }}
+                onFieldsCreated={onFieldsChange}
+                onSave={onFieldsChange}
+              />
+            </div>
+          </div>
+        );
       }
     }
     
     // 外延设计字段 - 使用 ChannelSelector
     if (handler === "design_outer") {
+      let hasChannels = false;
       try {
-        const parsed = JSON.parse(selectedBlock.content || "{}");
-        if (parsed.channels && Array.isArray(parsed.channels)) {
-          return (
-            <div className="h-full flex flex-col">
-              <div className="p-4 border-b border-surface-3">
-                <h1 className="text-xl font-bold text-zinc-100">外延设计</h1>
-                <p className="text-zinc-500 text-sm mt-1">
-                  选择要使用的传播渠道，确认后进入外延生产
-                </p>
-              </div>
-              <div className="flex-1 overflow-y-auto p-4">
-                <ChannelSelector
-                  projectId={projectId}
-                  fieldId={selectedBlock.id}
-                  content={selectedBlock.content}
-                  onConfirm={() => {
-                    onFieldsChange?.();
-                    onPhaseAdvance?.();
-                  }}
-                  onFieldsCreated={onFieldsChange}
-                  onSave={onFieldsChange}
-                />
-              </div>
-            </div>
-          );
-        }
+        const parsed = JSON.parse(selectedBlock.content || "{}") as { channels?: unknown[] };
+        hasChannels = Array.isArray(parsed.channels);
       } catch {
         // JSON 解析失败
+      }
+      if (hasChannels) {
+        return (
+          <div className="h-full flex flex-col">
+            <div className="p-4 border-b border-surface-3">
+              <h1 className="text-xl font-bold text-zinc-100">外延设计</h1>
+              <p className="text-zinc-500 text-sm mt-1">
+                选择要使用的传播渠道，确认后进入外延生产
+              </p>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4">
+              <ChannelSelector
+                projectId={projectId}
+                fieldId={selectedBlock.id}
+                content={selectedBlock.content}
+                onConfirm={() => {
+                  onFieldsChange?.();
+                  onPhaseAdvance?.();
+                }}
+                onFieldsCreated={onFieldsChange}
+                onSave={onFieldsChange}
+              />
+            </div>
+          </div>
+        );
       }
     }
     
@@ -365,7 +370,7 @@ export function ContentPanel({
             <div className="text-6xl mb-4">💬</div>
             <h2 className="text-xl font-bold text-zinc-200 mb-2">意图分析</h2>
             <p className="text-zinc-400 max-w-md">
-              意图分析由 AI Agent 通过对话完成。请在右侧对话框中输入"开始"来启动意图分析流程。
+              意图分析由 AI Agent 通过对话完成。请在右侧对话框中输入&quot;开始&quot;来启动意图分析流程。
             </p>
             <p className="text-zinc-500 text-sm mt-4">
               Agent 会问你 3 个问题来了解你的项目意图。

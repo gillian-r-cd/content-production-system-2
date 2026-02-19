@@ -30,7 +30,7 @@
 | 前端 | Next.js 16 + TypeScript + Radix UI + Tailwind CSS |
 | 后端 | Python 3.14 + FastAPI + LangGraph |
 | 数据库 | SQLite + SQLAlchemy |
-| AI | OpenAI GPT-5.1 |
+| AI | OpenAI Compatible API（当前默认：火山方舟 Kimi） |
 
 ## 核心架构
 
@@ -40,8 +40,8 @@
            progress-panel  content-panel    agent-panel
                                                ↓ SSE
 后端 FastAPI ─── api/ ─── core/orchestrator.py (LangGraph Agent)
-                              ├── agent_tools.py (12 个 @tool)
-                              ├── tools/ (eval_engine, simulator, deep_research...)
+                              ├── agent_tools.py (14 个 @tool)
+                              ├── tools/ (eval_engine, eval_v2_executor, simulator, deep_research...)
                               ├── models/ (Project, ContentBlock, FieldTemplate...)
                               ├── memory_service.py
                               ├── phase_service.py
@@ -53,6 +53,8 @@
 - **Project**: 项目实体，包含 `current_phase`, `phase_order`, `phase_status`
 - **ContentBlock**: 树形内容块，统一承载 phase/field/section 三种 `block_type`
 - **FieldTemplate**: 可复用字段模板，含预置 Eval 配置
+- **EvalTaskV2 / EvalTrialConfigV2 / EvalTrialResultV2**: Eval V2 任务容器与试验配置/结果模型
+- **EvalSuggestionState**: 评估报告中“让Agent修改”状态持久化模型
 - **AgentMode**: Agent 人格模式，每个 Mode 有独立的 system_prompt
 - **MemoryItem**: Agent 记忆条目，跨会话持久化
 - **ContentVersion**: 内容版本快照，支持 rollback
@@ -98,18 +100,20 @@
 | `docs/user_guide.md` | 使用者指南 | 了解用户视角时 |
 | `docs/design-system.md` | 前端设计系统 | 实现界面时 |
 
-## 当前开发重点（Suggestion Card）
+## 当前开发重点（Eval V2 执行闭环 + Suggestion 持久化）
 
-核心改进 **Suggestion Card 修改闭环** 已实现（M1/M1.5/M2/M3/M4/M6 已完成）：
+当前核心是 **Eval V2 执行稳定性与可观测性**，已实现：
 
-1. Agent 输出修改建议时，使用 `propose_edit` 工具（已实现）
-2. 前端以 SuggestionCard 形式展示 diff 预览（已实现）
-3. 用户可以"应用 / 拒绝 / 追问"（已实现）
-4. 应用后保存版本快照，支持 15 秒 Undo Toast 和完整版本回滚（已实现）
-5. 多字段修改每个字段独立 SuggestionCard（已实现，SuggestionGroup UI 已废弃）
-6. 卡片状态持久化、追问→superseded 闭环、stale closure 修复（M6 已完成）
+1. Eval V2 `start/pause/resume/stop` 状态机
+2. 单任务内 Trial 可控并行执行（`eval_max_parallel_trials`）
+3. 运行态丢失自愈、超时兜底、进度回退计算
+4. 报告页过程回放与逐次 LLM 输入/输出明细
+5. “让Agent修改”状态后端持久化（刷新后保留）
+6. Suggestion Card 主闭环（应用/拒绝/追问/Undo/版本回滚）保持可用
 
-详见 `docs/suggestion_card_design.md`
+详见：
+- `docs/eval_v2_redesign.md`
+- `docs/suggestion_card_design.md`
 
 ## 目录结构
 
@@ -120,7 +124,7 @@
 │   │   ├── models/         # SQLAlchemy 数据模型
 │   │   ├── tools/          # Eval 引擎、模拟器、调研等
 │   │   ├── orchestrator.py # LangGraph Agent 编排器
-│   │   ├── agent_tools.py  # 12 个 @tool 定义
+│   │   ├── agent_tools.py  # 14 个 @tool 定义
 │   │   ├── edit_engine.py  # anchor-based edits + diff 生成（已实现未接入）
 │   │   ├── memory_service.py
 │   │   ├── phase_service.py

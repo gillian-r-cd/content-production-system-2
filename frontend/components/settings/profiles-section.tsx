@@ -8,9 +8,15 @@ import { settingsAPI } from "@/lib/api";
 import type { CreatorProfile } from "@/lib/api";
 import { FormField, ImportExportButtons, SingleExportButton, downloadJSON } from "./shared";
 
+interface ProfileEditForm {
+  name: string;
+  description: string;
+  traits: Record<string, string>;
+}
+
 export function ProfilesSection({ profiles, onRefresh }: { profiles: CreatorProfile[]; onRefresh: () => void }) {
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState<any>({});
+  const [editForm, setEditForm] = useState<ProfileEditForm>({ name: "", description: "", traits: {} });
   const [isCreating, setIsCreating] = useState(false);
 
   // 预定义的特质类型
@@ -25,7 +31,7 @@ export function ProfilesSection({ profiles, onRefresh }: { profiles: CreatorProf
     try {
       const result = await settingsAPI.exportCreatorProfiles();
       downloadJSON(result, `creator_profiles_${new Date().toISOString().split("T")[0]}.json`);
-    } catch (err) {
+    } catch {
       alert("导出失败");
     }
   };
@@ -35,12 +41,12 @@ export function ProfilesSection({ profiles, onRefresh }: { profiles: CreatorProf
       const result = await settingsAPI.exportCreatorProfiles(id);
       const profile = profiles.find(p => p.id === id);
       downloadJSON(result, `creator_profile_${profile?.name || id}.json`);
-    } catch (err) {
+    } catch {
       alert("导出失败");
     }
   };
 
-  const handleImport = async (data: any[]) => {
+  const handleImport = async (data: unknown[]) => {
     await settingsAPI.importCreatorProfiles(data);
     onRefresh();
   };
@@ -52,7 +58,11 @@ export function ProfilesSection({ profiles, onRefresh }: { profiles: CreatorProf
 
   const handleEdit = (profile: CreatorProfile) => {
     setEditingId(profile.id);
-    setEditForm({ ...profile });
+    setEditForm({
+      name: profile.name || "",
+      description: profile.description || "",
+      traits: (profile.traits || {}) as Record<string, string>,
+    });
   };
 
   const handleSave = async () => {
@@ -75,7 +85,7 @@ export function ProfilesSection({ profiles, onRefresh }: { profiles: CreatorProf
     try {
       await settingsAPI.deleteCreatorProfile(id);
       onRefresh();
-    } catch (err) {
+    } catch {
       alert("删除失败");
     }
   };

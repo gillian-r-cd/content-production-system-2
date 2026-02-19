@@ -167,14 +167,12 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
   
   // M4: Inline AI 编辑状态
   const [selectedText, setSelectedText] = useState("");
-  const [selectionRange, setSelectionRange] = useState<{ start: number; end: number } | null>(null);
   const [inlineEditLoading, setInlineEditLoading] = useState(false);
   const [inlineEditResult, setInlineEditResult] = useState<{
     original: string;
     replacement: string;
     diff_preview: string;
   } | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const contentDisplayRef = useRef<HTMLDivElement>(null);
   const [toolbarPosition, setToolbarPosition] = useState<{ top: number; left: number } | null>(null);
 
@@ -263,10 +261,11 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
     
     blockAPI.get(block.id).then(freshBlock => {
       if (cancelled) return;
+      const snapshot = blockSnapshotRef.current;
       // 如果后端状态和本地不一致（例如后端是 in_progress 但本地不是），触发刷新
-      if (freshBlock.status !== block.status || freshBlock.content !== block.content) {
-        console.log(`[BlockEditor] 检测到数据不同步: block=${block.name}, local_status=${block.status}, server_status=${freshBlock.status}`);
-        onUpdate?.(); // 触发整个 allBlocks 刷新
+      if (freshBlock.status !== snapshot.status || freshBlock.content !== snapshot.content) {
+        console.log(`[BlockEditor] 检测到数据不同步: block=${snapshot.name}, local_status=${snapshot.status}, server_status=${freshBlock.status}`);
+        onUpdateRef.current?.(); // 触发整个 allBlocks 刷新
       }
     }).catch(() => {}); // 静默忽略（可能是虚拟块等）
     
@@ -276,8 +275,24 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
   // ===== 关键修复 2：如果 block 状态是 in_progress 但当前组件没在流式生成，则轮询刷新 =====
   // 优化：先检查后端数据是否实际变化，只在变化时才触发父组件刷新
   // 避免每3秒无条件调用 onUpdate() 导致整棵树级联重渲染
+  const onUpdateRef = useRef(onUpdate);
+  const blockSnapshotRef = useRef({
+    name: block.name,
+    status: block.status,
+    content: block.content || "",
+  });
   const pollStatusRef = useRef(block.status);
   const pollContentLenRef = useRef((block.content || "").length);
+  useEffect(() => {
+    onUpdateRef.current = onUpdate;
+  }, [onUpdate]);
+  useEffect(() => {
+    blockSnapshotRef.current = {
+      name: block.name,
+      status: block.status,
+      content: block.content || "",
+    };
+  }, [block.name, block.status, block.content]);
   useEffect(() => {
     pollStatusRef.current = block.status;
     pollContentLenRef.current = (block.content || "").length;
@@ -293,7 +308,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
         // 只在状态或内容实际变化时才触发全局刷新
         if (fresh.status !== pollStatusRef.current || 
             (fresh.content || "").length !== pollContentLenRef.current) {
-          onUpdate?.();
+          onUpdateRef.current?.();
         }
       } catch {
         // 静默忽略轮询错误
@@ -362,7 +377,11 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
   // 保存内容
   const handleSaveContent = async () => {
     try {
-      const result: any = await blockAPI.update(block.id, { content: editedContent });
+      const result = (await blockAPI.update(block.id, { content: editedContent })) as {
+        version_warning?: string;
+        affected_blocks?: unknown;
+        affected_fields?: unknown;
+      };
       setIsEditing(false);
       onUpdate?.();
       
@@ -371,7 +390,10 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
       const affected = result?.affected_blocks || result?.affected_fields;
       if (warning) {
         setVersionWarning(warning);
-        setAffectedBlocks(affected || null);
+        const normalizedAffected = Array.isArray(affected)
+          ? affected.map((item) => String(item))
+          : null;
+        setAffectedBlocks(normalizedAffected);
       }
     } catch (err) {
       console.error("保存失败:", err);
@@ -391,8 +413,8 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
       });
       setEditedPrompt(result.prompt);
       setAiPromptPurpose("");
-    } catch (e: any) {
-      alert("生成提示词失败: " + (e.message || "未知错误"));
+    } catch (e: unknown) {
+      alert("生成提示词失败: " + (e instanceof Error ? e.message : "未知错误"));
     } finally {
       setGeneratingPrompt(false);
     }

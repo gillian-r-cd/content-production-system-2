@@ -70,22 +70,22 @@ class TestLLMClient:
 # ============== Test 2: Agent 工具注册 ==============
 
 class TestAgentTools:
-    """验证 agent_tools.py 的 12 个工具"""
+    """验证 agent_tools.py 的工具集合"""
     
     def test_agent_tools_count(self):
-        """应该有 12 个工具"""
+        """当前应有 14 个工具"""
         from core.agent_tools import AGENT_TOOLS
-        assert len(AGENT_TOOLS) == 12, f"Expected 12, got {len(AGENT_TOOLS)}: {[t.name for t in AGENT_TOOLS]}"
+        assert len(AGENT_TOOLS) == 14, f"Expected 14, got {len(AGENT_TOOLS)}: {[t.name for t in AGENT_TOOLS]}"
     
     def test_agent_tools_names(self):
         """所有工具名称应该正确"""
         from core.agent_tools import AGENT_TOOLS
         names = {t.name for t in AGENT_TOOLS}
         expected = {
-            "modify_field", "generate_field_content", "query_field",
+            "propose_edit", "rewrite_field", "generate_field_content", "query_field",
             "read_field", "update_field", "manage_architecture",
             "advance_to_phase", "run_research", "manage_persona",
-            "run_evaluation", "generate_outline", "manage_skill",
+            "run_evaluation", "generate_outline", "manage_skill", "read_mode_history",
         }
         assert names == expected, f"Missing: {expected - names}, Extra: {names - expected}"
     

@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "eslint . --ext .js,.jsx,.ts,.tsx",
+    "lint:baseline": "eslint . --ext .js,.jsx,.ts,.tsx -f json -o lint-baseline.json",
+    "lint:batch:eval": "eslint components/eval-phase-panel.tsx components/eval-field-editors.tsx components/layout/workspace-layout.tsx --ext .ts,.tsx"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.0.5",
@@ -34,6 +36,8 @@
     "@types/react": "^18.2.55",
     "@types/react-dom": "^18.2.19",
     "autoprefixer": "^10.4.17",
+    "eslint": "^9.21.0",
+    "eslint-config-next": "^16.1.6",
     "postcss": "^8.4.35",
     "tailwindcss": "^3.4.1",
     "typescript": "^5.3.3"

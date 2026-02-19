@@ -7,8 +7,20 @@ import { useState, useEffect } from "react";
 import { settingsAPI } from "@/lib/api";
 import { FormField } from "./shared";
 
-export function AgentSettingsSection({ settings, onRefresh }: { settings: any; onRefresh: () => void }) {
-  const [editForm, setEditForm] = useState<any>(settings || { tools: [], skills: [] });
+interface AgentSkill {
+  name: string;
+  description: string;
+  prompt: string;
+}
+
+interface AgentSettingsData {
+  tools?: string[];
+  skills?: AgentSkill[];
+  tool_prompts?: Record<string, string>;
+}
+
+export function AgentSettingsSection({ settings, onRefresh }: { settings: AgentSettingsData | null; onRefresh: () => void }) {
+  const [editForm, setEditForm] = useState<AgentSettingsData>(settings || { tools: [], skills: [] });
   const [isSaving, setIsSaving] = useState(false);
   const [editingSkillIndex, setEditingSkillIndex] = useState<number | null>(null);
   const [newSkill, setNewSkill] = useState({ name: "", description: "", prompt: "" });
@@ -23,7 +35,7 @@ export function AgentSettingsSection({ settings, onRefresh }: { settings: any; o
       await settingsAPI.updateAgentSettings(editForm);
       onRefresh();
       alert("保存成功");
-    } catch (err) {
+    } catch {
       alert("保存失败");
     } finally {
       setIsSaving(false);
@@ -117,14 +129,14 @@ export function AgentSettingsSection({ settings, onRefresh }: { settings: any; o
   };
 
   const updateSkill = (index: number, key: string, value: string) => {
-    const newSkills = [...editForm.skills];
-    newSkills[index] = { ...newSkills[index], [key]: value };
+    const newSkills = [...(editForm.skills || [])];
+    newSkills[index] = { ...newSkills[index], [key]: value } as AgentSkill;
     setEditForm({ ...editForm, skills: newSkills });
   };
 
   const removeSkill = (index: number) => {
     if (!confirm("确定删除这个技能？")) return;
-    const newSkills = editForm.skills.filter((_: any, i: number) => i !== index);
+    const newSkills = (editForm.skills || []).filter((_, i: number) => i !== index);
     setEditForm({ ...editForm, skills: newSkills });
   };
 
@@ -216,7 +228,7 @@ export function AgentSettingsSection({ settings, onRefresh }: { settings: any; o
 
           {/* 现有技能列表 */}
           <div className="space-y-3 mb-4">
-            {(editForm.skills || []).map((skill: any, index: number) => (
+            {(editForm.skills || []).map((skill, index: number) => (
               <div key={index} className="p-4 bg-surface-1 border border-surface-3 rounded-lg">
                 {editingSkillIndex === index ? (
                   <div className="space-y-3">

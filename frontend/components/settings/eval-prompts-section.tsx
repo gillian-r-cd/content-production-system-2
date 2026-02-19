@@ -22,9 +22,17 @@ const PHASE_TO_PROMPT_TYPE: Record<string, string> = {
   eval_cross_trial_analysis: "grader_prompt",
 };
 
-export function EvalPromptsSection({ prompts, onRefresh }: { prompts: any[]; onRefresh: () => void }) {
+interface EvalPromptItem {
+  id: string;
+  phase: string;
+  name?: string;
+  description?: string;
+  content?: string;
+}
+
+export function EvalPromptsSection({ prompts, onRefresh }: { prompts: EvalPromptItem[]; onRefresh: () => void }) {
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState<any>({});
+  const [editForm, setEditForm] = useState<Partial<EvalPromptItem>>({});
   const [generating, setGenerating] = useState(false);
   const [syncingPresets, setSyncingPresets] = useState(false);
 
@@ -33,7 +41,7 @@ export function EvalPromptsSection({ prompts, onRefresh }: { prompts: any[]; onR
     [prompts]
   );
 
-  const beginEdit = (prompt: any) => {
+  const beginEdit = (prompt: EvalPromptItem) => {
     setEditingId(prompt.id);
     setEditForm({ ...prompt });
   };
@@ -49,8 +57,8 @@ export function EvalPromptsSection({ prompts, onRefresh }: { prompts: any[]; onR
       setEditingId(null);
       onRefresh();
       sendNotification("评估提示词已保存", "success");
-    } catch (e: any) {
-      sendNotification(`保存失败: ${e.message}`, "error");
+    } catch (e: unknown) {
+      sendNotification(`保存失败: ${errorMessage(e)}`, "error");
     }
   };
 
@@ -63,10 +71,10 @@ export function EvalPromptsSection({ prompts, onRefresh }: { prompts: any[]; onR
         form_type: editForm.phase,
         description: editForm.description || editForm.name || "",
       });
-      setEditForm((prev: any) => ({ ...prev, content: out.generated_prompt || prev.content }));
+      setEditForm((prev) => ({ ...prev, content: out.generated_prompt || prev.content }));
       sendNotification("AI 提示词已生成，可继续微调后保存", "success");
-    } catch (e: any) {
-      sendNotification(`AI 生成失败: ${e.message}`, "error");
+    } catch (e: unknown) {
+      sendNotification(`AI 生成失败: ${errorMessage(e)}`, "error");
     } finally {
       setGenerating(false);
     }
@@ -81,8 +89,8 @@ export function EvalPromptsSection({ prompts, onRefresh }: { prompts: any[]; onR
         "success"
       );
       onRefresh();
-    } catch (e: any) {
-      sendNotification(`同步失败: ${e.message}`, "error");
+    } catch (e: unknown) {
+      sendNotification(`同步失败: ${errorMessage(e)}`, "error");
     } finally {
       setSyncingPresets(false);
     }
@@ -181,5 +189,10 @@ export function EvalPromptsSection({ prompts, onRefresh }: { prompts: any[]; onR
       </div>
     </div>
   );
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error ?? "未知错误");
 }
 

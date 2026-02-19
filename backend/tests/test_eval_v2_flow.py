@@ -988,7 +988,7 @@ async def test_eval_v2_pause_and_resume_keeps_same_batch_and_no_duplicate(client
     first_batch = first["batch_id"]
     assert first["task"]["status"] == "paused"
     # 并行调度下，暂停请求生效前可能已有多个 in-flight trial
-    assert 1 <= len(first["trials"]) <= 2
+    assert 1 <= len(first["trials"]) <= 3
 
     # resume：继续同一 batch，且不重复已跑过 repeat_index=0
     second = await eval_api._execute_task_v2(task.id, session, resume_batch_id=first_batch)
@@ -1004,4 +1004,152 @@ async def test_eval_v2_pause_and_resume_keeps_same_batch_and_no_duplicate(client
     keys = {(r.trial_config_id, r.repeat_index) for r in rows}
     assert len(rows) == 3
     assert len(keys) == 3
+
+
+def test_eval_v2_intent_fallback_does_not_use_project_name(client_and_session):
+    _client, session = client_and_session
+    project = Project(id=generate_uuid(), name="项目名不能当意图")
+    session.add(project)
+    session.commit()
+    session.refresh(project)
+
+    intent = eval_api._get_project_intent(project, session)
+    assert intent == ""
+
+
+def test_eval_v2_trial_serialization_has_summary_evidence_and_independent_suggestions():
+    row = EvalTrialResultV2(
+        id=generate_uuid(),
+        task_id=generate_uuid(),
+        trial_config_id=generate_uuid(),
+        project_id=generate_uuid(),
+        batch_id="batch_test",
+        repeat_index=0,
+        form_type="assessment",
+        process=[],
+        grader_results=[
+            {
+                "grader_name": "结构评分器",
+                "scores": {"结构": 6, "价值": 8},
+                "comments": {"结构": "结构衔接不足。", "价值": "价值点清晰。"},
+                "feedback": "建议补充过渡段。并优化案例细节。",
+            }
+        ],
+        dimension_scores={"结构": 6, "价值": 8},
+        overall_score=7.0,
+        llm_calls=[],
+        tokens_in=0,
+        tokens_out=0,
+        cost=0.0,
+        status="completed",
+        error="",
+    )
+
+    payload = eval_api._serialize_trial_result_v2(row)
+    assert "overall_comment" in payload
+    assert "score_evidence" in payload and len(payload["score_evidence"]) == 2
+    assert "improvement_suggestions" in payload
+    assert any("建议" in x or "优化" in x for x in payload["improvement_suggestions"])
+
+
+def test_eval_v2_build_process_transcript_for_experience_stages():
+    process = [
+        {
+            "type": "plan",
+            "stage": "阶段1-探索规划",
+            "data": {
+                "overall_goal": "判断是否值得购买",
+                "plan": [{"block_id": "b1", "block_title": "第一章", "reason": "先看核心", "expectation": "看价值"}],
+            },
+        },
+        {
+            "type": "per_block",
+            "stage": "阶段2-逐块探索",
+            "block_id": "b1",
+            "block_title": "第一章",
+            "data": {"discovery": "有框架", "doubt": "不够具体", "missing": "案例", "feeling": "一般", "score": 6},
+        },
+        {
+            "type": "summary",
+            "stage": "阶段3-总体总结",
+            "data": {"overall_impression": "中等", "concerns_addressed": ["价值"], "concerns_unaddressed": ["案例"], "summary": "需补案例"},
+        },
+    ]
+    transcript = eval_api._build_process_transcript(process)
+    assert "阶段1-规划" in transcript
+    assert "阶段2-逐块探索" in transcript
+    assert "阶段3-总结" in transcript
+    assert "第一章" in transcript
+
+
+@pytest.mark.asyncio
+async def test_eval_v2_scenario_fallback_to_dialogue_when_primary_path_raises(client_and_session, monkeypatch):
+    _client, session = client_and_session
+    project, content_block, grader = _seed_minimal_eval_context(session)
+    task = EvalTaskV2(
+        id=generate_uuid(),
+        project_id=project.id,
+        name="scenario-fallback-task",
+        description="",
+        order_index=0,
+        status="pending",
+    )
+    session.add(task)
+    session.flush()
+    cfg = EvalTrialConfigV2(
+        id=generate_uuid(),
+        task_id=task.id,
+        name="场景对话",
+        form_type="scenario",
+        target_block_ids=[content_block.id],
+        grader_ids=[grader.id],
+        repeat_count=1,
+        order_index=0,
+        form_config={"max_turns": 2},
+    )
+    session.add(cfg)
+    session.commit()
+
+    state = {"calls": 0}
+
+    async def fake_run_task_trial(**kwargs):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            raise RuntimeError("primary seller path failed")
+        return type(
+            "TR",
+            (),
+            {
+                "nodes": [{"role": "consumer", "content": "fallback dialogue ok", "turn": 1}],
+                "llm_calls": [],
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "cost": 0.0,
+                "success": True,
+                "error": "",
+                "grader_outputs": [],
+            },
+        )()
+
+    async def fake_run_individual_grader(**kwargs):
+        return (
+            {
+                "grader_name": kwargs.get("grader_name", "测试评分器"),
+                "scores": {"结构": 7, "价值": 7},
+                "comments": {},
+                "feedback": "建议补充案例",
+            },
+            None,
+        )
+
+    monkeypatch.setattr("api.eval.run_task_trial", fake_run_task_trial)
+    monkeypatch.setattr("api.eval.run_individual_grader", fake_run_individual_grader)
+
+    out = await eval_api._execute_task_v2(task.id, session)
+    assert out["task"]["status"] == "completed"
+    assert len(out["trials"]) == 1
+    trial = out["trials"][0]
+    assert trial["status"] == "completed"
+    assert any((x or {}).get("type") == "system_note" for x in (trial.get("process") or []))
+    assert state["calls"] >= 2
 

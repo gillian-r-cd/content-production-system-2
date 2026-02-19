@@ -7,9 +7,24 @@ import { useState } from "react";
 import { settingsAPI } from "@/lib/api";
 import { FormField } from "./shared";
 
-export function ChannelsSection({ channels, onRefresh }: { channels: any[]; onRefresh: () => void }) {
+interface ChannelItem {
+  id: string;
+  name: string;
+  description?: string;
+  platform?: string;
+  prompt_template?: string;
+}
+
+interface ChannelEditForm {
+  name: string;
+  description: string;
+  platform: string;
+  prompt_template: string;
+}
+
+export function ChannelsSection({ channels, onRefresh }: { channels: ChannelItem[]; onRefresh: () => void }) {
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState<any>({});
+  const [editForm, setEditForm] = useState<ChannelEditForm>({ name: "", description: "", platform: "social", prompt_template: "" });
   const [isCreating, setIsCreating] = useState(false);
 
   const PLATFORM_OPTIONS = [
@@ -26,9 +41,14 @@ export function ChannelsSection({ channels, onRefresh }: { channels: any[]; onRe
     setEditForm({ name: "", description: "", platform: "social", prompt_template: "" });
   };
 
-  const handleEdit = (channel: any) => {
+  const handleEdit = (channel: ChannelItem) => {
     setEditingId(channel.id);
-    setEditForm({ ...channel });
+    setEditForm({
+      name: channel.name || "",
+      description: channel.description || "",
+      platform: channel.platform || "social",
+      prompt_template: channel.prompt_template || "",
+    });
   };
 
   const handleSave = async () => {
@@ -41,7 +61,7 @@ export function ChannelsSection({ channels, onRefresh }: { channels: any[]; onRe
       setEditingId(null);
       setIsCreating(false);
       onRefresh();
-    } catch (err) {
+    } catch {
       alert("保存失败");
     }
   };
@@ -51,7 +71,7 @@ export function ChannelsSection({ channels, onRefresh }: { channels: any[]; onRe
     try {
       await settingsAPI.deleteChannel(id);
       onRefresh();
-    } catch (err) {
+    } catch {
       alert("删除失败");
     }
   };

@@ -198,7 +198,7 @@ class TestIntentRouting:
         expected_tools = {
             "advance_to_phase",    # 旧 advance_phase
             "generate_field_content",  # 旧 generate
-            "modify_field",        # 旧 modify
+            "rewrite_field",       # 旧 modify（重命名）
             "run_research",        # 旧 research
             "run_evaluation",      # 旧 evaluate (含 simulate)
             "query_field",         # 旧 query
@@ -226,7 +226,7 @@ class TestStateTransition:
     """状态转换测试 — LangGraph AgentState"""
     
     def test_agent_state_structure(self):
-        """测试 AgentState 结构完整 (4 字段)"""
+        """测试 AgentState 结构完整（当前为 7 字段）"""
         from core.orchestrator import AgentState
         
         required_fields = [
@@ -239,7 +239,8 @@ class TestStateTransition:
         annotations = AgentState.__annotations__
         for field in required_fields:
             assert field in annotations, f"Missing field: {field}"
-        assert len(annotations) == 4
+        # 当前架构额外包含 mode/mode_prompt/memory_context
+        assert len(annotations) == 7
     
     def test_initial_state_defaults(self):
         """测试初始状态默认值"""

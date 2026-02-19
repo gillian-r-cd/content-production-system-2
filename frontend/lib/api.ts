@@ -42,7 +42,7 @@ export interface Field {
     depends_on: string[];
     dependency_type: string;
   };
-  constraints?: Record<string, any>;   // 字段生产约束
+  constraints?: Record<string, unknown>;   // 字段生产约束
   need_review: boolean;             // 是否需要人工确认（false = 自动生成）
   template_id: string | null;
   version_warning?: string;         // 版本变更警告（更新时返回）
@@ -55,7 +55,7 @@ export interface CreatorProfile {
   id: string;
   name: string;
   description: string;
-  traits: Record<string, any>;
+  traits: Record<string, unknown>;
   created_at: string;
 }
 
@@ -114,7 +114,7 @@ export interface SimulationRecord {
   simulator_id: string;
   target_field_ids: string[];
   persona: Persona;
-  interaction_log: any[];
+  interaction_log: unknown[];
   feedback: {
     scores: Record<string, number>;
     comments: Record<string, string>;
@@ -154,7 +154,16 @@ async function fetchAPI<T>(
     if (typeof error.detail === "string") {
       errorMessage = error.detail;
     } else if (Array.isArray(error.detail)) {
-      errorMessage = error.detail.map((e: any) => e.msg || e.message || JSON.stringify(e)).join("; ");
+      errorMessage = error.detail
+        .map((e: unknown) => {
+          const item = e as Record<string, unknown>;
+          const msg = item.msg;
+          if (typeof msg === "string" && msg.trim()) return msg;
+          const message = item.message;
+          if (typeof message === "string" && message.trim()) return message;
+          return JSON.stringify(e);
+        })
+        .join("; ");
     } else {
       errorMessage = `API error: ${response.status}`;
     }
@@ -202,9 +211,9 @@ export const projectAPI = {
     fetchAPI<Project>(`/api/projects/${id}/duplicate`, { method: "POST" }),
 
   exportProject: (id: string, includeLogs: boolean = false) =>
-    fetchAPI<Record<string, any>>(`/api/projects/${id}/export?include_logs=${includeLogs}`),
+    fetchAPI<Record<string, unknown>>(`/api/projects/${id}/export?include_logs=${includeLogs}`),
 
-  importProject: (data: Record<string, any>, matchCreatorProfile: boolean = true) =>
+  importProject: (data: Record<string, unknown>, matchCreatorProfile: boolean = true) =>
     fetchAPI<{ message: string; project: Project; stats: Record<string, number> }>(
       "/api/projects/import",
       {
@@ -363,10 +372,10 @@ export const agentAPI = {
   
   // 删除消息
   deleteMessage: (messageId: string) =>
-    fetchAPI<any>(`/api/agent/message/${messageId}`, { method: "DELETE" }),
+    fetchAPI<unknown>(`/api/agent/message/${messageId}`, { method: "DELETE" }),
   
   // 调用Tool
-  callTool: (projectId: string, toolName: string, parameters: Record<string, any> = {}) =>
+  callTool: (projectId: string, toolName: string, parameters: Record<string, unknown> = {}) =>
     fetchAPI<ChatResponse>("/api/agent/tool", {
       method: "POST",
       body: JSON.stringify({
@@ -391,20 +400,91 @@ export const agentAPI = {
 
 // ============== Settings API ==============
 
+export interface SystemPromptItem {
+  id: string;
+  name: string;
+  phase: string;
+  content?: string;
+}
+
+export interface EvalPromptItem {
+  id: string;
+  phase: string;
+  name?: string;
+  description?: string;
+  content?: string;
+}
+
+export interface FieldTemplateFieldItem {
+  name: string;
+  type: string;
+  ai_prompt: string;
+  content?: string;
+  pre_questions?: string[];
+  depends_on?: string[];
+  need_review?: boolean;
+  special_handler?: string;
+}
+
+export interface FieldTemplateItem {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  fields: FieldTemplateFieldItem[];
+}
+
+export interface ChannelItem {
+  id: string;
+  name: string;
+  description?: string;
+  platform?: string;
+  prompt_template?: string;
+}
+
+export interface SimulatorItem {
+  id: string;
+  name: string;
+  description?: string;
+  interaction_type: string;
+  prompt_template?: string;
+  secondary_prompt?: string;
+  grader_template?: string;
+  evaluation_dimensions?: string[];
+  max_turns?: number;
+}
+
+export interface AgentSkillItem {
+  name: string;
+  description: string;
+  prompt: string;
+}
+
+export interface AgentSettingsData {
+  tools?: string[];
+  skills?: AgentSkillItem[];
+  tool_prompts?: Record<string, string>;
+}
+
+export interface SettingsLogItem {
+  id: string;
+  [key: string]: unknown;
+}
+
 export const settingsAPI = {
   // System Prompts
   listSystemPrompts: () =>
-    fetchAPI<any[]>("/api/settings/system-prompts"),
+    fetchAPI<SystemPromptItem[]>("/api/settings/system-prompts"),
   
-  updateSystemPrompt: (id: string, data: any) =>
-    fetchAPI<any>(`/api/settings/system-prompts/${id}`, {
+  updateSystemPrompt: (id: string, data: unknown) =>
+    fetchAPI<unknown>(`/api/settings/system-prompts/${id}`, {
       method: "PUT",
       body: JSON.stringify(data),
     }),
   listEvalPrompts: () =>
-    fetchAPI<any[]>("/api/settings/eval-prompts"),
-  updateEvalPrompt: (id: string, data: any) =>
-    fetchAPI<any>(`/api/settings/eval-prompts/${id}`, {
+    fetchAPI<EvalPromptItem[]>("/api/settings/eval-prompts"),
+  updateEvalPrompt: (id: string, data: unknown) =>
+    fetchAPI<unknown>(`/api/settings/eval-prompts/${id}`, {
       method: "PUT",
       body: JSON.stringify(data),
     }),
@@ -433,71 +513,71 @@ export const settingsAPI = {
     }),
   
   deleteCreatorProfile: (id: string) =>
-    fetchAPI<any>(`/api/settings/creator-profiles/${id}`, { method: "DELETE" }),
+    fetchAPI<unknown>(`/api/settings/creator-profiles/${id}`, { method: "DELETE" }),
   
   // Field Templates
   listFieldTemplates: () =>
-    fetchAPI<any[]>("/api/settings/field-templates"),
+    fetchAPI<FieldTemplateItem[]>("/api/settings/field-templates"),
   
-  createFieldTemplate: (data: any) =>
-    fetchAPI<any>("/api/settings/field-templates", {
+  createFieldTemplate: (data: unknown) =>
+    fetchAPI<unknown>("/api/settings/field-templates", {
       method: "POST",
       body: JSON.stringify(data),
     }),
   
-  updateFieldTemplate: (id: string, data: any) =>
-    fetchAPI<any>(`/api/settings/field-templates/${id}`, {
+  updateFieldTemplate: (id: string, data: unknown) =>
+    fetchAPI<unknown>(`/api/settings/field-templates/${id}`, {
       method: "PUT",
       body: JSON.stringify(data),
     }),
   
   deleteFieldTemplate: (id: string) =>
-    fetchAPI<any>(`/api/settings/field-templates/${id}`, { method: "DELETE" }),
+    fetchAPI<unknown>(`/api/settings/field-templates/${id}`, { method: "DELETE" }),
   
   // Channels
   listChannels: () =>
-    fetchAPI<any[]>("/api/settings/channels"),
+    fetchAPI<ChannelItem[]>("/api/settings/channels"),
   
-  createChannel: (data: any) =>
-    fetchAPI<any>("/api/settings/channels", {
+  createChannel: (data: unknown) =>
+    fetchAPI<unknown>("/api/settings/channels", {
       method: "POST",
       body: JSON.stringify(data),
     }),
   
-  updateChannel: (id: string, data: any) =>
-    fetchAPI<any>(`/api/settings/channels/${id}`, {
+  updateChannel: (id: string, data: unknown) =>
+    fetchAPI<unknown>(`/api/settings/channels/${id}`, {
       method: "PUT",
       body: JSON.stringify(data),
     }),
   
   deleteChannel: (id: string) =>
-    fetchAPI<any>(`/api/settings/channels/${id}`, { method: "DELETE" }),
+    fetchAPI<unknown>(`/api/settings/channels/${id}`, { method: "DELETE" }),
   
   // Simulators
   listSimulators: () =>
-    fetchAPI<any[]>("/api/settings/simulators"),
+    fetchAPI<SimulatorItem[]>("/api/settings/simulators"),
   
-  createSimulator: (data: any) =>
-    fetchAPI<any>("/api/settings/simulators", {
+  createSimulator: (data: unknown) =>
+    fetchAPI<unknown>("/api/settings/simulators", {
       method: "POST",
       body: JSON.stringify(data),
     }),
   
-  updateSimulator: (id: string, data: any) =>
-    fetchAPI<any>(`/api/settings/simulators/${id}`, {
+  updateSimulator: (id: string, data: unknown) =>
+    fetchAPI<unknown>(`/api/settings/simulators/${id}`, {
       method: "PUT",
       body: JSON.stringify(data),
     }),
   
   deleteSimulator: (id: string) =>
-    fetchAPI<any>(`/api/settings/simulators/${id}`, { method: "DELETE" }),
+    fetchAPI<unknown>(`/api/settings/simulators/${id}`, { method: "DELETE" }),
   
   // Agent Settings
   getAgentSettings: () =>
-    fetchAPI<any>("/api/settings/agent"),
+    fetchAPI<AgentSettingsData>("/api/settings/agent"),
   
-  updateAgentSettings: (data: any) =>
-    fetchAPI<any>("/api/settings/agent", {
+  updateAgentSettings: (data: unknown) =>
+    fetchAPI<unknown>("/api/settings/agent", {
       method: "PUT",
       body: JSON.stringify(data),
     }),
@@ -505,21 +585,21 @@ export const settingsAPI = {
   // Logs
   listLogs: (projectId?: string) => {
     const query = projectId ? `?project_id=${projectId}` : "";
-    return fetchAPI<any[]>(`/api/settings/logs${query}`);
+    return fetchAPI<SettingsLogItem[]>(`/api/settings/logs${query}`);
   },
   
   exportLogs: (projectId?: string) => {
     const query = projectId ? `?project_id=${projectId}` : "";
-    return fetchAPI<any>(`/api/settings/logs/export${query}`);
+    return fetchAPI<unknown>(`/api/settings/logs/export${query}`);
   },
 
   // System Prompts Import/Export
   exportSystemPrompts: (id?: string) => {
     const query = id ? `?id=${id}` : "";
-    return fetchAPI<any>(`/api/settings/system-prompts/export${query}`);
+    return fetchAPI<unknown>(`/api/settings/system-prompts/export${query}`);
   },
-  importSystemPrompts: (data: any[]) =>
-    fetchAPI<any>("/api/settings/system-prompts/import", {
+  importSystemPrompts: (data: unknown[]) =>
+    fetchAPI<unknown>("/api/settings/system-prompts/import", {
       method: "POST",
       body: JSON.stringify({ data }),
     }),
@@ -527,10 +607,10 @@ export const settingsAPI = {
   // Creator Profiles Import/Export
   exportCreatorProfiles: (id?: string) => {
     const query = id ? `?id=${id}` : "";
-    return fetchAPI<any>(`/api/settings/creator-profiles/export${query}`);
+    return fetchAPI<unknown>(`/api/settings/creator-profiles/export${query}`);
   },
-  importCreatorProfiles: (data: any[]) =>
-    fetchAPI<any>("/api/settings/creator-profiles/import", {
+  importCreatorProfiles: (data: unknown[]) =>
+    fetchAPI<unknown>("/api/settings/creator-profiles/import", {
       method: "POST",
       body: JSON.stringify({ data }),
     }),
@@ -538,10 +618,10 @@ export const settingsAPI = {
   // Field Templates Import/Export
   exportFieldTemplates: (id?: string) => {
     const query = id ? `?id=${id}` : "";
-    return fetchAPI<any>(`/api/settings/field-templates/export${query}`);
+    return fetchAPI<unknown>(`/api/settings/field-templates/export${query}`);
   },
-  importFieldTemplates: (data: any[]) =>
-    fetchAPI<any>("/api/settings/field-templates/import", {
+  importFieldTemplates: (data: unknown[]) =>
+    fetchAPI<unknown>("/api/settings/field-templates/import", {
       method: "POST",
       body: JSON.stringify({ data }),
     }),
@@ -549,17 +629,17 @@ export const settingsAPI = {
   // Simulators Import/Export
   exportSimulators: (id?: string) => {
     const query = id ? `?id=${id}` : "";
-    return fetchAPI<any>(`/api/settings/simulators/export${query}`);
+    return fetchAPI<unknown>(`/api/settings/simulators/export${query}`);
   },
-  importSimulators: (data: any[]) =>
-    fetchAPI<any>("/api/settings/simulators/import", {
+  importSimulators: (data: unknown[]) =>
+    fetchAPI<unknown>("/api/settings/simulators/import", {
       method: "POST",
       body: JSON.stringify({ data }),
     }),
 
   // Graders
   listGraders: () =>
-    fetchAPI<any[]>("/api/graders"),
+    fetchAPI<GraderData[]>("/api/graders"),
 };
 
 // ============== Simulation API ==============
@@ -591,7 +671,7 @@ export const simulationAPI = {
   
   // 删除模拟记录
   delete: (id: string) =>
-    fetchAPI<any>(`/api/simulations/${id}`, { method: "DELETE" }),
+    fetchAPI<unknown>(`/api/simulations/${id}`, { method: "DELETE" }),
   
   // 获取消费者调研中的人物小传
   getPersonasFromResearch: (projectId: string) =>
@@ -611,7 +691,7 @@ export interface ContentBlock {
   content: string;
   status: "pending" | "in_progress" | "completed" | "failed";
   ai_prompt?: string;
-  constraints?: Record<string, any>;
+  constraints?: Record<string, unknown>;
   depends_on?: string[];
   special_handler: string | null;
   pre_questions?: string[];
@@ -648,7 +728,7 @@ export interface PhaseTemplate {
       content?: string;
       pre_questions?: string[];
       depends_on?: string[];
-      constraints?: Record<string, any>;
+      constraints?: Record<string, unknown>;
       need_review?: boolean;
     }>;
   }>;
@@ -677,7 +757,7 @@ export const blockAPI = {
     block_type?: string;
     content?: string;
     ai_prompt?: string;
-    constraints?: Record<string, any>;
+    constraints?: Record<string, unknown>;
     depends_on?: string[];
     special_handler?: string | null;
     pre_questions?: string[];
@@ -696,7 +776,7 @@ export const blockAPI = {
     content: string;
     status: string;
     ai_prompt: string;
-    constraints: Record<string, any>;
+    constraints: Record<string, unknown>;
     depends_on: string[];
     pre_questions: string[];
     pre_answers: Record<string, string>;
@@ -957,7 +1037,7 @@ export interface EvalRun {
   role_scores: Record<string, number>;
   trial_count: number;
   content_block_id: string | null;
-  config: Record<string, any>;
+  config: Record<string, unknown>;
   created_at: string;
 }
 
@@ -967,10 +1047,10 @@ export interface EvalTask {
   name: string;
   simulator_type: string;
   interaction_mode: string;
-  simulator_config: Record<string, any>;
-  persona_config: Record<string, any>;
+  simulator_config: Record<string, unknown>;
+  persona_config: Record<string, unknown>;
   target_block_ids: string[];
-  grader_config: Record<string, any>;
+  grader_config: Record<string, unknown>;
   order_index: number;
   status: string;
   error: string;
@@ -993,13 +1073,13 @@ export interface EvalTrial {
   eval_run_id: string;
   eval_task_id: string | null;
   role: string;
-  role_config: Record<string, any>;
+  role_config: Record<string, unknown>;
   interaction_mode: string;
   input_block_ids: string[];
-  persona: Record<string, any>;
+  persona: Record<string, unknown>;
   nodes: Array<{ role: string; content: string; turn?: number; phase?: string }>;
-  result: Record<string, any>;
-  grader_outputs: any[];
+  result: Record<string, unknown>;
+  grader_outputs: unknown[];
   llm_calls: LLMCall[];
   overall_score: number | null;
   status: string;
@@ -1024,7 +1104,7 @@ export interface EvalConfig {
   simulator_types: Record<string, SimulatorTypeInfo>;
   interaction_modes: Record<string, { name: string; description: string }>;
   grader_types: Record<string, { name: string; description: string }>;
-  roles: Record<string, any>;
+  roles: Record<string, unknown>;
 }
 
 export const evalAPI = {
@@ -1036,7 +1116,7 @@ export const evalAPI = {
       method: "POST",
       body: JSON.stringify({ project_id: projectId, avoid_names: avoidNames }),
     }),
-  generatePrompt: (promptType: string, context: Record<string, any> = {}) =>
+  generatePrompt: (promptType: string, context: Record<string, unknown> = {}) =>
     fetchAPI<{ generated_prompt: string }>("/api/eval/prompts/generate", {
       method: "POST",
       body: JSON.stringify({ prompt_type: promptType, context }),
@@ -1058,7 +1138,7 @@ export interface EvalV2TrialConfig {
   grader_weights?: Record<string, number>;
   repeat_count: number;
   probe?: string;
-  form_config?: Record<string, any>;
+  form_config?: Record<string, unknown>;
   order_index?: number;
 }
 
@@ -1071,7 +1151,7 @@ export interface EvalV2Task {
   status: string;
   content_hash: string;
   last_executed_at: string;
-  latest_scores: Record<string, any>;
+  latest_scores: Record<string, unknown>;
   latest_overall: number | null;
   latest_batch_id: string;
   progress?: {
@@ -1086,6 +1166,63 @@ export interface EvalV2Task {
   };
   can_stop?: boolean;
   trial_configs: EvalV2TrialConfig[];
+}
+
+export interface EvalV2ExecutionRow {
+  task_id: string;
+  batch_id: string;
+  task_name: string;
+  overall?: number | null;
+  status?: string;
+  trial_count?: number | null;
+  executed_at?: string;
+}
+
+export interface EvalV2TrialDetail {
+  id: string;
+  trial_config_name?: string;
+  form_type: string;
+  repeat_index: number;
+  overall_score?: number | null;
+  status?: string;
+  llm_calls?: Array<{
+    step?: string;
+    tokens_in?: number;
+    tokens_out?: number;
+    cost?: number;
+    input?: { system_prompt?: string; user_message?: string };
+    output?: unknown;
+  }>;
+  dimension_scores?: Record<string, number | null | undefined>;
+  overall_comment?: string;
+  score_evidence?: Array<{
+    grader_name?: string;
+    dimension?: string;
+    score?: number | string | null;
+    evidence?: string;
+  }>;
+  grader_results?: Array<{ grader_name?: string; feedback?: string }>;
+  improvement_suggestions?: string[];
+  process?: Array<{
+    type?: string;
+    stage?: string;
+    role?: string;
+    content?: string;
+    block_id?: string;
+    block_title?: string;
+    data?: unknown;
+  }>;
+}
+
+export interface EvalV2TaskBatchDetail {
+  trials?: EvalV2TrialDetail[];
+}
+
+export interface EvalV2DiagnosisResponse {
+  analysis?: {
+    patterns?: Array<{ title?: string; frequency?: string }>;
+    suggestions?: Array<{ title?: string; detail?: string }>;
+  } | null;
 }
 
 export const evalV2API = {
@@ -1114,37 +1251,37 @@ export const evalV2API = {
   deleteTask: (taskId: string) =>
     fetchAPI<{ message: string }>(`/api/eval/task/${taskId}`, { method: "DELETE" }),
   executeTask: (taskId: string) =>
-    fetchAPI<any>(`/api/eval/task/${taskId}/execute`, { method: "POST" }),
+    fetchAPI<{ message?: string }>(`/api/eval/task/${taskId}/execute`, { method: "POST" }),
   startTask: (taskId: string) =>
-    fetchAPI<any>(`/api/eval/task/${taskId}/start`, { method: "POST" }),
+    fetchAPI<{ message?: string }>(`/api/eval/task/${taskId}/start`, { method: "POST" }),
   stopTask: (taskId: string) =>
-    fetchAPI<any>(`/api/eval/task/${taskId}/stop`, { method: "POST" }),
+    fetchAPI<{ message?: string }>(`/api/eval/task/${taskId}/stop`, { method: "POST" }),
   pauseTask: (taskId: string) =>
-    fetchAPI<any>(`/api/eval/task/${taskId}/pause`, { method: "POST" }),
+    fetchAPI<{ message?: string }>(`/api/eval/task/${taskId}/pause`, { method: "POST" }),
   resumeTask: (taskId: string) =>
-    fetchAPI<any>(`/api/eval/task/${taskId}/resume`, { method: "POST" }),
+    fetchAPI<{ message?: string }>(`/api/eval/task/${taskId}/resume`, { method: "POST" }),
   executeAll: (projectId: string) =>
-    fetchAPI<any>(`/api/eval/tasks/${projectId}/execute-all`, { method: "POST" }),
+    fetchAPI<{ message?: string }>(`/api/eval/tasks/${projectId}/execute-all`, { method: "POST" }),
   taskTrials: (taskId: string) =>
-    fetchAPI<{ trials: any[] }>(`/api/eval/task/${taskId}/trials`),
+    fetchAPI<{ trials: EvalV2TrialDetail[] }>(`/api/eval/task/${taskId}/trials`),
   taskLatest: (taskId: string) =>
-    fetchAPI<any>(`/api/eval/task/${taskId}/latest`),
+    fetchAPI<unknown>(`/api/eval/task/${taskId}/latest`),
   taskReport: (projectId: string) =>
-    fetchAPI<{ tasks: any[] }>(`/api/eval/tasks/${projectId}/report`),
+    fetchAPI<{ tasks: unknown[] }>(`/api/eval/tasks/${projectId}/report`),
   executionReport: (projectId: string) =>
-    fetchAPI<{ executions: any[] }>(`/api/eval/tasks/${projectId}/executions`),
+    fetchAPI<{ executions: EvalV2ExecutionRow[] }>(`/api/eval/tasks/${projectId}/executions`),
   runTaskDiagnosis: (taskId: string) =>
-    fetchAPI<any>(`/api/eval/task/${taskId}/diagnose`, { method: "POST" }),
+    fetchAPI<EvalV2DiagnosisResponse>(`/api/eval/task/${taskId}/diagnose`, { method: "POST" }),
   runTaskDiagnosisForBatch: (taskId: string, batchId: string) =>
-    fetchAPI<any>(`/api/eval/task/${taskId}/diagnose?batch_id=${encodeURIComponent(batchId)}`, { method: "POST" }),
+    fetchAPI<EvalV2DiagnosisResponse>(`/api/eval/task/${taskId}/diagnose?batch_id=${encodeURIComponent(batchId)}`, { method: "POST" }),
   getTaskDiagnosis: (taskId: string, batchId?: string) =>
-    fetchAPI<any>(`/api/eval/task/${taskId}/diagnosis${batchId ? `?batch_id=${encodeURIComponent(batchId)}` : ""}`),
+    fetchAPI<EvalV2DiagnosisResponse>(`/api/eval/task/${taskId}/diagnosis${batchId ? `?batch_id=${encodeURIComponent(batchId)}` : ""}`),
   taskBatch: (taskId: string, batchId: string) =>
-    fetchAPI<any>(`/api/eval/task/${taskId}/batch/${batchId}`),
+    fetchAPI<EvalV2TaskBatchDetail>(`/api/eval/task/${taskId}/batch/${batchId}`),
   deleteTaskBatch: (taskId: string, batchId: string) =>
-    fetchAPI<any>(`/api/eval/task/${taskId}/batch/${batchId}`, { method: "DELETE" }),
+    fetchAPI<unknown>(`/api/eval/task/${taskId}/batch/${batchId}`, { method: "DELETE" }),
   batchDeleteExecutions: (projectId: string, items: Array<{ task_id: string; batch_id: string }>) =>
-    fetchAPI<any>(`/api/eval/tasks/${projectId}/executions/delete`, {
+    fetchAPI<unknown>(`/api/eval/tasks/${projectId}/executions/delete`, {
       method: "POST",
       body: JSON.stringify({ items }),
     }),
@@ -1153,12 +1290,12 @@ export const evalV2API = {
       `/api/eval/task/${taskId}/batch/${batchId}/suggestion-states`
     ),
   markSuggestionApplied: (taskId: string, batchId: string, payload: { source: string; suggestion: string; status?: string }) =>
-    fetchAPI<any>(`/api/eval/task/${taskId}/batch/${batchId}/suggestion-state`, {
+    fetchAPI<unknown>(`/api/eval/task/${taskId}/batch/${batchId}/suggestion-state`, {
       method: "POST",
       body: JSON.stringify(payload),
     }),
   providerTest: () =>
-    fetchAPI<any>("/api/eval/provider/test", { method: "POST" }),
+    fetchAPI<unknown>("/api/eval/provider/test", { method: "POST" }),
 };
 
 
@@ -1192,10 +1329,10 @@ export const graderAPI = {
   getTypes: () => fetchAPI("/api/graders/types"),
   exportAll: (id?: string) => {
     const query = id ? `?grader_id=${id}` : "";
-    return fetchAPI<any>(`/api/graders/export/all${query}`);
+    return fetchAPI<unknown>(`/api/graders/export/all${query}`);
   },
-  importAll: (data: any[]) =>
-    fetchAPI<any>("/api/graders/import/all", {
+  importAll: (data: unknown[]) =>
+    fetchAPI<unknown>("/api/graders/import/all", {
       method: "POST",
       body: JSON.stringify({ data }),
     }),

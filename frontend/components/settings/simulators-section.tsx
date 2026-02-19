@@ -7,9 +7,41 @@ import { useState } from "react";
 import { settingsAPI } from "@/lib/api";
 import { FormField, TagInput, ImportExportButtons, SingleExportButton, downloadJSON } from "./shared";
 
-export function SimulatorsSection({ simulators, onRefresh }: { simulators: any[]; onRefresh: () => void }) {
+interface SimulatorItem {
+  id: string;
+  name: string;
+  description?: string;
+  interaction_type: string;
+  prompt_template?: string;
+  secondary_prompt?: string;
+  grader_template?: string;
+  evaluation_dimensions?: string[];
+  max_turns?: number;
+}
+
+interface SimulatorEditForm {
+  name: string;
+  description: string;
+  interaction_type: string;
+  prompt_template: string;
+  secondary_prompt: string;
+  grader_template: string;
+  evaluation_dimensions: string[];
+  max_turns: number;
+}
+
+export function SimulatorsSection({ simulators, onRefresh }: { simulators: SimulatorItem[]; onRefresh: () => void }) {
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState<any>({});
+  const [editForm, setEditForm] = useState<SimulatorEditForm>({
+    name: "",
+    description: "",
+    interaction_type: "reading",
+    prompt_template: "",
+    secondary_prompt: "",
+    grader_template: "",
+    evaluation_dimensions: [],
+    max_turns: 10,
+  });
   const [isCreating, setIsCreating] = useState(false);
 
   const INTERACTION_TYPES = [
@@ -23,7 +55,7 @@ export function SimulatorsSection({ simulators, onRefresh }: { simulators: any[]
     try {
       const result = await settingsAPI.exportSimulators();
       downloadJSON(result, `simulators_${new Date().toISOString().split("T")[0]}.json`);
-    } catch (err) {
+    } catch {
       alert("导出失败");
     }
   };
@@ -33,12 +65,12 @@ export function SimulatorsSection({ simulators, onRefresh }: { simulators: any[]
       const result = await settingsAPI.exportSimulators(id);
       const simulator = simulators.find(s => s.id === id);
       downloadJSON(result, `simulator_${simulator?.name || id}.json`);
-    } catch (err) {
+    } catch {
       alert("导出失败");
     }
   };
 
-  const handleImport = async (data: any[]) => {
+  const handleImport = async (data: unknown[]) => {
     await settingsAPI.importSimulators(data);
     onRefresh();
   };
@@ -48,9 +80,18 @@ export function SimulatorsSection({ simulators, onRefresh }: { simulators: any[]
     setEditForm({ name: "", description: "", interaction_type: "reading", prompt_template: "", secondary_prompt: "", grader_template: "", evaluation_dimensions: [], max_turns: 10 });
   };
 
-  const handleEdit = (simulator: any) => {
+  const handleEdit = (simulator: SimulatorItem) => {
     setEditingId(simulator.id);
-    setEditForm({ ...simulator });
+    setEditForm({
+      name: simulator.name || "",
+      description: simulator.description || "",
+      interaction_type: simulator.interaction_type || "reading",
+      prompt_template: simulator.prompt_template || "",
+      secondary_prompt: simulator.secondary_prompt || "",
+      grader_template: simulator.grader_template || "",
+      evaluation_dimensions: simulator.evaluation_dimensions || [],
+      max_turns: simulator.max_turns || 10,
+    });
   };
 
   const handleSave = async () => {
@@ -63,7 +104,7 @@ export function SimulatorsSection({ simulators, onRefresh }: { simulators: any[]
       setEditingId(null);
       setIsCreating(false);
       onRefresh();
-    } catch (err) {
+    } catch {
       alert("保存失败");
     }
   };
@@ -73,7 +114,7 @@ export function SimulatorsSection({ simulators, onRefresh }: { simulators: any[]
     try {
       await settingsAPI.deleteSimulator(id);
       onRefresh();
-    } catch (err) {
+    } catch {
       alert("删除失败");
     }
   };
@@ -224,7 +265,9 @@ export function SimulatorsSection({ simulators, onRefresh }: { simulators: any[]
       {isCreating && renderForm()}
 
       <div className="grid gap-4">
-        {simulators.map((simulator) => (
+        {simulators.map((simulator) => {
+          const evaluationDimensions = simulator.evaluation_dimensions ?? [];
+          return (
           <div key={simulator.id}>
             {editingId === simulator.id ? renderForm() : (
               <div className="p-5 bg-surface-2 border border-surface-3 rounded-xl">
@@ -238,9 +281,9 @@ export function SimulatorsSection({ simulators, onRefresh }: { simulators: any[]
                       </span>
                     </div>
                     <p className="text-sm text-zinc-500 mt-1">{simulator.description}</p>
-                    {simulator.evaluation_dimensions?.length > 0 && (
+                    {evaluationDimensions.length > 0 && (
                       <div className="mt-3 flex flex-wrap gap-2">
-                        {simulator.evaluation_dimensions.map((dim: string, i: number) => (
+                        {evaluationDimensions.map((dim: string, i: number) => (
                           <span key={i} className="text-xs bg-brand-600/10 text-brand-400 px-2 py-1 rounded">
                             {dim}
                           </span>
@@ -287,7 +330,7 @@ export function SimulatorsSection({ simulators, onRefresh }: { simulators: any[]
               </div>
             )}
           </div>
-        ))}
+        )})}
       </div>
     </div>
   );

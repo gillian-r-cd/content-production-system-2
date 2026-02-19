@@ -6,7 +6,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { cn, PHASE_NAMES, sendNotification, requestNotificationPermission } from "@/lib/utils";
+import { cn, sendNotification, requestNotificationPermission } from "@/lib/utils";
 import { agentAPI, parseReferences, API_BASE, modesAPI } from "@/lib/api";
 import type { ChatMessageRecord, ContentBlock, AgentModeInfo } from "@/lib/api";
 import ReactMarkdown from "react-markdown";
@@ -31,7 +31,6 @@ interface AgentPanelProps {
   currentPhase?: string;  // 当前阶段
   allBlocks?: ContentBlock[];  // 所有内容块
   onContentUpdate?: () => void;  // 当Agent生成内容后刷新
-  isLoading?: boolean;
   /** M3: 外部组件注入的消息（如 Eval 诊断→Agent 修改桥接），消费后清空 */
   externalMessage?: string | null;
   onExternalMessageConsumed?: () => void;
@@ -79,7 +78,6 @@ export function AgentPanel({
   currentPhase,
   allBlocks = [],
   onContentUpdate,
-  isLoading = false,
   externalMessage,
   onExternalMessageConsumed,
 }: AgentPanelProps) {
@@ -178,7 +176,7 @@ export function AgentPanel({
               const parsed = JSON.parse(block.content);
               const proposals = parsed?.proposals;
               if (Array.isArray(proposals)) {
-                proposals.forEach((p: any, i: number) => {
+                proposals.forEach((p: { id?: string | number; name?: string }, i: number) => {
                   if (p && p.name) {
                     const pName = `方案${i + 1}:${p.name}`;
                     if (!seen.has(pName)) {
@@ -208,6 +206,40 @@ export function AgentPanel({
     item.label.toLowerCase().includes(mentionFilter.toLowerCase())
   );
 
+  const loadHistory = useCallback(async () => {
+    if (!projectId) return;
+    try {
+      const history = await agentAPI.getHistory(projectId, 100, chatMode);
+      setMessages(history);
+
+      // 从 message_metadata.suggestion_cards 恢复卡片状态（持久化 → 刷新后不丢失）
+      const restoredCards: SuggestionCardData[] = [];
+      for (const msg of history) {
+        const cards = msg.metadata?.suggestion_cards;
+        if (cards && Array.isArray(cards)) {
+          for (const c of cards) {
+            restoredCards.push({
+              id: c.id,
+              target_field: c.target_field,
+              summary: c.summary || "",
+              reason: c.reason,
+              diff_preview: c.diff_preview || "",
+              edits_count: c.edits_count || 0,
+              group_id: c.group_id,
+              group_summary: c.group_summary,
+              status: (c.status || "pending") as SuggestionStatus,
+              messageId: msg.id,
+              mode: msg.metadata?.mode || "assistant",
+            });
+          }
+        }
+      }
+      setSuggestions(restoredCards);
+    } catch (err) {
+      console.error("加载对话历史失败:", err);
+    }
+  }, [projectId, chatMode]);
+
   // 加载对话历史
   useEffect(() => {
     if (projectId) {
@@ -215,7 +247,7 @@ export function AgentPanel({
     } else {
       setMessages([]);
     }
-  }, [projectId, chatMode]);
+  }, [projectId, loadHistory]);
 
   // 加载工具列表（从后台 Agent 设置）
   useEffect(() => {
@@ -266,6 +298,12 @@ export function AgentPanel({
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 2500);
+    return () => clearTimeout(timer);
+  }, [toast]);
+
   // M3: 外部组件注入消息（如 Eval 诊断→Agent 修改）— 消费后通知父组件清空
   useEffect(() => {
     if (externalMessage && !sending) {
@@ -273,40 +311,6 @@ export function AgentPanel({
       onExternalMessageConsumed?.();
     }
   }, [externalMessage]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const loadHistory = async () => {
-    if (!projectId) return;
-    try {
-      const history = await agentAPI.getHistory(projectId, 100, chatMode);
-      setMessages(history);
-
-      // 从 message_metadata.suggestion_cards 恢复卡片状态（持久化 → 刷新后不丢失）
-      const restoredCards: SuggestionCardData[] = [];
-      for (const msg of history) {
-        const cards = msg.metadata?.suggestion_cards;
-        if (cards && Array.isArray(cards)) {
-          for (const c of cards) {
-            restoredCards.push({
-              id: c.id,
-              target_field: c.target_field,
-              summary: c.summary || "",
-              reason: c.reason,
-              diff_preview: c.diff_preview || "",
-              edits_count: c.edits_count || 0,
-              group_id: c.group_id,
-              group_summary: c.group_summary,
-              status: (c.status || "pending") as SuggestionStatus,
-              messageId: msg.id,
-              mode: msg.metadata?.mode || "assistant",
-            });
-          }
-        }
-      }
-      setSuggestions(restoredCards);
-    } catch (err) {
-      console.error("加载对话历史失败:", err);
-    }
-  };
 
   const insertMention = useCallback((item: MentionItem) => {
     const beforeMention = input.slice(0, mentionStartPos.current);
@@ -696,7 +700,7 @@ export function AgentPanel({
                   )
                 );
               }
-            } catch (e) {
+            } catch {
               // JSON 解析失败，忽略
             }
           }
@@ -1001,7 +1005,7 @@ export function AgentPanel({
                 // M7 T7.5: 流结束后清空 followUpSourceRef
                 followUpSourceRef.current = null;
               }
-            } catch (e) {}
+            } catch {}
           }
         }
       }
@@ -1022,9 +1026,10 @@ export function AgentPanel({
   const handleCopy = async (content: string) => {
     try {
       await navigator.clipboard.writeText(content);
-      // 可以添加toast提示
+      setToast({ message: "已复制到剪贴板", type: "success" });
     } catch (err) {
       console.error("复制失败:", err);
+      setToast({ message: "复制失败", type: "error" });
     }
   };
 
@@ -1228,7 +1233,7 @@ export function AgentPanel({
           <div className="text-center text-zinc-500 py-8">
             <p>开始对话吧！</p>
             <p className="text-sm mt-2">
-              你可以说 "开始" 来启动内容生产流程
+              你可以说 &quot;开始&quot; 来启动内容生产流程
             </p>
           </div>
         )}

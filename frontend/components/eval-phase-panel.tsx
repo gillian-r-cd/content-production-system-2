@@ -219,8 +219,8 @@ function EvalV2TaskConfigPanel({ projectId, personaBlock, onUpdate }: EvalV2Task
       ]);
       setTasks(taskResp.tasks || []);
       setGraders(graderResp || []);
-    } catch (e: any) {
-      sendNotification(`加载评估任务失败: ${e.message}`, "error");
+    } catch (e: unknown) {
+      sendNotification(`加载评估任务失败: ${errorMessage(e)}`, "error");
     } finally {
       if (!silent) setLoading(false);
     }
@@ -294,8 +294,8 @@ function EvalV2TaskConfigPanel({ projectId, personaBlock, onUpdate }: EvalV2Task
       await loadData();
       onUpdate?.();
       sendNotification("评估任务已保存", "success");
-    } catch (e: any) {
-      sendNotification(`保存失败: ${e.message}`, "error");
+    } catch (e: unknown) {
+      sendNotification(`保存失败: ${errorMessage(e)}`, "error");
     } finally {
       setSaving(false);
     }
@@ -307,8 +307,8 @@ function EvalV2TaskConfigPanel({ projectId, personaBlock, onUpdate }: EvalV2Task
       await loadData(true);
       onUpdate?.();
       sendNotification("任务已开始执行", "success");
-    } catch (e: any) {
-      sendNotification(`执行失败: ${e.message}`, "error");
+    } catch (e: unknown) {
+      sendNotification(`执行失败: ${errorMessage(e)}`, "error");
     }
   };
 
@@ -317,8 +317,8 @@ function EvalV2TaskConfigPanel({ projectId, personaBlock, onUpdate }: EvalV2Task
       await evalV2API.pauseTask(taskId);
       await loadData(true);
       sendNotification("已请求暂停任务", "success");
-    } catch (e: any) {
-      sendNotification(`暂停失败: ${e.message}`, "error");
+    } catch (e: unknown) {
+      sendNotification(`暂停失败: ${errorMessage(e)}`, "error");
     }
   };
 
@@ -327,8 +327,8 @@ function EvalV2TaskConfigPanel({ projectId, personaBlock, onUpdate }: EvalV2Task
       const resp = await evalV2API.resumeTask(taskId);
       await loadData(true);
       sendNotification(resp?.message || "任务已恢复执行", "success");
-    } catch (e: any) {
-      sendNotification(`恢复失败: ${e.message}`, "error");
+    } catch (e: unknown) {
+      sendNotification(`恢复失败: ${errorMessage(e)}`, "error");
     }
   };
 
@@ -337,8 +337,8 @@ function EvalV2TaskConfigPanel({ projectId, personaBlock, onUpdate }: EvalV2Task
       await evalV2API.stopTask(taskId);
       await loadData(true);
       sendNotification("已请求终止任务", "success");
-    } catch (e: any) {
-      sendNotification(`停止失败: ${e.message}`, "error");
+    } catch (e: unknown) {
+      sendNotification(`停止失败: ${errorMessage(e)}`, "error");
     }
   };
 
@@ -348,8 +348,8 @@ function EvalV2TaskConfigPanel({ projectId, personaBlock, onUpdate }: EvalV2Task
       await loadData();
       onUpdate?.();
       sendNotification("批量执行已完成", "success");
-    } catch (e: any) {
-      sendNotification(`批量执行失败: ${e.message}`, "error");
+    } catch (e: unknown) {
+      sendNotification(`批量执行失败: ${errorMessage(e)}`, "error");
     }
   };
 
@@ -360,8 +360,8 @@ function EvalV2TaskConfigPanel({ projectId, personaBlock, onUpdate }: EvalV2Task
       await loadData();
       onUpdate?.();
       sendNotification("任务已删除", "success");
-    } catch (e: any) {
-      sendNotification(`删除失败: ${e.message}`, "error");
+    } catch (e: unknown) {
+      sendNotification(`删除失败: ${errorMessage(e)}`, "error");
     }
   };
 
@@ -663,13 +663,98 @@ interface EvalV2ReportPanelProps {
   onSendToAgent?: (message: string) => void;
 }
 
+interface EvalExecutionRow {
+  task_id: string;
+  batch_id: string;
+  task_name: string;
+  overall?: number | null;
+  status?: string;
+  trial_count?: number | null;
+  executed_at?: string;
+}
+
+interface SuggestionStateRow {
+  source: string;
+  suggestion: string;
+  status?: string;
+}
+
+interface ScoreEvidenceItem {
+  grader_name?: string;
+  dimension?: string;
+  score?: number | string | null;
+  evidence?: string;
+}
+
+interface GraderResultItem {
+  grader_name?: string;
+  feedback?: string;
+}
+
+interface ProcessStep {
+  type?: string;
+  stage?: string;
+  role?: string;
+  content?: string;
+  block_id?: string;
+  block_title?: string;
+  data?: unknown;
+}
+
+interface LLMCallItem {
+  step?: string;
+  tokens_in?: number;
+  tokens_out?: number;
+  cost?: number;
+  input?: {
+    system_prompt?: string;
+    user_message?: string;
+  };
+  output?: unknown;
+}
+
+interface EvalTrialDetail {
+  id: string;
+  trial_config_name?: string;
+  form_type: string;
+  repeat_index: number;
+  overall_score?: number | null;
+  status?: string;
+  llm_calls?: LLMCallItem[];
+  dimension_scores?: Record<string, number | null | undefined>;
+  overall_comment?: string;
+  score_evidence?: ScoreEvidenceItem[];
+  grader_results?: GraderResultItem[];
+  improvement_suggestions?: string[];
+  process?: ProcessStep[];
+}
+
+interface EvalTaskBatchDetail {
+  trials?: EvalTrialDetail[];
+}
+
+interface DiagnosisPattern {
+  title?: string;
+  frequency?: string;
+}
+
+interface DiagnosisSuggestion {
+  title?: string;
+  detail?: string;
+}
+
+interface DiagnosisResult {
+  patterns?: DiagnosisPattern[];
+  suggestions?: DiagnosisSuggestion[];
+}
+
 function EvalV2ReportPanel({ projectId, onUpdate, onSendToAgent }: EvalV2ReportPanelProps) {
-  const [rows, setRows] = useState<any[]>([]);
+  const [rows, setRows] = useState<EvalExecutionRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState(false);
-  const [selectedExecution, setSelectedExecution] = useState<any | null>(null);
-  const [detail, setDetail] = useState<any | null>(null);
-  const [diagnosis, setDiagnosis] = useState<any | null>(null);
+  const [selectedExecution, setSelectedExecution] = useState<EvalExecutionRow | null>(null);
+  const [detail, setDetail] = useState<EvalTaskBatchDetail | null>(null);
+  const [diagnosis, setDiagnosis] = useState<DiagnosisResult | null>(null);
   const [diagnosing, setDiagnosing] = useState(false);
   const [expandedPromptTrialId, setExpandedPromptTrialId] = useState<string | null>(null);
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
@@ -681,8 +766,8 @@ function EvalV2ReportPanel({ projectId, onUpdate, onSendToAgent }: EvalV2ReportP
       const data = await evalV2API.executionReport(projectId);
       setRows(data.executions || []);
       setSelectedKeys([]);
-    } catch (e: any) {
-      sendNotification(`加载报告失败: ${e.message}`, "error");
+    } catch (e: unknown) {
+      sendNotification(`加载报告失败: ${errorMessage(e)}`, "error");
     } finally {
       setLoading(false);
     }
@@ -692,7 +777,7 @@ function EvalV2ReportPanel({ projectId, onUpdate, onSendToAgent }: EvalV2ReportP
     loadReport();
   }, [loadReport]);
 
-  const openExecution = async (execution: any) => {
+  const openExecution = async (execution: EvalExecutionRow) => {
     setSelectedExecution(execution);
     try {
       const [detailResp, diagResp, stateResp] = await Promise.all([
@@ -703,25 +788,25 @@ function EvalV2ReportPanel({ projectId, onUpdate, onSendToAgent }: EvalV2ReportP
       setDetail(detailResp);
       setDiagnosis(diagResp.analysis || null);
       const stateMap: Record<string, boolean> = {};
-      for (const s of stateResp.states || []) {
+      for (const s of ((stateResp as { states?: SuggestionStateRow[] }).states || [])) {
         if ((s.status || "") === "applied") {
           stateMap[`${s.source}::${s.suggestion}`] = true;
         }
       }
       setSentSuggestionKeys(stateMap);
-    } catch (e: any) {
-      sendNotification(`加载任务详情失败: ${e.message}`, "error");
+    } catch (e: unknown) {
+      sendNotification(`加载任务详情失败: ${errorMessage(e)}`, "error");
     }
   };
 
-  const keyOf = (r: any) => `${r.task_id}::${r.batch_id}`;
+  const keyOf = (r: EvalExecutionRow) => `${r.task_id}::${r.batch_id}`;
 
-  const toggleSelect = (r: any) => {
+  const toggleSelect = (r: EvalExecutionRow) => {
     const key = keyOf(r);
     setSelectedKeys((prev) => (prev.includes(key) ? prev.filter((x) => x !== key) : [...prev, key]));
   };
 
-  const deleteOne = async (r: any) => {
+  const deleteOne = async (r: EvalExecutionRow) => {
     if (!confirm(`确认删除记录？\n任务: ${r.task_name}\n批次: ${String(r.batch_id || "").slice(0, 8)}`)) return;
     setDeleting(true);
     try {
@@ -734,8 +819,8 @@ function EvalV2ReportPanel({ projectId, onUpdate, onSendToAgent }: EvalV2ReportP
       await loadReport();
       onUpdate?.();
       sendNotification("记录已删除", "success");
-    } catch (e: any) {
-      sendNotification(`删除失败: ${e.message}`, "error");
+    } catch (e: unknown) {
+      sendNotification(`删除失败: ${errorMessage(e)}`, "error");
     } finally {
       setDeleting(false);
     }
@@ -762,8 +847,8 @@ function EvalV2ReportPanel({ projectId, onUpdate, onSendToAgent }: EvalV2ReportP
       await loadReport();
       onUpdate?.();
       sendNotification(`已删除 ${items.length} 条记录`, "success");
-    } catch (e: any) {
-      sendNotification(`批量删除失败: ${e.message}`, "error");
+    } catch (e: unknown) {
+      sendNotification(`批量删除失败: ${errorMessage(e)}`, "error");
     } finally {
       setDeleting(false);
     }
@@ -777,8 +862,8 @@ function EvalV2ReportPanel({ projectId, onUpdate, onSendToAgent }: EvalV2ReportP
       setDiagnosis(out.analysis || null);
       onUpdate?.();
       sendNotification("跨 Trial 分析已生成", "success");
-    } catch (e: any) {
-      sendNotification(`分析失败: ${e.message}`, "error");
+    } catch (e: unknown) {
+      sendNotification(`分析失败: ${errorMessage(e)}`, "error");
     } finally {
       setDiagnosing(false);
     }
@@ -798,8 +883,8 @@ function EvalV2ReportPanel({ projectId, onUpdate, onSendToAgent }: EvalV2ReportP
       onSendToAgent(msg);
       setSentSuggestionKeys((prev) => ({ ...prev, [key]: true }));
       sendNotification("建议已发送到 Agent 面板", "success");
-    } catch (e: any) {
-      sendNotification(`发送失败: ${e.message}`, "error");
+    } catch (e: unknown) {
+      sendNotification(`发送失败: ${errorMessage(e)}`, "error");
     }
   };
 
@@ -902,7 +987,7 @@ function EvalV2ReportPanel({ projectId, onUpdate, onSendToAgent }: EvalV2ReportP
 
               <div className="space-y-2">
                 <div className="text-sm font-medium text-zinc-100">试验详情</div>
-                {(detail?.trials || []).map((t: any) => (
+                {(detail?.trials || []).map((t) => (
                   <div key={t.id} className="border border-surface-3 rounded-lg p-3 space-y-2">
                     <div className="flex items-center justify-between">
                       <div className="text-sm text-zinc-100">
@@ -915,7 +1000,7 @@ function EvalV2ReportPanel({ projectId, onUpdate, onSendToAgent }: EvalV2ReportP
                       {Object.entries(t.dimension_scores || {}).length === 0 ? (
                         <span className="text-xs text-zinc-500">本 Trial 暂无维度分</span>
                       ) : (
-                        Object.entries(t.dimension_scores || {}).map(([dim, score]: any) => (
+                        Object.entries(t.dimension_scores || {}).map(([dim, score]) => (
                           <span key={dim} className="text-xs bg-surface-2 border border-surface-3 rounded px-2 py-1 text-zinc-300">
                             {dim}: {typeof score === "number" ? score.toFixed(2) : "-"}
                           </span>
@@ -931,45 +1016,79 @@ function EvalV2ReportPanel({ projectId, onUpdate, onSendToAgent }: EvalV2ReportP
                         {expandedPromptTrialId === t.id ? "收起过程与调用明细" : "查看过程与调用明细"}
                       </button>
                     </div>
-                    {(t.grader_results || []).map((gr: any, i: number) => (
+                    <div className="bg-surface-1 border border-surface-3 rounded p-2">
+                      <div className="text-xs text-zinc-500 mb-1">Trial 总评</div>
+                      <div className="text-xs text-zinc-300 whitespace-pre-wrap">
+                        {t.overall_comment || "本 Trial 暂无总评。"}
+                      </div>
+                    </div>
+                    <div className="bg-surface-1 border border-surface-3 rounded p-2">
+                      <div className="text-xs text-zinc-500 mb-1">评分依据</div>
+                      {(t.score_evidence || []).length === 0 ? (
+                        <div className="text-xs text-zinc-500">暂无评分依据</div>
+                      ) : (
+                        <div className="space-y-1.5">
+                          {(t.score_evidence || []).map((ev, evIdx: number) => (
+                            <div key={evIdx} className="text-xs text-zinc-300">
+                              <span className="text-zinc-500">[{ev.grader_name || "评分器"} · {ev.dimension || "综合"} · {ev.score ?? "-"}]</span>{" "}
+                              {ev.evidence || ""}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {(t.grader_results || []).map((gr, i: number) => (
                       <div key={i} className="bg-surface-1 border border-surface-3 rounded p-2 text-sm">
                         <div className="text-zinc-200">{gr.grader_name}</div>
                         <div className="text-zinc-400 text-xs mt-1 whitespace-pre-wrap">{gr.feedback || "无反馈"}</div>
-                        {extractSuggestions(gr.feedback).map((sg, sgIdx) => (
-                          <div key={sgIdx} className="mt-2 flex items-center justify-between bg-surface-2 border border-surface-3 rounded px-2 py-1.5">
-                            <span className="text-xs text-zinc-300">{sg}</span>
-                            {onSendToAgent && (
-                              <button
-                                className="text-xs px-2 py-1 rounded bg-brand-500/20 text-brand-300 hover:bg-brand-500/30 disabled:opacity-60"
-                                onClick={() => sendSuggestionToAgent(`${selectedExecution.task_name} / ${gr.grader_name}`, sg)}
-                                disabled={!!sentSuggestionKeys[`${selectedExecution.task_name} / ${gr.grader_name}::${sg}`]}
-                              >
-                                {sentSuggestionKeys[`${selectedExecution.task_name} / ${gr.grader_name}::${sg}`] ? "已修改" : "让Agent修改"}
-                              </button>
-                            )}
-                          </div>
-                        ))}
                       </div>
                     ))}
+                    <div className="bg-surface-1 border border-surface-3 rounded p-2">
+                      <div className="text-xs text-zinc-500 mb-1">修改建议</div>
+                      {collectTrialSuggestions(t).length === 0 ? (
+                        <div className="text-xs text-zinc-500">暂无独立修改建议</div>
+                      ) : (
+                        <div className="space-y-1.5">
+                          {collectTrialSuggestions(t).map((sg: string, sgIdx: number) => {
+                            const source = `${selectedExecution.task_name} / ${(t.trial_config_name || t.form_type || "trial")} #${sgIdx + 1}`;
+                            const stateKey = `${source}::${sg}`;
+                            return (
+                              <div key={sgIdx} className="flex items-center justify-between bg-surface-2 border border-surface-3 rounded px-2 py-1.5">
+                                <span className="text-xs text-zinc-300">{sg}</span>
+                                {onSendToAgent && (
+                                  <button
+                                    className="text-xs px-2 py-1 rounded bg-brand-500/20 text-brand-300 hover:bg-brand-500/30 disabled:opacity-60"
+                                    onClick={() => sendSuggestionToAgent(source, sg)}
+                                    disabled={!!sentSuggestionKeys[stateKey]}
+                                  >
+                                    {sentSuggestionKeys[stateKey] ? "已修改" : "让Agent修改"}
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
 
                     {expandedPromptTrialId === t.id && (
                       <div className="border border-surface-3 rounded p-2 bg-surface-1 space-y-2">
                         <div className="text-xs text-zinc-300">过程回放</div>
-                        {(t.process || []).length === 0 ? (
+                        {(t.form_type === "assessment" || t.form_type === "review") ? (
+                          <div className="text-xs text-zinc-500">
+                            该评估形态以评分结论为主，不展示过程回放；请查看上方“评分依据”。
+                          </div>
+                        ) : (t.process || []).length === 0 ? (
                           <div className="text-xs text-zinc-500">无过程记录</div>
                         ) : (
-                          (t.process || []).map((p: any, idx: number) => (
+                          (t.process || []).map((p, idx: number) => (
                             <div key={idx} className="border border-surface-3 rounded bg-surface-0 p-2 space-y-1">
-                              <div className="text-xs text-zinc-400">#{idx + 1} · {p.type || "dialogue_step"}</div>
-                              {(typeof p?.role === "string" || typeof p?.content === "string") ? (
-                                <div className="text-[11px] text-zinc-300 whitespace-pre-wrap">
-                                  <span className="text-zinc-500">[{p.role || "assistant"}]</span>{"\n"}{p.content || ""}
-                                </div>
-                              ) : (
-                                <div className="text-[11px] text-zinc-300 whitespace-pre-wrap">
-                                  {formatAnyData(p?.data ?? p)}
-                                </div>
-                              )}
+                              <div className="text-xs text-zinc-400">
+                                #{idx + 1} · {p.stage || p.type || "dialogue_step"}
+                              </div>
+                              <div className="text-[11px] text-zinc-300 whitespace-pre-wrap">
+                                {formatProcessStep(t.form_type, p)}
+                              </div>
                             </div>
                           ))
                         )}
@@ -978,7 +1097,7 @@ function EvalV2ReportPanel({ projectId, onUpdate, onSendToAgent }: EvalV2ReportP
                         {(t.llm_calls || []).length === 0 ? (
                           <div className="text-xs text-zinc-500">无调用记录</div>
                         ) : (
-                          (t.llm_calls || []).map((c: any, idx: number) => (
+                          (t.llm_calls || []).map((c, idx: number) => (
                             <div key={idx} className="border border-surface-3 rounded bg-surface-0 p-2 space-y-2">
                               <div className="text-xs text-zinc-400">
                                 #{idx + 1} · step: {c.step || "-"} · in/out: {c.tokens_in ?? 0}/{c.tokens_out ?? 0} · cost: {typeof c.cost === "number" ? c.cost.toFixed(6) : "0.000000"}
@@ -1019,20 +1138,20 @@ function EvalV2ReportPanel({ projectId, onUpdate, onSendToAgent }: EvalV2ReportP
                   <div className="text-xs text-zinc-500">暂无分析结果</div>
                 ) : (
                   <div className="space-y-2">
-                    {(diagnosis.patterns || []).map((p: any, i: number) => (
+                    {(diagnosis.patterns || []).map((p, i: number) => (
                       <div key={i} className="text-sm text-zinc-300">- {p.title} ({p.frequency})</div>
                     ))}
-                    {(diagnosis.suggestions || []).map((s: any, i: number) => (
+                    {(diagnosis.suggestions || []).map((s, i: number) => (
                       <div key={i} className="bg-surface-1 border border-surface-3 rounded p-2">
                         <div className="text-sm text-zinc-200">{s.title}</div>
                         <div className="text-xs text-zinc-400 mt-1">{s.detail}</div>
                         {onSendToAgent && (
                           <button
                             className="mt-2 text-xs px-2 py-1 rounded bg-brand-500/20 text-brand-300 hover:bg-brand-500/30 disabled:opacity-60"
-                            onClick={() => sendSuggestionToAgent(`${selectedExecution.task_name} / 跨Trial分析`, s.detail || s.title)}
-                            disabled={!!sentSuggestionKeys[`${selectedExecution.task_name} / 跨Trial分析::${s.detail || s.title}`]}
+                            onClick={() => sendSuggestionToAgent(`${selectedExecution.task_name} / 跨Trial分析`, String(s.detail || s.title || ""))}
+                            disabled={!!sentSuggestionKeys[`${selectedExecution.task_name} / 跨Trial分析::${String(s.detail || s.title || "")}`]}
                           >
-                            {sentSuggestionKeys[`${selectedExecution.task_name} / 跨Trial分析::${s.detail || s.title}`] ? "已修改" : "让Agent修改"}
+                            {sentSuggestionKeys[`${selectedExecution.task_name} / 跨Trial分析::${String(s.detail || s.title || "")}`] ? "已修改" : "让Agent修改"}
                           </button>
                         )}
                       </div>
@@ -1050,14 +1169,73 @@ function EvalV2ReportPanel({ projectId, onUpdate, onSendToAgent }: EvalV2ReportP
 
 function parsePersonas(content: string): Array<{ id: string; name: string }> {
   try {
-    const data = JSON.parse(content || "{}");
-    const personas = Array.isArray(data.personas) ? data.personas : [];
+    const data: unknown = JSON.parse(content || "{}");
+    const personaOwner = isRecord(data) ? data : {};
+    const personas = Array.isArray(personaOwner.personas) ? personaOwner.personas : [];
     return personas
-      .filter((p: any) => p && typeof p.id === "string" && typeof p.name === "string")
-      .map((p: any) => ({ id: p.id, name: p.name }));
+      .filter((p): p is { id: string; name: string } => isRecord(p) && typeof p.id === "string" && typeof p.name === "string")
+      .map((p) => ({ id: p.id, name: p.name }));
   } catch {
     return [];
   }
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error ?? "未知错误");
+}
+
+function collectTrialSuggestions(trial: EvalTrialDetail): string[] {
+  if (Array.isArray(trial?.improvement_suggestions) && trial.improvement_suggestions.length > 0) {
+    return Array.from(new Set(trial.improvement_suggestions.map((x) => String(x || "").trim()).filter((x: string) => x.length > 0)));
+  }
+  const fallback: string[] = [];
+  for (const gr of trial?.grader_results || []) {
+    fallback.push(...extractSuggestions(String(gr?.feedback || "")));
+  }
+  return Array.from(new Set(fallback));
+}
+
+function formatProcessStep(formType: string, step: ProcessStep): string {
+  if (!step) return "";
+  if (typeof step?.role === "string" || typeof step?.content === "string") {
+    return `[${step.role || "assistant"}]\n${step.content || ""}`;
+  }
+  if (formType === "experience") {
+    if (step.type === "plan") {
+      const data = isRecord(step.data) ? step.data : {};
+      const rawPlan = Array.isArray(data.plan) ? data.plan : [];
+      const goal = String(data.overall_goal || "").trim();
+      const lines = rawPlan.map((x, i: number) => {
+        const item = isRecord(x) ? x : {};
+        return `${i + 1}. ${String(item.block_title || item.block_id || "内容块")}：${String(item.reason || "")}`;
+      });
+      return [`探索目标：${goal || "未提供"}`, ...lines].join("\n");
+    }
+    if (step.type === "per_block") {
+      const d = isRecord(step.data) ? step.data : {};
+      return [
+        `内容块：${step?.block_title || step?.block_id || "未命名"}`,
+        `发现：${String(d.discovery || "未提供")}`,
+        `疑问：${String(d.doubt || "无")}`,
+        `缺失：${String(d.missing || "无")}`,
+        `感受：${String(d.feeling || "未提供")}`,
+        `评分：${typeof d.score === "number" ? d.score : "-"}`,
+      ].join("\n");
+    }
+    if (step.type === "summary") {
+      const d = isRecord(step.data) ? step.data : {};
+      const addressed = Array.isArray(d.concerns_addressed) ? d.concerns_addressed.map(String).join("、") : "无";
+      const unaddressed = Array.isArray(d.concerns_unaddressed) ? d.concerns_unaddressed.map(String).join("、") : "无";
+      return [
+        `总体印象：${String(d.overall_impression || "未提供")}`,
+        `已满足关切：${addressed}`,
+        `未满足关切：${unaddressed}`,
+        `结论：${String(d.summary || "未提供")}`,
+      ].join("\n");
+    }
+  }
+  return formatAnyData(step?.data ?? step);
 }
 
 function extractSuggestions(feedback: string): string[] {
@@ -1073,7 +1251,7 @@ function extractSuggestions(feedback: string): string[] {
   return Array.from(new Set(lines)).slice(0, 4);
 }
 
-function formatAnyData(value: any): string {
+function formatAnyData(value: unknown): string {
   if (value == null) return "";
   if (typeof value === "string") return value;
   try {
@@ -1081,5 +1259,9 @@ function formatAnyData(value: any): string {
   } catch {
     return String(value);
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 

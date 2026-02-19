@@ -19,8 +19,35 @@ const ROLE_CONFIG: Record<string, { label: string; color: string; bg: string }> 
   unknown: { label: "未知", color: "text-zinc-400", bg: "bg-zinc-500/10 border-zinc-500/30" },
 };
 
+interface LogToolCall {
+  name?: string;
+  [key: string]: unknown;
+}
+
+interface PromptMessage {
+  role?: string;
+  content?: unknown;
+  name?: string;
+  tool_calls?: LogToolCall[];
+}
+
+interface LogItem {
+  id: string;
+  phase?: string;
+  operation?: string;
+  model?: string;
+  prompt_input?: string;
+  prompt_output?: string;
+  tokens_in?: number;
+  tokens_out?: number;
+  duration_ms?: number;
+  cost?: number;
+  error_message?: string;
+  created_at?: string;
+}
+
 // ---- 单条 Message 展示块 ----
-function MessageBlock({ msg, index, defaultOpen }: { msg: any; index: number; defaultOpen: boolean }) {
+function MessageBlock({ msg, index, defaultOpen }: { msg: PromptMessage; index: number; defaultOpen: boolean }) {
   const [open, setOpen] = useState(defaultOpen);
   const role = msg.role || "unknown";
   const config = ROLE_CONFIG[role] || ROLE_CONFIG.unknown;
@@ -42,7 +69,7 @@ function MessageBlock({ msg, index, defaultOpen }: { msg: any; index: number; de
           )}
           {msg.tool_calls && msg.tool_calls.length > 0 && (
             <span className="text-xs text-cyan-400">
-              🔧 {msg.tool_calls.map((tc: any) => tc.name).join(", ")}
+              🔧 {msg.tool_calls.map((tc) => String(tc.name || "")).join(", ")}
             </span>
           )}
         </div>
@@ -71,12 +98,12 @@ function MessageBlock({ msg, index, defaultOpen }: { msg: any; index: number; de
 }
 
 // ---- 解析 prompt_input ----
-function parsePromptInput(raw: string): { parsed: any[] | null; rawText: string } {
+function parsePromptInput(raw: string): { parsed: PromptMessage[] | null; rawText: string } {
   if (!raw) return { parsed: null, rawText: "无" };
   try {
-    const arr = JSON.parse(raw);
-    if (Array.isArray(arr) && arr.length > 0 && arr[0].role) {
-      return { parsed: arr, rawText: raw };
+    const arr: unknown = JSON.parse(raw);
+    if (Array.isArray(arr) && arr.length > 0 && typeof (arr[0] as PromptMessage)?.role === "string") {
+      return { parsed: arr as PromptMessage[], rawText: raw };
     }
   } catch {
     // 旧格式或解析失败 — 显示原始文本
@@ -85,8 +112,8 @@ function parsePromptInput(raw: string): { parsed: any[] | null; rawText: string 
 }
 
 // ---- 日志详情弹窗 ----
-function LogDetailModal({ log, onClose }: { log: any; onClose: () => void }) {
-  const { parsed: messages, rawText } = useMemo(() => parsePromptInput(log.prompt_input), [log.prompt_input]);
+function LogDetailModal({ log, onClose }: { log: LogItem; onClose: () => void }) {
+  const { parsed: messages, rawText } = useMemo(() => parsePromptInput(log.prompt_input || ""), [log.prompt_input]);
   const [showRawInput, setShowRawInput] = useState(false);
 
   return (
@@ -134,7 +161,7 @@ function LogDetailModal({ log, onClose }: { log: any; onClose: () => void }) {
             ) : (
               // 分层消息视图
               <div className="space-y-2">
-                {messages.map((msg: any, idx: number) => (
+                {messages.map((msg, idx: number) => (
                   <MessageBlock
                     key={idx}
                     msg={msg}
@@ -170,8 +197,8 @@ function LogDetailModal({ log, onClose }: { log: any; onClose: () => void }) {
 }
 
 // ---- 主组件 ----
-export function LogsSection({ logs, onRefresh }: { logs: any[]; onRefresh?: () => void }) {
-  const [selectedLog, setSelectedLog] = useState<any>(null);
+export function LogsSection({ logs, onRefresh }: { logs: LogItem[]; onRefresh?: () => void }) {
+  const [selectedLog, setSelectedLog] = useState<LogItem | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const handleRefresh = async () => {
@@ -191,7 +218,7 @@ export function LogsSection({ logs, onRefresh }: { logs: any[]; onRefresh?: () =
         a.download = `logs_${new Date().toISOString().split("T")[0]}.json`;
         a.click();
       }
-    } catch (err) {
+    } catch {
       alert("导出失败");
     }
   };

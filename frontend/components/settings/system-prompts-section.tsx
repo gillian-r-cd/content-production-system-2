@@ -7,9 +7,16 @@ import { useState } from "react";
 import { settingsAPI } from "@/lib/api";
 import { FormField, ImportExportButtons, SingleExportButton, downloadJSON } from "./shared";
 
-export function SystemPromptsSection({ prompts, onRefresh }: { prompts: any[]; onRefresh: () => void }) {
+interface SystemPromptItem {
+  id: string;
+  name: string;
+  phase: string;
+  content?: string;
+}
+
+export function SystemPromptsSection({ prompts, onRefresh }: { prompts: SystemPromptItem[]; onRefresh: () => void }) {
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState<any>({});
+  const [editForm, setEditForm] = useState<Partial<SystemPromptItem>>({});
 
   const PHASE_NAMES: Record<string, string> = {
     intent: "意图分析",
@@ -22,7 +29,7 @@ export function SystemPromptsSection({ prompts, onRefresh }: { prompts: any[]; o
     evaluate: "评估",
   };
 
-  const handleEdit = (prompt: any) => {
+  const handleEdit = (prompt: SystemPromptItem) => {
     setEditingId(prompt.id);
     setEditForm({ ...prompt });
   };
@@ -41,7 +48,7 @@ export function SystemPromptsSection({ prompts, onRefresh }: { prompts: any[]; o
     try {
       const result = await settingsAPI.exportSystemPrompts();
       downloadJSON(result, `system_prompts_${new Date().toISOString().split("T")[0]}.json`);
-    } catch (err) {
+    } catch {
       alert("导出失败");
     }
   };
@@ -51,12 +58,12 @@ export function SystemPromptsSection({ prompts, onRefresh }: { prompts: any[]; o
       const result = await settingsAPI.exportSystemPrompts(id);
       const prompt = prompts.find(p => p.id === id);
       downloadJSON(result, `system_prompt_${prompt?.phase || id}.json`);
-    } catch (err) {
+    } catch {
       alert("导出失败");
     }
   };
 
-  const handleImport = async (data: any[]) => {
+  const handleImport = async (data: unknown[]) => {
     await settingsAPI.importSystemPrompts(data);
     onRefresh();
   };

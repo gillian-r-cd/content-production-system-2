@@ -23,3 +23,4 @@ class EvalSuggestionState(BaseModel):
     suggestion_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(20), default="applied")
 
+

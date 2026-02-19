@@ -8,9 +8,18 @@ import { phaseTemplateAPI } from "@/lib/api";
 import type { PhaseTemplate } from "@/lib/api";
 import { FormField } from "./shared";
 
+type TemplatePhase = PhaseTemplate["phases"][number];
+type TemplateField = TemplatePhase["default_fields"][number];
+
+interface PhaseTemplateEditForm {
+  name: string;
+  description: string;
+  phases: TemplatePhase[];
+}
+
 export function PhaseTemplatesSection({ templates, onRefresh }: { templates: PhaseTemplate[]; onRefresh: () => void }) {
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState<any>({});
+  const [editForm, setEditForm] = useState<PhaseTemplateEditForm>({ name: "", description: "", phases: [] });
   const [isCreating, setIsCreating] = useState(false);
 
   const handleCreate = () => {
@@ -69,16 +78,16 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
     setEditForm({ ...editForm, phases });
   };
 
-  const updatePhase = (pIdx: number, key: string, value: any) => {
+  const updatePhase = (pIdx: number, key: keyof TemplatePhase, value: unknown) => {
     const phases = [...editForm.phases];
-    phases[pIdx] = { ...phases[pIdx], [key]: value };
+    phases[pIdx] = { ...phases[pIdx], [key]: value as never };
     setEditForm({ ...editForm, phases });
   };
 
   const removePhase = (pIdx: number) => {
-    const phases = editForm.phases.filter((_: any, i: number) => i !== pIdx);
+    const phases = editForm.phases.filter((_, i: number) => i !== pIdx);
     // 重新排序 order_index
-    phases.forEach((p: any, i: number) => { p.order_index = i; });
+    phases.forEach((p, i: number) => { p.order_index = i; });
     setEditForm({ ...editForm, phases });
   };
 
@@ -95,7 +104,7 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
     setEditForm({ ...editForm, phases });
   };
 
-  const updateField = (pIdx: number, fIdx: number, key: string, value: any) => {
+  const updateField = (pIdx: number, fIdx: number, key: keyof TemplateField, value: unknown) => {
     const phases = JSON.parse(JSON.stringify(editForm.phases));
     phases[pIdx].default_fields[fIdx][key] = value;
     setEditForm({ ...editForm, phases });
@@ -110,8 +119,8 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
   // 收集所有字段名（用于依赖选择）
   const getAllFieldNames = (excludePIdx: number, excludeFIdx: number): string[] => {
     const names: string[] = [];
-    (editForm.phases || []).forEach((phase: any, pIdx: number) => {
-      (phase.default_fields || []).forEach((field: any, fIdx: number) => {
+    (editForm.phases || []).forEach((phase, pIdx: number) => {
+      (phase.default_fields || []).forEach((field, fIdx: number) => {
         if (pIdx === excludePIdx && fIdx === excludeFIdx) return;
         if (field.name) names.push(field.name);
       });
@@ -162,7 +171,7 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
           </div>
 
           <div className="space-y-4">
-            {(editForm.phases || []).map((phase: any, pIdx: number) => (
+            {(editForm.phases || []).map((phase, pIdx: number) => (
               <div key={pIdx} className="bg-surface-1 border border-surface-3 rounded-xl p-4">
                 {/* Phase header */}
                 <div className="flex items-center gap-3 mb-3">
@@ -192,7 +201,7 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
 
                 {/* Fields in this phase */}
                 <div className="ml-4 space-y-3">
-                  {(phase.default_fields || []).map((field: any, fIdx: number) => (
+                  {(phase.default_fields || []).map((field, fIdx: number) => (
                     <div key={fIdx} className="bg-surface-2 border border-surface-3 rounded-lg p-3 space-y-2">
                       <div className="flex items-center gap-2">
                         <span className="text-xs text-zinc-500 font-mono">
@@ -337,11 +346,11 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
                 <div className="flex gap-3 mt-2 text-xs text-zinc-400">
                   <span>{template.phases.length} 个组</span>
                   <span>
-                    {template.phases.reduce((sum: number, p: any) => sum + (p.default_fields || []).length, 0)} 个内容块
+                    {template.phases.reduce((sum: number, p) => sum + (p.default_fields || []).length, 0)} 个内容块
                   </span>
                   <span>
-                    {template.phases.reduce((sum: number, p: any) =>
-                      sum + (p.default_fields || []).filter((f: any) => f.content).length, 0
+                    {template.phases.reduce((sum: number, p) =>
+                      sum + (p.default_fields || []).filter((f) => f.content).length, 0
                     )} 个有预置内容
                   </span>
                 </div>
@@ -368,7 +377,7 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
 
             {/* 预览：展示组和字段 */}
             <div className="mt-3 space-y-2">
-              {template.phases.map((phase: any, pIdx: number) => (
+              {template.phases.map((phase, pIdx: number) => (
                 <div key={pIdx} className="text-xs">
                   <div className="flex items-center gap-1.5 text-zinc-300">
                     <span className="text-zinc-500">📁</span>
@@ -379,7 +388,7 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
                   </div>
                   {(phase.default_fields || []).length > 0 && (
                     <div className="ml-5 mt-1 space-y-0.5">
-                      {phase.default_fields.map((f: any, fIdx: number) => (
+                      {phase.default_fields.map((f, fIdx: number) => (
                         <div key={fIdx} className="flex items-center gap-1.5 text-zinc-500">
                           <span>📄</span>
                           <span>{f.name}</span>
@@ -398,7 +407,7 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
         {templates.length === 0 && !isCreating && (
           <div className="text-center py-12 text-zinc-500">
             <p>还没有流程模板</p>
-            <p className="text-xs mt-1">点击"新建模板"创建第一个</p>
+            <p className="text-xs mt-1">点击&quot;新建模板&quot;创建第一个</p>
           </div>
         )}
       </div>

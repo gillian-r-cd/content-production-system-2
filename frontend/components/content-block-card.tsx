@@ -5,7 +5,7 @@
 
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { blockAPI, runAutoTriggerChain } from "@/lib/api";
@@ -237,8 +237,8 @@ export function ContentBlockCard({
       });
       setEditedPrompt(result.prompt);
       setAiPromptPurpose("");
-    } catch (e: any) {
-      alert("生成提示词失败: " + (e.message || "未知错误"));
+    } catch (e: unknown) {
+      alert("生成提示词失败: " + (e instanceof Error ? e.message : "未知错误"));
     } finally {
       setGeneratingPrompt(false);
     }
