@@ -30,6 +30,8 @@ if TYPE_CHECKING:
 EVAL_V2_TASK_STATUS = {
     "pending": "待执行",
     "running": "执行中",
+    "paused": "已暂停",
+    "stopped": "已终止",
     "completed": "已完成",
     "stale": "内容已变更",
     "failed": "失败",

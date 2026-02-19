@@ -236,6 +236,29 @@ export function ContentPanel({
   // 处理内容块点击（field 类型）
   if (selectedBlock && selectedBlock.block_type === "field") {
     const handler = selectedBlock.special_handler as string | null | undefined;
+
+    // Eval V2: 即使用户点的是 eval 的单个字段块，也统一进入新三 Tab 面板，
+    // 避免落回旧的 eval-field-editors 逐字段渲染路径。
+    if (
+      handler === "eval_persona_setup" ||
+      handler === "eval_task_config" ||
+      handler === "eval_report"
+    ) {
+      const initialTab =
+        handler === "eval_task_config"
+          ? "config"
+          : handler === "eval_report"
+          ? "report"
+          : "persona";
+      return (
+        <EvalPhasePanel
+          projectId={projectId}
+          onFieldsChange={onFieldsChange}
+          onSendToAgent={onSendToAgent}
+          initialTab={initialTab}
+        />
+      );
+    }
     
     // 消费者调研字段 - 检查是否有结构化内容
     if (handler === "consumer_research" || handler === "research") {

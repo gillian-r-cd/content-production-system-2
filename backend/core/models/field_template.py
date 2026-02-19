@@ -30,9 +30,9 @@ EVAL_TEMPLATE_V2_DESCRIPTION = (
 EVAL_TEMPLATE_V2_CATEGORY = "评估"
 EVAL_TEMPLATE_V2_FIELDS = [
     {
-        "name": "目标消费者画像",
+        "name": "人物画像设置",
         "type": "richtext",
-        "ai_prompt": "从消费者调研中加载并管理目标消费者画像，也可手动创建新画像。",
+        "ai_prompt": "管理评估用人物画像，可从调研加载或手动创建，并支持 AI 生成画像。",
         "pre_questions": [],
         "depends_on": [],
         "dependency_type": "all",
@@ -42,9 +42,9 @@ EVAL_TEMPLATE_V2_FIELDS = [
     {
         "name": "评估任务配置",
         "type": "richtext",
-        "ai_prompt": "配置评估任务：选择模拟器类型、交互模式、消费者画像、评分维度。支持批量创建和全回归模板。",
+        "ai_prompt": "配置 Eval V2 任务与 Trial：按评估形态组织，设置目标内容、画像、评分器与权重。",
         "pre_questions": [],
-        "depends_on": ["目标消费者画像"],
+        "depends_on": ["人物画像设置"],
         "dependency_type": "all",
         "special_handler": "eval_task_config",
         "constraints": {},
@@ -52,7 +52,7 @@ EVAL_TEMPLATE_V2_FIELDS = [
     {
         "name": "评估报告",
         "type": "richtext",
-        "ai_prompt": "统一评估报告：执行所有试验 → 各 Grader 评分 → 综合诊断。含完整 LLM 调用日志、分维度评分、交互记录。",
+        "ai_prompt": "统一评估报告：查看批次结果、Trial 详情、评分汇总与跨 Trial 分析，并支持让 Agent 修改。",
         "pre_questions": [],
         "depends_on": ["评估任务配置"],
         "dependency_type": "all",

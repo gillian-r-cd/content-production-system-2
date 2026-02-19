@@ -1008,7 +1008,10 @@ async def run_individual_grader(
 {{"scores": {{{dim_score_str}}}, "comments": {{{dim_comment_str}}}, "feedback": "整体评价和改进建议（100-200字）"}}"""
 
     # user_message: 简单指令即可，所有信息已在 system_prompt 中
-    user_message = "请根据上述要求进行评分，严格按照指定的 JSON 格式输出。"
+    user_message = (
+        "请根据上述要求进行评分，严格按照指定的 JSON 格式输出。"
+        "其中 feedback 只保留需要修改的要点和可执行改法，不要写正面表扬。"
+    )
 
     try:
         text, call = await _call_llm(

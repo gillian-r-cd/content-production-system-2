@@ -13,21 +13,26 @@ import type { ContentBlock } from "@/lib/api";
 import type { EvalV2Task, EvalV2TrialConfig, GraderData } from "@/lib/api";
 import { EvalPersonaSetup } from "./eval-field-editors";
 import { sendNotification } from "@/lib/utils";
-import { Users, SlidersHorizontal, BarChart3, Loader2, Play, Pencil, Trash2, Plus, X, RefreshCw, Eye } from "lucide-react";
+import { Users, SlidersHorizontal, BarChart3, Loader2, Play, Pause, Square, Pencil, Trash2, Plus, X, RefreshCw, Eye } from "lucide-react";
 
 interface EvalPhasePanelProps {
   projectId: string | null;
   onFieldsChange?: () => void;
   /** M3: 将消息发送到 Agent 对话面板 */
   onSendToAgent?: (message: string) => void;
+  initialTab?: "persona" | "config" | "report";
 }
 
-export function EvalPhasePanel({ projectId, onFieldsChange, onSendToAgent }: EvalPhasePanelProps) {
+export function EvalPhasePanel({ projectId, onFieldsChange, onSendToAgent, initialTab = "persona" }: EvalPhasePanelProps) {
   const [personaBlock, setPersonaBlock] = useState<ContentBlock | null>(null);
   const [configBlock, setConfigBlock] = useState<ContentBlock | null>(null);
   const [reportBlock, setReportBlock] = useState<ContentBlock | null>(null);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<"persona" | "config" | "report">("persona");
+  const [activeTab, setActiveTab] = useState<"persona" | "config" | "report">(initialTab);
+
+  useEffect(() => {
+    setActiveTab(initialTab);
+  }, [initialTab]);
 
   // 加载或创建 eval 专用 ContentBlocks（统一三个锚点）
   const loadOrCreateEvalBlocks = useCallback(async () => {
@@ -205,8 +210,8 @@ function EvalV2TaskConfigPanel({ projectId, personaBlock, onUpdate }: EvalV2Task
   });
   const personas = parsePersonas(personaBlock.content);
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
+  const loadData = useCallback(async (silent: boolean = false) => {
+    if (!silent) setLoading(true);
     try {
       const [taskResp, graderResp] = await Promise.all([
         evalV2API.listTasks(projectId),
@@ -217,13 +222,22 @@ function EvalV2TaskConfigPanel({ projectId, personaBlock, onUpdate }: EvalV2Task
     } catch (e: any) {
       sendNotification(`加载评估任务失败: ${e.message}`, "error");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [projectId]);
 
   useEffect(() => {
-    loadData();
+    loadData(false);
   }, [loadData]);
+
+  useEffect(() => {
+    const hasRunning = tasks.some((t) => t.status === "running" || t.progress?.is_running || t.progress?.pause_requested);
+    if (!hasRunning) return;
+    const timer = setInterval(() => {
+      loadData(true);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [tasks, loadData]);
 
   const newTrial = (): EvalV2TrialConfig => ({
     name: "新试验",
@@ -289,12 +303,42 @@ function EvalV2TaskConfigPanel({ projectId, personaBlock, onUpdate }: EvalV2Task
 
   const executeTask = async (taskId: string) => {
     try {
-      await evalV2API.executeTask(taskId);
-      await loadData();
+      await evalV2API.startTask(taskId);
+      await loadData(true);
       onUpdate?.();
-      sendNotification("任务执行完成", "success");
+      sendNotification("任务已开始执行", "success");
     } catch (e: any) {
       sendNotification(`执行失败: ${e.message}`, "error");
+    }
+  };
+
+  const pauseTask = async (taskId: string) => {
+    try {
+      await evalV2API.pauseTask(taskId);
+      await loadData(true);
+      sendNotification("已请求暂停任务", "success");
+    } catch (e: any) {
+      sendNotification(`暂停失败: ${e.message}`, "error");
+    }
+  };
+
+  const resumeTask = async (taskId: string) => {
+    try {
+      const resp = await evalV2API.resumeTask(taskId);
+      await loadData(true);
+      sendNotification(resp?.message || "任务已恢复执行", "success");
+    } catch (e: any) {
+      sendNotification(`恢复失败: ${e.message}`, "error");
+    }
+  };
+
+  const stopTask = async (taskId: string) => {
+    try {
+      await evalV2API.stopTask(taskId);
+      await loadData(true);
+      sendNotification("已请求终止任务", "success");
+    } catch (e: any) {
+      sendNotification(`停止失败: ${e.message}`, "error");
     }
   };
 
@@ -421,13 +465,42 @@ function EvalV2TaskConfigPanel({ projectId, personaBlock, onUpdate }: EvalV2Task
               <div className="min-w-0">
                 <div className="text-sm font-medium text-zinc-100 truncate">{task.name}</div>
                 <div className="text-xs text-zinc-500 mt-1">
-                  {task.trial_configs.length} 个试验 · 状态: {task.status}
+                  {task.trial_configs.length} 个试验 · 状态: {task.progress?.pause_requested ? "pausing" : task.progress?.stop_requested ? "stopping" : task.status}
                 </div>
+                {typeof task.progress?.percent === "number" && (
+                  <div className="mt-2 w-56">
+                    <div className="h-1.5 bg-surface-2 rounded overflow-hidden">
+                      <div
+                        className="h-full bg-brand-500 transition-all"
+                        style={{ width: `${task.progress.percent}%` }}
+                      />
+                    </div>
+                    <div className="text-[11px] text-zinc-500 mt-1">
+                      进度 {task.progress.completed || 0}/{task.progress.total || 0} ({task.progress.percent}%)
+                      {task.progress.pause_requested ? " · 暂停中..." : ""}
+                    </div>
+                  </div>
+                )}
               </div>
               <div className="flex gap-1">
-                <button className="p-2 rounded hover:bg-surface-2 text-zinc-300" onClick={() => executeTask(task.id)} title="执行">
-                  <Play className="w-4 h-4" />
-                </button>
+                {task.status === "running" || task.progress?.is_running ? (
+                  <>
+                    <button className="p-2 rounded hover:bg-surface-2 text-amber-300" onClick={() => pauseTask(task.id)} title="暂停">
+                      <Pause className="w-4 h-4" />
+                    </button>
+                    <button className="p-2 rounded hover:bg-surface-2 text-red-300" onClick={() => stopTask(task.id)} title="终止">
+                      <Square className="w-4 h-4" />
+                    </button>
+                  </>
+                ) : task.status === "paused" ? (
+                  <button className="p-2 rounded hover:bg-surface-2 text-emerald-300" onClick={() => resumeTask(task.id)} title="恢复">
+                    <Play className="w-4 h-4" />
+                  </button>
+                ) : (
+                  <button className="p-2 rounded hover:bg-surface-2 text-zinc-300" onClick={() => executeTask(task.id)} title="开始">
+                    <Play className="w-4 h-4" />
+                  </button>
+                )}
                 <button className="p-2 rounded hover:bg-surface-2 text-zinc-300" onClick={() => openEdit(task)} title="编辑">
                   <Pencil className="w-4 h-4" />
                 </button>
@@ -593,17 +666,21 @@ interface EvalV2ReportPanelProps {
 function EvalV2ReportPanel({ projectId, onUpdate, onSendToAgent }: EvalV2ReportPanelProps) {
   const [rows, setRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [deleting, setDeleting] = useState(false);
   const [selectedExecution, setSelectedExecution] = useState<any | null>(null);
   const [detail, setDetail] = useState<any | null>(null);
   const [diagnosis, setDiagnosis] = useState<any | null>(null);
   const [diagnosing, setDiagnosing] = useState(false);
   const [expandedPromptTrialId, setExpandedPromptTrialId] = useState<string | null>(null);
+  const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
+  const [sentSuggestionKeys, setSentSuggestionKeys] = useState<Record<string, boolean>>({});
 
   const loadReport = useCallback(async () => {
     setLoading(true);
     try {
       const data = await evalV2API.executionReport(projectId);
       setRows(data.executions || []);
+      setSelectedKeys([]);
     } catch (e: any) {
       sendNotification(`加载报告失败: ${e.message}`, "error");
     } finally {
@@ -618,14 +695,77 @@ function EvalV2ReportPanel({ projectId, onUpdate, onSendToAgent }: EvalV2ReportP
   const openExecution = async (execution: any) => {
     setSelectedExecution(execution);
     try {
-      const [detailResp, diagResp] = await Promise.all([
+      const [detailResp, diagResp, stateResp] = await Promise.all([
         evalV2API.taskBatch(execution.task_id, execution.batch_id),
         evalV2API.getTaskDiagnosis(execution.task_id, execution.batch_id),
+        evalV2API.getSuggestionStates(execution.task_id, execution.batch_id),
       ]);
       setDetail(detailResp);
       setDiagnosis(diagResp.analysis || null);
+      const stateMap: Record<string, boolean> = {};
+      for (const s of stateResp.states || []) {
+        if ((s.status || "") === "applied") {
+          stateMap[`${s.source}::${s.suggestion}`] = true;
+        }
+      }
+      setSentSuggestionKeys(stateMap);
     } catch (e: any) {
       sendNotification(`加载任务详情失败: ${e.message}`, "error");
+    }
+  };
+
+  const keyOf = (r: any) => `${r.task_id}::${r.batch_id}`;
+
+  const toggleSelect = (r: any) => {
+    const key = keyOf(r);
+    setSelectedKeys((prev) => (prev.includes(key) ? prev.filter((x) => x !== key) : [...prev, key]));
+  };
+
+  const deleteOne = async (r: any) => {
+    if (!confirm(`确认删除记录？\n任务: ${r.task_name}\n批次: ${String(r.batch_id || "").slice(0, 8)}`)) return;
+    setDeleting(true);
+    try {
+      await evalV2API.deleteTaskBatch(r.task_id, r.batch_id);
+      if (selectedExecution && selectedExecution.task_id === r.task_id && selectedExecution.batch_id === r.batch_id) {
+        setSelectedExecution(null);
+        setDetail(null);
+        setDiagnosis(null);
+      }
+      await loadReport();
+      onUpdate?.();
+      sendNotification("记录已删除", "success");
+    } catch (e: any) {
+      sendNotification(`删除失败: ${e.message}`, "error");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const deleteSelected = async () => {
+    if (!selectedKeys.length) return;
+    if (!confirm(`确认批量删除 ${selectedKeys.length} 条记录吗？`)) return;
+    const items = selectedKeys.map((k) => {
+      const [task_id, batch_id] = k.split("::");
+      return { task_id, batch_id };
+    });
+    setDeleting(true);
+    try {
+      await evalV2API.batchDeleteExecutions(projectId, items);
+      if (
+        selectedExecution &&
+        items.some((x) => x.task_id === selectedExecution.task_id && x.batch_id === selectedExecution.batch_id)
+      ) {
+        setSelectedExecution(null);
+        setDetail(null);
+        setDiagnosis(null);
+      }
+      await loadReport();
+      onUpdate?.();
+      sendNotification(`已删除 ${items.length} 条记录`, "success");
+    } catch (e: any) {
+      sendNotification(`批量删除失败: ${e.message}`, "error");
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -644,21 +784,42 @@ function EvalV2ReportPanel({ projectId, onUpdate, onSendToAgent }: EvalV2ReportP
     }
   };
 
-  const sendSuggestionToAgent = (source: string, suggestion: string) => {
+  const sendSuggestionToAgent = async (source: string, suggestion: string) => {
     if (!onSendToAgent) return;
+    if (!selectedExecution) return;
+    const key = `${source}::${suggestion}`;
     const msg = `请根据评估建议修改内容。\n来源: ${source}\n建议: ${suggestion}\n要求: 先给出可执行编辑方案，并输出可确认的修改建议。`;
-    onSendToAgent(msg);
-    sendNotification("建议已发送到 Agent 面板", "success");
+    try {
+      await evalV2API.markSuggestionApplied(selectedExecution.task_id, selectedExecution.batch_id, {
+        source,
+        suggestion,
+        status: "applied",
+      });
+      onSendToAgent(msg);
+      setSentSuggestionKeys((prev) => ({ ...prev, [key]: true }));
+      sendNotification("建议已发送到 Agent 面板", "success");
+    } catch (e: any) {
+      sendNotification(`发送失败: ${e.message}`, "error");
+    }
   };
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <h3 className="text-base font-semibold text-zinc-100">评估报告</h3>
-        <button className="px-3 py-2 text-sm rounded bg-surface-2 border border-surface-3 hover:bg-surface-3 flex items-center gap-1.5" onClick={loadReport}>
-          <RefreshCw className="w-4 h-4" />
-          刷新
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            className="px-3 py-2 text-sm rounded bg-red-500/15 border border-red-500/40 text-red-300 hover:bg-red-500/25 disabled:opacity-50"
+            onClick={deleteSelected}
+            disabled={deleting || selectedKeys.length === 0}
+          >
+            批量删除 ({selectedKeys.length})
+          </button>
+          <button className="px-3 py-2 text-sm rounded bg-surface-2 border border-surface-3 hover:bg-surface-3 flex items-center gap-1.5" onClick={loadReport}>
+            <RefreshCw className="w-4 h-4" />
+            刷新
+          </button>
+        </div>
       </div>
 
       {loading ? (
@@ -670,17 +831,35 @@ function EvalV2ReportPanel({ projectId, onUpdate, onSendToAgent }: EvalV2ReportP
       ) : (
         <div className="space-y-2">
           {rows.map((r) => (
-            <button
+            <div
               key={`${r.task_id}-${r.batch_id}`}
               className="w-full text-left border border-surface-3 rounded-lg px-3 py-2 hover:bg-surface-2 transition-colors"
-              onClick={() => openExecution(r)}
             >
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-medium text-zinc-100">{r.task_name}</div>
-                <div className="text-sm text-zinc-300">{typeof r.overall === "number" ? r.overall.toFixed(2) : "-"}</div>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <input
+                    type="checkbox"
+                    checked={selectedKeys.includes(keyOf(r))}
+                    onChange={() => toggleSelect(r)}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                  <button className="text-left min-w-0" onClick={() => openExecution(r)}>
+                    <div className="text-sm font-medium text-zinc-100 truncate">{r.task_name}</div>
+                  </button>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="text-sm text-zinc-300">{typeof r.overall === "number" ? r.overall.toFixed(2) : "-"}</div>
+                  <button
+                    className="text-xs px-2 py-1 rounded border border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/20"
+                    onClick={() => deleteOne(r)}
+                    disabled={deleting}
+                  >
+                    删除
+                  </button>
+                </div>
               </div>
               <div className="text-xs text-zinc-500 mt-1">状态: {r.status} · 执行时间: {r.executed_at || "-"} · batch: {String(r.batch_id || "").slice(0, 8)}</div>
-            </button>
+            </div>
           ))}
         </div>
       )}
@@ -693,22 +872,31 @@ function EvalV2ReportPanel({ projectId, onUpdate, onSendToAgent }: EvalV2ReportP
                 <div className="text-zinc-100 font-semibold">{selectedExecution.task_name}</div>
                 <div className="text-xs text-zinc-500 mt-1">总分: {typeof selectedExecution.overall === "number" ? selectedExecution.overall.toFixed(2) : "-"} · batch: {String(selectedExecution.batch_id || "").slice(0, 8)}</div>
               </div>
-              <button className="p-1.5 rounded hover:bg-surface-2 text-zinc-400" onClick={() => { setSelectedExecution(null); setDetail(null); setDiagnosis(null); setExpandedPromptTrialId(null); }}>
+              <button className="p-1.5 rounded hover:bg-surface-2 text-zinc-400" onClick={() => { setSelectedExecution(null); setDetail(null); setDiagnosis(null); setExpandedPromptTrialId(null); setSentSuggestionKeys({}); }}>
                 <X className="w-4 h-4" />
               </button>
             </div>
 
             <div className="p-4 space-y-4">
               <div className="border border-surface-3 rounded-lg p-3">
-                <div className="text-sm font-medium text-zinc-100 mb-2">维度得分</div>
-                <div className="flex flex-wrap gap-3 text-sm text-zinc-300">
-                  {Object.entries((selectedExecution.scores?.dimensions || {})).length === 0 ? (
-                    <span className="text-zinc-500">暂无维度分</span>
-                  ) : (
-                    Object.entries(selectedExecution.scores.dimensions || {}).map(([dim, val]: any) => (
-                      <span key={dim}>{dim}: {typeof val?.mean === "number" ? val.mean.toFixed(2) : "-"}</span>
-                    ))
-                  )}
+                <div className="text-sm font-medium text-zinc-100 mb-2">总览指标</div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
+                  <div className="bg-surface-1 border border-surface-3 rounded px-2 py-1.5">
+                    <div className="text-zinc-500 text-xs">总分</div>
+                    <div className="text-zinc-100 font-medium">{typeof selectedExecution.overall === "number" ? selectedExecution.overall.toFixed(2) : "-"}</div>
+                  </div>
+                  <div className="bg-surface-1 border border-surface-3 rounded px-2 py-1.5">
+                    <div className="text-zinc-500 text-xs">批次状态</div>
+                    <div className="text-zinc-100 font-medium">{selectedExecution.status || "-"}</div>
+                  </div>
+                  <div className="bg-surface-1 border border-surface-3 rounded px-2 py-1.5">
+                    <div className="text-zinc-500 text-xs">Trial 数</div>
+                    <div className="text-zinc-100 font-medium">{selectedExecution.trial_count ?? "-"}</div>
+                  </div>
+                  <div className="bg-surface-1 border border-surface-3 rounded px-2 py-1.5">
+                    <div className="text-zinc-500 text-xs">执行时间</div>
+                    <div className="text-zinc-100 font-medium">{selectedExecution.executed_at || "-"}</div>
+                  </div>
                 </div>
               </div>
 
@@ -718,18 +906,29 @@ function EvalV2ReportPanel({ projectId, onUpdate, onSendToAgent }: EvalV2ReportP
                   <div key={t.id} className="border border-surface-3 rounded-lg p-3 space-y-2">
                     <div className="flex items-center justify-between">
                       <div className="text-sm text-zinc-100">
-                        {t.form_type} · repeat {t.repeat_index + 1}
+                        {t.trial_config_name || `试验 ${t.form_type}`} · repeat {t.repeat_index + 1}
                       </div>
                       <div className="text-sm text-zinc-300">{typeof t.overall_score === "number" ? t.overall_score.toFixed(2) : "-"}</div>
                     </div>
                     <div className="text-xs text-zinc-500">状态: {t.status} · LLM调用: {(t.llm_calls || []).length}</div>
+                    <div className="flex flex-wrap gap-2">
+                      {Object.entries(t.dimension_scores || {}).length === 0 ? (
+                        <span className="text-xs text-zinc-500">本 Trial 暂无维度分</span>
+                      ) : (
+                        Object.entries(t.dimension_scores || {}).map(([dim, score]: any) => (
+                          <span key={dim} className="text-xs bg-surface-2 border border-surface-3 rounded px-2 py-1 text-zinc-300">
+                            {dim}: {typeof score === "number" ? score.toFixed(2) : "-"}
+                          </span>
+                        ))
+                      )}
+                    </div>
                     <div>
                       <button
                         className="text-xs px-2 py-1 rounded bg-surface-2 border border-surface-3 hover:bg-surface-3 flex items-center gap-1.5"
                         onClick={() => setExpandedPromptTrialId(expandedPromptTrialId === t.id ? null : t.id)}
                       >
                         <Eye className="w-3.5 h-3.5" />
-                        {expandedPromptTrialId === t.id ? "收起原始提示词" : "查看原始提示词"}
+                        {expandedPromptTrialId === t.id ? "收起过程与调用明细" : "查看过程与调用明细"}
                       </button>
                     </div>
                     {(t.grader_results || []).map((gr: any, i: number) => (
@@ -741,10 +940,11 @@ function EvalV2ReportPanel({ projectId, onUpdate, onSendToAgent }: EvalV2ReportP
                             <span className="text-xs text-zinc-300">{sg}</span>
                             {onSendToAgent && (
                               <button
-                                className="text-xs px-2 py-1 rounded bg-brand-500/20 text-brand-300 hover:bg-brand-500/30"
+                                className="text-xs px-2 py-1 rounded bg-brand-500/20 text-brand-300 hover:bg-brand-500/30 disabled:opacity-60"
                                 onClick={() => sendSuggestionToAgent(`${selectedExecution.task_name} / ${gr.grader_name}`, sg)}
+                                disabled={!!sentSuggestionKeys[`${selectedExecution.task_name} / ${gr.grader_name}::${sg}`]}
                               >
-                                让Agent修改
+                                {sentSuggestionKeys[`${selectedExecution.task_name} / ${gr.grader_name}::${sg}`] ? "已修改" : "让Agent修改"}
                               </button>
                             )}
                           </div>
@@ -754,21 +954,46 @@ function EvalV2ReportPanel({ projectId, onUpdate, onSendToAgent }: EvalV2ReportP
 
                     {expandedPromptTrialId === t.id && (
                       <div className="border border-surface-3 rounded p-2 bg-surface-1 space-y-2">
-                        <div className="text-xs text-zinc-300">LLM 调用明细（system / user / output）</div>
+                        <div className="text-xs text-zinc-300">过程回放</div>
+                        {(t.process || []).length === 0 ? (
+                          <div className="text-xs text-zinc-500">无过程记录</div>
+                        ) : (
+                          (t.process || []).map((p: any, idx: number) => (
+                            <div key={idx} className="border border-surface-3 rounded bg-surface-0 p-2 space-y-1">
+                              <div className="text-xs text-zinc-400">#{idx + 1} · {p.type || "dialogue_step"}</div>
+                              {(typeof p?.role === "string" || typeof p?.content === "string") ? (
+                                <div className="text-[11px] text-zinc-300 whitespace-pre-wrap">
+                                  <span className="text-zinc-500">[{p.role || "assistant"}]</span>{"\n"}{p.content || ""}
+                                </div>
+                              ) : (
+                                <div className="text-[11px] text-zinc-300 whitespace-pre-wrap">
+                                  {formatAnyData(p?.data ?? p)}
+                                </div>
+                              )}
+                            </div>
+                          ))
+                        )}
+
+                        <div className="text-xs text-zinc-300 mt-2">LLM 调用明细（逐次输入 / 输出）</div>
                         {(t.llm_calls || []).length === 0 ? (
                           <div className="text-xs text-zinc-500">无调用记录</div>
                         ) : (
                           (t.llm_calls || []).map((c: any, idx: number) => (
-                            <div key={idx} className="border border-surface-3 rounded bg-surface-0 p-2 space-y-1">
-                              <div className="text-xs text-zinc-400">step: {c.step || "-"}</div>
-                              <div className="text-[11px] text-zinc-300 whitespace-pre-wrap">
-                                <span className="text-zinc-500">[system]</span>{"\n"}{c.input?.system_prompt || ""}
+                            <div key={idx} className="border border-surface-3 rounded bg-surface-0 p-2 space-y-2">
+                              <div className="text-xs text-zinc-400">
+                                #{idx + 1} · step: {c.step || "-"} · in/out: {c.tokens_in ?? 0}/{c.tokens_out ?? 0} · cost: {typeof c.cost === "number" ? c.cost.toFixed(6) : "0.000000"}
                               </div>
-                              <div className="text-[11px] text-zinc-300 whitespace-pre-wrap">
-                                <span className="text-zinc-500">[user]</span>{"\n"}{c.input?.user_message || ""}
+                              <div className="border border-surface-3 rounded p-2 bg-surface-1">
+                                <div className="text-[11px] text-zinc-500 mb-1">Input / system</div>
+                                <div className="text-[11px] text-zinc-300 whitespace-pre-wrap">{c.input?.system_prompt || ""}</div>
                               </div>
-                              <div className="text-[11px] text-zinc-300 whitespace-pre-wrap">
-                                <span className="text-zinc-500">[output]</span>{"\n"}{c.output || ""}
+                              <div className="border border-surface-3 rounded p-2 bg-surface-1">
+                                <div className="text-[11px] text-zinc-500 mb-1">Input / user</div>
+                                <div className="text-[11px] text-zinc-300 whitespace-pre-wrap">{c.input?.user_message || ""}</div>
+                              </div>
+                              <div className="border border-surface-3 rounded p-2 bg-surface-1">
+                                <div className="text-[11px] text-zinc-500 mb-1">Output</div>
+                                <div className="text-[11px] text-zinc-300 whitespace-pre-wrap">{formatAnyData(c.output || "")}</div>
                               </div>
                             </div>
                           ))
@@ -803,10 +1028,11 @@ function EvalV2ReportPanel({ projectId, onUpdate, onSendToAgent }: EvalV2ReportP
                         <div className="text-xs text-zinc-400 mt-1">{s.detail}</div>
                         {onSendToAgent && (
                           <button
-                            className="mt-2 text-xs px-2 py-1 rounded bg-brand-500/20 text-brand-300 hover:bg-brand-500/30"
+                            className="mt-2 text-xs px-2 py-1 rounded bg-brand-500/20 text-brand-300 hover:bg-brand-500/30 disabled:opacity-60"
                             onClick={() => sendSuggestionToAgent(`${selectedExecution.task_name} / 跨Trial分析`, s.detail || s.title)}
+                            disabled={!!sentSuggestionKeys[`${selectedExecution.task_name} / 跨Trial分析::${s.detail || s.title}`]}
                           >
-                            让Agent修改
+                            {sentSuggestionKeys[`${selectedExecution.task_name} / 跨Trial分析::${s.detail || s.title}`] ? "已修改" : "让Agent修改"}
                           </button>
                         )}
                       </div>
@@ -836,10 +1062,24 @@ function parsePersonas(content: string): Array<{ id: string; name: string }> {
 
 function extractSuggestions(feedback: string): string[] {
   if (!feedback || typeof feedback !== "string") return [];
+  const changeKeywords = ["建议", "需要", "应当", "应", "优化", "改", "补充", "删除", "避免", "修正", "调整", "简化", "明确"];
+  const positiveOnlyKeywords = ["高质量", "优秀", "不错", "清晰", "有条理", "有深度", "完整", "稳定", "较好", "很好", "友好"];
   const lines = feedback
     .split(/\n|。|；|;/g)
     .map((s) => s.trim())
-    .filter((s) => s.length >= 8);
+    .filter((s) => s.length >= 8)
+    .filter((s) => changeKeywords.some((k) => s.includes(k)))
+    .filter((s) => !positiveOnlyKeywords.some((k) => s.includes(k) && !changeKeywords.some((ck) => s.includes(ck))));
   return Array.from(new Set(lines)).slice(0, 4);
+}
+
+function formatAnyData(value: any): string {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }
 

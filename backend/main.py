@@ -11,6 +11,7 @@ Content Production System - Backend Entry Point
 import sys
 import os
 import logging
+import json
 
 # ===== 关键：Windows 下强制 UTF-8 输出，防止中文 print 导致后台任务崩溃 =====
 if sys.platform == "win32":
@@ -50,6 +51,20 @@ def _setup_logging():
 _setup_logging()
 
 
+def _ensure_db_schema_on_startup():
+    """
+    启动时确保数据库 schema 完整，避免新增表（如 Eval V2）在旧数据库中缺失。
+    """
+    try:
+        from core.database import init_db
+        init_db()
+        logging.getLogger("startup").info("数据库 schema 校验完成")
+    except Exception as e:
+        logging.getLogger("startup").warning(
+            f"启动时校验数据库 schema 失败（不影响运行）: {e}"
+        )
+
+
 def _sync_eval_template_on_startup():
     """
     启动时同步综合评估模板：若数据库中的版本过期则自动更新为 V2。
@@ -71,27 +86,161 @@ def _sync_eval_template_on_startup():
             FieldTemplate.name == EVAL_TEMPLATE_V2_NAME
         ).first()
 
-        if existing:
-            existing_handlers = sorted(
-                f.get("special_handler", "") for f in (existing.fields or [])
-            )
+        # 兼容历史脏数据：某些环境中模板名可能异常，但 special_handler 组合仍可识别
+        if not existing:
             expected_handlers = sorted(
                 f.get("special_handler", "") for f in EVAL_TEMPLATE_V2_FIELDS
             )
-            if existing_handlers != expected_handlers:
+            all_templates = db.query(FieldTemplate).all()
+            for t in all_templates:
+                handlers = sorted(
+                    f.get("special_handler", "") for f in (t.fields or [])
+                )
+                if handlers == expected_handlers:
+                    existing = t
+                    break
+
+        expected_fields_json = json.dumps(
+            EVAL_TEMPLATE_V2_FIELDS, ensure_ascii=False, sort_keys=True
+        )
+
+        if existing:
+            existing_fields_json = json.dumps(
+                existing.fields or [], ensure_ascii=False, sort_keys=True
+            )
+            needs_update = (
+                existing_fields_json != expected_fields_json
+                or existing.description != EVAL_TEMPLATE_V2_DESCRIPTION
+                or existing.category != EVAL_TEMPLATE_V2_CATEGORY
+                or existing.name != EVAL_TEMPLATE_V2_NAME
+            )
+            if needs_update:
                 existing.fields = EVAL_TEMPLATE_V2_FIELDS
                 existing.description = EVAL_TEMPLATE_V2_DESCRIPTION
                 existing.category = EVAL_TEMPLATE_V2_CATEGORY
+                existing.name = EVAL_TEMPLATE_V2_NAME
                 db.commit()
                 logging.getLogger("startup").info(
                     "综合评估模板已自动更新为最新 V2 版本"
                 )
-            # 不需要 else 日志，正常启动不打扰
-        # 不存在时不创建——init_db 负责初始化
+        else:
+            # 启动自愈：不存在时直接创建，避免环境未执行 init_db 导致缺模板
+            db.add(
+                FieldTemplate(
+                    name=EVAL_TEMPLATE_V2_NAME,
+                    description=EVAL_TEMPLATE_V2_DESCRIPTION,
+                    category=EVAL_TEMPLATE_V2_CATEGORY,
+                    fields=EVAL_TEMPLATE_V2_FIELDS,
+                )
+            )
+            db.commit()
+            logging.getLogger("startup").info("综合评估模板不存在，已自动创建 V2 版本")
+
         db.close()
     except Exception as e:
         logging.getLogger("startup").warning(
             f"启动时同步评估模板失败（不影响运行）: {e}"
+        )
+
+
+def _cleanup_legacy_eval_templates_on_startup():
+    """
+    清理历史 Eval 模板，仅保留唯一的 Eval V2 综合评估模板。
+    用户已确认无需迁移旧 Eval 模板数据。
+    """
+    from core.database import get_session_maker
+    from core.models import FieldTemplate
+    from core.models.field_template import EVAL_TEMPLATE_V2_NAME
+
+    try:
+        SessionLocal = get_session_maker()
+        db = SessionLocal()
+        templates = db.query(FieldTemplate).all()
+        removed = 0
+        for t in templates:
+            handlers = [f.get("special_handler", "") for f in (t.fields or [])]
+            has_eval_handler = any(
+                h in {"eval_persona_setup", "eval_task_config", "eval_report", "evaluate", "eval"}
+                for h in handlers
+            )
+            name_hit = "评估" in (t.name or "")
+            if (has_eval_handler or name_hit) and t.name != EVAL_TEMPLATE_V2_NAME:
+                db.delete(t)
+                removed += 1
+
+        if removed > 0:
+            db.commit()
+            logging.getLogger("startup").info(
+                f"已清理 {removed} 个历史 Eval 模板，仅保留综合评估模板"
+            )
+        db.close()
+    except Exception as e:
+        logging.getLogger("startup").warning(
+            f"启动时清理历史 Eval 模板失败（不影响运行）: {e}"
+        )
+
+
+def _dedupe_eval_anchor_blocks_on_startup():
+    """
+    按 project_id + special_handler 去重 Eval 三个锚点块，
+    避免历史重复块导致前端随机命中旧块/乱码块。
+    """
+    from core.database import get_session_maker
+    from core.models import ContentBlock
+
+    target_handlers = ["eval_persona_setup", "eval_task_config", "eval_report"]
+    canonical_names = {
+        "eval_persona_setup": "人物画像设置",
+        "eval_task_config": "评估任务配置",
+        "eval_report": "评估报告",
+    }
+
+    try:
+        SessionLocal = get_session_maker()
+        db = SessionLocal()
+        blocks = db.query(ContentBlock).filter(
+            ContentBlock.special_handler.in_(target_handlers)
+        ).all()
+
+        grouped: dict[tuple[str, str], list[ContentBlock]] = {}
+        for b in blocks:
+            key = (b.project_id, b.special_handler)
+            grouped.setdefault(key, []).append(b)
+
+        removed = 0
+        renamed = 0
+        for (_pid, handler), items in grouped.items():
+            if len(items) == 0:
+                continue
+
+            # 优先保留有内容且更新更晚的块，减少数据丢失风险
+            items_sorted = sorted(
+                items,
+                key=lambda x: (
+                    1 if (x.content and x.content.strip()) else 0,
+                    x.updated_at or x.created_at,
+                ),
+                reverse=True,
+            )
+            keep = items_sorted[0]
+            expected_name = canonical_names.get(handler, keep.name)
+            if keep.name != expected_name:
+                keep.name = expected_name
+                renamed += 1
+
+            for extra in items_sorted[1:]:
+                db.delete(extra)
+                removed += 1
+
+        if removed > 0 or renamed > 0:
+            db.commit()
+            logging.getLogger("startup").info(
+                f"已完成 Eval 锚点块去重：删除 {removed} 个重复块，规范命名 {renamed} 个"
+            )
+        db.close()
+    except Exception as e:
+        logging.getLogger("startup").warning(
+            f"启动时去重 Eval 锚点块失败（不影响运行）: {e}"
         )
 
 
@@ -159,7 +308,10 @@ def create_app() -> FastAPI:
     # 启动时同步评估模板
     @app.on_event("startup")
     def on_startup():
+        _ensure_db_schema_on_startup()
         _sync_eval_template_on_startup()
+        _cleanup_legacy_eval_templates_on_startup()
+        _dedupe_eval_anchor_blocks_on_startup()
 
     return app
 

@@ -6,13 +6,16 @@
 #   - /api/eval/tasks/{project_id} 与 /api/eval/task/{task_id}/execute 新接口响应
 
 import pytest
+import asyncio
+import time
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from core.database import Base, get_db
-from core.models import Project, ContentBlock, Grader, generate_uuid
+from core.models import Project, ContentBlock, Grader, EvalTaskV2, EvalTrialConfigV2, EvalTrialResultV2, generate_uuid
+import api.eval as eval_api
 from main import app
 
 
@@ -629,4 +632,376 @@ async def test_eval_v2_e2e_all_forms_single_task(client_and_session, monkeypatch
     assert forms == ["assessment", "experience", "review", "scenario"]
     assert all(t["status"] == "completed" for t in trials)
     assert all(isinstance(t.get("overall_score"), (int, float)) for t in trials)
+
+
+@pytest.mark.asyncio
+async def test_eval_v2_provider_test_endpoint(client_and_session, monkeypatch):
+    client, _session = client_and_session
+
+    class _FakeResp:
+        content = "OK"
+
+    class _FakeModel:
+        async def ainvoke(self, _messages):
+            return _FakeResp()
+
+    monkeypatch.setattr("api.eval.get_chat_model", lambda **kwargs: _FakeModel())
+
+    resp = client.post("/api/eval/provider/test")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert "OK" in body["reply"]
+
+
+@pytest.mark.asyncio
+async def test_eval_v2_start_pause_stop_endpoints_and_progress_payload(client_and_session, monkeypatch):
+    client, session = client_and_session
+    project, _, grader = _seed_minimal_eval_context(session)
+
+    async def slow_grader(**kwargs):
+        await asyncio.sleep(0.05)
+        return (
+            {
+                "grader_name": kwargs.get("grader_name", "测试评分器"),
+                "scores": {"结构": 7, "价值": 7},
+                "comments": {},
+                "feedback": "ok",
+            },
+            None,
+        )
+
+    monkeypatch.setattr("api.eval.run_individual_grader", slow_grader)
+
+    create_resp = client.post(
+        f"/api/eval/tasks/{project.id}",
+        json={
+            "name": "可停止任务",
+            "trial_configs": [
+                {
+                    "name": "慢速评估",
+                    "form_type": "assessment",
+                    "grader_ids": [grader.id],
+                    "repeat_count": 6,
+                    "form_config": {},
+                }
+            ],
+        },
+    )
+    assert create_resp.status_code == 200
+    task_id = create_resp.json()["id"]
+
+    start_resp = client.post(f"/api/eval/task/{task_id}/start")
+    assert start_resp.status_code == 200
+    time.sleep(0.06)
+    pause_resp = client.post(f"/api/eval/task/{task_id}/pause")
+    assert pause_resp.status_code == 200
+    stop_resp = client.post(f"/api/eval/task/{task_id}/stop")
+    assert stop_resp.status_code == 200
+
+    tasks = client.get(f"/api/eval/tasks/{project.id}").json()["tasks"]
+    final_task = next((t for t in tasks if t["id"] == task_id), None)
+    assert final_task is not None
+    assert "progress" in final_task
+    assert isinstance(final_task["progress"]["percent"], int)
+    assert final_task["status"] in ("running", "paused", "stopped", "completed", "failed")
+
+
+@pytest.mark.asyncio
+async def test_eval_v2_delete_single_and_batch_execution_records(client_and_session, monkeypatch):
+    client, session = client_and_session
+    project, _, grader = _seed_minimal_eval_context(session)
+
+    async def fake_run_individual_grader(**kwargs):
+        return (
+            {
+                "grader_name": kwargs.get("grader_name", "测试评分器"),
+                "scores": {"结构": 8, "价值": 8},
+                "comments": {},
+                "feedback": "ok",
+            },
+            None,
+        )
+
+    monkeypatch.setattr("api.eval.run_individual_grader", fake_run_individual_grader)
+
+    create_resp = client.post(
+        f"/api/eval/tasks/{project.id}",
+        json={
+            "name": "删除记录任务",
+            "trial_configs": [
+                {
+                    "name": "判定",
+                    "form_type": "assessment",
+                    "grader_ids": [grader.id],
+                    "repeat_count": 1,
+                    "form_config": {},
+                }
+            ],
+        },
+    )
+    assert create_resp.status_code == 200
+    task_id = create_resp.json()["id"]
+
+    b1 = client.post(f"/api/eval/task/{task_id}/execute").json()["batch_id"]
+    b2 = client.post(f"/api/eval/task/{task_id}/execute").json()["batch_id"]
+    rows = client.get(f"/api/eval/tasks/{project.id}/executions").json()["executions"]
+    assert len([r for r in rows if r["task_id"] == task_id]) == 2
+
+    del_one = client.delete(f"/api/eval/task/{task_id}/batch/{b1}")
+    assert del_one.status_code == 200
+    rows_after_one = client.get(f"/api/eval/tasks/{project.id}/executions").json()["executions"]
+    assert len([r for r in rows_after_one if r["task_id"] == task_id]) == 1
+
+    del_batch = client.post(
+        f"/api/eval/tasks/{project.id}/executions/delete",
+        json={"items": [{"task_id": task_id, "batch_id": b2}]},
+    )
+    assert del_batch.status_code == 200
+    rows_after_all = client.get(f"/api/eval/tasks/{project.id}/executions").json()["executions"]
+    assert len([r for r in rows_after_all if r["task_id"] == task_id]) == 0
+
+
+@pytest.mark.asyncio
+async def test_eval_v2_suggestion_state_persist_and_query(client_and_session, monkeypatch):
+    client, session = client_and_session
+    project, _, grader = _seed_minimal_eval_context(session)
+
+    async def fake_run_individual_grader(**kwargs):
+        return (
+            {
+                "grader_name": kwargs.get("grader_name", "测试评分器"),
+                "scores": {"结构": 8, "价值": 8},
+                "comments": {},
+                "feedback": "建议补充示例和步骤。",
+            },
+            None,
+        )
+
+    monkeypatch.setattr("api.eval.run_individual_grader", fake_run_individual_grader)
+
+    create_resp = client.post(
+        f"/api/eval/tasks/{project.id}",
+        json={
+            "name": "建议状态任务",
+            "trial_configs": [
+                {
+                    "name": "判定",
+                    "form_type": "assessment",
+                    "grader_ids": [grader.id],
+                    "repeat_count": 1,
+                    "form_config": {},
+                }
+            ],
+        },
+    )
+    assert create_resp.status_code == 200
+    task_id = create_resp.json()["id"]
+    batch_id = client.post(f"/api/eval/task/{task_id}/execute").json()["batch_id"]
+
+    mark = client.post(
+        f"/api/eval/task/{task_id}/batch/{batch_id}/suggestion-state",
+        json={"source": "taskA / graderX", "suggestion": "建议补充示例", "status": "applied"},
+    )
+    assert mark.status_code == 200
+
+    query = client.get(f"/api/eval/task/{task_id}/batch/{batch_id}/suggestion-states")
+    assert query.status_code == 200
+    states = query.json()["states"]
+    assert any(s["source"] == "taskA / graderX" and s["suggestion"] == "建议补充示例" for s in states)
+
+
+@pytest.mark.asyncio
+async def test_eval_v2_running_status_is_healed_when_runtime_lost(client_and_session):
+    client, session = client_and_session
+    project, _content_block, _grader = _seed_minimal_eval_context(session)
+    task = EvalTaskV2(
+        id=generate_uuid(),
+        project_id=project.id,
+        name="stale-running-task",
+        description="",
+        order_index=0,
+        status="running",
+        latest_batch_id="batch_x",
+    )
+    session.add(task)
+    session.commit()
+
+    # 模拟服务重启后运行态内存丢失
+    eval_api._clear_task_runtime(task.id)
+
+    resp = client.get(f"/api/eval/tasks/{project.id}")
+    assert resp.status_code == 200
+    row = next(x for x in resp.json()["tasks"] if x["id"] == task.id)
+    assert row["status"] == "failed"
+    assert "执行状态丢失" in (row.get("last_error", "") or "")
+
+
+@pytest.mark.asyncio
+async def test_eval_v2_resume_is_queued_when_pause_not_settled(client_and_session):
+    client, session = client_and_session
+    project, _, _grader = _seed_minimal_eval_context(session)
+    task = EvalTaskV2(
+        id=generate_uuid(),
+        project_id=project.id,
+        name="resume-queued-task",
+        description="",
+        order_index=0,
+        status="running",
+        latest_batch_id="batch_x",
+    )
+    session.add(task)
+    session.commit()
+    eval_api._set_task_runtime(task.id, {"is_running": True, "pause_requested": True})
+
+    resp = client.post(f"/api/eval/task/{task.id}/resume")
+    assert resp.status_code == 200
+    assert "排队恢复" in resp.json()["message"]
+    rt = eval_api._get_task_runtime(task.id)
+    assert rt.get("resume_requested") is True
+
+
+@pytest.mark.asyncio
+async def test_eval_v2_parallel_trials_respect_limit(client_and_session, monkeypatch):
+    _client, session = client_and_session
+    project, _content_block, _grader = _seed_minimal_eval_context(session)
+    task = EvalTaskV2(
+        id=generate_uuid(),
+        project_id=project.id,
+        name="parallel-task",
+        description="",
+        order_index=0,
+        status="pending",
+    )
+    session.add(task)
+    session.flush()
+    cfg = EvalTrialConfigV2(
+        id=generate_uuid(),
+        task_id=task.id,
+        name="trial-A",
+        form_type="assessment",
+        target_block_ids=[],
+        grader_ids=[],
+        repeat_count=4,
+        order_index=0,
+        form_config={},
+    )
+    session.add(cfg)
+    session.commit()
+
+    active = {"n": 0, "max": 0}
+
+    async def fake_plan_item(session_factory, task_id, trial_config_id, repeat_index, batch_id):
+        active["n"] += 1
+        active["max"] = max(active["max"], active["n"])
+        await asyncio.sleep(0.03)
+        active["n"] -= 1
+        return {
+            "id": generate_uuid(),
+            "task_id": task_id,
+            "trial_config_id": trial_config_id,
+            "project_id": project.id,
+            "batch_id": batch_id,
+            "repeat_index": repeat_index,
+            "form_type": "assessment",
+            "process": [],
+            "grader_results": [],
+            "dimension_scores": {"综合": 8},
+            "overall_score": 8.0,
+            "llm_calls": [],
+            "tokens_in": 0,
+            "tokens_out": 0,
+            "cost": 0.0,
+            "status": "completed",
+            "error": "",
+        }
+
+    monkeypatch.setattr("api.eval._run_trial_plan_item_isolated", fake_plan_item)
+    monkeypatch.setattr(eval_api.settings, "eval_max_parallel_trials", 2)
+
+    out = await eval_api._execute_task_v2(task.id, session)
+    assert out["task"]["status"] == "completed"
+    assert len(out["trials"]) == 4
+    assert active["max"] >= 2
+
+
+@pytest.mark.asyncio
+async def test_eval_v2_pause_and_resume_keeps_same_batch_and_no_duplicate(client_and_session, monkeypatch):
+    _client, session = client_and_session
+    project, _content_block, _grader = _seed_minimal_eval_context(session)
+
+    task = EvalTaskV2(
+        id=generate_uuid(),
+        project_id=project.id,
+        name="暂停恢复任务",
+        description="",
+        order_index=0,
+        status="pending",
+    )
+    session.add(task)
+    session.flush()
+    cfg = EvalTrialConfigV2(
+        id=generate_uuid(),
+        task_id=task.id,
+        name="trial-A",
+        form_type="assessment",
+        target_block_ids=[],
+        grader_ids=[],
+        repeat_count=3,
+        order_index=0,
+        form_config={},
+    )
+    session.add(cfg)
+    session.commit()
+
+    calls = {"n": 0}
+
+    async def fake_run_once(task, trial_cfg, repeat_index, batch_id, persona_map, db):
+        calls["n"] += 1
+        # 第一条执行后请求暂停，模拟用户点击暂停
+        if calls["n"] == 1:
+            eval_api._set_task_runtime(task.id, {"pause_requested": True})
+        return EvalTrialResultV2(
+            id=generate_uuid(),
+            task_id=task.id,
+            trial_config_id=trial_cfg.id,
+            project_id=task.project_id,
+            batch_id=batch_id,
+            repeat_index=repeat_index,
+            form_type=trial_cfg.form_type,
+            process=[],
+            grader_results=[],
+            dimension_scores={"综合": 8},
+            overall_score=8.0,
+            llm_calls=[],
+            tokens_in=0,
+            tokens_out=0,
+            cost=0.0,
+            status="completed",
+            error="",
+        )
+
+    monkeypatch.setattr("api.eval._run_trial_config_once", fake_run_once)
+    eval_api._clear_task_runtime(task.id)
+
+    first = await eval_api._execute_task_v2(task.id, session)
+    first_batch = first["batch_id"]
+    assert first["task"]["status"] == "paused"
+    # 并行调度下，暂停请求生效前可能已有多个 in-flight trial
+    assert 1 <= len(first["trials"]) <= 2
+
+    # resume：继续同一 batch，且不重复已跑过 repeat_index=0
+    second = await eval_api._execute_task_v2(task.id, session, resume_batch_id=first_batch)
+    assert second["batch_id"] == first_batch
+    assert second["task"]["status"] in ("completed", "failed")
+    assert len(second["trials"]) == 3
+
+    rows = (
+        session.query(EvalTrialResultV2)
+        .filter(EvalTrialResultV2.task_id == task.id, EvalTrialResultV2.batch_id == first_batch)
+        .all()
+    )
+    keys = {(r.trial_config_id, r.repeat_index) for r in rows}
+    assert len(rows) == 3
+    assert len(keys) == 3
 

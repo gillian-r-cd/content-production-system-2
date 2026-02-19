@@ -22,14 +22,16 @@ EvalRun → EvalTask[] → EvalTrial[]
 
 import json
 import asyncio
+import threading
+import hashlib
 from typing import Optional, List
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel as PydanticBase
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 from langchain_core.messages import SystemMessage, HumanMessage
 
-from core.database import get_db
+from core.database import get_db, get_session_maker
 from core.models import (
     Project,
     ContentBlock,
@@ -41,6 +43,7 @@ from core.models import (
     EvalTrialConfigV2,
     EvalTrialResultV2,
     TaskAnalysisV2,
+    EvalSuggestionState,
     EVAL_ROLES,
     SIMULATOR_TYPES,
     INTERACTION_MODES,
@@ -69,6 +72,10 @@ from core.config import settings
 
 
 router = APIRouter(prefix="/api/eval", tags=["eval"])
+
+# 运行期状态（内存态，不落库）
+_TASK_RUNTIME_STATE = {}
+_TASK_RUNTIME_LOCK = threading.Lock()
 
 
 # ============== Schemas ==============
@@ -224,6 +231,21 @@ class UpdateTaskV2Request(PydanticBase):
     order_index: Optional[int] = None
     trial_configs: Optional[List[TrialConfigPayload]] = None
 
+
+class DeleteExecutionItem(PydanticBase):
+    task_id: str
+    batch_id: str
+
+
+class BatchDeleteExecutionsRequest(PydanticBase):
+    items: List[DeleteExecutionItem]
+
+
+class SuggestionStateUpsertRequest(PydanticBase):
+    source: str
+    suggestion: str
+    status: str = "applied"
+
 # ============== Config Routes ==============
 
 @router.post("/personas/generate")
@@ -265,6 +287,24 @@ def get_eval_config():
         "interaction_modes": INTERACTION_MODES,
         "grader_types": GRADER_TYPES,
         "roles": EVAL_ROLES,
+        "eval_runtime": {
+            "max_parallel_trials": max(1, int(settings.eval_max_parallel_trials or 1)),
+        },
+    }
+
+
+@router.post("/provider/test")
+async def test_eval_provider():
+    """
+    最小化探针：验证当前后端进程真实使用的模型配置可调用。
+    """
+    model = get_chat_model(model=settings.openai_model, temperature=0.0, streaming=False)
+    reply = await model.ainvoke([HumanMessage(content="Reply exactly: OK")])
+    return {
+        "ok": True,
+        "model": settings.openai_model,
+        "api_base": settings.openai_api_base,
+        "reply": str(getattr(reply, "content", ""))[:120],
     }
 
 
@@ -355,6 +395,19 @@ def list_eval_v2_tasks(project_id: str, db: Session = Depends(get_db)):
         .order_by(EvalTaskV2.order_index, EvalTaskV2.created_at)
         .all()
     )
+    healed = False
+    for t in tasks:
+        rt = _get_task_runtime(t.id)
+        if t.status == "running" and not rt.get("is_running", False):
+            # 运行态丢失（常见于服务重启/进程中断），避免界面长期假 running
+            t.status = "failed"
+            if not (t.last_error or "").strip():
+                t.last_error = "执行状态丢失（服务重启或任务中断），请重新执行。"
+            healed = True
+    if healed:
+        db.commit()
+        for t in tasks:
+            db.refresh(t)
     return {"tasks": [_serialize_task_v2(t) for t in tasks]}
 
 
@@ -497,6 +550,149 @@ def get_eval_v2_executions(project_id: str, db: Session = Depends(get_db)):
 
     executions.sort(key=lambda x: x.get("executed_at", ""), reverse=True)
     return {"executions": executions}
+
+
+@router.delete("/task/{task_id}/batch/{batch_id}")
+def delete_eval_v2_task_batch(task_id: str, batch_id: str, db: Session = Depends(get_db)):
+    """
+    删除某个 task 的单个 batch 记录（trial + analysis）。
+    """
+    task = db.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="EvalTask not found")
+
+    db.query(TaskAnalysisV2).filter(
+        TaskAnalysisV2.task_id == task_id,
+        TaskAnalysisV2.batch_id == batch_id,
+    ).delete()
+    db.query(EvalSuggestionState).filter(
+        EvalSuggestionState.task_id == task_id,
+        EvalSuggestionState.batch_id == batch_id,
+    ).delete()
+    deleted = db.query(EvalTrialResultV2).filter(
+        EvalTrialResultV2.task_id == task_id,
+        EvalTrialResultV2.batch_id == batch_id,
+    ).delete()
+
+    _recompute_task_latest_after_delete(task, db)
+    db.commit()
+    db.refresh(task)
+    return {"deleted_trials": int(deleted or 0), "task": _serialize_task_v2(task)}
+
+
+@router.post("/tasks/{project_id}/executions/delete")
+def batch_delete_eval_v2_executions(
+    project_id: str,
+    request: BatchDeleteExecutionsRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    批量删除执行记录（按 task_id + batch_id）。
+    """
+    if not request.items:
+        raise HTTPException(status_code=400, detail="items 不能为空")
+
+    touched_task_ids = set()
+    deleted_trials = 0
+    for item in request.items:
+        task = db.query(EvalTaskV2).filter(
+            EvalTaskV2.id == item.task_id,
+            EvalTaskV2.project_id == project_id,
+        ).first()
+        if not task:
+            continue
+        touched_task_ids.add(task.id)
+        db.query(TaskAnalysisV2).filter(
+            TaskAnalysisV2.task_id == item.task_id,
+            TaskAnalysisV2.batch_id == item.batch_id,
+        ).delete()
+        db.query(EvalSuggestionState).filter(
+            EvalSuggestionState.task_id == item.task_id,
+            EvalSuggestionState.batch_id == item.batch_id,
+        ).delete()
+        deleted_trials += int(
+            db.query(EvalTrialResultV2).filter(
+                EvalTrialResultV2.task_id == item.task_id,
+                EvalTrialResultV2.batch_id == item.batch_id,
+            ).delete()
+            or 0
+        )
+
+    for task_id in touched_task_ids:
+        task = db.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
+        if task:
+            _recompute_task_latest_after_delete(task, db)
+
+    db.commit()
+    return {
+        "deleted_trials": deleted_trials,
+        "deleted_batches": len(request.items),
+        "touched_tasks": len(touched_task_ids),
+    }
+
+
+@router.get("/task/{task_id}/batch/{batch_id}/suggestion-states")
+def get_eval_v2_suggestion_states(task_id: str, batch_id: str, db: Session = Depends(get_db)):
+    rows = (
+        db.query(EvalSuggestionState)
+        .filter(
+            EvalSuggestionState.task_id == task_id,
+            EvalSuggestionState.batch_id == batch_id,
+        )
+        .all()
+    )
+    return {
+        "states": [
+            {
+                "id": r.id,
+                "source": r.source,
+                "suggestion": r.suggestion,
+                "suggestion_hash": r.suggestion_hash,
+                "status": r.status,
+            }
+            for r in rows
+        ]
+    }
+
+
+@router.post("/task/{task_id}/batch/{batch_id}/suggestion-state")
+def upsert_eval_v2_suggestion_state(
+    task_id: str,
+    batch_id: str,
+    request: SuggestionStateUpsertRequest,
+    db: Session = Depends(get_db),
+):
+    task = db.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="EvalTask not found")
+    sg_hash = _suggestion_hash(request.source, request.suggestion)
+    row = (
+        db.query(EvalSuggestionState)
+        .filter(
+            EvalSuggestionState.task_id == task_id,
+            EvalSuggestionState.batch_id == batch_id,
+            EvalSuggestionState.suggestion_hash == sg_hash,
+        )
+        .first()
+    )
+    if not row:
+        row = EvalSuggestionState(
+            id=generate_uuid(),
+            project_id=task.project_id,
+            task_id=task_id,
+            batch_id=batch_id,
+            source=request.source,
+            suggestion=request.suggestion,
+            suggestion_hash=sg_hash,
+            status=request.status or "applied",
+        )
+        db.add(row)
+    else:
+        row.status = request.status or "applied"
+        row.source = request.source
+        row.suggestion = request.suggestion
+    db.commit()
+    return {"ok": True, "suggestion_hash": sg_hash, "status": row.status}
 
 
 @router.get("/task/{task_id}/trials")
@@ -1094,6 +1290,151 @@ async def execute_single_task(task_id: str, db: Session = Depends(get_db)):
         task.error = str(e)
         db.commit()
         raise HTTPException(status_code=500, detail=f"Task 执行失败: {str(e)}")
+
+
+@router.post("/task/{task_id}/start")
+async def start_eval_v2_task(task_id: str, db: Session = Depends(get_db)):
+    """
+    异步启动 V2 Task 执行（立即返回），用于前端实时进度展示。
+    """
+    task = db.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="EvalTask not found")
+    rt = _get_task_runtime(task_id)
+    if rt.get("is_running"):
+        return {"message": "任务已在运行中", "task_id": task_id}
+    if task.status == "paused":
+        raise HTTPException(status_code=400, detail="任务已暂停，请使用 resume 继续，或先停止后重新开始")
+
+    cfgs = (
+        db.query(EvalTrialConfigV2)
+        .filter(EvalTrialConfigV2.task_id == task_id)
+        .order_by(EvalTrialConfigV2.order_index.asc())
+        .all()
+    )
+    total_runs = sum(max(1, int(c.repeat_count or 1)) for c in cfgs)
+    task.status = "running"
+    task.last_error = ""
+    db.commit()
+
+    # 启动前清理旧状态，避免历史 stop 标记影响
+    _clear_task_runtime(task_id)
+    _set_task_runtime(
+        task_id,
+        {
+            "task_id": task_id,
+            "batch_id": "",
+            "total": total_runs,
+            "completed": 0,
+            "is_running": True,
+            "is_paused": False,
+            "pause_requested": False,
+            "stop_requested": False,
+            "resume_requested": False,
+            "max_parallel": max(1, int(settings.eval_max_parallel_trials or 1)),
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    asyncio.create_task(_execute_task_v2_background(task_id))
+    return {"message": "已开始执行", "task_id": task_id}
+
+
+@router.post("/task/{task_id}/pause")
+def pause_eval_v2_task(task_id: str, db: Session = Depends(get_db)):
+    """
+    请求暂停正在运行的 V2 Task（在 Trial 边界生效）。
+    """
+    task = db.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="EvalTask not found")
+    rt = _get_task_runtime(task_id)
+    if not rt.get("is_running"):
+        return {"message": "任务当前未在运行", "task_id": task_id}
+    # 保持 running，前端通过 pause_requested 展示 pausing；
+    # 真正 paused 在 Trial 边界由执行循环落库。
+    if task.status != "running":
+        task.status = "running"
+        db.commit()
+    _set_task_runtime(
+        task_id,
+        {
+            "pause_requested": True,
+            "is_paused": False,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    return {"message": "已请求暂停", "task_id": task_id}
+
+
+@router.post("/task/{task_id}/resume")
+async def resume_eval_v2_task(task_id: str, db: Session = Depends(get_db)):
+    """
+    恢复已暂停任务：在同一 batch 上继续未完成 Trial。
+    """
+    task = db.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="EvalTask not found")
+    rt = _get_task_runtime(task_id)
+    if rt.get("is_running"):
+        # 若处于“请求暂停但尚未停稳”，记录恢复请求，等进入 paused 后自动续跑
+        if rt.get("pause_requested"):
+            _set_task_runtime(
+                task_id,
+                {
+                    "resume_requested": True,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            return {"message": "已排队恢复，暂停完成后会自动继续", "task_id": task_id}
+        return {"message": "任务已在运行中", "task_id": task_id}
+    if task.status != "paused" or not task.latest_batch_id:
+        raise HTTPException(status_code=400, detail="当前任务不处于可恢复状态")
+
+    _set_task_runtime(
+        task_id,
+        {
+            "task_id": task_id,
+            "batch_id": task.latest_batch_id,
+            "is_running": True,
+            "is_paused": False,
+            "pause_requested": False,
+            "stop_requested": False,
+            "resume_requested": False,
+            "max_parallel": max(1, int(settings.eval_max_parallel_trials or 1)),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    task.status = "running"
+    db.commit()
+    asyncio.create_task(_execute_task_v2_background(task_id, resume_batch_id=task.latest_batch_id))
+    return {"message": "已恢复执行", "task_id": task_id, "batch_id": task.latest_batch_id}
+
+
+@router.post("/task/{task_id}/stop")
+def stop_eval_v2_task(task_id: str, db: Session = Depends(get_db)):
+    """
+    请求终止正在运行的 V2 Task（在 Trial 边界生效，终止后不可 resume）。
+    """
+    task = db.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="EvalTask not found")
+    rt = _get_task_runtime(task_id)
+    if not rt.get("is_running"):
+        return {"message": "任务当前未在运行", "task_id": task_id}
+    # 立即反映状态，便于用户及时看到“终止中/已终止”
+    task.status = "stopped"
+    db.commit()
+    _set_task_runtime(
+        task_id,
+        {
+            "stop_requested": True,
+            "pause_requested": False,
+            "is_paused": False,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    return {"message": "已请求终止", "task_id": task_id}
 
 
 async def _execute_single_task(
@@ -2100,7 +2441,104 @@ def _find_sibling_by_handler(block, handler: str, db) -> ContentBlock:
     ).first()
 
 
+def _suggestion_hash(source: str, suggestion: str) -> str:
+    base = f"{(source or '').strip()}||{(suggestion or '').strip()}"
+    return hashlib.sha256(base.encode("utf-8")).hexdigest()
+
+
+def _set_task_runtime(task_id: str, patch: dict) -> None:
+    with _TASK_RUNTIME_LOCK:
+        prev = _TASK_RUNTIME_STATE.get(task_id, {})
+        _TASK_RUNTIME_STATE[task_id] = {**prev, **patch}
+
+
+def _get_task_runtime(task_id: str) -> dict:
+    with _TASK_RUNTIME_LOCK:
+        return dict(_TASK_RUNTIME_STATE.get(task_id, {}))
+
+
+def _clear_task_runtime(task_id: str) -> None:
+    with _TASK_RUNTIME_LOCK:
+        _TASK_RUNTIME_STATE.pop(task_id, None)
+
+
+def _build_task_progress_payload(task: EvalTaskV2) -> dict:
+    rt = _get_task_runtime(task.id)
+    # total 优先运行态；若运行态丢失，回退到 Task 配置总 Trial 数
+    fallback_total = 0
+    for c in (task.trial_configs or []):
+        fallback_total += max(1, int(getattr(c, "repeat_count", 1) or 1))
+    total = int(rt.get("total", 0) or fallback_total or 0)
+
+    # completed 优先运行态；若缺失，回退到最新 batch 的已写入结果数
+    if "completed" in rt and rt.get("completed") is not None:
+        completed = int(rt.get("completed", 0) or 0)
+    else:
+        latest_batch = task.latest_batch_id or ""
+        if latest_batch:
+            completed = sum(1 for r in (task.trial_results or []) if (r.batch_id or "") == latest_batch)
+        else:
+            completed = 0
+    if total > 0:
+        percent = int(max(0, min(100, round(completed * 100 / total))))
+    else:
+        percent = 100 if task.status in ("completed", "failed", "stopped") else 0
+    is_running = bool(rt.get("is_running", False)) and (task.status == "running")
+    return {
+        "total": total,
+        "completed": completed,
+        "percent": percent,
+        "max_parallel": int(rt.get("max_parallel", max(1, int(settings.eval_max_parallel_trials or 1)))),
+        "is_running": is_running,
+        "is_paused": bool(rt.get("is_paused", False)),
+        "stop_requested": bool(rt.get("stop_requested", False)),
+        "pause_requested": bool(rt.get("pause_requested", False)),
+        "resume_requested": bool(rt.get("resume_requested", False)),
+        "batch_id": rt.get("batch_id", ""),
+        "started_at": rt.get("started_at", ""),
+        "updated_at": rt.get("updated_at", ""),
+    }
+
+
+def _recompute_task_latest_after_delete(task: EvalTaskV2, db: Session) -> None:
+    latest_row = (
+        db.query(EvalTrialResultV2)
+        .filter(EvalTrialResultV2.task_id == task.id)
+        .order_by(EvalTrialResultV2.created_at.desc())
+        .first()
+    )
+    if not latest_row:
+        task.latest_batch_id = ""
+        task.latest_scores = {}
+        task.latest_overall = None
+        task.last_executed_at = None
+        task.status = "pending"
+        task.last_error = ""
+        return
+
+    batch_rows = (
+        db.query(EvalTrialResultV2)
+        .filter(
+            EvalTrialResultV2.task_id == task.id,
+            EvalTrialResultV2.batch_id == latest_row.batch_id,
+        )
+        .all()
+    )
+    aggregate_input = [
+        {"overall_score": x.overall_score, "dimension_scores": x.dimension_scores or {}}
+        for x in batch_rows
+        if x.status == "completed"
+    ]
+    agg = aggregate_task_scores(aggregate_input)
+    task.latest_batch_id = latest_row.batch_id
+    task.latest_scores = agg
+    task.latest_overall = (agg.get("overall") or {}).get("mean") if agg.get("overall") else None
+    task.last_executed_at = latest_row.created_at
+    task.status = "completed" if any(x.status == "completed" for x in batch_rows) else "failed"
+
+
 def _serialize_task_v2(task: EvalTaskV2) -> dict:
+    progress = _build_task_progress_payload(task)
     return {
         "id": task.id,
         "project_id": task.project_id,
@@ -2108,11 +2546,16 @@ def _serialize_task_v2(task: EvalTaskV2) -> dict:
         "description": task.description or "",
         "order_index": task.order_index,
         "status": task.status,
+        "last_error": task.last_error or "",
         "content_hash": task.content_hash or "",
         "last_executed_at": task.last_executed_at.isoformat() if task.last_executed_at else "",
         "latest_scores": task.latest_scores or {},
         "latest_overall": task.latest_overall,
         "latest_batch_id": task.latest_batch_id or "",
+        "progress": progress,
+        "can_stop": progress["is_running"],
+        "can_pause": progress["is_running"],
+        "can_resume": (task.status == "paused"),
         "trial_configs": [
             {
                 "id": c.id,
@@ -2136,6 +2579,7 @@ def _serialize_trial_result_v2(row: EvalTrialResultV2) -> dict:
         "id": row.id,
         "task_id": row.task_id,
         "trial_config_id": row.trial_config_id,
+        "trial_config_name": (row.trial_config.name if getattr(row, "trial_config", None) else ""),
         "project_id": row.project_id,
         "batch_id": row.batch_id,
         "repeat_index": row.repeat_index,
@@ -2531,7 +2975,96 @@ async def _run_trial_config_once(
     )
 
 
-async def _execute_task_v2(task_id: str, db: Session) -> dict:
+def _build_trial_plan(configs: List[EvalTrialConfigV2]) -> list[tuple[EvalTrialConfigV2, int]]:
+    plan = []
+    for cfg in configs:
+        repeats = max(1, int(cfg.repeat_count or 1))
+        for ridx in range(repeats):
+            plan.append((cfg, ridx))
+    return plan
+
+
+def _row_to_payload(row: EvalTrialResultV2) -> dict:
+    return {
+        "id": row.id,
+        "task_id": row.task_id,
+        "trial_config_id": row.trial_config_id,
+        "project_id": row.project_id,
+        "batch_id": row.batch_id,
+        "repeat_index": row.repeat_index,
+        "form_type": row.form_type,
+        "process": row.process or [],
+        "grader_results": row.grader_results or [],
+        "dimension_scores": row.dimension_scores or {},
+        "overall_score": row.overall_score,
+        "llm_calls": row.llm_calls or [],
+        "tokens_in": row.tokens_in or 0,
+        "tokens_out": row.tokens_out or 0,
+        "cost": row.cost or 0.0,
+        "status": row.status or "failed",
+        "error": row.error or "",
+    }
+
+
+async def _run_trial_plan_item_isolated(
+    session_factory,
+    task_id: str,
+    trial_config_id: str,
+    repeat_index: int,
+    batch_id: str,
+) -> dict:
+    wdb = session_factory()
+    try:
+        task = wdb.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
+        cfg = wdb.query(EvalTrialConfigV2).filter(EvalTrialConfigV2.id == trial_config_id).first()
+        if not task or not cfg:
+            return {
+                "id": generate_uuid(),
+                "task_id": task_id,
+                "trial_config_id": trial_config_id,
+                "project_id": task.project_id if task else "",
+                "batch_id": batch_id,
+                "repeat_index": repeat_index,
+                "form_type": cfg.form_type if cfg else "assessment",
+                "status": "failed",
+                "error": "任务或试验配置不存在",
+            }
+        persona_map = _get_persona_map(task.project_id, wdb)
+        try:
+            row = await asyncio.wait_for(
+                _run_trial_config_once(task, cfg, repeat_index, batch_id, persona_map, wdb),
+                timeout=300,
+            )
+        except asyncio.TimeoutError:
+            row = EvalTrialResultV2(
+                id=generate_uuid(),
+                task_id=task.id,
+                trial_config_id=cfg.id,
+                project_id=task.project_id,
+                batch_id=batch_id,
+                repeat_index=repeat_index,
+                form_type=cfg.form_type,
+                status="failed",
+                error="单次 Trial 执行超时（300s）",
+            )
+        return _row_to_payload(row)
+    finally:
+        wdb.close()
+
+
+def _load_done_keys_for_batch(task_id: str, batch_id: str, db: Session) -> set[tuple[str, int]]:
+    rows = (
+        db.query(EvalTrialResultV2.trial_config_id, EvalTrialResultV2.repeat_index)
+        .filter(
+            EvalTrialResultV2.task_id == task_id,
+            EvalTrialResultV2.batch_id == batch_id,
+        )
+        .all()
+    )
+    return {(str(tc_id), int(ridx)) for tc_id, ridx in rows}
+
+
+async def _execute_task_v2(task_id: str, db: Session, resume_batch_id: Optional[str] = None) -> dict:
     task = db.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="EvalTask not found")
@@ -2545,26 +3078,112 @@ async def _execute_task_v2(task_id: str, db: Session) -> dict:
     if not configs:
         raise HTTPException(status_code=400, detail="Task 没有 Trial 配置")
 
+    plan = _build_trial_plan(configs)
+    total_runs = len(plan)
+    batch_id = resume_batch_id or generate_uuid()
+    done_keys = _load_done_keys_for_batch(task_id, batch_id, db) if resume_batch_id else set()
+    pending_plan = [(cfg.id, ridx) for cfg, ridx in plan if (cfg.id, ridx) not in done_keys]
+    max_parallel = max(1, int(settings.eval_max_parallel_trials or 1))
+    worker_session_factory = sessionmaker(
+        autocommit=False,
+        autoflush=False,
+        bind=db.get_bind(),
+    )
+
     task.status = "running"
     task.last_error = ""
+    # 在执行开始即写入当前 batch，便于进度与排障
+    task.latest_batch_id = batch_id
     db.commit()
+    _set_task_runtime(
+        task_id,
+        {
+            "task_id": task_id,
+            "batch_id": batch_id,
+            "total": total_runs,
+            "completed": len(done_keys),
+            "is_running": True,
+            "is_paused": False,
+            "pause_requested": False,
+            "stop_requested": False,
+            "started_at": _get_task_runtime(task_id).get("started_at", datetime.now(timezone.utc).isoformat()),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
 
-    persona_map = _get_persona_map(task.project_id, db)
-    batch_id = generate_uuid()
     run_rows = []
+    stopped = False
+    paused = False
+    inflight: dict[asyncio.Task, tuple[str, int]] = {}
+    cursor = 0
+    while cursor < len(pending_plan) or inflight:
+        rt = _get_task_runtime(task_id)
+        while (
+            cursor < len(pending_plan)
+            and len(inflight) < max_parallel
+            and not rt.get("stop_requested")
+            and not rt.get("pause_requested")
+        ):
+            cfg_id, ridx = pending_plan[cursor]
+            cursor += 1
+            t = asyncio.create_task(_run_trial_plan_item_isolated(worker_session_factory, task_id, cfg_id, ridx, batch_id))
+            inflight[t] = (cfg_id, ridx)
 
-    for cfg in configs:
-        repeats = max(1, int(cfg.repeat_count or 1))
-        for ridx in range(repeats):
-            row = await _run_trial_config_once(task, cfg, ridx, batch_id, persona_map, db)
+        if not inflight:
+            if rt.get("stop_requested"):
+                stopped = True
+            if rt.get("pause_requested"):
+                paused = True
+            break
+
+        done, _ = await asyncio.wait(set(inflight.keys()), return_when=asyncio.FIRST_COMPLETED)
+        for t in done:
+            cfg_id, ridx = inflight.pop(t, ("", 0))
+            try:
+                payload = t.result()
+            except Exception as e:
+                payload = {
+                    "id": generate_uuid(),
+                    "task_id": task.id,
+                    "trial_config_id": cfg_id,
+                    "project_id": task.project_id,
+                    "batch_id": batch_id,
+                    "repeat_index": ridx,
+                    "form_type": "assessment",
+                    "status": "failed",
+                    "error": str(e),
+                }
+            row = EvalTrialResultV2(**payload)
             db.add(row)
             run_rows.append(row)
+            _set_task_runtime(
+                task_id,
+                {
+                    "completed": len(done_keys) + len(run_rows),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+
+        rt_after = _get_task_runtime(task_id)
+        if rt_after.get("stop_requested"):
+            stopped = True
+        if rt_after.get("pause_requested"):
+            paused = True
 
     db.flush()
 
+    all_rows = (
+        db.query(EvalTrialResultV2)
+        .filter(
+            EvalTrialResultV2.task_id == task_id,
+            EvalTrialResultV2.batch_id == batch_id,
+        )
+        .order_by(EvalTrialResultV2.created_at.asc())
+        .all()
+    )
     aggregate_input = [
         {"overall_score": r.overall_score, "dimension_scores": r.dimension_scores or {}}
-        for r in run_rows
+        for r in all_rows
         if r.status == "completed"
     ]
     agg = aggregate_task_scores(aggregate_input)
@@ -2572,18 +3191,70 @@ async def _execute_task_v2(task_id: str, db: Session) -> dict:
     task.latest_overall = (agg.get("overall") or {}).get("mean") if agg.get("overall") else None
     task.latest_batch_id = batch_id
     task.last_executed_at = datetime.now(timezone.utc)
-    task.status = "completed" if any(r.status == "completed" for r in run_rows) else "failed"
-    task.last_error = "; ".join([r.error for r in run_rows if r.error])[:2000]
+    if stopped:
+        task.status = "stopped"
+    elif paused:
+        task.status = "paused"
+    else:
+        task.status = "completed" if any(r.status == "completed" for r in all_rows) else "failed"
+    task.last_error = "; ".join([r.error for r in all_rows if r.error])[:2000]
 
     db.commit()
     db.refresh(task)
+    _set_task_runtime(
+        task_id,
+        {
+            "completed": len(done_keys) + len(run_rows),
+            "is_running": False,
+            "is_paused": paused,
+            "pause_requested": False,
+            "stop_requested": False,
+            "max_parallel": max_parallel,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+    # 若用户在“暂停尚未落稳”阶段已点击恢复，则自动续跑
+    rt_final = _get_task_runtime(task_id)
+    if task.status == "paused" and rt_final.get("resume_requested"):
+        _set_task_runtime(task_id, {"resume_requested": False, "updated_at": datetime.now(timezone.utc).isoformat()})
+        asyncio.create_task(_execute_task_v2_background(task_id, resume_batch_id=batch_id))
 
     return {
         "task": _serialize_task_v2(task),
         "batch_id": batch_id,
         "overall": task.latest_overall,
-        "trials": [_serialize_trial_result_v2(r) for r in run_rows],
+        "trials": [_serialize_trial_result_v2(r) for r in all_rows],
     }
+
+
+async def _execute_task_v2_background(task_id: str, resume_batch_id: Optional[str] = None) -> None:
+    """
+    后台执行 V2 Task，使用独立 DB Session，避免请求结束后 session 失效。
+    """
+    SessionLocal = get_session_maker()
+    db = SessionLocal()
+    try:
+        await _execute_task_v2(task_id, db, resume_batch_id=resume_batch_id)
+    except Exception as e:
+        task = db.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
+        if task:
+            task.status = "failed"
+            task.last_error = str(e)[:2000]
+            db.commit()
+    finally:
+        rt = _get_task_runtime(task_id)
+        _set_task_runtime(
+            task_id,
+            {
+                "is_running": False,
+                "is_paused": bool(rt.get("is_paused", False)),
+                "pause_requested": False,
+                "stop_requested": False,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        db.close()
 
 
 def _build_task_analysis_from_trials(task: EvalTaskV2, rows: List[EvalTrialResultV2], batch_id: str) -> TaskAnalysisV2:

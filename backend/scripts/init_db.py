@@ -9,6 +9,7 @@
 """
 
 import sys
+import json
 from pathlib import Path
 
 # 确保可以导入core模块
@@ -524,17 +525,23 @@ def seed_default_data():
             FieldTemplate.name == EVAL_TEMPLATE_V2_NAME
         ).first()
         if eval_template_existing:
-            # 检查是否需要更新（字段数或 special_handler 不一致）
-            existing_handlers = sorted(
-                f.get("special_handler", "") for f in (eval_template_existing.fields or [])
+            existing_fields_json = json.dumps(
+                eval_template_existing.fields or [], ensure_ascii=False, sort_keys=True
             )
-            expected_handlers = sorted(
-                f.get("special_handler", "") for f in EVAL_TEMPLATE_V2_FIELDS
+            expected_fields_json = json.dumps(
+                EVAL_TEMPLATE_V2_FIELDS, ensure_ascii=False, sort_keys=True
             )
-            if existing_handlers != expected_handlers:
+            needs_update = (
+                existing_fields_json != expected_fields_json
+                or eval_template_existing.description != EVAL_TEMPLATE_V2_DESCRIPTION
+                or eval_template_existing.category != EVAL_TEMPLATE_V2_CATEGORY
+                or eval_template_existing.name != EVAL_TEMPLATE_V2_NAME
+            )
+            if needs_update:
                 eval_template_existing.fields = EVAL_TEMPLATE_V2_FIELDS
                 eval_template_existing.description = EVAL_TEMPLATE_V2_DESCRIPTION
                 eval_template_existing.category = EVAL_TEMPLATE_V2_CATEGORY
+                eval_template_existing.name = EVAL_TEMPLATE_V2_NAME
                 print("  - 更新了综合评估模板为最新V2版本")
             else:
                 print("  - 综合评估模板已是最新V2版本，跳过")

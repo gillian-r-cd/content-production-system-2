@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     backend_port: int = 8000
     debug: bool = True
 
+    # Eval V2
+    eval_max_parallel_trials: int = 8
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

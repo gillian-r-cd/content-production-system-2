@@ -1074,6 +1074,17 @@ export interface EvalV2Task {
   latest_scores: Record<string, any>;
   latest_overall: number | null;
   latest_batch_id: string;
+  progress?: {
+    total: number;
+    completed: number;
+    percent: number;
+    is_running: boolean;
+    is_paused?: boolean;
+    pause_requested?: boolean;
+    stop_requested: boolean;
+    batch_id?: string;
+  };
+  can_stop?: boolean;
   trial_configs: EvalV2TrialConfig[];
 }
 
@@ -1104,6 +1115,14 @@ export const evalV2API = {
     fetchAPI<{ message: string }>(`/api/eval/task/${taskId}`, { method: "DELETE" }),
   executeTask: (taskId: string) =>
     fetchAPI<any>(`/api/eval/task/${taskId}/execute`, { method: "POST" }),
+  startTask: (taskId: string) =>
+    fetchAPI<any>(`/api/eval/task/${taskId}/start`, { method: "POST" }),
+  stopTask: (taskId: string) =>
+    fetchAPI<any>(`/api/eval/task/${taskId}/stop`, { method: "POST" }),
+  pauseTask: (taskId: string) =>
+    fetchAPI<any>(`/api/eval/task/${taskId}/pause`, { method: "POST" }),
+  resumeTask: (taskId: string) =>
+    fetchAPI<any>(`/api/eval/task/${taskId}/resume`, { method: "POST" }),
   executeAll: (projectId: string) =>
     fetchAPI<any>(`/api/eval/tasks/${projectId}/execute-all`, { method: "POST" }),
   taskTrials: (taskId: string) =>
@@ -1122,6 +1141,24 @@ export const evalV2API = {
     fetchAPI<any>(`/api/eval/task/${taskId}/diagnosis${batchId ? `?batch_id=${encodeURIComponent(batchId)}` : ""}`),
   taskBatch: (taskId: string, batchId: string) =>
     fetchAPI<any>(`/api/eval/task/${taskId}/batch/${batchId}`),
+  deleteTaskBatch: (taskId: string, batchId: string) =>
+    fetchAPI<any>(`/api/eval/task/${taskId}/batch/${batchId}`, { method: "DELETE" }),
+  batchDeleteExecutions: (projectId: string, items: Array<{ task_id: string; batch_id: string }>) =>
+    fetchAPI<any>(`/api/eval/tasks/${projectId}/executions/delete`, {
+      method: "POST",
+      body: JSON.stringify({ items }),
+    }),
+  getSuggestionStates: (taskId: string, batchId: string) =>
+    fetchAPI<{ states: Array<{ source: string; suggestion: string; suggestion_hash: string; status: string }> }>(
+      `/api/eval/task/${taskId}/batch/${batchId}/suggestion-states`
+    ),
+  markSuggestionApplied: (taskId: string, batchId: string, payload: { source: string; suggestion: string; status?: string }) =>
+    fetchAPI<any>(`/api/eval/task/${taskId}/batch/${batchId}/suggestion-state`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  providerTest: () =>
+    fetchAPI<any>("/api/eval/provider/test", { method: "POST" }),
 };
 
 

@@ -1,7 +1,7 @@
 // frontend/components/eval-field-editors.tsx
 // 功能: Eval V2 专用字段编辑器集合
 // 5个 special_handler 对应 5 个专用 UI：
-//   - eval_persona_setup: 目标消费者画像选择/创建
+//   - eval_persona_setup: 人物画像选择/创建
 //   - eval_task_config: 评估任务配置（卡片式）
 //   - eval_report: 统一评估报告面板（执行 + 评分 + 诊断 + LLM 日志）
 
@@ -95,7 +95,7 @@ const LABEL = "text-xs font-medium text-zinc-400 mb-1.5 block";
 const EMPTY_STATE = "text-center py-12 border-2 border-dashed border-surface-3 rounded-xl";
 
 
-// ============== 1. 目标消费者画像 ==============
+// ============== 1. 人物画像设置 ==============
 
 export function EvalPersonaSetup({ block, projectId, onUpdate }: EvalFieldProps) {
   const [personas, setPersonas] = useState<PersonaData[]>([]);
@@ -120,7 +120,7 @@ export function EvalPersonaSetup({ block, projectId, onUpdate }: EvalFieldProps)
       if (fetched.length > 0) {
         setPersonas(fetched);
       } else {
-        alert("消费者调研中未找到画像，请先完成消费者调研或手动添加。");
+        alert("调研中未找到画像，请先完成消费者调研或手动添加。");
       }
     } catch (e: any) {
       alert("加载失败: " + e.message);
@@ -152,7 +152,7 @@ export function EvalPersonaSetup({ block, projectId, onUpdate }: EvalFieldProps)
   };
 
   const addPersona = () => {
-    setPersonas([...personas, { name: "新消费者画像", background: "", pain_points: [] }]);
+    setPersonas([...personas, { name: "新画像", background: "", pain_points: [] }]);
     setEditingIdx(personas.length);
   };
 
@@ -190,7 +190,7 @@ export function EvalPersonaSetup({ block, projectId, onUpdate }: EvalFieldProps)
           <div className="w-8 h-8 rounded-lg bg-blue-500/20 flex items-center justify-center">
             <Users className="w-4.5 h-4.5 text-blue-400" />
           </div>
-          目标消费者画像
+          人物画像设置
         </h3>
         <div className="flex gap-2">
           <button onClick={generateWithAI} disabled={loading}
@@ -214,7 +214,7 @@ export function EvalPersonaSetup({ block, projectId, onUpdate }: EvalFieldProps)
       {personas.length === 0 ? (
         <div className={EMPTY_STATE}>
           <Users className="w-10 h-10 mx-auto mb-3 text-zinc-600" />
-          <p className="text-zinc-400 font-medium">暂无消费者画像</p>
+          <p className="text-zinc-400 font-medium">暂无人物画像</p>
           <p className="text-sm text-zinc-500 mt-1">点击「从调研加载」或「手动添加」开始配置</p>
         </div>
       ) : (
@@ -901,7 +901,7 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
                     {/* Persona 选择（所有模拟器类型均可选择角色画像，影响评估视角） */}
                     {trial.simulator_id && (
                       <div className={`${CARD_INNER} p-4`}>
-                        <label className="text-sm font-medium text-zinc-200 mb-2 block">👤 消费者画像 <span className="text-xs font-normal text-zinc-500">（可选，决定评估视角）</span></label>
+                        <label className="text-sm font-medium text-zinc-200 mb-2 block">👤 人物画像 <span className="text-xs font-normal text-zinc-500">（可选，决定评估视角）</span></label>
                         {personas.length > 0 ? (
                           <div className="space-y-2">
                             {personas.map((p, pi) => (
@@ -926,7 +926,7 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
                           </div>
                         ) : (
                           <p className="text-sm text-zinc-500 mt-1">
-                            ⚠️ 请先在「目标消费者画像」字段中配置画像
+                            ⚠️ 请先在「人物画像设置」中配置画像
                           </p>
                         )}
                       </div>

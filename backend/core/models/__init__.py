@@ -34,6 +34,7 @@ from core.models.eval_v2 import (
     EVAL_V2_TASK_STATUS,
     EVAL_V2_FORM_TYPES,
 )
+from core.models.eval_suggestion_state import EvalSuggestionState
 from core.models.grader import Grader, GRADER_TYPE_CHOICES, PRESET_GRADERS
 from core.models.agent_mode import AgentMode
 from core.models.memory_item import MemoryItem
@@ -84,6 +85,7 @@ __all__ = [
     "EvalTrialConfigV2",
     "EvalTrialResultV2",
     "TaskAnalysisV2",
+    "EvalSuggestionState",
     "EVAL_V2_TASK_STATUS",
     "EVAL_V2_FORM_TYPES",
     
