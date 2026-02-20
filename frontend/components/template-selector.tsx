@@ -11,7 +11,6 @@ import {
   Check, 
   ChevronRight, 
   Folder, 
-  FileText,
   Lightbulb,
   Users,
   PlayCircle,

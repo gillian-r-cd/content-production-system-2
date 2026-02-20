@@ -6,9 +6,9 @@
 "use client";
 
 import { useState, useMemo, useEffect } from "react";
-import { blockAPI, agentAPI } from "@/lib/api";
+import { blockAPI } from "@/lib/api";
 import type { ContentBlock } from "@/lib/api";
-import { Check, Plus, Trash2, GripVertical, Send, Pencil, X } from "lucide-react";
+import { Check, Plus, Trash2, Send, Pencil, X } from "lucide-react";
 
 // 渠道定义
 interface Channel {

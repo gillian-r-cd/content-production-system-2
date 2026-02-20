@@ -11,7 +11,7 @@ import { ContentPanel } from "@/components/content-panel";
 import { AgentPanel } from "@/components/agent-panel";
 import { CreateProjectModal } from "@/components/create-project-modal";
 import { GlobalSearchModal } from "@/components/global-search-modal";
-import { projectAPI, agentAPI } from "@/lib/api";
+import { projectAPI } from "@/lib/api";
 import { requestNotificationPermission } from "@/lib/utils";
 import type { Project, ContentBlock } from "@/lib/api";
 import { Copy, Trash2, ChevronDown, CheckSquare, Square, X, Download, Upload, Search } from "lucide-react";
@@ -71,6 +71,7 @@ export default function WorkspacePage() {
   useEffect(() => {
     loadProjects();
     requestNotificationPermission();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // 项目切换时：记住选中项目 & 重置工作区状态
@@ -82,6 +83,7 @@ export default function WorkspacePage() {
     // 清除旧项目残留状态 —— 新项目的数据会由各自的 useEffect 重新加载
     setSelectedBlock(null);
     setAllBlocks([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentProject?.id]);
 
   const loadProjects = async () => {
@@ -155,6 +157,7 @@ export default function WorkspacePage() {
         setSelectedBlock(updatedBlock);
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allBlocks]);
 
   const handleCreateProject = () => {
@@ -629,7 +632,7 @@ export default function WorkspacePage() {
           projectId={currentProject.id}
           open={showSearch}
           onClose={() => setShowSearch(false)}
-          onNavigateToField={(fieldId, fieldType) => {
+          onNavigateToField={(fieldId) => {
             // P0-1: 统一通过 allBlocks 定位内容块
             const findBlockRecursive = (blocks: ContentBlock[], id: string): ContentBlock | null => {
               for (const b of blocks) {

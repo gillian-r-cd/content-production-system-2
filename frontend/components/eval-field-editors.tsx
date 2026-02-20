@@ -7,16 +7,16 @@
 
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { evalAPI, blockAPI, graderAPI, settingsAPI } from "@/lib/api";
 import { sendNotification } from "@/lib/utils";
-import type { ContentBlock, EvalConfig, LLMCall, GraderData } from "@/lib/api";
+import type { ContentBlock, GraderData } from "@/lib/api";
 import {
   Users, Plus, Trash2, Play, SlidersHorizontal, ChevronDown, ChevronRight,
-  Eye, Save, RefreshCw, BarChart3, FileText, MessageSquare,
-  AlertTriangle, CheckCircle, XCircle, Clock, Zap, Download, Pencil, Sparkles,
+  Eye, Save, RefreshCw, BarChart3, FileText,
+  AlertTriangle, XCircle, Clock, Zap, Pencil, Sparkles,
 } from "lucide-react";
 
 
@@ -163,7 +163,6 @@ interface EvalReportData {
 const CARD = "bg-surface-2 border border-surface-3 rounded-xl";
 const CARD_INNER = "bg-surface-1 border border-surface-3 rounded-lg";
 const INPUT = "w-full bg-surface-1 border border-surface-3 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all";
-const SELECT = "w-full bg-surface-1 border border-surface-3 rounded-lg px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all appearance-none";
 const TEXTAREA = "w-full bg-surface-1 border border-surface-3 rounded-lg px-3 py-2.5 text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all resize-none";
 const BTN_PRIMARY = "px-4 py-2 text-sm font-medium rounded-lg transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed";
 const LABEL = "text-xs font-medium text-zinc-400 mb-1.5 block";
@@ -419,12 +418,6 @@ function getSimStyle(sim?: SimulatorData | null, type?: string) {
   return SIM_TYPE_STYLE[type || "custom"] || SIM_TYPE_STYLE.custom;
 }
 
-const GRADER_TYPES_LOCAL: Record<string, { label: string; desc: string }> = {
-  content: { label: "内容评分", desc: "直接评价内容质量" },
-  process: { label: "过程评分", desc: "评价互动过程质量" },
-  combined: { label: "综合评分", desc: "同时评价内容和过程" },
-};
-
 export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
   const [trials, setTrials] = useState<TrialConfig[]>([]);
   const [personas, setPersonas] = useState<PersonaData[]>([]);
@@ -435,18 +428,7 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
   const [expandedTrial, setExpandedTrial] = useState<number | null>(null);
   const [showPrompt, setShowPrompt] = useState<string | null>(null);  // simulator id -> show prompt
 
-  // 加载数据
-  useEffect(() => {
-    if (block.content) {
-      try {
-        const data = JSON.parse(block.content);
-        setTrials(data.trials || _migrateOldTasks(data.tasks || []));
-      } catch { setTrials([]); }
-    }
-    _loadDeps();
-  }, [block.content]);
-
-  const _loadDeps = async () => {
+  const _loadDeps = useCallback(async () => {
     try {
       const [personaResp, graderList, blockTree, simList] = await Promise.all([
         evalAPI.getPersonas(projectId).catch(() => ({ personas: [] } as PersonasResponse)),
@@ -471,7 +453,18 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
       _flatten((blockTree.blocks || []) as ProjectBlockTreeNode[]);
       setProjectBlocks(fields);
     } catch { /* ignore */ }
-  };
+  }, [projectId]);
+
+  // 加载数据
+  useEffect(() => {
+    if (block.content) {
+      try {
+        const data = JSON.parse(block.content);
+        setTrials(data.trials || _migrateOldTasks(data.tasks || []));
+      } catch { setTrials([]); }
+    }
+    _loadDeps();
+  }, [block.content, _loadDeps]);
 
   // 旧格式迁移：tasks → trials
   const _migrateOldTasks = (tasks: TaskConfig[]): TrialConfig[] => {
@@ -1060,7 +1053,7 @@ function scoreBg(score: number, max: number = 10): string {
   return "bg-red-500";
 }
 
-export function EvalReportPanel({ block, projectId, onUpdate, onSendToAgent }: EvalFieldProps) {
+export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldProps) {
   const [executing, setExecuting] = useState(false);
   const [reportData, setReportData] = useState<EvalReportData | null>(null);
   const [expandedTrial, setExpandedTrial] = useState<number | null>(null);
@@ -1068,6 +1061,11 @@ export function EvalReportPanel({ block, projectId, onUpdate, onSendToAgent }: E
   const [expandedSection, setExpandedSection] = useState<Record<string, boolean>>({});
   const [pollError, setPollError] = useState<string | null>(null);
   const mountedRef = React.useRef(true);
+
+  const onUpdateRef = React.useRef(onUpdate);
+  useEffect(() => {
+    onUpdateRef.current = onUpdate;
+  }, [onUpdate]);
 
   // 组件卸载时标记
   useEffect(() => {
@@ -1100,7 +1098,7 @@ export function EvalReportPanel({ block, projectId, onUpdate, onSendToAgent }: E
       // 如果数据不同步，触发父组件刷新
       if (freshBlock.status !== block.status || freshBlock.content !== block.content) {
         console.log(`[EvalReport] 数据不同步: local_status=${block.status}, server_status=${freshBlock.status}`);
-        onUpdate?.();
+        onUpdateRef.current?.();
       }
     }).catch(() => {}); // 静默忽略
     
@@ -1133,7 +1131,7 @@ export function EvalReportPanel({ block, projectId, onUpdate, onSendToAgent }: E
           if (freshBlock.content) {
             try { setReportData(JSON.parse(freshBlock.content)); } catch {}
           }
-          onUpdate?.(); // 刷新父组件数据
+          onUpdateRef.current?.(); // 刷新父组件数据
           // 浏览器通知
           sendNotification(
             "评估执行完成",
@@ -1157,7 +1155,7 @@ export function EvalReportPanel({ block, projectId, onUpdate, onSendToAgent }: E
     // 自管理轮询会检测到完成状态
     evalAPI.generateForBlock(block.id).then(() => {
       // 后端执行完成，刷新数据
-      if (mountedRef.current) onUpdate?.();
+      if (mountedRef.current) onUpdateRef.current?.();
     }).catch((e: unknown) => {
       if (!mountedRef.current) return;
       setPollError(getErrorMessage(e));

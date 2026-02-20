@@ -56,7 +56,7 @@ export function useBlockGeneration({
   const generatingBlockIdRef = useRef<string | null>(null);
 
   // ---- 依赖检查 ----
-  const dependsOn = block.depends_on || [];
+  const dependsOn = useMemo(() => block.depends_on || [], [block.depends_on]);
   const dependencyBlocks = useMemo(
     () => dependsOn.map((id) => allBlocks.find((b) => b.id === id)).filter(Boolean) as ContentBlock[],
     [dependsOn, allBlocks],

@@ -180,7 +180,7 @@ export function TagInput({ value, onChange, placeholder }: { value: string[]; on
   );
 }
 
-export function KeyValueEditor({ value, onChange, keyLabel, valueLabel, keyPlaceholder, valuePlaceholder }: {
+export function KeyValueEditor({ value, onChange, keyPlaceholder, valuePlaceholder }: {
   value: Record<string, string>;
   onChange: (v: Record<string, string>) => void;
   keyLabel?: string;
@@ -202,6 +202,7 @@ export function KeyValueEditor({ value, onChange, keyLabel, valueLabel, keyPlace
   };
   
   const removePair = (key: string) => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { [key]: _, ...rest } = value;
     onChange(rest);
   };

@@ -4,7 +4,7 @@
 
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { settingsAPI, graderAPI, phaseTemplateAPI } from "@/lib/api";
 import type { AgentSettingsData, CreatorProfile, GraderData, PhaseTemplate } from "@/lib/api";
 
@@ -60,11 +60,7 @@ export default function SettingsPage() {
   const [phaseTemplates, setPhaseTemplates] = useState<PhaseTemplate[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    loadData();
-  }, [activeTab]);
-
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
     try {
       switch (activeTab) {
@@ -104,7 +100,11 @@ export default function SettingsPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [activeTab]);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   const tabs: { id: Tab; label: string; icon: string }[] = [
     { id: "prompts", label: "传统流程提示词", icon: "📝" },

@@ -43,6 +43,7 @@ export function VersionHistoryPanel({ entityId, entityName, onRollback, onClose 
 
   useEffect(() => {
     loadVersions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entityId]);
 
   const loadVersions = async () => {

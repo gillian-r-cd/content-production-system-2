@@ -7,7 +7,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Search, Replace, X, ChevronDown, ChevronRight, CaseSensitive, ArrowRight } from "lucide-react";
 import { projectAPI } from "@/lib/api";
-import type { SearchResult, SearchSnippet } from "@/lib/api";
+import type { SearchResult } from "@/lib/api";
 
 interface GlobalSearchModalProps {
   projectId: string;

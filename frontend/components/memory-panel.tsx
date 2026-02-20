@@ -6,7 +6,6 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { cn } from "@/lib/utils";
 import { memoriesAPI } from "@/lib/api";
 import type { MemoryItemInfo } from "@/lib/api";
 
