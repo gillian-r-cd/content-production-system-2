@@ -10,12 +10,12 @@
 import React, { useState, useEffect, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { evalAPI, blockAPI, graderAPI, settingsAPI } from "@/lib/api";
+import { evalAPI, blockAPI, graderAPI } from "@/lib/api";
 import { sendNotification } from "@/lib/utils";
 import type { ContentBlock, GraderData } from "@/lib/api";
 import {
   Users, Plus, Trash2, Play, SlidersHorizontal, ChevronDown, ChevronRight,
-  Eye, Save, RefreshCw, BarChart3, FileText,
+  Save, RefreshCw, BarChart3, FileText,
   AlertTriangle, XCircle, Clock, Zap, Pencil, Sparkles,
 } from "lucide-react";
 
@@ -40,40 +40,28 @@ interface PersonaData {
   block_id?: string;
 }
 
-interface SimulatorData {
-  id: string;
-  name: string;
-  description: string;
-  simulator_type: string;
-  interaction_type: string;           // 旧版: reading/dialogue/decision/exploration
-  interaction_mode: string;           // 新版: review/dialogue/scenario/exploration
-  prompt_template: string;
-  secondary_prompt: string;           // 对话模式第二方提示词
-  grader_template: string;
-  evaluation_dimensions: string[];
-  max_turns: number;
-  is_preset: boolean;
-}
-
 interface TrialConfig {
   name: string;
-  target_block_ids: string[];       // 核心：要评估的内容块 ID
-  target_block_names: string[];     // 显示用
-  simulator_type: string;           // 保留向后兼容
-  simulator_id?: string;            // 新: 关联后台配置的模拟器
-  simulator_name?: string;          // 显示用
+  target_block_ids: string[];
+  target_block_names: string[];
+  form_type: string;
   interaction_mode: string;
   persona_config: {
     name?: string;
     [key: string]: unknown;
   };
-  grader_ids: string[];             // 多个 Grader 评分器
-  grader_names: string[];           // 显示用
-  simulator_config?: {
+  grader_ids: string[];
+  grader_names: string[];
+  form_config?: {
     max_turns?: number;
     [key: string]: unknown;
   };
   order_index: number;
+  // legacy fields kept for backward compat parsing
+  simulator_type?: string;
+  simulator_id?: string;
+  simulator_name?: string;
+  simulator_config?: Record<string, unknown>;
 }
 
 // 兼容旧格式
@@ -388,59 +376,34 @@ export function EvalPersonaSetup({ block, projectId, onUpdate }: EvalFieldProps)
 
 // ============== 2. 评估任务配置 ==============
 
-// 模拟器类型图标/颜色映射（基于 simulator_type 或 interaction_type）
-const SIM_TYPE_STYLE: Record<string, { icon: string; color: string }> = {
-  coach: { icon: "🎯", color: "text-rose-400 bg-rose-500/15 border-rose-500/30" },
-  editor: { icon: "✍️", color: "text-amber-400 bg-amber-500/15 border-amber-500/30" },
-  expert: { icon: "🔬", color: "text-violet-400 bg-violet-500/15 border-violet-500/30" },
-  consumer: { icon: "👤", color: "text-blue-400 bg-blue-500/15 border-blue-500/30" },
-  seller: { icon: "💰", color: "text-emerald-400 bg-emerald-500/15 border-emerald-500/30" },
-  custom: { icon: "🔧", color: "text-zinc-400 bg-zinc-500/15 border-zinc-500/30" },
-  reading: { icon: "📖", color: "text-blue-400 bg-blue-500/15 border-blue-500/30" },
-  dialogue: { icon: "💬", color: "text-emerald-400 bg-emerald-500/15 border-emerald-500/30" },
-  decision: { icon: "🎯", color: "text-amber-400 bg-amber-500/15 border-amber-500/30" },
-  exploration: { icon: "🔍", color: "text-violet-400 bg-violet-500/15 border-violet-500/30" },
+const FORM_TYPE_STYLE: Record<string, { icon: string; label: string; color: string; desc: string }> = {
+  assessment: { icon: "🎯", label: "直接判定", color: "text-rose-400 bg-rose-500/15 border-rose-500/30", desc: "AI 直接评分，不产生交互过程" },
+  review: { icon: "✍️", label: "视角审查", color: "text-amber-400 bg-amber-500/15 border-amber-500/30", desc: "以特定角色视角审查内容" },
+  experience: { icon: "👤", label: "消费体验", color: "text-blue-400 bg-blue-500/15 border-blue-500/30", desc: "模拟消费者分块探索内容" },
+  scenario: { icon: "💬", label: "场景模拟", color: "text-emerald-400 bg-emerald-500/15 border-emerald-500/30", desc: "多轮对话模拟真实场景" },
 };
 
-const INTERACTION_MODES_LOCAL: Record<string, { label: string; desc: string }> = {
-  review: { label: "审查模式", desc: "AI 一次性给出完整评审意见" },
-  dialogue: { label: "对话模式", desc: "AI 模拟消费者/销售进行多轮对话" },
-  reading: { label: "阅读模式", desc: "全盘阅读后给出反馈" },
-  decision: { label: "决策模式", desc: "模拟购买/转化决策过程" },
-  exploration: { label: "探索模式", desc: "带目的的内容探索" },
-  scenario: { label: "场景模式", desc: "在特定场景下测试内容反应" },
-};
-
-function getSimStyle(sim?: SimulatorData | null, type?: string) {
-  if (sim) {
-    return SIM_TYPE_STYLE[sim.simulator_type] || SIM_TYPE_STYLE[sim.interaction_type] || SIM_TYPE_STYLE.custom;
-  }
-  return SIM_TYPE_STYLE[type || "custom"] || SIM_TYPE_STYLE.custom;
+function getFormStyle(formType?: string) {
+  return FORM_TYPE_STYLE[formType || "assessment"] || FORM_TYPE_STYLE.assessment;
 }
 
 export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
   const [trials, setTrials] = useState<TrialConfig[]>([]);
   const [personas, setPersonas] = useState<PersonaData[]>([]);
   const [graders, setGraders] = useState<GraderData[]>([]);
-  const [simulators, setSimulators] = useState<SimulatorData[]>([]);
   const [projectBlocks, setProjectBlocks] = useState<{id: string; name: string}[]>([]);
   const [saving, setSaving] = useState(false);
   const [expandedTrial, setExpandedTrial] = useState<number | null>(null);
-  const [showPrompt, setShowPrompt] = useState<string | null>(null);  // simulator id -> show prompt
 
   const _loadDeps = useCallback(async () => {
     try {
-      const [personaResp, graderList, blockTree, simList] = await Promise.all([
+      const [personaResp, graderList, blockTree] = await Promise.all([
         evalAPI.getPersonas(projectId).catch(() => ({ personas: [] } as PersonasResponse)),
         graderAPI.listForProject(projectId).catch(() => []),
         blockAPI.getProjectBlocks(projectId).catch(() => ({ blocks: [] } as ProjectBlockTreeResponse)),
-        settingsAPI.listSimulators().catch(() => []) as Promise<SimulatorData[]>,
-      ]) as [PersonasResponse, GraderData[], ProjectBlockTreeResponse, SimulatorData[]];
+      ]) as [PersonasResponse, GraderData[], ProjectBlockTreeResponse];
       setPersonas(personaResp.personas || []);
       setGraders(graderList);
-      // 过滤掉"体验式"模拟器
-      setSimulators((simList || []).filter((s: SimulatorData) => s.interaction_type !== "experience"));
-      // 提取所有 field 类型的内容块作为可选内容块（P0-1: 统一使用 blockAPI）
       const fields: {id: string; name: string}[] = [];
       const _flatten = (blocks: ProjectBlockTreeNode[]) => {
         for (const b of blocks) {
@@ -466,111 +429,93 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
     _loadDeps();
   }, [block.content, _loadDeps]);
 
-  // 旧格式迁移：tasks → trials
   const _migrateOldTasks = (tasks: TaskConfig[]): TrialConfig[] => {
     return tasks.map((t, i) => ({
       name: t.name,
       target_block_ids: t.target_block_ids || [],
       target_block_names: [],
-      simulator_type: t.simulator_type,
+      form_type: t.interaction_mode === "review" ? "review" : t.interaction_mode === "scenario" ? "scenario" : "assessment",
       interaction_mode: t.interaction_mode,
       persona_config: t.persona_config || {},
       grader_ids: [],
       grader_names: [],
-      simulator_config: t.simulator_config,
       order_index: i,
     }));
   };
 
-  // 添加单个试验
   const addTrial = () => {
-    const defaultSim = simulators[0];
     const newTrial: TrialConfig = {
       name: `试验 ${trials.length + 1}`,
       target_block_ids: [],
       target_block_names: [],
-      simulator_type: defaultSim?.simulator_type || "custom",
-      simulator_id: defaultSim?.id || "",
-      simulator_name: defaultSim?.name || "",
-      interaction_mode: defaultSim?.interaction_mode || defaultSim?.interaction_type || "review",
+      form_type: "assessment",
+      interaction_mode: "review",
       persona_config: {},
       grader_ids: graders.length > 0 ? [graders[0].id] : [],
       grader_names: graders.length > 0 ? [graders[0].name] : [],
-      simulator_config: { max_turns: defaultSim?.max_turns || 5 },
       order_index: trials.length,
     };
     setTrials([...trials, newTrial]);
     setExpandedTrial(trials.length);
   };
 
-  // 全回归：每个模拟器 × 全部内容块 创建试验
   const addFullRegression = () => {
     const newTrials: TrialConfig[] = [];
     let order = trials.length;
 
-    // 获取所有内容块
     const targetFields = projectBlocks.length > 0 ? projectBlocks : [{ id: "all", name: "全部内容" }];
     const fieldIds = targetFields.map(f => f.id);
     const fieldNames = targetFields.map(f => f.name);
 
-    // 找匹配的 grader
     const contentGrader = graders.find(g => g.grader_type === "content_only") || graders[0];
     const processGrader = graders.find(g => g.grader_type === "content_and_process") || graders[0];
     const allGraderIds = [contentGrader, processGrader].filter(Boolean).map(g => g!.id);
     const allGraderNames = [contentGrader, processGrader].filter(Boolean).map(g => g!.name);
+    const activePersonas = personas.length > 0 ? personas : [{ name: "典型用户", background: "目标读者" }];
 
-    if (simulators.length > 0) {
-      // 基于实际配置的模拟器生成
-      const activePersonas = personas.length > 0 ? personas : [{ name: "典型用户", background: "目标读者" }];
+    // 1. 直接判定
+    newTrials.push({
+      name: "直接判定评估",
+      target_block_ids: fieldIds, target_block_names: fieldNames,
+      form_type: "assessment", interaction_mode: "review",
+      persona_config: {},
+      grader_ids: contentGrader ? [contentGrader.id] : [],
+      grader_names: contentGrader ? [contentGrader.name] : [],
+      order_index: order++,
+    });
 
-      for (const sim of simulators) {
-        const isDialogue = sim.interaction_type === "dialogue" || sim.interaction_mode === "dialogue";
-        if (isDialogue) {
-          // 对话类模拟器：每个 persona 一个 trial
-          for (const persona of activePersonas) {
-            newTrials.push({
-              name: `${sim.name} · ${persona.name}`,
-              target_block_ids: fieldIds,
-              target_block_names: fieldNames,
-              simulator_type: sim.simulator_type,
-              simulator_id: sim.id,
-              simulator_name: sim.name,
-              interaction_mode: sim.interaction_mode || sim.interaction_type,
-              persona_config: persona as unknown as TrialConfig["persona_config"],
-              grader_ids: allGraderIds,
-              grader_names: allGraderNames,
-              simulator_config: { max_turns: sim.max_turns || 5 },
-              order_index: order++,
-            });
-          }
-        } else {
-          // 审查/阅读类模拟器：一个 trial 即可
-          newTrials.push({
-            name: `${sim.name}评估`,
-            target_block_ids: fieldIds,
-            target_block_names: fieldNames,
-            simulator_type: sim.simulator_type,
-            simulator_id: sim.id,
-            simulator_name: sim.name,
-            interaction_mode: sim.interaction_mode || sim.interaction_type,
-            persona_config: {},
-            grader_ids: contentGrader ? [contentGrader.id] : [],
-            grader_names: contentGrader ? [contentGrader.name] : [],
-            order_index: order++,
-          });
-        }
-      }
-    } else {
-      // 后备：无模拟器时用简单默认
+    // 2. 视角审查
+    newTrials.push({
+      name: "视角审查评估",
+      target_block_ids: fieldIds, target_block_names: fieldNames,
+      form_type: "review", interaction_mode: "review",
+      persona_config: {},
+      grader_ids: contentGrader ? [contentGrader.id] : [],
+      grader_names: contentGrader ? [contentGrader.name] : [],
+      order_index: order++,
+    });
+
+    // 3. 消费体验：每个 persona 一个
+    for (const persona of activePersonas) {
       newTrials.push({
-        name: "默认内容审查",
-        target_block_ids: fieldIds,
-        target_block_names: fieldNames,
-        simulator_type: "custom",
-        interaction_mode: "review",
-        persona_config: {},
-        grader_ids: contentGrader ? [contentGrader.id] : [],
-        grader_names: contentGrader ? [contentGrader.name] : [],
+        name: `消费体验 · ${persona.name}`,
+        target_block_ids: fieldIds, target_block_names: fieldNames,
+        form_type: "experience", interaction_mode: "exploration",
+        persona_config: persona as unknown as TrialConfig["persona_config"],
+        grader_ids: allGraderIds, grader_names: allGraderNames,
+        order_index: order++,
+      });
+    }
+
+    // 4. 场景模拟：每个 persona 一个
+    for (const persona of activePersonas) {
+      newTrials.push({
+        name: `场景模拟 · ${persona.name}`,
+        target_block_ids: fieldIds, target_block_names: fieldNames,
+        form_type: "scenario", interaction_mode: "scenario",
+        persona_config: persona as unknown as TrialConfig["persona_config"],
+        grader_ids: allGraderIds, grader_names: allGraderNames,
+        form_config: { max_turns: 5 },
         order_index: order++,
       });
     }
@@ -668,19 +613,9 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
           <Zap className="w-4 h-4" /> 全回归模板
         </button>
         <span className="text-xs text-zinc-500 self-center ml-2">
-          模拟器: {simulators.length} 个 · 字段: {projectBlocks.length} 个 · 评分器: {graders.length} 个 · 画像: {personas.length} 个
+          字段: {projectBlocks.length} 个 · 评分器: {graders.length} 个 · 画像: {personas.length} 个
         </span>
       </div>
-
-      {/* 无模拟器提示 */}
-      {simulators.length === 0 && (
-        <div className="px-4 py-3 bg-amber-500/10 border border-amber-500/20 rounded-lg flex items-center gap-2">
-          <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0" />
-          <span className="text-sm text-amber-300">
-            后台尚未配置模拟器。请到「后台设置 → 模拟器」中添加。模拟器定义了交互方式和提示词。
-          </span>
-        </div>
-      )}
 
       {/* 试验列表 */}
       {trials.length === 0 ? (
@@ -694,13 +629,11 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
       ) : (
         <div className="space-y-3">
           {trials.map((trial, idx) => {
-            const simMatch = simulators.find(s => s.id === trial.simulator_id);
-            const style = getSimStyle(simMatch, trial.simulator_type);
+            const style = getFormStyle(trial.form_type);
             const isExpanded = expandedTrial === idx;
             const targetCount = (trial.target_block_ids || []).length;
             return (
               <div key={idx} className={`${CARD} overflow-hidden transition-all ${isExpanded ? "ring-1 ring-brand-500/30" : ""}`}>
-                {/* 试验卡片头部 */}
                 <div className="px-5 py-4 flex items-center gap-4 cursor-pointer hover:bg-surface-3/30 transition-colors"
                   onClick={() => setExpandedTrial(isExpanded ? null : idx)}>
                   <div className="w-7 h-7 rounded-full bg-surface-3 flex items-center justify-center flex-shrink-0">
@@ -710,25 +643,17 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
                   <div className="flex-1 min-w-0">
                     <div className="font-medium text-zinc-100 text-base truncate">{trial.name}</div>
                     <div className="flex items-center gap-2 mt-1 flex-wrap">
-                      {/* 目标字段数 */}
                       <span className="text-xs px-2 py-0.5 rounded-md bg-blue-500/15 text-blue-400 border border-blue-500/30">
                         📄 {targetCount > 0 ? `${targetCount} 个内容块` : "未选内容块"}
                       </span>
-                      {/* 模拟器名称 */}
                       <span className={`text-xs px-2 py-0.5 rounded-md border ${style.color}`}>
-                        {trial.simulator_name || simMatch?.name || trial.simulator_type}
+                        {style.label}
                       </span>
-                      {/* 交互模式 */}
-                      <span className="text-xs px-2 py-0.5 rounded-md bg-surface-3 text-zinc-400">
-                        {INTERACTION_MODES_LOCAL[trial.interaction_mode || ""]?.label || trial.interaction_mode}
-                      </span>
-                      {/* 评分器 */}
                       {(trial.grader_names || []).length > 0 && (
                         <span className="text-xs px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-400 border border-amber-500/30">
                           ⚖️ {trial.grader_names.length} 个评分器
                         </span>
                       )}
-                      {/* Persona */}
                       {trial.persona_config?.name && (
                         <span className="text-xs text-zinc-500">👤 {trial.persona_config.name}</span>
                       )}
@@ -797,114 +722,35 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
                       )}
                     </div>
 
-                    {/* 模拟器选择 */}
+                    {/* 评估形态选择 */}
                     <div className={`${CARD_INNER} p-4`}>
                       <label className="text-sm font-medium text-zinc-200 mb-3 block flex items-center gap-2">
-                        🎭 模拟器
-                        <span className="text-xs font-normal text-zinc-500">（决定交互方式和提示词，在「后台设置 → 模拟器」管理）</span>
+                        🎯 评估形态
+                        <span className="text-xs font-normal text-zinc-500">（决定交互方式；提示词在「后台设置 → 评估提示词」管理）</span>
                       </label>
-                      {simulators.length > 0 ? (
-                        <div className="space-y-2">
-                          {simulators.map((sim) => {
-                            const selected = trial.simulator_id === sim.id;
-                            const simStyle = getSimStyle(sim);
-                            return (
-                              <div key={sim.id}
-                                className={`rounded-lg transition-all border ${
-                                  selected
-                                    ? "bg-brand-500/10 border-brand-500/30 ring-1 ring-brand-500/20"
-                                    : "bg-surface-2 border-surface-3 hover:border-surface-4"
-                                }`}>
-                                <label className="flex items-center gap-3 p-3 cursor-pointer">
-                                  <input type="radio" name={`sim-${idx}`}
-                                    checked={selected}
-                                    onChange={() => {
-                                      updateTrial(idx, "simulator_id", sim.id);
-                                      updateTrial(idx, "simulator_name", sim.name);
-                                      updateTrial(idx, "simulator_type", sim.simulator_type);
-                                      updateTrial(idx, "interaction_mode", sim.interaction_mode || sim.interaction_type);
-                                      updateTrial(idx, "simulator_config", {
-                                        ...trial.simulator_config,
-                                        max_turns: sim.max_turns || 5,
-                                        system_prompt: sim.prompt_template || "",
-                                        secondary_prompt: sim.secondary_prompt || "",
-                                        simulator_name: sim.name,
-                                        grader_template: sim.grader_template || "",
-                                      });
-                                    }}
-                                    className="accent-brand-500" />
-                                  <span className="text-lg flex-shrink-0">{simStyle.icon}</span>
-                                  <div className="flex-1 min-w-0">
-                                    <div className="text-sm font-medium text-zinc-200">{sim.name}</div>
-                                    <div className="text-xs text-zinc-500 mt-0.5 flex items-center gap-2">
-                                      <span className="px-1.5 py-0.5 rounded bg-surface-3">
-                                        {INTERACTION_MODES_LOCAL[sim.interaction_mode]?.label
-                                          || INTERACTION_MODES_LOCAL[sim.interaction_type]?.label
-                                          || sim.interaction_type}
-                                      </span>
-                                      {sim.description && <span className="truncate">{sim.description}</span>}
-                                    </div>
-                                  </div>
-                                  <button onClick={(e) => {
-                                    e.preventDefault();
-                                    setShowPrompt(showPrompt === sim.id ? null : sim.id);
-                                  }}
-                                    className="px-2 py-1 rounded text-xs text-zinc-400 hover:text-zinc-200 hover:bg-surface-3 transition-colors flex items-center gap-1"
-                                    title="查看提示词模板">
-                                    <Eye className="w-3.5 h-3.5" /> 提示词
-                                  </button>
-                                </label>
-                                {/* 展开提示词 */}
-                                {showPrompt === sim.id && (
-                                  <div className="px-4 pb-4 border-t border-surface-3 mt-1 pt-3 space-y-3">
-                                    {/* 主提示词 */}
-                                    <div>
-                                      <div className="text-xs font-medium text-blue-400 mb-1.5">
-                                        📤 {sim.interaction_type === "decision" ? "销售方提示词" : "主提示词（模拟消费者/审阅者）"}
-                                      </div>
-                                      <pre className="bg-surface-1 p-3 rounded-lg border border-surface-3 text-xs text-zinc-300 whitespace-pre-wrap max-h-[200px] overflow-y-auto leading-relaxed">
-                                        {sim.prompt_template || "(空 — 将使用默认模板)"}
-                                      </pre>
-                                    </div>
-                                    {/* 第二方提示词（对话模式） */}
-                                    {(sim.interaction_type === "dialogue" || sim.interaction_type === "decision" || sim.interaction_type === "exploration") && (
-                                      <div>
-                                        <div className="text-xs font-medium text-emerald-400 mb-1.5">
-                                          📥 {sim.interaction_type === "decision" ? "消费者回应提示词" : "内容代表提示词"}
-                                        </div>
-                                        <pre className="bg-surface-1 p-3 rounded-lg border border-surface-3 text-xs text-zinc-300 whitespace-pre-wrap max-h-[200px] overflow-y-auto leading-relaxed">
-                                          {sim.secondary_prompt || "(空 — 将使用默认模板)"}
-                                        </pre>
-                                      </div>
-                                    )}
-                                    {/* 评分提示词 */}
-                                    {sim.grader_template && (
-                                      <div>
-                                        <div className="text-xs font-medium text-amber-400 mb-1.5">⚖️ 评分提示词模板</div>
-                                        <pre className="bg-surface-1 p-3 rounded-lg border border-surface-3 text-xs text-zinc-300 whitespace-pre-wrap max-h-[150px] overflow-y-auto leading-relaxed">
-                                          {sim.grader_template}
-                                        </pre>
-                                      </div>
-                                    )}
-                                    {sim.evaluation_dimensions?.length > 0 && (
-                                      <div className="flex flex-wrap gap-1.5">
-                                        {sim.evaluation_dimensions.map((d, i) => (
-                                          <span key={i} className="px-2 py-0.5 bg-surface-3 text-zinc-400 text-xs rounded">
-                                            {d}
-                                          </span>
-                                        ))}
-                                      </div>
-                                    )}
-                                    <p className="text-xs text-zinc-600 italic">💡 在后台设置 → 模拟器 中编辑这些提示词</p>
-                                  </div>
-                                )}
+                      <div className="grid grid-cols-2 gap-2">
+                        {Object.entries(FORM_TYPE_STYLE).map(([ft, info]) => {
+                          const selected = trial.form_type === ft;
+                          return (
+                            <label key={ft}
+                              className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-all border ${
+                                selected
+                                  ? "bg-brand-500/10 border-brand-500/30 ring-1 ring-brand-500/20"
+                                  : "bg-surface-2 border-surface-3 hover:border-surface-4"
+                              }`}>
+                              <input type="radio" name={`form-${idx}`}
+                                checked={selected}
+                                onChange={() => updateTrial(idx, "form_type", ft)}
+                                className="accent-brand-500" />
+                              <span className="text-lg flex-shrink-0">{info.icon}</span>
+                              <div className="flex-1 min-w-0">
+                                <div className="text-sm font-medium text-zinc-200">{info.label}</div>
+                                <div className="text-xs text-zinc-500 mt-0.5">{info.desc}</div>
                               </div>
-                            );
-                          })}
-                        </div>
-                      ) : (
-                        <p className="text-sm text-zinc-500">暂无模拟器，请到「后台设置 → 模拟器」中创建。</p>
-                      )}
+                            </label>
+                          );
+                        })}
+                      </div>
                     </div>
 
                     {/* ★ Grader 评分器选择（多选） */}
@@ -966,8 +812,8 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
                       )}
                     </div>
 
-                    {/* Persona 选择（所有模拟器类型均可选择角色画像，影响评估视角） */}
-                    {trial.simulator_id && (
+                    {/* Persona 选择（experience/scenario 需要选择人物画像） */}
+                    {(trial.form_type === "experience" || trial.form_type === "scenario" || trial.form_type === "review") && (
                       <div className={`${CARD_INNER} p-4`}>
                         <label className="text-sm font-medium text-zinc-200 mb-2 block">👤 人物画像 <span className="text-xs font-normal text-zinc-500">（可选，决定评估视角）</span></label>
                         {personas.length > 0 ? (
@@ -1000,14 +846,14 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
                       </div>
                     )}
 
-                    {/* 对话轮数 */}
-                    {trial.interaction_mode !== "review" && (
+                    {/* 对话轮数（场景模拟需要） */}
+                    {trial.form_type === "scenario" && (
                       <div>
                         <label className={LABEL}>最大对话轮数</label>
                         <input type="number" min={1} max={20}
-                          value={trial.simulator_config?.max_turns || 5}
-                          onChange={(e) => updateTrial(idx, "simulator_config", {
-                            ...trial.simulator_config, max_turns: parseInt(e.target.value) || 5,
+                          value={trial.form_config?.max_turns || 5}
+                          onChange={(e) => updateTrial(idx, "form_config", {
+                            ...trial.form_config, max_turns: parseInt(e.target.value) || 5,
                           })}
                           className={`${INPUT} w-40`} />
                         <p className="text-xs text-zinc-500 mt-1">建议：消费者对话 3-5 轮，销售测试 5-8 轮</p>
@@ -1313,7 +1159,7 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
             </div>
             <div className="space-y-2.5">
               {trials.map((trial: ReportTrial, idx: number) => {
-                const style = getSimStyle(null, trial.simulator_type);
+                const style = getFormStyle(trial.simulator_type);
                 const score = trial.overall_score;
                 const isBelowStd = score != null && score < 6;
                 const graderEntries = trial.grader_scores ? Object.entries(trial.grader_scores) : [];
@@ -1404,7 +1250,7 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
           {expandedTrial != null && trials[expandedTrial] && (() => {
             const trial = trials[expandedTrial];
             const idx = expandedTrial;
-            const trialStyle = getSimStyle(null, trial.simulator_type);
+            const trialStyle = getFormStyle(trial.simulator_type);
             return (
               <div className={`${CARD} overflow-hidden ring-1 ring-brand-500/30`}>
                 {/* 试验标题栏 */}
@@ -1418,7 +1264,7 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
                           {trial.simulator_name || trial.simulator_type}
                         </span>
                         <span className="px-1.5 py-0.5 rounded bg-surface-3">
-                          {INTERACTION_MODES_LOCAL[trial.interaction_mode || ""]?.label || trial.interaction_mode}
+                          {FORM_TYPE_STYLE[trial.interaction_mode || ""]?.label || trial.interaction_mode}
                         </span>
                         {trial.persona_name && <span>👤 {trial.persona_name}</span>}
                         <span>{trial.llm_calls?.length || 0} 次 LLM 调用</span>

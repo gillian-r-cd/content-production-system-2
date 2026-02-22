@@ -199,6 +199,7 @@ interface EvalV2TaskConfigPanelProps {
 function EvalV2TaskConfigPanel({ projectId, personaBlock, onUpdate }: EvalV2TaskConfigPanelProps) {
   const [tasks, setTasks] = useState<EvalV2Task[]>([]);
   const [graders, setGraders] = useState<GraderData[]>([]);
+  const [projectBlocks, setProjectBlocks] = useState<{ id: string; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [showModal, setShowModal] = useState(false);
@@ -213,12 +214,24 @@ function EvalV2TaskConfigPanel({ projectId, personaBlock, onUpdate }: EvalV2Task
   const loadData = useCallback(async (silent: boolean = false) => {
     if (!silent) setLoading(true);
     try {
-      const [taskResp, graderResp] = await Promise.all([
+      const [taskResp, graderResp, blockTree] = await Promise.all([
         evalV2API.listTasks(projectId),
         graderAPI.listForProject(projectId),
+        blockAPI.getProjectBlocks(projectId).catch(() => ({ blocks: [] })),
       ]);
       setTasks(taskResp.tasks || []);
       setGraders(graderResp || []);
+      const fields: { id: string; name: string }[] = [];
+      const flatten = (blocks: ContentBlock[]) => {
+        for (const b of blocks) {
+          if (b.block_type === "field" && !b.special_handler?.startsWith("eval_")) {
+            fields.push({ id: b.id, name: b.name });
+          }
+          if (b.children) flatten(b.children);
+        }
+      };
+      flatten(blockTree.blocks || []);
+      setProjectBlocks(fields);
     } catch (e: unknown) {
       sendNotification(`加载评估任务失败: ${errorMessage(e)}`, "error");
     } finally {
@@ -590,6 +603,54 @@ function EvalV2TaskConfigPanel({ projectId, personaBlock, onUpdate }: EvalV2Task
                           onChange={(e) => updateTrial(idx, { repeat_count: Math.max(1, Number(e.target.value || 1)) })}
                         />
                       </div>
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-xs text-zinc-400">
+                          评估内容块
+                          {trial.target_block_ids.length > 0
+                            ? ` (${trial.target_block_ids.length}/${projectBlocks.length})`
+                            : ` (不选 = 全部 ${projectBlocks.length} 个)`}
+                        </label>
+                        <button
+                          type="button"
+                          className="text-xs text-zinc-500 hover:text-zinc-300"
+                          onClick={() => {
+                            const allSelected = trial.target_block_ids.length === projectBlocks.length;
+                            updateTrial(idx, { target_block_ids: allSelected ? [] : projectBlocks.map(b => b.id) });
+                          }}
+                        >
+                          {trial.target_block_ids.length === projectBlocks.length ? "清除全选" : "全选"}
+                        </button>
+                      </div>
+                      {projectBlocks.length > 0 ? (
+                        <div className="grid grid-cols-2 gap-1 max-h-36 overflow-y-auto border border-surface-3 rounded p-2 bg-surface-1">
+                          {projectBlocks.map((b) => {
+                            const checked = trial.target_block_ids.includes(b.id);
+                            return (
+                              <label key={b.id} className={`text-xs flex items-center gap-1.5 p-1.5 rounded cursor-pointer transition-colors ${checked ? "text-blue-300 bg-blue-500/10" : "text-zinc-400 hover:text-zinc-300"}`}>
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => {
+                                    const ids = checked
+                                      ? trial.target_block_ids.filter(id => id !== b.id)
+                                      : [...trial.target_block_ids, b.id];
+                                    updateTrial(idx, { target_block_ids: ids });
+                                  }}
+                                  className="accent-blue-500"
+                                />
+                                <span className="truncate">{b.name}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="text-xs text-zinc-500 p-2 border border-surface-3 rounded bg-surface-1">
+                          项目中暂无内容块
+                        </div>
+                      )}
                     </div>
 
                     {renderTrialFormConfig(trial, idx)}

@@ -92,9 +92,11 @@ def list_graders(db: Session = Depends(get_db)):
 
 @router.get("/project/{project_id}", response_model=List[GraderResponse])
 def list_project_graders(project_id: str, db: Session = Depends(get_db)):
-    """获取某项目可用的评分器（预置 + 该项目专用）"""
+    """获取某项目可用的评分器（预置 + 全局自定义 + 该项目专用）"""
     graders = db.query(Grader).filter(
-        (Grader.is_preset == True) | (Grader.project_id == project_id)
+        (Grader.is_preset == True)
+        | (Grader.project_id == project_id)
+        | (Grader.project_id == None)  # noqa: E711  全局自定义评分器
     ).order_by(Grader.is_preset.desc(), Grader.created_at).all()
     return [_grader_to_response(g) for g in graders]
 
