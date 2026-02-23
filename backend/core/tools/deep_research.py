@@ -21,12 +21,16 @@ import os
 import asyncio
 from typing import Optional, List
 from pydantic import BaseModel, Field
+import logging
 
 from tavily import TavilyClient
 
 from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.runnables import RunnableConfig
 
 from core.llm import llm
+
+logger = logging.getLogger("deep_research")
 
 
 class PersonaBasicInfo(BaseModel):
@@ -108,18 +112,28 @@ def search_tavily(query: str, max_results: int = 5) -> List[dict]:
             include_answer=False,     # 不需要 Tavily 的 AI 摘要
         )
         results = response.get("results", [])
-        print(f"[Tavily] 搜索 '{query}' → {len(results)} 条结果")
+        logger.info("[Tavily] 搜索 '%s' → %d 条结果", query, len(results))
         for r in results[:3]:
-            print(f"  [{r.get('score', 0):.2f}] {r.get('title', '')} ({r.get('url', '')})")
+            logger.info(
+                "[Tavily] [%.2f] %s (%s)",
+                r.get("score", 0),
+                r.get("title", ""),
+                r.get("url", ""),
+            )
         return results
     except Exception as e:
         import traceback
-        print(f"[Tavily] 搜索失败 '{query}': {e}")
+        logger.error("[Tavily] 搜索失败 '%s': %s", query, e)
         traceback.print_exc()
         return []
 
 
-async def plan_search_queries(query: str, intent: str, research_type: str = "consumer") -> List[str]:
+async def plan_search_queries(
+    query: str,
+    intent: str,
+    research_type: str = "consumer",
+    config: Optional[RunnableConfig] = None,
+) -> List[str]:
     """
     使用 LLM 规划搜索查询（中文优先，针对项目意图）
     
@@ -170,12 +184,12 @@ async def plan_search_queries(query: str, intent: str, research_type: str = "con
         HumanMessage(content=human_content),
     ]
     
-    response = await llm.ainvoke(messages)
+    response = await llm.ainvoke(messages, config=config)
     queries = [q.strip().lstrip("0123456789.-、) ") for q in response.content.strip().split("\n") if q.strip()]
     # 过滤掉太短或方法论类的查询词
     queries = [q for q in queries if len(q) >= 4]
     
-    print(f"[DeepResearch] 生成搜索查询: {queries}")
+    logger.info("[DeepResearch] 生成搜索查询: %s", queries)
     return queries[:5]
 
 
@@ -183,6 +197,7 @@ async def synthesize_report(
     contents: List[dict],
     query: str,
     intent: str,
+    config: Optional[RunnableConfig] = None,
 ) -> ResearchReport:
     """
     综合分析生成调研报告
@@ -249,7 +264,7 @@ async def synthesize_report(
 请基于以上真实搜索结果生成调研报告（记得在文中添加引用标注 [1] [2] 等）："""),
     ]
     
-    report = await llm.with_structured_output(ResearchReport).ainvoke(messages)
+    report = await llm.with_structured_output(ResearchReport).ainvoke(messages, config=config)
     
     return report
 
@@ -259,6 +274,7 @@ async def deep_research(
     intent: str,
     max_sources: int = 10,
     research_type: str = "consumer",
+    config: Optional[RunnableConfig] = None,
 ) -> ResearchReport:
     """
     执行深度调研（Tavily Search API）
@@ -278,7 +294,7 @@ async def deep_research(
         ResearchReport
     """
     # 1. 规划搜索查询
-    search_queries = await plan_search_queries(query, intent, research_type)
+    search_queries = await plan_search_queries(query, intent, research_type, config=config)
     if not search_queries:
         # 降级：如果 LLM 未能生成查询词，使用意图中的关键信息
         search_queries = [intent[:100]]
@@ -300,12 +316,16 @@ async def deep_research(
             if len(unique_results) >= max_sources:
                 break
     
-    print(f"[DeepResearch] 总搜索: {len(all_results)} 条, 去重后: {len(unique_results)} 条")
+    logger.info("[DeepResearch] 总搜索: %d 条, 去重后: %d 条", len(all_results), len(unique_results))
     
     # 4. 综合分析
     combined_content = "\n".join(r.get("content", "") for r in unique_results)
 
-    print(f"[DeepResearch] unique_results数量: {len(unique_results)}, URLs: {[r.get('url','')[:50] for r in unique_results[:3]]}")
+    logger.info(
+        "[DeepResearch] unique_results=%d, URLs=%s",
+        len(unique_results),
+        [r.get("url", "")[:80] for r in unique_results[:3]],
+    )
 
     if not unique_results:
         raise ValueError(
@@ -315,7 +335,7 @@ async def deep_research(
             "请稍后重试或调整调研主题。"
         )
     
-    report = await synthesize_report(unique_results, query, intent)
+    report = await synthesize_report(unique_results, query, intent, config=config)
 
     # 始终使用 Tavily 返回的真实 URL（不依赖 LLM 输出的 sources）
     # LLM 有时会返回占位文本（如 "[1] 当前报告阶段无外部可用URL..."）而非实际 URL
@@ -324,8 +344,8 @@ async def deep_research(
     report.search_queries = search_queries
     report.content_length = len(combined_content)
     
-    print(f"[DeepResearch] 搜索查询: {search_queries}")
-    print(f"[DeepResearch] 来源URLs: {[r.get('url','') for r in unique_results[:5]]}")
-    print(f"[DeepResearch] 内容总长度: {len(combined_content)} 字符")
+    logger.info("[DeepResearch] 搜索查询: %s", search_queries)
+    logger.info("[DeepResearch] 来源URLs: %s", [r.get("url", "") for r in unique_results[:5]])
+    logger.info("[DeepResearch] 内容总长度: %d 字符", len(combined_content))
     
     return report

@@ -141,7 +141,8 @@ class PhaseTemplate(BaseModel):
             }
             blocks_to_create.append(phase_block)
             
-            # 创建默认字段
+            # 创建默认字段（继承父 phase 的 special_handler）
+            phase_handler = phase.get("special_handler")
             for idx, field in enumerate(phase.get("default_fields", [])):
                 template_content = field.get("content", "")
                 field_block = {
@@ -154,11 +155,11 @@ class PhaseTemplate(BaseModel):
                     "order_index": idx,
                     "ai_prompt": field.get("ai_prompt", ""),
                     "content": template_content,
+                    "special_handler": field.get("special_handler", phase_handler),
                     "pre_questions": field.get("pre_questions", []),
                     "depends_on": field.get("depends_on", []),
                     "constraints": field.get("constraints", {}),
                     "need_review": field.get("need_review", True),
-                    # 有预置内容：need_review=True → in_progress(待确认)，否则 completed
                     "status": (
                         ("in_progress" if field.get("need_review", True) else "completed")
                         if template_content else "pending"

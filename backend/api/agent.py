@@ -869,23 +869,41 @@ async def stream_chat(
                                 "field_updated": False,
                             })
 
-                    # rewrite_field (原 modify_field) 特殊处理：解析 JSON 输出
+                    # rewrite_field 现在也走 SuggestionCard 确认流程（与 propose_edit 相同）
                     elif ended_tool == "rewrite_field":
                         try:
                             result = json.loads(output_str)
-                            if result.get("status") == "need_confirm":
-                                yield sse_event({
-                                    "type": "modify_confirm_needed",
+                            if result.get("status") == "suggestion":
+                                card_sse = {
+                                    "type": "suggestion_card",
+                                    "id": result.get("id"),
+                                    "group_id": result.get("group_id"),
+                                    "group_summary": result.get("group_summary"),
                                     "target_field": result.get("target_field"),
-                                    "edits": result.get("edits"),
+                                    "target_entity_id": result.get("target_entity_id"),
                                     "summary": result.get("summary"),
+                                    "reason": result.get("reason"),
+                                    "diff_preview": result.get("diff_preview"),
+                                    "edits_count": result.get("edits_count", 0),
+                                    "applied_count": result.get("applied_count", 0),
+                                    "failed_count": result.get("failed_count", 0),
+                                }
+                                yield sse_event(card_sse)
+                                suggestion_cards_emitted.append({
+                                    "id": result.get("id"),
+                                    "target_field": result.get("target_field"),
+                                    "summary": result.get("summary"),
+                                    "reason": result.get("reason"),
+                                    "diff_preview": result.get("diff_preview"),
+                                    "edits_count": result.get("edits_count", 0),
+                                    "status": "pending",
                                 })
-                            elif result.get("status") == "applied":
+                            elif result.get("status") == "error":
                                 yield sse_event({
                                     "type": "tool_end",
                                     "tool": ended_tool,
-                                    "output": result.get("summary", ""),
-                                    "field_updated": True,
+                                    "output": result.get("message", output_str[:500]),
+                                    "field_updated": False,
                                 })
                             else:
                                 yield sse_event({
@@ -901,6 +919,32 @@ async def stream_chat(
                                 "output": output_str[:500],
                                 "field_updated": field_updated,
                             })
+                    # run_research 特殊处理：输出 sources 和 search_queries 到日志和 SSE
+                    elif ended_tool == "run_research":
+                        try:
+                            result = json.loads(output_str)
+                            sources = result.get("sources", [])
+                            queries = result.get("search_queries", [])
+                            logger.info(
+                                "[stream] run_research 完成: sources=%d, queries=%s",
+                                len(sources), queries,
+                            )
+                            yield sse_event({
+                                "type": "tool_end",
+                                "tool": ended_tool,
+                                "output": result.get("summary", "")[:500],
+                                "field_updated": True,
+                                "sources": sources[:10],
+                                "search_queries": queries,
+                            })
+                        except (json.JSONDecodeError, TypeError):
+                            yield sse_event({
+                                "type": "tool_end",
+                                "tool": ended_tool,
+                                "output": output_str[:500],
+                                "field_updated": field_updated,
+                            })
+
                     else:
                         yield sse_event({
                             "type": "tool_end",
@@ -1288,17 +1332,23 @@ async def confirm_suggestion(
                 # 冲突检测: 如果内容在 propose_edit 后被修改，重新计算 diff
                 current_content = entity.content or ""
                 if current_content != original_content:
-                    logger.warning(
-                        "[confirm-suggestion] %s 内容已变更，基于当前内容重新应用 edits", target_field,
-                    )
-                    re_modified, re_changes = apply_edits(current_content, card["edits"])
-                    applied = [c for c in re_changes if c["status"] == "applied"]
-                    if not applied:
-                        logger.warning(
-                            "[confirm-suggestion] %s edits 无法应用到已变更内容，跳过", target_field,
+                    # full_rewrite 卡片：直接用 modified_content 覆盖，无需 anchor-based 重算
+                    if card.get("card_type") == "full_rewrite":
+                        logger.info(
+                            "[confirm-suggestion] %s 全文重写卡片，直接替换（忽略中间变更）", target_field,
                         )
-                        continue
-                    modified_content = re_modified
+                    else:
+                        logger.warning(
+                            "[confirm-suggestion] %s 内容已变更，基于当前内容重新应用 edits", target_field,
+                        )
+                        re_modified, re_changes = apply_edits(current_content, card["edits"])
+                        applied = [c for c in re_changes if c["status"] == "applied"]
+                        if not applied:
+                            logger.warning(
+                                "[confirm-suggestion] %s edits 无法应用到已变更内容，跳过", target_field,
+                            )
+                            continue
+                        modified_content = re_modified
 
                 # 2. 保存旧版本
                 version_id = save_content_version(

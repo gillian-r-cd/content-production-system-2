@@ -2,6 +2,12 @@
 # 功能: LangGraph Agent 的工具定义层
 # 主要导出: AGENT_TOOLS (list[BaseTool]) — 注册到 Agent 的全部 @tool
 #           PENDING_SUGGESTIONS (dict) — 未确认的 SuggestionCard 内存缓存
+#           PRODUCE_TOOLS (set) — 直接写 DB 的工具名集合（前端据此刷新）
+# 安全机制:
+#   - _is_structured_handler(): 阻止纯文本工具覆写结构化内容块（含父块继承）
+#   - _is_explicit_rewrite_intent(): 双重守护（用户消息 + LLM instruction）
+#   - rewrite_field: 走 SuggestionCard 确认流程，不直接写 DB
+#   - generate_field_content: 对已有内容拒绝覆写，除非用户明确要求重新生成
 # 设计原则:
 #   1. 每个 @tool 是现有 tool 模块的薄包装，复用已有逻辑
 #   2. docstring 是 LLM 选择工具的唯一依据（通过 bind_tools → JSON Schema）
@@ -22,6 +28,7 @@ Agent 工具定义
 
 import json
 import logging
+import re
 from typing import Optional, List, Annotated
 
 from pydantic import BaseModel, Field
@@ -103,6 +110,7 @@ def _set_content_status(entity) -> None:
 # 使用结构化 JSON 内容的 special_handler 集合。
 # 这些内容块有专用 UI 和专用工具，不能被纯文本工具（rewrite_field / generate_field_content）覆写。
 _STRUCTURED_HANDLERS = frozenset({
+    "research",            # 消费者调研（结构化 JSON，必须走 run_research）
     "eval_persona_setup",   # 目标消费者画像 → manage_persona
     "eval_task_config",     # 评估任务配置 → 前端专用 UI
     "eval_report",          # 评估报告 → run_evaluation
@@ -110,9 +118,39 @@ _STRUCTURED_HANDLERS = frozenset({
 
 
 def _is_structured_handler(entity) -> bool:
-    """判断内容块是否使用结构化 JSON 格式，不能被纯文本工具覆写。"""
+    """判断内容块是否使用结构化 JSON 格式，不能被纯文本工具覆写。
+
+    直接检查 entity.special_handler。子 field 块在创建时已从父 phase 块
+    继承 special_handler（见 phase_template.py::apply_to_project + migrate_special_handler.py）。
+    """
     handler = getattr(entity, "special_handler", None)
     return handler in _STRUCTURED_HANDLERS
+
+
+def _is_explicit_rewrite_intent(instruction: str) -> bool:
+    """是否为明确的全文重写指令（运行时保险丝，避免误触发 rewrite_field）。"""
+    text = (instruction or "").strip().lower()
+    if not text:
+        return False
+    # 只要出现"局部编辑/小改"语义，直接判定不是全文重写
+    partial_hints = (
+        "改一下", "优化一下", "微调", "润色", "局部", "一句", "一段", "开头", "结尾",
+        "replace", "edit", "small change",
+    )
+    if any(h in text for h in partial_hints):
+        return False
+
+    rewrite_keywords = (
+        "重写", "全文", "整篇", "通篇", "从头写", "从头改", "完全重做", "整体改写", "整体调整",
+        "rewrite", "rewrite all", "rewrite whole", "from scratch",
+    )
+    if any(k in text for k in rewrite_keywords):
+        return True
+
+    # 兜底：包含"风格/语气" + 全局范围词，也视为全文重写
+    style_terms = ("风格", "语气", "口吻", "style", "tone")
+    global_scope_terms = ("整体", "全文", "整篇", "全篇", "通篇", "all", "whole")
+    return any(s in text for s in style_terms) and any(g in text for g in global_scope_terms)
 
 
 # ============== Suggestion Card 缓存 ==============
@@ -209,6 +247,7 @@ async def propose_edit(
         suggestion_id = generate_uuid()
         card = {
             "id": suggestion_id,
+            "card_type": "anchor_edit",
             "group_id": group_id or None,
             "group_summary": group_summary or None,
             "target_field": target_field,
@@ -301,6 +340,14 @@ async def _rewrite_field_impl(
     project_id = _get_project_id(config)
     db = _get_db()
     try:
+        # 指令级守护：检查 LLM 构造的 instruction 是否有明确的全文重写意图
+        # 即使被绕过，rewrite_field 现在也走 SuggestionCard 确认流程（用户有最终决定权）
+        if not _is_explicit_rewrite_intent(instruction):
+            return _json_err(
+                "rewrite_field 仅用于明确的全文重写。当前指令更像局部修改，"
+                "请改用 propose_edit（Suggestion Card）以降低误改风险。"
+            )
+
         entity = _find_block(db, project_id, field_name)
         if not entity:
             return _json_err(f"找不到内容块「{field_name}」")
@@ -309,7 +356,7 @@ async def _rewrite_field_impl(
         if _is_structured_handler(entity):
             return _json_err(
                 f"内容块「{field_name}」是结构化数据块（{entity.special_handler}），"
-                f"不能使用 rewrite_field 修改。请使用对应的专用工具（如 manage_persona）。"
+                f"不能使用 rewrite_field 修改。请使用对应的专用工具（如 run_research / manage_persona）。"
             )
 
         current_content = entity.content or ""
@@ -348,13 +395,46 @@ async def _rewrite_field_impl(
             logger.warning(f"[rewrite_field] 输出被截断（finish_reason=length），不保存，内容 {len(new_content)} 字")
             return _json_err(f"修改内容被截断（{len(new_content)} 字），内容过长。建议拆分内容块或使用更简洁的指令。")
 
-        _save_version(db, entity.id, current_content, "agent")
-        entity.content = new_content
-        _set_content_status(entity)
-        db.commit()
+        # 走 SuggestionCard 确认流程，不直接写 DB
+        from core.edit_engine import generate_revision_markdown
+        from core.models import generate_uuid
 
-        logger.info(f"[rewrite_field] 已重写「{field_name}」, {len(new_content)} 字")
-        return _json_ok(field_name, "applied", f"已重写「{field_name}」")
+        diff_preview = generate_revision_markdown(current_content, new_content)
+
+        suggestion_id = generate_uuid()
+        card = {
+            "id": suggestion_id,
+            "card_type": "full_rewrite",
+            "group_id": None,
+            "group_summary": None,
+            "target_field": field_name,
+            "target_entity_id": entity.id,
+            "summary": f"全文重写「{field_name}」",
+            "reason": instruction,
+            "edits": [],
+            "changes": [],
+            "diff_preview": diff_preview,
+            "original_content": current_content,
+            "modified_content": new_content,
+            "status": "pending",
+            "source_mode": config.get("configurable", {}).get("thread_id", "").split(":")[-1] or "assistant",
+        }
+
+        PENDING_SUGGESTIONS[suggestion_id] = card
+        logger.info(f"[rewrite_field] 生成重写建议卡片 {suggestion_id[:8]}..., 目标={field_name}, {len(new_content)} 字")
+
+        return json.dumps({
+            "status": "suggestion",
+            "id": suggestion_id,
+            "target_field": field_name,
+            "target_entity_id": entity.id,
+            "summary": f"全文重写「{field_name}」",
+            "reason": instruction,
+            "diff_preview": diff_preview,
+            "edits_count": 1,
+            "applied_count": 1,
+            "failed_count": 0,
+        }, ensure_ascii=False)
 
     except Exception as e:
         logger.error(f"rewrite_field error: {e}", exc_info=True)
@@ -372,22 +452,20 @@ async def generate_field_content(
     instruction: str = "",
     *, config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
-    """为指定内容块生成内容（从零开始或全部重写）。
+    """为空白内容块首次生成内容。
 
     何时使用:
-    - 内容块为空，需要首次生成内容
-    - 用户要求"整个重写""从头来过"
-    - 用户说"生成XX""帮我写XX"（且内容块当前为空或需全部替换）
+    - 内容块当前为空，需要首次生成
+    - 用户说"生成XX""帮我写XX"（且内容块当前为空）
 
     何时不使用:
-    - 内容块已有内容，只需局部修改 → propose_edit（默认）或 rewrite_field（全文重写）
+    - 内容块已有内容 → 一律拒绝。局部修改用 propose_edit，全文重写用 rewrite_field
     - 用户想看已有内容 → read_field
     - 用户想改项目结构 → manage_architecture
 
     典型场景:
     - "生成场景库" → generate_field_content("场景库")
     - "帮我写一个详细的意图分析" → generate_field_content("意图分析", "详细的")
-    - "帮我把场景库整个重写" → generate_field_content("场景库", "重写")
 
     Args:
         field_name: 要生成内容的内容块名称
@@ -416,7 +494,16 @@ async def _generate_field_impl(
         if _is_structured_handler(entity):
             return _json_err(
                 f"内容块「{field_name}」是结构化数据块（{entity.special_handler}），"
-                f"不能使用 generate_field_content 生成。请使用对应的专用工具（如 manage_persona）。"
+                f"不能使用 generate_field_content 生成。请使用对应的专用工具（如 run_research / manage_persona）。"
+            )
+
+        # 防护：已有内容的块不能用 generate（直接写 DB）覆写
+        # 局部修改 → propose_edit（确认流程），全文重写 → rewrite_field（确认流程）
+        if entity.content and entity.content.strip():
+            return _json_err(
+                f"内容块「{field_name}」已有内容（{len(entity.content)} 字）。"
+                f"generate_field_content 仅用于空块的首次生成。"
+                f"如需局部修改请使用 propose_edit，如需全文重写请使用 rewrite_field。"
             )
 
         project = db.query(Project).filter(Project.id == project_id).first()
@@ -791,17 +878,27 @@ async def _run_research_impl(query: str, research_type: str, config: RunnableCon
             query=query or ("目标消费者深度调研" if research_type == "consumer" else query),
             intent=intent,
             research_type=research_type,
+            config=config,
         )
 
         report_json = report.model_dump_json(indent=2, ensure_ascii=False)
         saved = False
 
-        # 1. 尝试保存到 ContentBlock（灵活架构）
+        # 1. 保存到 ContentBlock — 优先找 field 子块（如"消费者调研报告"），
+        #    避免 .first() 匹配到 phase 块（"消费者调研"本身）
         research_block = db.query(ContentBlock).filter(
             ContentBlock.project_id == project_id,
-            ContentBlock.name.in_(["消费者调研", "消费者调研报告"]),
+            ContentBlock.name.in_(["消费者调研报告", "消费者调研"]),
+            ContentBlock.block_type == "field",
             ContentBlock.deleted_at == None,  # noqa: E711
         ).first()
+        # fallback: 旧项目可能只有 phase 块
+        if not research_block:
+            research_block = db.query(ContentBlock).filter(
+                ContentBlock.project_id == project_id,
+                ContentBlock.name.in_(["消费者调研报告", "消费者调研"]),
+                ContentBlock.deleted_at == None,  # noqa: E711
+            ).first()
         if research_block:
             if research_block.content:
                 _save_version(db, research_block.id, research_block.content, "agent")
@@ -816,7 +913,15 @@ async def _run_research_impl(query: str, research_type: str, config: RunnableCon
             db.commit()
 
         summary = report.summary[:500] if hasattr(report, "summary") else str(report)[:500]
-        return f"✅ 调研完成。\n{summary}"
+        return json.dumps({
+            "status": "completed",
+            "target_field": "消费者调研",
+            "summary": f"✅ 调研完成。{summary}",
+            "research_type": research_type,
+            "sources": list(getattr(report, "sources", []) or []),
+            "search_queries": list(getattr(report, "search_queries", []) or []),
+            "content_length": int(getattr(report, "content_length", 0) or 0),
+        }, ensure_ascii=False)
 
     except Exception as e:
         logger.error(f"run_research error: {e}", exc_info=True)
@@ -1201,9 +1306,8 @@ AGENT_TOOLS = [
 ]
 
 # 这些工具执行后表示产生了内容块更新，前端需要刷新
-# 注意: propose_edit 不在此列 — 它只生成预览，不写 DB
+# 注意: propose_edit 和 rewrite_field 不在此列 — 它们只生成预览，不写 DB
 PRODUCE_TOOLS = {
-    "rewrite_field",
     "generate_field_content",
     "update_field",
 }
