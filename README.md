@@ -113,6 +113,56 @@ npm run dev
 - [x] Eval 系统 (多模拟器 + Grader)
 - [x] E2E 集成测试
 
+## DeepResearch 评测层运行指南
+
+> 说明：评测层不会在每次对话时自动执行，只有手动运行脚本时才会触发。
+
+### 前置条件
+
+- 后端依赖已安装（`pip install -r backend/requirements.txt`）
+- 建议先运行并使用系统产生一些真实 `run_research` 轨迹（可选）
+
+### 1) 生成/更新 20 条样本集
+
+```bash
+cd backend
+python -m scripts.build_deepresearch_samples
+```
+
+输出文件：
+- `backend/scripts/data/deepresearch_samples_20.json`
+
+规则：
+- 优先从本地数据库抽取真实 `run_research` 样本
+- 不足 20 条会自动补 `pending_execution` 占位样本
+
+### 2) 执行指标评测
+
+```bash
+cd backend
+python -m scripts.eval_deepresearch_metrics --samples scripts/data/deepresearch_samples_20.json --output scripts/data/deepresearch_eval_report.json
+```
+
+仅评测已完成样本（忽略 pending）：
+
+```bash
+cd backend
+python -m scripts.eval_deepresearch_metrics --samples scripts/data/deepresearch_samples_20.json --output scripts/data/deepresearch_eval_report.json --ignore-pending
+```
+
+输出文件：
+- `backend/scripts/data/deepresearch_eval_report.json`
+
+### 3) 会话迁移（可选）
+
+如需先把历史消息回填到会话维度，再做样本抽取：
+
+```bash
+cd backend
+python -m scripts.migrate_conversations --dry-run
+python -m scripts.migrate_conversations --execute
+```
+
 ## License
 
 Private

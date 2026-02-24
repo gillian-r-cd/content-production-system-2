@@ -100,19 +100,34 @@
 | `docs/user_guide.md` | 使用者指南 | 了解用户视角时 |
 | `docs/design-system.md` | 前端设计系统 | 实现界面时 |
 
-## 当前开发重点（Eval V2 执行闭环 + Suggestion 持久化）
+## 当前开发重点（会话体系 + 预算控制 + DeepResearch 工程化）
 
-当前核心是 **Eval V2 执行稳定性与可观测性**，已实现：
+当前核心从“只保证可跑”升级为“可持续演进、可测量、可回归”：
 
-1. Eval V2 `start/pause/resume/stop` 状态机
-2. 单任务内 Trial 可控并行执行（`eval_max_parallel_trials`）
-3. 运行态丢失自愈、超时兜底、进度回退计算
-4. 报告页过程回放与逐次 LLM 输入/输出明细
-5. “让Agent修改”状态后端持久化（刷新后保留）
-6. Suggestion Card 主闭环（应用/拒绝/追问/Undo/版本回滚）保持可用
+1. **会话体系（Conversation）**
+   - `ChatMessage` 新增 `conversation_id`
+   - `Conversation` 模型支持按 `project + mode` 管理历史会话
+   - 前端 Agent Panel 可创建新会话、切换旧会话并继续对话
+   - `thread_id` 升级为 `project:mode:conversation_id`，避免历史上下文无限污染
+
+2. **时间锚点与上下文预算**
+   - system prompt 注入运行时当前时间（含时区），降低时间相关幻觉
+   - 采用 token 预算区间（A/B/C/D）控制上下文注入与压缩策略
+   - 区间 A（未逼近上限）不干预；仅在高压力区间执行轻压缩/选择
+
+3. **DeepResearch 指标工程化**
+   - 新增 `deepresearch_metrics.py`，定义 5 项质量指标
+   - 新增样本构建脚本：从真实轨迹抽样，不足补 pending
+   - 新增评测脚本：可选择忽略 pending，只统计已完成样本
+   - DeepResearch 运行结果写入结构化 metadata（sources / queries / summary 等），为后续评测提供稳定输入
+
+4. **迁移与回归能力**
+   - 新增会话迁移脚本，支持 dry-run / execute，并验证幂等
+   - 关键路径新增回归测试（预算引擎、DeepResearch 指标、迁移流程）
+   - 对依赖本地服务的集成测试增加可用性守护，避免环境噪音误报
 
 详见：
-- `docs/eval_v2_redesign.md`
+- `docs/tool_safety_and_research_fix.md`
 - `docs/suggestion_card_design.md`
 
 ## 目录结构
@@ -124,17 +139,28 @@
 │   │   ├── models/         # SQLAlchemy 数据模型
 │   │   ├── tools/          # Eval 引擎、模拟器、调研等
 │   │   ├── orchestrator.py # LangGraph Agent 编排器
-│   │   ├── agent_tools.py  # 14 个 @tool 定义
-│   │   ├── edit_engine.py  # anchor-based edits + diff 生成（已实现未接入）
+│   │   ├── agent_tools.py  # Agent 工具定义（含 run_research）
 │   │   ├── memory_service.py
-│   │   ├── phase_service.py
-│   │   └── version_service.py
-│   ├── api/                # FastAPI 路由
-│   ├── scripts/            # 数据库初始化脚本
-│   └── main.py
+│   │   ├── deepresearch_metrics.py
+│   │   └── database.py
+│   ├── api/                # FastAPI 路由（含会话/流式接口）
+│   ├── scripts/            # 迁移、样本构建、评测脚本
+│   │   └── data/           # deepresearch_samples_20 / eval_report
+│   ├── tests/              # 回归与集成测试
+│   └── data/               # SQLite / checkpoint 数据
 ├── frontend/               # Next.js 前端
 │   ├── app/                # 页面路由
-│   ├── components/         # React 组件
+│   ├── components/         # React 组件（含 agent-panel/progress-panel）
 │   └── lib/                # API 客户端、工具函数
+├── README.md               # 项目说明与运行指南
 └── cursorrule.md           # 本文件
 ```
+
+## DeepResearch 评测触发规则
+
+- **不会每次对话自动评测**
+- 对话中若触发 `run_research`，只会沉淀结构化轨迹到消息 metadata
+- 只有显式运行脚本时才执行评测：
+  - `python -m scripts.build_deepresearch_samples`
+  - `python -m scripts.eval_deepresearch_metrics --samples scripts/data/deepresearch_samples_20.json --output scripts/data/deepresearch_eval_report.json`
+  - 可加 `--ignore-pending` 仅统计已完成样本
