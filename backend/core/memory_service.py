@@ -37,6 +37,12 @@ CONSOLIDATE_THRESHOLD = 50   # 记忆超过此数时触发 LLM 合并
 FILTER_THRESHOLD = 100       # 记忆超过此数时注入前 LLM 预筛选
 FILTER_TOP_N = 30            # 预筛选保留的条数
 
+# Token 预算（first-principles 版本）
+MODEL_WINDOW_DEFAULT = 128_000
+OUTPUT_RESERVE = 16_000
+SAFETY_MARGIN = 2_000
+SOFT_CAP_DEFAULT = 96_000
+
 
 # ============== 提炼 Prompt ==============
 
@@ -279,6 +285,8 @@ async def load_memory_context_async(
     project_id: str,
     mode: str = "assistant",
     phase: str = "",
+    budget: Optional[dict] = None,
+    query_ctx: str = "",
 ) -> str:
     """
     异步版 load_memory_context — 超过 FILTER_THRESHOLD 时调用 LLM 预筛选。
@@ -309,13 +317,33 @@ async def load_memory_context_async(
             prefix = "[全局] " if m.project_id is None else ""
             all_lines.append((i, f"{prefix}{m.content} ({source})"))
 
-        if len(memories) > FILTER_THRESHOLD:
-            # LLM 预筛选
-            selected_indices = await filter_memories_by_relevance(all_lines, mode, phase)
-            selected_lines = [all_lines[i] for i in selected_indices if i < len(all_lines)]
-            logger.info("[memory] 预筛选: %d → %d 条", len(memories), len(selected_lines))
-        else:
+        zone = (budget or {}).get("zone", "A")
+        memory_token_cap = (budget or {}).get("memory_token_cap", 12_000)
+
+        if zone == "A":
+            # 未超限不干预：保持完整上下文连续性
             selected_lines = all_lines
+        elif zone == "B":
+            # 轻量收敛：仅在条目很多时做 top-N 预筛选
+            if len(memories) > FILTER_THRESHOLD:
+                selected_indices = await filter_memories_by_relevance(all_lines, mode, phase)
+                selected_lines = [all_lines[i] for i in selected_indices if i < len(all_lines)]
+            else:
+                selected_lines = all_lines
+        else:
+            # Zone C/D: token 预算驱动选择（utility/token 最大化）
+            selected_lines = select_memory_under_budget(
+                memories=all_lines,
+                budget_tokens=memory_token_cap,
+                query_ctx=query_ctx,
+            )
+
+        logger.info(
+            "[memory] budget zone=%s, selected=%d/%d",
+            zone,
+            len(selected_lines),
+            len(all_lines),
+        )
 
         return "\n".join(f"- {text}" for _, text in selected_lines)
 
@@ -324,6 +352,72 @@ async def load_memory_context_async(
         return ""
     finally:
         db.close()
+
+
+def compute_context_budget(model_name: str = "") -> dict:
+    """
+    计算上下文预算与触发区间阈值。
+    当前默认按 128k 窗口模型配置；保留参数用于后续按模型映射扩展。
+    """
+    _ = model_name
+    model_window = MODEL_WINDOW_DEFAULT
+    soft_cap = SOFT_CAP_DEFAULT
+    return {
+        "model_window": model_window,
+        "output_reserve": OUTPUT_RESERVE,
+        "safety_margin": SAFETY_MARGIN,
+        "soft_cap": soft_cap,
+        "zone_a": int(0.7 * soft_cap),
+        "zone_b": int(0.9 * soft_cap),
+        "zone_c": soft_cap,
+    }
+
+
+def _count_tokens(text: str) -> int:
+    import tiktoken
+    enc = tiktoken.get_encoding("cl100k_base")
+    return len(enc.encode(text or "", disallowed_special=()))
+
+
+def _memory_utility_score(text: str, query_ctx: str, recency_rank: int, total: int) -> float:
+    query_tokens = set((query_ctx or "").lower().split())
+    text_tokens = set((text or "").lower().split())
+    overlap = len(query_tokens.intersection(text_tokens))
+    relevance = min(1.0, overlap / max(1, len(query_tokens))) if query_tokens else 0.2
+    recency = 1.0 - (recency_rank / max(1, total))
+    constraint_strength = 1.0 if any(k in text for k in ["必须", "禁止", "不要", "约束", "偏好"]) else 0.2
+    cross_mode_value = 0.8 if "[全局]" in text or "(consolidated" in text else 0.3
+    return relevance + recency + constraint_strength + cross_mode_value
+
+
+def select_memory_under_budget(
+    memories: list[tuple[int, str]],
+    budget_tokens: int,
+    query_ctx: str = "",
+) -> list[tuple[int, str]]:
+    """
+    在 token 约束下最大化 memory utility。
+    采用贪心近似：按 utility/token 排序选择。
+    """
+    if not memories:
+        return []
+    scored = []
+    total = len(memories)
+    for rank, (idx, text) in enumerate(memories):
+        token_cost = max(1, _count_tokens(text))
+        utility = _memory_utility_score(text, query_ctx=query_ctx, recency_rank=rank, total=total)
+        scored.append((utility / token_cost, idx, text, token_cost))
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    selected: list[tuple[int, str]] = []
+    used = 0
+    for _, idx, text, token_cost in scored:
+        if used + token_cost > budget_tokens:
+            continue
+        selected.append((idx, text))
+        used += token_cost
+    selected.sort(key=lambda x: x[0])
+    return selected
 
 
 # ============== 记忆合并（M3-3） ==============

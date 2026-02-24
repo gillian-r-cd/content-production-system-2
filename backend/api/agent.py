@@ -18,6 +18,7 @@ Agent 对话 API
 import json
 import asyncio
 import logging
+from datetime import datetime
 from typing import Optional, List, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
@@ -27,7 +28,7 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db
 from core.models import (
-    Project, ChatMessage,
+    Project, ChatMessage, Conversation,
     ContentVersion, AgentMode, generate_uuid,
 )
 from core.models.content_block import ContentBlock
@@ -171,6 +172,111 @@ def _to_message_response(m: ChatMessage):
     )
 
 
+def _to_conversation_response(c: Conversation) -> "ConversationResponse":
+    return ConversationResponse(
+        id=c.id,
+        project_id=c.project_id,
+        mode=c.mode,
+        title=c.title,
+        status=c.status,
+        bootstrap_policy=c.bootstrap_policy,
+        last_message_at=c.last_message_at.isoformat() if c.last_message_at else None,
+        message_count=c.message_count or 0,
+        created_at=c.created_at.isoformat() if c.created_at else "",
+        updated_at=c.updated_at.isoformat() if c.updated_at else "",
+    )
+
+
+def _build_thread_id(project_id: str, mode: str, conversation_id: str) -> str:
+    """统一 thread_id 组装规则。"""
+    return f"{project_id}:{mode}:{conversation_id}"
+
+
+def _derive_conversation_title(message: str) -> str:
+    title = (message or "").strip()
+    if not title:
+        return "新会话"
+    return title[:40]
+
+
+def _build_runtime_budget(query_text: str) -> dict:
+    """根据当前查询文本构建 token 预算参数（用于 memory 选择）。"""
+    from core.memory_service import compute_context_budget
+
+    cfg = compute_context_budget("")
+    soft_cap = cfg["soft_cap"]
+    token_total = max(256, len(query_text or ""))
+    if token_total <= int(0.7 * soft_cap):
+        zone = "A"
+    elif token_total <= int(0.9 * soft_cap):
+        zone = "B"
+    elif token_total <= soft_cap:
+        zone = "C"
+    else:
+        zone = "D"
+    memory_token_cap = 12_000 if zone in ("A", "B") else (8_000 if zone == "C" else 4_000)
+    return {
+        "token_total": token_total,
+        "zone": zone,
+        "soft_cap": soft_cap,
+        "memory_token_cap": memory_token_cap,
+    }
+
+
+def _touch_conversation(conversation: Conversation, is_new_message: bool = True) -> None:
+    conversation.last_message_at = datetime.now()
+    if is_new_message:
+        conversation.message_count = (conversation.message_count or 0) + 1
+
+
+def _get_or_create_conversation(
+    db: Session,
+    project_id: str,
+    mode: str,
+    conversation_id: Optional[str] = None,
+    seed_message: str = "",
+) -> Conversation:
+    """
+    解析会话 ID，不存在时回退最近活跃会话或创建新会话。
+
+    回退策略：
+    1. 显式 conversation_id 且存在 -> 使用它
+    2. 取当前 mode 最近活跃会话
+    3. 创建默认会话（memory_only）
+    """
+    if conversation_id:
+        existing = db.query(Conversation).filter(
+            Conversation.id == conversation_id,
+            Conversation.project_id == project_id,
+            Conversation.mode == mode,
+        ).first()
+        if existing:
+            return existing
+
+    latest = db.query(Conversation).filter(
+        Conversation.project_id == project_id,
+        Conversation.mode == mode,
+        Conversation.status == "active",
+    ).order_by(Conversation.last_message_at.desc(), Conversation.created_at.desc()).first()
+    if latest:
+        return latest
+
+    new_conv = Conversation(
+        id=generate_uuid(),
+        project_id=project_id,
+        mode=mode,
+        title=_derive_conversation_title(seed_message),
+        status="active",
+        bootstrap_policy="memory_only",
+        last_message_at=datetime.now(),
+        message_count=0,
+    )
+    db.add(new_conv)
+    db.commit()
+    db.refresh(new_conv)
+    return new_conv
+
+
 # ============== Schemas ==============
 
 class ChatRequest(BaseModel):
@@ -181,6 +287,7 @@ class ChatRequest(BaseModel):
     references: List[str] = []
     mode: str = "assistant"  # 模式名：assistant / strategist / critic / reader / creative / 自定义
     followup_context: Optional[str] = None  # 追问上下文（Suggestion Card 追问时注入）
+    conversation_id: Optional[str] = None
 
 
 class FieldUpdatedInfo(BaseModel):
@@ -220,6 +327,31 @@ class ChatMessageResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ConversationResponse(BaseModel):
+    id: str
+    project_id: str
+    mode: str
+    title: str
+    status: str
+    bootstrap_policy: str
+    last_message_at: Optional[str] = None
+    message_count: int
+    created_at: str
+    updated_at: str
+
+
+class CreateConversationRequest(BaseModel):
+    project_id: str
+    mode: str = "assistant"
+    title: Optional[str] = None
+    bootstrap_policy: str = "memory_only"
+
+
+class UpdateConversationRequest(BaseModel):
+    title: Optional[str] = None
+    status: Optional[str] = None
+
+
 class ChatResponseExtended(BaseModel):
     message_id: str
     message: str
@@ -233,15 +365,91 @@ class ChatResponseExtended(BaseModel):
 
 # ============== Routes ==============
 
+@router.get("/conversations", response_model=List[ConversationResponse])
+def list_conversations(
+    project_id: str,
+    mode: str = "assistant",
+    status: str = "active",
+    limit: int = 50,
+    db: Session = Depends(get_db),
+):
+    query = db.query(Conversation).filter(
+        Conversation.project_id == project_id,
+        Conversation.mode == mode,
+    )
+    if status:
+        query = query.filter(Conversation.status == status)
+    rows = query.order_by(
+        Conversation.last_message_at.desc(),
+        Conversation.updated_at.desc(),
+    ).limit(limit).all()
+    return [_to_conversation_response(c) for c in rows]
+
+
+@router.post("/conversations", response_model=ConversationResponse)
+def create_conversation(
+    request: CreateConversationRequest,
+    db: Session = Depends(get_db),
+):
+    conv = Conversation(
+        id=generate_uuid(),
+        project_id=request.project_id,
+        mode=request.mode or "assistant",
+        title=(request.title or "").strip() or "新会话",
+        status="active",
+        bootstrap_policy=request.bootstrap_policy or "memory_only",
+        last_message_at=None,
+        message_count=0,
+    )
+    db.add(conv)
+    db.commit()
+    db.refresh(conv)
+    return _to_conversation_response(conv)
+
+
+@router.patch("/conversations/{conversation_id}", response_model=ConversationResponse)
+def update_conversation(
+    conversation_id: str,
+    request: UpdateConversationRequest,
+    db: Session = Depends(get_db),
+):
+    conv = db.query(Conversation).filter(Conversation.id == conversation_id).first()
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if request.title is not None:
+        conv.title = request.title.strip() or conv.title
+    if request.status is not None:
+        conv.status = request.status
+    db.commit()
+    db.refresh(conv)
+    return _to_conversation_response(conv)
+
+
+@router.get("/conversations/{conversation_id}/messages", response_model=List[ChatMessageResponse])
+def get_conversation_messages(
+    conversation_id: str,
+    limit: int = 200,
+    db: Session = Depends(get_db),
+):
+    messages = db.query(ChatMessage).filter(
+        ChatMessage.conversation_id == conversation_id
+    ).order_by(ChatMessage.created_at.asc()).limit(limit).all()
+    return [_to_message_response(m) for m in messages]
+
+
 @router.get("/history/{project_id}", response_model=List[ChatMessageResponse])
 def get_chat_history(
     project_id: str,
     limit: int = 100,
     mode: Optional[str] = None,
+    conversation_id: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
     """获取项目的对话历史（可按 mode 过滤）"""
     query = db.query(ChatMessage).filter(ChatMessage.project_id == project_id)
+
+    if conversation_id:
+        query = query.filter(ChatMessage.conversation_id == conversation_id)
 
     if mode:
         # message_metadata 是 JSON 字段，用 json_extract 按 mode 过滤（SQLite 兼容）
@@ -278,6 +486,18 @@ async def chat(
     project = db.query(Project).filter(Project.id == request.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    conversation = _get_or_create_conversation(
+        db=db,
+        project_id=request.project_id,
+        mode="assistant",
+        seed_message=f"调用工具: {request.tool_name}",
+    )
+    conversation = _get_or_create_conversation(
+        db=db,
+        project_id=request.project_id,
+        mode="assistant",
+        seed_message=f"调用工具: {request.tool_name}",
+    )
 
     current_phase = request.current_phase or project.current_phase
 
@@ -285,16 +505,25 @@ async def chat(
     mode_name = request.mode or "assistant"
     mode_obj = db.query(AgentMode).filter(AgentMode.name == mode_name).first()
     mode_prompt = mode_obj.system_prompt if mode_obj else ""
+    conversation = _get_or_create_conversation(
+        db=db,
+        project_id=request.project_id,
+        mode=mode_name,
+        conversation_id=request.conversation_id,
+        seed_message=request.message,
+    )
 
     # 保存用户消息
     user_msg = ChatMessage(
         id=generate_uuid(),
         project_id=request.project_id,
+        conversation_id=conversation.id,
         role="user",
         content=request.message,
         message_metadata={"phase": current_phase, "mode": mode_name, "references": request.references},
     )
     db.add(user_msg)
+    _touch_conversation(conversation, is_new_message=True)
     db.commit()
 
     creator_profile_str = ""
@@ -304,7 +533,13 @@ async def chat(
     try:
         # M2+M3: 加载项目记忆
         from core.memory_service import load_memory_context_async
-        memory_ctx = await load_memory_context_async(request.project_id, mode_name, current_phase)
+        memory_ctx = await load_memory_context_async(
+            request.project_id,
+            mode_name,
+            current_phase,
+            budget=_build_runtime_budget(request.message),
+            query_ctx=request.message,
+        )
 
         state = {
             "messages": [HumanMessage(content=request.message)],
@@ -317,7 +552,7 @@ async def chat(
         }
         config = {
             "configurable": {
-                "thread_id": f"{request.project_id}:{mode_name}",
+                "thread_id": _build_thread_id(request.project_id, mode_name, conversation.id),
                 "project_id": request.project_id,
             }
         }
@@ -353,11 +588,13 @@ async def chat(
     agent_msg = ChatMessage(
         id=generate_uuid(),
         project_id=request.project_id,
+        conversation_id=conversation.id,
         role="assistant",
         content=agent_output,
         message_metadata={"phase": current_phase, "mode": mode_name},
     )
     db.add(agent_msg)
+    _touch_conversation(conversation, is_new_message=True)
     db.commit()
 
     return ChatResponseExtended(
@@ -436,6 +673,13 @@ async def retry_message(
         or (user_msg.message_metadata or {}).get("mode")
         or "assistant"
     )
+    conversation = _get_or_create_conversation(
+        db=db,
+        project_id=user_msg.project_id,
+        mode=mode_name,
+        conversation_id=msg.conversation_id or user_msg.conversation_id,
+        seed_message=user_msg.content,
+    )
 
     # 查 AgentMode 获取 mode_prompt
     mode_obj = db.query(AgentMode).filter(AgentMode.name == mode_name).first()
@@ -445,7 +689,13 @@ async def retry_message(
 
     # M2+M3: 加载项目记忆
     from core.memory_service import load_memory_context_async
-    memory_ctx = await load_memory_context_async(user_msg.project_id, mode_name, current_phase)
+    memory_ctx = await load_memory_context_async(
+        user_msg.project_id,
+        mode_name,
+        current_phase,
+        budget=_build_runtime_budget(user_msg.content),
+        query_ctx=user_msg.content,
+    )
 
     state = {
         "messages": [HumanMessage(content=user_msg.content)],
@@ -458,7 +708,7 @@ async def retry_message(
     }
     config = {
         "configurable": {
-            "thread_id": f"{user_msg.project_id}:{mode_name}",
+            "thread_id": _build_thread_id(user_msg.project_id, mode_name, conversation.id),
             "project_id": user_msg.project_id,
         }
     }
@@ -473,6 +723,7 @@ async def retry_message(
     new_msg = ChatMessage(
         id=generate_uuid(),
         project_id=user_msg.project_id,
+        conversation_id=conversation.id,
         role="assistant",
         content=agent_output,
         parent_message_id=message_id,
@@ -483,6 +734,7 @@ async def retry_message(
         },
     )
     db.add(new_msg)
+    _touch_conversation(conversation, is_new_message=True)
     db.commit()
 
     return ChatResponseSchema(
@@ -505,6 +757,12 @@ async def call_tool(
     project = db.query(Project).filter(Project.id == request.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    conversation = _get_or_create_conversation(
+        db=db,
+        project_id=request.project_id,
+        mode="assistant",
+        seed_message=f"调用工具: {request.tool_name}",
+    )
 
     # 查找工具
     tool_map = {t.name: t for t in AGENT_TOOLS}
@@ -518,6 +776,7 @@ async def call_tool(
     user_msg = ChatMessage(
         id=generate_uuid(),
         project_id=request.project_id,
+        conversation_id=conversation.id,
         role="user",
         content=f"调用工具: {request.tool_name}",
         message_metadata={
@@ -528,6 +787,7 @@ async def call_tool(
         },
     )
     db.add(user_msg)
+    _touch_conversation(conversation, is_new_message=True)
 
     try:
         # ainvoke 统一处理 sync/async 工具
@@ -543,6 +803,7 @@ async def call_tool(
     agent_msg = ChatMessage(
         id=generate_uuid(),
         project_id=request.project_id,
+        conversation_id=conversation.id,
         role="assistant",
         content=str(output),
         message_metadata={
@@ -552,6 +813,7 @@ async def call_tool(
         },
     )
     db.add(agent_msg)
+    _touch_conversation(conversation, is_new_message=True)
     db.commit()
 
     return ChatResponseSchema(
@@ -603,11 +865,19 @@ async def stream_chat(
     mode_name = request.mode or "assistant"
     mode_obj = db.query(AgentMode).filter(AgentMode.name == mode_name).first()
     mode_prompt = mode_obj.system_prompt if mode_obj else ""
+    conversation = _get_or_create_conversation(
+        db=db,
+        project_id=request.project_id,
+        mode=mode_name,
+        conversation_id=request.conversation_id,
+        seed_message=request.message,
+    )
 
     # ---- 保存用户消息 ----
     user_msg = ChatMessage(
         id=generate_uuid(),
         project_id=request.project_id,
+        conversation_id=conversation.id,
         role="user",
         content=request.message,
         message_metadata={
@@ -617,6 +887,7 @@ async def stream_chat(
         },
     )
     db.add(user_msg)
+    _touch_conversation(conversation, is_new_message=True)
     db.commit()
     saved_user_msg_id = user_msg.id
 
@@ -637,7 +908,7 @@ async def stream_chat(
     # Checkpointer 配置 + LLM 日志回调
     from core.llm_logger import GenerationLogCallback
 
-    thread_id = f"{request.project_id}:{mode_name}"
+    thread_id = _build_thread_id(request.project_id, mode_name, conversation.id)
     llm_log_cb = GenerationLogCallback(
         project_id=request.project_id,
         phase=current_phase,
@@ -666,7 +937,15 @@ async def stream_chat(
 
     # M2+M3: 加载项目记忆（超阈值时 LLM 预筛选）
     from core.memory_service import load_memory_context_async
-    memory_ctx = await load_memory_context_async(request.project_id, mode_name, current_phase)
+    runtime_budget = _build_runtime_budget(augmented_message)
+    memory_ctx = await load_memory_context_async(
+        request.project_id,
+        mode_name,
+        current_phase,
+        budget=runtime_budget,
+        query_ctx=augmented_message,
+    )
+    memory_selected_count = sum(1 for line in (memory_ctx or "").splitlines() if line.strip().startswith("- "))
 
     input_state = {
         "messages": input_messages,
@@ -687,7 +966,11 @@ async def stream_chat(
     async def event_generator():
         try:
             # 1. 返回用户消息真实 ID
-            yield sse_event({"type": "user_saved", "message_id": saved_user_msg_id})
+            yield sse_event({
+                "type": "user_saved",
+                "message_id": saved_user_msg_id,
+                "conversation_id": conversation.id,
+            })
 
             full_content = ""           # agent 节点的 LLM 输出（显示在聊天气泡）
             current_tool = None
@@ -697,6 +980,7 @@ async def stream_chat(
             tool_chars = 0              # 工具内 LLM 输出的字符数（用于进度显示）
             event_count = 0             # 事件计数（调试用）
             suggestion_cards_emitted = []  # 收集本次流中产生的 suggestion cards（用于持久化到 message_metadata）
+            run_research_metrics = None
 
             logger.info("[stream] 开始 astream_events, project=%s, phase=%s",
                         request.project_id, current_phase)
@@ -925,6 +1209,12 @@ async def stream_chat(
                             result = json.loads(output_str)
                             sources = result.get("sources", [])
                             queries = result.get("search_queries", [])
+                            run_research_metrics = {
+                                "sources": sources,
+                                "search_queries": queries,
+                                "content_length": int(result.get("content_length", 0) or 0),
+                                "summary": result.get("summary", ""),
+                            }
                             logger.info(
                                 "[stream] run_research 完成: sources=%d, queries=%s",
                                 len(sources), queries,
@@ -988,7 +1278,16 @@ async def stream_chat(
                 "phase": current_phase,
                 "mode": mode_name,
                 "tools_used": tools_used,
+                "budget": {
+                    "token_total": runtime_budget["token_total"],
+                    "zone": runtime_budget["zone"],
+                    "soft_cap": runtime_budget["soft_cap"],
+                    "memory_selected_count": memory_selected_count,
+                    "compression_applied": runtime_budget["zone"] != "A",
+                },
             }
+            if run_research_metrics:
+                msg_metadata["run_research_metrics"] = run_research_metrics
             # 将本次流中产生的 suggestion cards 持久化到 message_metadata
             # 刷新页面后前端可从历史消息中恢复卡片状态
             if suggestion_cards_emitted:
@@ -997,11 +1296,13 @@ async def stream_chat(
             agent_msg = ChatMessage(
                 id=generate_uuid(),
                 project_id=request.project_id,
+                conversation_id=conversation.id,
                 role="assistant",
                 content=full_content,
                 message_metadata=msg_metadata,
             )
             db.add(agent_msg)
+            _touch_conversation(conversation, is_new_message=True)
 
             # 反写 message_id 到 PENDING_SUGGESTIONS（供 confirm API 定位消息并更新元数据）
             if suggestion_cards_emitted:
@@ -1019,8 +1320,16 @@ async def stream_chat(
             yield sse_event({
                 "type": "done",
                 "message_id": agent_msg.id,
+                "conversation_id": conversation.id,
                 "is_producing": is_producing,
                 "route": tools_used[0] if tools_used else "chat",
+                "budget": {
+                    "token_total": runtime_budget["token_total"],
+                    "zone": runtime_budget["zone"],
+                    "soft_cap": runtime_budget["soft_cap"],
+                    "memory_selected_count": memory_selected_count,
+                    "compression_applied": runtime_budget["zone"] != "A",
+                },
             })
 
             # M2: 异步触发记忆提炼（不阻塞 SSE 流）
@@ -1085,18 +1394,28 @@ async def advance_phase(
     db.commit()
 
     msg_content = f"✅ 已进入【{result.display_name}】阶段。"
+    mode_name = request.mode or "assistant"
+    conversation = _get_or_create_conversation(
+        db=db,
+        project_id=request.project_id,
+        mode=mode_name,
+        conversation_id=request.conversation_id,
+        seed_message=msg_content,
+    )
 
     enter_msg = ChatMessage(
         id=generate_uuid(),
         project_id=request.project_id,
+        conversation_id=conversation.id,
         role="assistant",
         content=msg_content,
         message_metadata={
             "phase": result.next_phase,
-            "mode": request.mode or "assistant",
+            "mode": mode_name,
         },
     )
     db.add(enter_msg)
+    _touch_conversation(conversation, is_new_message=True)
     db.commit()
     db.refresh(project)
 

@@ -17,6 +17,7 @@ from core.models.base import BaseModel
 
 if TYPE_CHECKING:
     from core.models.project import Project
+    from core.models.conversation import Conversation
 
 
 class ChatMessage(BaseModel):
@@ -41,6 +42,9 @@ class ChatMessage(BaseModel):
     project_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("projects.id"), nullable=False
     )
+    conversation_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("conversations.id"), nullable=True
+    )
     role: Mapped[str] = mapped_column(String(20), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     original_content: Mapped[str] = mapped_column(Text, default="")
@@ -59,4 +63,5 @@ class ChatMessage(BaseModel):
 
     # 关联
     project: Mapped["Project"] = relationship("Project")
+    conversation: Mapped[Optional["Conversation"]] = relationship("Conversation", back_populates="messages")
 

@@ -28,6 +28,7 @@ LangGraph Agent 核心编排器
 
 import logging
 import operator
+from datetime import datetime
 from typing import TypedDict, Annotated, Optional, List, Dict
 
 from langgraph.graph import StateGraph, END
@@ -99,6 +100,12 @@ def build_system_prompt(state: AgentState) -> str:
     project_id = state.get("project_id", "")
     mode_prompt = state.get("mode_prompt", "")
     memory_context = state.get("memory_context", "")
+    now = datetime.now().astimezone()
+    current_time_context = (
+        f"当前系统时间: {now.strftime('%Y-%m-%d %H:%M:%S %Z%z')}\n"
+        f"今天是: {now.strftime('%A')}\n"
+        "时间解释规则: 用户提到“以来”“最近”“截至今天”时，以上述系统时间为准。"
+    )
 
     # ---- 动态段落 1: 内容块索引（简化前缀，6.8 节） ----
     field_index_section = ""
@@ -210,6 +217,11 @@ def build_system_prompt(state: AgentState) -> str:
     return f"""<identity>
 {identity}
 </identity>
+
+<current_time_anchor>
+## 当前时间锚点
+{current_time_context}
+</current_time_anchor>
 
 <output_rules>
 ALWAYS: 输出格式规则
@@ -479,6 +491,39 @@ def _count_tokens_approx(messages: list) -> int:
     return total
 
 
+def _resolve_budget_zone(total_tokens: int, soft_cap: int) -> str:
+    if total_tokens <= int(0.7 * soft_cap):
+        return "A"
+    if total_tokens <= int(0.9 * soft_cap):
+        return "B"
+    if total_tokens <= soft_cap:
+        return "C"
+    return "D"
+
+
+def _compress_if_needed(messages: list[BaseMessage], zone: str) -> list[BaseMessage]:
+    """
+    按预算区间压缩历史消息。
+    Zone A: 不干预
+    Zone B: 优先裁剪旧 ToolMessage
+    Zone C: 保留最近 40 条非系统消息
+    Zone D: 强制保留最近 20 条非系统消息
+    """
+    if zone == "A":
+        return messages
+
+    if zone == "B":
+        non_tool = [m for m in messages if not isinstance(m, ToolMessage)]
+        if len(non_tool) >= 20:
+            return non_tool
+        return messages
+
+    if zone == "C":
+        return messages[-40:]
+
+    return messages[-20:]
+
+
 # ============== 节点函数 ==============
 
 async def agent_node(state: AgentState, config: RunnableConfig) -> dict:
@@ -510,13 +555,29 @@ async def agent_node(state: AgentState, config: RunnableConfig) -> dict:
 
     system_prompt = build_system_prompt(state)
 
-    # Token 预算管理：保留最近消息，裁剪过早历史
+    # Token 预算管理：按 Zone A/B/C/D 执行逐级治理
+    from core.memory_service import compute_context_budget
+    budget = compute_context_budget(getattr(llm, "model_name", ""))
+    soft_cap = budget["soft_cap"]
+    token_total = _count_tokens_approx(state["messages"])
+    zone = _resolve_budget_zone(token_total, soft_cap)
+    compressed_messages = _compress_if_needed(state["messages"], zone)
+
+    logger.info(
+        "[budget] token_total=%d zone=%s soft_cap=%d messages=%d->%d",
+        token_total,
+        zone,
+        soft_cap,
+        len(state["messages"]),
+        len(compressed_messages),
+    )
+
     # 注意: token_counter 不能直接用 llm，因为 ChatOpenAI 的 tiktoken
     # 不认识 OpenRouter 模型名（如 anthropic/claude-opus-4.6）。
     # 改用通用 tiktoken 编码作为近似计数，精度足够用于裁剪决策。
     trimmed = trim_messages(
-        state["messages"],
-        max_tokens=100_000,      # 为 system prompt (~5K) + 回复 (~10K) 预留
+        compressed_messages,
+        max_tokens=soft_cap,
         token_counter=_count_tokens_approx,  # 兼容任意模型名
         strategy="last",         # 保留最新消息
         start_on="human",        # 确保从 HumanMessage 开始

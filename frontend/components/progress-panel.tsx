@@ -34,6 +34,7 @@ interface ProgressPanelProps {
   project: Project | null;
   blocksRefreshKey?: number;  // 外部触发 ContentBlocks 重新加载
   onPhaseClick?: (phase: string) => void;
+  onPhaseReorder?: (newPhaseOrder: string[]) => Promise<void>;
   onBlockSelect?: (block: ContentBlock) => void;
   onBlocksChange?: (blocks: ContentBlock[]) => void;  // 当内容块加载/变化时通知父组件
   onProjectChange?: () => void;  // 项目数据变化时通知父组件刷新
@@ -43,6 +44,7 @@ export function ProgressPanel({
   project,
   blocksRefreshKey = 0,
   onPhaseClick,
+  onPhaseReorder: _onPhaseReorder,
   onBlockSelect,
   onBlocksChange,
 }: ProgressPanelProps) {

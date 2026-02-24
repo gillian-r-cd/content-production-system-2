@@ -101,6 +101,19 @@ export interface ChatMessageRecord {
   created_at: string;
 }
 
+export interface ConversationRecord {
+  id: string;
+  project_id: string;
+  mode: string;
+  title: string;
+  status: string;
+  bootstrap_policy: string;
+  last_message_at: string | null;
+  message_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Persona {
   source: string;
   name: string;
@@ -335,7 +348,8 @@ export const agentAPI = {
     projectId: string,
     message: string,
     currentPhase?: string,
-    mode?: string
+    mode?: string,
+    conversationId?: string
   ): AsyncGenerator<{ node?: string; content?: string; done?: boolean; error?: string }> {
     const { readSSEStream } = await import("@/lib/sse");
 
@@ -347,6 +361,7 @@ export const agentAPI = {
         message,
         current_phase: currentPhase,
         mode: mode || "assistant",
+        conversation_id: conversationId,
       }),
     });
 
@@ -354,8 +369,28 @@ export const agentAPI = {
   },
 
   // 获取对话历史
-  getHistory: (projectId: string, limit: number = 100, mode?: string) =>
-    fetchAPI<ChatMessageRecord[]>(`/api/agent/history/${projectId}?limit=${limit}${mode ? `&mode=${mode}` : ""}`),
+  getHistory: (projectId: string, limit: number = 100, mode?: string, conversationId?: string) =>
+    fetchAPI<ChatMessageRecord[]>(
+      `/api/agent/history/${projectId}?limit=${limit}${mode ? `&mode=${mode}` : ""}${conversationId ? `&conversation_id=${conversationId}` : ""}`
+    ),
+
+  listConversations: (projectId: string, mode: string) =>
+    fetchAPI<ConversationRecord[]>(`/api/agent/conversations?project_id=${projectId}&mode=${mode}&status=active`),
+
+  createConversation: (data: { project_id: string; mode: string; title?: string }) =>
+    fetchAPI<ConversationRecord>("/api/agent/conversations", {
+      method: "POST",
+      body: JSON.stringify({ ...data, bootstrap_policy: "memory_only" }),
+    }),
+
+  getConversationMessages: (conversationId: string, limit: number = 200) =>
+    fetchAPI<ChatMessageRecord[]>(`/api/agent/conversations/${conversationId}/messages?limit=${limit}`),
+
+  updateConversation: (conversationId: string, data: { title?: string; status?: string }) =>
+    fetchAPI<ConversationRecord>(`/api/agent/conversations/${conversationId}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
   
   // 编辑消息
   editMessage: (messageId: string, content: string) =>

@@ -1,0 +1,74 @@
+{
+  "summary": {
+    "count": 4,
+    "pass_rate": 0.0,
+    "fact_accuracy": 0.6,
+    "citation_support": 0.0,
+    "coverage_completeness": 1.0,
+    "source_quality": 0.0,
+    "tool_efficiency": 1.0
+  },
+  "input_count": 4,
+  "items": [
+    {
+      "index": 1,
+      "request": "上网调研 AI for Coding 的发展脉络，把时间线上最重要的节点填入 @AI for Coding 的进展和脉络 中，记得附上链接",
+      "score": {
+        "fact_accuracy": 0.6,
+        "citation_support": 0.0,
+        "coverage_completeness": 1.0,
+        "source_quality": 0.0,
+        "tool_efficiency": 1.0,
+        "passed": false,
+        "reasons": [
+          "无来源列表"
+        ]
+      }
+    },
+    {
+      "index": 2,
+      "request": "非常好！接着调研大模型驱动的 AI coding (Vibe coding) 的发展脉络与最佳实践，把调研结果写入 @大语言模型驱动的 AI Coding",
+      "score": {
+        "fact_accuracy": 0.6,
+        "citation_support": 0.0,
+        "coverage_completeness": 1.0,
+        "source_quality": 0.0,
+        "tool_efficiency": 1.0,
+        "passed": false,
+        "reasons": [
+          "无来源列表"
+        ]
+      }
+    },
+    {
+      "index": 3,
+      "request": "你给我找的 Vibe coding 的发展脉络，我觉得有点太偏技术化了，不好理解。重新搜索，一方面搜索来源要是2025下半年至今的，另一方面搜索的目标是整理出非技术人员/产品经理能理解的一些出于第一性原理的最佳实践，必须要把agent作为其中的一环。先想清楚再开始调研，调研结果填入 @Vibe coding",
+      "score": {
+        "fact_accuracy": 0.6,
+        "citation_support": 0.0,
+        "coverage_completeness": 1.0,
+        "source_quality": 0.0,
+        "tool_efficiency": 1.0,
+        "passed": false,
+        "reasons": [
+          "无来源列表"
+        ]
+      }
+    },
+    {
+      "index": 4,
+      "request": "请帮我进行深度调研。",
+      "score": {
+        "fact_accuracy": 0.6,
+        "citation_support": 0.0,
+        "coverage_completeness": 1.0,
+        "source_quality": 0.0,
+        "tool_efficiency": 1.0,
+        "passed": false,
+        "reasons": [
+          "无来源列表"
+        ]
+      }
+    }
+  ]
+}

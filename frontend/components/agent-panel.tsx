@@ -8,7 +8,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { cn, sendNotification, requestNotificationPermission } from "@/lib/utils";
 import { agentAPI, parseReferences, API_BASE, modesAPI } from "@/lib/api";
-import type { ChatMessageRecord, ContentBlock, AgentModeInfo } from "@/lib/api";
+import type { ChatMessageRecord, ContentBlock, AgentModeInfo, ConversationRecord } from "@/lib/api";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
@@ -82,6 +82,8 @@ export function AgentPanel({
   onExternalMessageConsumed,
 }: AgentPanelProps) {
   const [messages, setMessages] = useState<ChatMessageRecord[]>([]);
+  const [conversations, setConversations] = useState<ConversationRecord[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [showMentions, setShowMentions] = useState(false);
@@ -206,10 +208,32 @@ export function AgentPanel({
     item.label.toLowerCase().includes(mentionFilter.toLowerCase())
   );
 
-  const loadHistory = useCallback(async () => {
+  const loadConversations = useCallback(async () => {
     if (!projectId) return;
     try {
-      const history = await agentAPI.getHistory(projectId, 100, chatMode);
+      const rows = await agentAPI.listConversations(projectId, chatMode);
+      setConversations(rows);
+      if (rows.length === 0) {
+        const created = await agentAPI.createConversation({
+          project_id: projectId,
+          mode: chatMode,
+        });
+        setConversations([created]);
+        setActiveConversationId(created.id);
+        return;
+      }
+      if (!activeConversationId || !rows.some((c) => c.id === activeConversationId)) {
+        setActiveConversationId(rows[0].id);
+      }
+    } catch (err) {
+      console.error("加载会话列表失败:", err);
+    }
+  }, [projectId, chatMode, activeConversationId]);
+
+  const loadHistory = useCallback(async () => {
+    if (!projectId || !activeConversationId) return;
+    try {
+      const history = await agentAPI.getConversationMessages(activeConversationId, 200);
       setMessages(history);
 
       // 从 message_metadata.suggestion_cards 恢复卡片状态（持久化 → 刷新后不丢失）
@@ -238,16 +262,27 @@ export function AgentPanel({
     } catch (err) {
       console.error("加载对话历史失败:", err);
     }
-  }, [projectId, chatMode]);
+  }, [projectId, activeConversationId]);
 
-  // 加载对话历史
+  // 按 mode 加载会话列表
   useEffect(() => {
     if (projectId) {
-      loadHistory();
+      setMessages([]);
+      setSuggestions([]);
+      loadConversations();
     } else {
+      setConversations([]);
+      setActiveConversationId(null);
       setMessages([]);
     }
-  }, [projectId, loadHistory]);
+  }, [projectId, chatMode, loadConversations]);
+
+  // 会话切换后加载消息
+  useEffect(() => {
+    if (projectId && activeConversationId) {
+      loadHistory();
+    }
+  }, [projectId, activeConversationId, loadHistory]);
 
   // 加载工具列表（从后台 Agent 设置）
   useEffect(() => {
@@ -399,7 +434,7 @@ export function AgentPanel({
 
   const handleSend = async (overrideMessage?: string) => {
     const messageToSend = overrideMessage || input.trim();
-    if (!messageToSend || !projectId || sending) return;
+    if (!messageToSend || !projectId || !activeConversationId || sending) return;
     // 首次发送时请求通知权限（需在用户交互中触发）
     requestNotificationPermission();
 
@@ -454,6 +489,7 @@ export function AgentPanel({
         references,
         current_phase: currentPhase || undefined,
         mode: chatMode,
+        conversation_id: activeConversationId,
       };
 
       // M7 T7.4: 追问上下文注入 — 发送时生成，而非点击追问时
@@ -684,6 +720,9 @@ export function AgentPanel({
                     prev.map((s) => s.messageId === tempAiMsg.id ? { ...s, messageId: data.message_id } : s)
                   );
                 }
+                if (data.conversation_id) {
+                  setActiveConversationId(data.conversation_id);
+                }
                 // M7 T7.5: 流结束后清空 followUpSourceRef（AI 回复纯文字没有新卡片时避免残留）
                 followUpSourceRef.current = null;
                 sendNotification(
@@ -770,7 +809,7 @@ export function AgentPanel({
   };
 
   const handleSaveEdit = async () => {
-    if (!editingMessageId || !projectId || sending) return;
+    if (!editingMessageId || !projectId || !activeConversationId || sending) return;
 
     setSending(true);
     setEditingMessageId(null);
@@ -829,6 +868,7 @@ export function AgentPanel({
         references,
         current_phase: currentPhase || undefined,
         mode: chatMode,
+        conversation_id: activeConversationId,
       };
       // M7 T7.4: 追问上下文注入（与 handleSend 对齐）
       if (followUpTarget) {
@@ -1147,6 +1187,22 @@ export function AgentPanel({
     await handleSend(instruction);
   };
 
+  const handleCreateConversation = async () => {
+    if (!projectId || sending) return;
+    try {
+      const conv = await agentAPI.createConversation({
+        project_id: projectId,
+        mode: chatMode,
+      });
+      setConversations((prev) => [conv, ...prev]);
+      setActiveConversationId(conv.id);
+      setMessages([]);
+      setSuggestions([]);
+    } catch (err) {
+      console.error("创建会话失败:", err);
+    }
+  };
+
   return (
     <div className="flex flex-col h-full relative">
       {/* Toast 通知 */}
@@ -1221,6 +1277,34 @@ export function AgentPanel({
               <span>助手</span>
             </button>
           )}
+        </div>
+        <div className="px-3 py-2 border-t border-surface-3">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs text-zinc-500">会话历史</span>
+            <button
+              onClick={handleCreateConversation}
+              disabled={!projectId || sending}
+              className="text-xs px-2 py-1 rounded border border-surface-3 text-zinc-300 hover:bg-surface-2 disabled:opacity-50"
+            >
+              新建会话
+            </button>
+          </div>
+          <div className="max-h-28 overflow-y-auto space-y-1">
+            {conversations.map((conv) => (
+              <button
+                key={conv.id}
+                onClick={() => setActiveConversationId(conv.id)}
+                className={cn(
+                  "w-full text-left px-2 py-1 rounded text-xs border",
+                  activeConversationId === conv.id
+                    ? "border-brand-500 bg-brand-500/10 text-brand-300"
+                    : "border-surface-3 text-zinc-400 hover:bg-surface-2"
+                )}
+              >
+                <div className="truncate">{conv.title || "新会话"}</div>
+              </button>
+            ))}
+          </div>
         </div>
       </div>
       )}
@@ -1390,7 +1474,7 @@ export function AgentPanel({
               onChange={handleInputChange}
               onKeyDown={handleKeyDown}
               placeholder={projectId ? `输入消息... 使用 @ 引用内容块${mentionItems.length > 0 ? ` (${mentionItems.length}个可用)` : ""}` : "请先选择项目"}
-              disabled={!projectId || sending}
+              disabled={!projectId || !activeConversationId || sending}
               rows={1}
               className={cn(
                 "flex-1 px-4 py-2 bg-surface-2 border border-surface-3 text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:opacity-50 resize-none overflow-hidden",
@@ -1410,7 +1494,7 @@ export function AgentPanel({
             ) : (
               <button
                 onClick={() => handleSend()}
-                disabled={!projectId || !input.trim()}
+                disabled={!projectId || !activeConversationId || !input.trim()}
                 className="px-4 py-2 bg-brand-600 hover:bg-brand-700 disabled:bg-surface-3 disabled:cursor-not-allowed rounded-lg transition-colors"
               >
                 发送

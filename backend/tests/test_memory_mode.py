@@ -38,6 +38,12 @@ TIMEOUT = 120.0  # LLM 调用可能很慢，用宽裕的超时
 def client():
     """httpx 同步客户端（禁用代理，使用宽裕超时）"""
     with httpx.Client(base_url=BASE_URL, timeout=TIMEOUT, proxy=None) as c:
+        try:
+            health = c.get("/health")
+            if health.status_code != 200:
+                pytest.skip("backend service not ready for integration mode tests")
+        except Exception:
+            pytest.skip("backend service unavailable for integration mode tests")
         yield c
 
 

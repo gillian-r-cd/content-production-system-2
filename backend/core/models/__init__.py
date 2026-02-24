@@ -19,6 +19,7 @@ from core.models.generation_log import GenerationLog
 from core.models.system_prompt import SystemPrompt
 from core.models.agent_settings import AgentSettings
 from core.models.chat_history import ChatMessage
+from core.models.conversation import Conversation
 from core.models.content_block import ContentBlock, BLOCK_TYPES, SPECIAL_HANDLERS, BLOCK_STATUS
 from core.models.block_history import BlockHistory, HISTORY_ACTIONS
 from core.models.phase_template import PhaseTemplate, DEFAULT_PHASE_TEMPLATE
@@ -48,6 +49,7 @@ __all__ = [
     "SystemPrompt",
     "AgentSettings",
     "ChatMessage",
+    "Conversation",
     
     # 创作者
     "CreatorProfile",
