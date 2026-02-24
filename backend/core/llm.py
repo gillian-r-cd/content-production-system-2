@@ -1,13 +1,13 @@
 # backend/core/llm.py
-# 功能: 统一的 LLM 实例管理，基于 LangChain ChatOpenAI
+# 功能: 统一的 LLM 实例管理，支持 OpenAI 和 Anthropic
 # 主要导出: llm (主模型), llm_mini (轻量模型), get_chat_model()
-# 设计: 取代 ai_client.py，所有 LLM 调用统一走 LangChain ChatModel 接口
+# 设计: 通过 LLM_PROVIDER 环境变量切换 provider，所有调用走 LangChain ChatModel 接口
 #
-# 为什么用 ChatOpenAI 而不是自定义 ai_client:
-# 1. 原生支持 tool calling (bind_tools) — LangGraph Agent 的基础
-# 2. 原生支持 LangChain 消息类型 (HumanMessage, AIMessage, ToolMessage)
-# 3. 切换 API 只需改一行 import (ChatGoogleGenerativeAI, ChatTongyi 等)
-# 4. astream_events 原生支持 token 级流式
+# 支持的 provider:
+# 1. openai  — ChatOpenAI（支持 OpenAI 直连和 OpenRouter）
+# 2. anthropic — ChatAnthropic（Anthropic 原生 API）
+#
+# 两者都原生支持 tool calling / bind_tools / astream_events
 
 """
 统一 LLM 实例管理
@@ -28,7 +28,7 @@
     response = await llm_with_tools.ainvoke(messages)
 """
 
-from langchain_openai import ChatOpenAI
+from langchain_core.language_models.chat_models import BaseChatModel
 from core.config import settings
 
 
@@ -37,37 +37,67 @@ def get_chat_model(
     temperature: float = 0.7,
     streaming: bool = True,
     **kwargs,
-) -> ChatOpenAI:
+) -> BaseChatModel:
     """
-    获取 ChatOpenAI 实例。
+    获取 LLM 实例（根据 LLM_PROVIDER 自动选择 ChatOpenAI 或 ChatAnthropic）。
 
     Args:
-        model: 模型名称，默认用配置中的 openai_model
+        model: 模型名称，默认用配置中的对应 provider 默认模型
         temperature: 温度
         streaming: 是否启用流式（默认开启，astream_events 需要）
-        **kwargs: 其他 ChatOpenAI 参数
+        **kwargs: 其他参数
 
     Returns:
-        ChatOpenAI 实例
+        BaseChatModel 实例（ChatOpenAI 或 ChatAnthropic）
     """
-    return ChatOpenAI(
-        model=model or settings.openai_model or "gpt-4o",
-        api_key=settings.openai_api_key,
-        base_url=settings.openai_api_base or None,
-        organization=settings.openai_org_id or None,
-        temperature=temperature,
-        streaming=streaming,
-        timeout=120.0,
-        max_retries=3,  # 网络瞬时故障自动重试
-        max_tokens=16384,  # 显式设置最大输出 token，防止长内容截断
-        **kwargs,
-    )
+    provider = (settings.llm_provider or "openai").lower().strip()
+
+    if provider == "anthropic":
+        from langchain_anthropic import ChatAnthropic
+
+        return ChatAnthropic(
+            model=model or settings.anthropic_model or "claude-opus-4-6",
+            api_key=settings.anthropic_api_key,
+            temperature=temperature,
+            streaming=streaming,
+            timeout=120.0,
+            max_retries=3,
+            max_tokens=16384,
+            **kwargs,
+        )
+    else:
+        # 默认: OpenAI（也支持 OpenRouter 等 OpenAI 兼容 API）
+        from langchain_openai import ChatOpenAI
+
+        return ChatOpenAI(
+            model=model or settings.openai_model or "gpt-4o",
+            api_key=settings.openai_api_key,
+            base_url=settings.openai_api_base or None,
+            organization=settings.openai_org_id or None,
+            temperature=temperature,
+            streaming=streaming,
+            timeout=120.0,
+            max_retries=3,
+            max_tokens=16384,
+            **kwargs,
+        )
 
 
 # ============== 预置实例 ==============
+
+_provider = (settings.llm_provider or "openai").lower().strip()
 
 # 主模型：用于 Agent 决策、内容生成、修改等
 llm = get_chat_model()
 
 # 轻量模型：用于摘要、分类等简单任务（成本更低）
-llm_mini = get_chat_model(model=settings.openai_mini_model or "gpt-4o-mini", temperature=0.3)
+if _provider == "anthropic":
+    llm_mini = get_chat_model(
+        model=settings.anthropic_mini_model or "claude-sonnet-4-6",
+        temperature=0.3,
+    )
+else:
+    llm_mini = get_chat_model(
+        model=settings.openai_mini_model or "gpt-4o-mini",
+        temperature=0.3,
+    )

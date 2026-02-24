@@ -388,11 +388,14 @@ async def _rewrite_field_impl(
         ], config=config)
 
         new_content = response.content
+        if isinstance(new_content, list):
+            new_content = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in new_content)
 
-        # 截断检测：如果 finish_reason == "length"，说明输出被截断，不保存
-        finish_reason = (response.response_metadata or {}).get("finish_reason", "stop")
-        if finish_reason == "length":
-            logger.warning(f"[rewrite_field] 输出被截断（finish_reason=length），不保存，内容 {len(new_content)} 字")
+        # 截断检测：OpenAI 用 finish_reason=="length"，Anthropic 用 stop_reason=="max_tokens"
+        meta = response.response_metadata or {}
+        finish_reason = meta.get("finish_reason", meta.get("stop_reason", "stop"))
+        if finish_reason in ("length", "max_tokens"):
+            logger.warning(f"[rewrite_field] 输出被截断（{finish_reason}），不保存，内容 {len(new_content)} 字")
             return _json_err(f"修改内容被截断（{len(new_content)} 字），内容过长。建议拆分内容块或使用更简洁的指令。")
 
         # 走 SuggestionCard 确认流程，不直接写 DB
@@ -545,11 +548,14 @@ async def _generate_field_impl(
         ], config=config)
 
         new_content = response.content
+        if isinstance(new_content, list):
+            new_content = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in new_content)
 
-        # 截断检测
-        finish_reason = (response.response_metadata or {}).get("finish_reason", "stop")
-        if finish_reason == "length":
-            logger.warning(f"[generate_field_content] 输出被截断, {len(new_content)} 字")
+        # 截断检测：OpenAI 用 finish_reason=="length"，Anthropic 用 stop_reason=="max_tokens"
+        meta = response.response_metadata or {}
+        finish_reason = meta.get("finish_reason", meta.get("stop_reason", "stop"))
+        if finish_reason in ("length", "max_tokens"):
+            logger.warning(f"[generate_field_content] 输出被截断 ({finish_reason}), {len(new_content)} 字")
             return _json_err(f"生成内容被截断（{len(new_content)} 字），内容过长。建议拆分内容块。")
 
         if entity.content and entity.content.strip():
@@ -619,7 +625,10 @@ async def _query_field_impl(field_name: str, question: str, config: RunnableConf
             SystemMessage(content=f"你是内容分析助手。以下是内容块「{field_name}」的内容：\n\n{content[:4000]}"),
             HumanMessage(content=question),
         ], config=config)
-        return response.content
+        result = response.content
+        if isinstance(result, list):
+            result = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in result)
+        return result
     except Exception as e:
         return f"查询失败: {e}"
     finally:

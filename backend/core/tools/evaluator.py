@@ -99,7 +99,7 @@ async def evaluate_section(
         HumanMessage(content=context),
     ]
     
-    llm_eval = get_chat_model(model=settings.openai_model, temperature=0.5)
+    llm_eval = get_chat_model(temperature=0.5)
     score = await llm_eval.with_structured_output(SectionScore).ainvoke(messages)
     
     return score

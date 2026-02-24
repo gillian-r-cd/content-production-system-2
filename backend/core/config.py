@@ -15,12 +15,20 @@ from functools import lru_cache
 class Settings(BaseSettings):
     """应用配置"""
 
+    # LLM Provider: "openai" | "anthropic"
+    llm_provider: str = "openai"
+
     # OpenAI
     openai_api_key: str = ""
     openai_org_id: str = ""
     openai_model: str = "gpt-5.1"
     openai_mini_model: str = "gpt-4o-mini"
     openai_api_base: str = ""
+
+    # Anthropic
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-opus-4-6"
+    anthropic_mini_model: str = "claude-sonnet-4-6"
 
     # Tavily Search API (DeepResearch)
     tavily_api_key: str = ""

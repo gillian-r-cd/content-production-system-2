@@ -299,13 +299,18 @@ async def test_eval_provider():
     """
     最小化探针：验证当前后端进程真实使用的模型配置可调用。
     """
-    model = get_chat_model(model=settings.openai_model, temperature=0.0, streaming=False)
+    model = get_chat_model(temperature=0.0, streaming=False)
     reply = await model.ainvoke([HumanMessage(content="Reply exactly: OK")])
+    # 获取当前使用的模型名
+    current_model = (settings.anthropic_model if settings.llm_provider == "anthropic" else settings.openai_model)
+    raw_content = getattr(reply, "content", "")
+    if isinstance(raw_content, list):
+        raw_content = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in raw_content)
     return {
         "ok": True,
-        "model": settings.openai_model,
-        "api_base": settings.openai_api_base,
-        "reply": str(getattr(reply, "content", ""))[:120],
+        "model": current_model,
+        "provider": settings.llm_provider,
+        "reply": str(raw_content)[:120],
     }
 
 
@@ -2353,9 +2358,12 @@ async def _generate_persona_with_llm(project_name: str, project_intent: str, exi
 输出 JSON:
 {{"name":"画像名称","prompt":"完整画像提示词（包含身份、背景、核心需求、顾虑、决策标准）"}}"""
     try:
-        model = get_chat_model(model=settings.openai_model, temperature=0.8)
+        model = get_chat_model(temperature=0.8)
         response = await model.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
-        parsed = _parse_json_response(response.content if isinstance(response.content, str) else str(response.content))
+        raw = response.content
+        if isinstance(raw, list):
+            raw = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in raw)
+        parsed = _parse_json_response(raw if isinstance(raw, str) else str(raw))
         name = str(parsed.get("name", "")).strip()
         prompt = str(parsed.get("prompt", "")).strip()
         if not name:
@@ -2404,9 +2412,12 @@ async def _generate_prompt_with_llm(prompt_type: str, context: dict) -> str:
 输出 JSON:
 {{"generated_prompt":"完整提示词"}}"""
     try:
-        model = get_chat_model(model=settings.openai_model, temperature=0.7)
+        model = get_chat_model(temperature=0.7)
         response = await model.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
-        parsed = _parse_json_response(response.content if isinstance(response.content, str) else str(response.content))
+        raw = response.content
+        if isinstance(raw, list):
+            raw = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in raw)
+        parsed = _parse_json_response(raw if isinstance(raw, str) else str(raw))
         generated = str(parsed.get("generated_prompt", "")).strip()
         if generated:
             return generated
