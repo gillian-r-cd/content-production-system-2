@@ -11,6 +11,8 @@
 在 agent_tools、api/agent、api/blocks 三处曾各自实现，现统一到此。
 """
 
+from __future__ import annotations
+
 import logging
 from sqlalchemy.orm import Session
 

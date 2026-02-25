@@ -41,6 +41,28 @@ logger = logging.getLogger("agent")
 
 # ============== Helpers ==============
 
+def _normalize_content(content) -> str:
+    """
+    将 LLM 返回的 content 归一化为 str。
+
+    ChatOpenAI 返回 str，ChatAnthropic 可能返回 list[dict]（内容块列表）。
+    本函数统一处理，确保下游代码始终拿到 str。
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict):
+                parts.append(block.get("text", ""))
+            elif isinstance(block, str):
+                parts.append(block)
+            else:
+                parts.append(str(block))
+        return "".join(parts)
+    return str(content) if content else ""
+
+
 async def _extract_and_save_memories(
     project_id: str, mode: str, phase: str, messages: list[dict],
 ):
@@ -583,7 +605,7 @@ async def chat(
     # 提取最后一条 AI 消息
     ai_messages = [m for m in result["messages"] if isinstance(m, AIMessage)]
     last_ai = ai_messages[-1] if ai_messages else None
-    agent_output = last_ai.content if last_ai else ""
+    agent_output = _normalize_content(last_ai.content) if last_ai else ""
 
     agent_msg = ChatMessage(
         id=generate_uuid(),
@@ -718,7 +740,7 @@ async def retry_message(
     # 提取最后一条 AI 消息
     ai_messages = [m for m in result["messages"] if isinstance(m, AIMessage)]
     last_ai = ai_messages[-1] if ai_messages else None
-    agent_output = last_ai.content if last_ai else ""
+    agent_output = _normalize_content(last_ai.content) if last_ai else ""
 
     new_msg = ChatMessage(
         id=generate_uuid(),
@@ -1001,7 +1023,7 @@ async def stream_chat(
                     if not chunk or not hasattr(chunk, "content"):
                         continue
 
-                    content_piece = chunk.content
+                    content_piece = _normalize_content(chunk.content)
                     if not content_piece:
                         continue
 
@@ -1259,7 +1281,7 @@ async def stream_chat(
                         # 取最后一条 AIMessage（非 ToolMessage）
                         for m in reversed(msgs):
                             if isinstance(m, AIMessage) and not m.tool_calls and m.content:
-                                full_content = m.content
+                                full_content = _normalize_content(m.content)
                                 logger.warning(
                                     "[stream] 回退：从 state 中提取 AI 内容, %d chars",
                                     len(full_content),
@@ -1443,7 +1465,7 @@ class ConfirmSuggestionRequest(BaseModel):
 class AppliedCardInfo(BaseModel):
     card_id: str
     entity_id: str
-    version_id: str | None
+    version_id: Optional[str] = None
 
 
 class ConfirmSuggestionResponse(BaseModel):

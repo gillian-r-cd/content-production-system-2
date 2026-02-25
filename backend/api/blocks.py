@@ -972,7 +972,12 @@ async def generate_block_content(
         ]
         response = await llm.ainvoke(messages)
         
-        block.content = response.content
+        # ChatAnthropic 的 content 可能是 list，归一化为 str
+        gen_content = response.content
+        if isinstance(gen_content, list):
+            gen_content = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in gen_content)
+
+        block.content = gen_content
         # 关键逻辑：need_review=True 时，生成完成后状态为 in_progress（等待用户确认）
         # need_review=False 时，才自动设为 completed
         block.status = "completed" if not block.need_review else "in_progress"
@@ -991,7 +996,7 @@ async def generate_block_content(
             tokens_out=usage.get("output_tokens", 0),
             duration_ms=0,
             prompt_input=system_prompt,
-            prompt_output=response.content,
+            prompt_output=gen_content,
             cost=0.0,
             status="success",
         )
@@ -1006,7 +1011,7 @@ async def generate_block_content(
         
         return {
             "block_id": block.id,
-            "content": response.content,
+            "content": gen_content,
             "status": block.status,
             "tokens_in": usage.get("input_tokens", 0),
             "tokens_out": usage.get("output_tokens", 0),
@@ -1107,9 +1112,13 @@ async def generate_block_content_stream(
             ]
             
             async for chunk in llm.astream(messages):
-                if chunk.content:
-                    content_parts.append(chunk.content)
-                    data = json.dumps({"chunk": chunk.content}, ensure_ascii=False)
+                piece = chunk.content
+                # ChatAnthropic 的 chunk.content 可能是 list
+                if isinstance(piece, list):
+                    piece = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in piece)
+                if piece:
+                    content_parts.append(piece)
+                    data = json.dumps({"chunk": piece}, ensure_ascii=False)
                     yield f"data: {data}\n\n"
             
             # AI 流完整结束
@@ -1134,13 +1143,13 @@ async def generate_block_content_stream(
                 field_id=block.id,
                 phase=block.parent_id or "content_block",
                 operation=f"block_generate_stream_{block.name}",
-                model=settings.openai_model,
+                model=settings.anthropic_model if settings.llm_provider == "anthropic" else settings.openai_model,
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
                 duration_ms=duration_ms,
                 prompt_input=system_prompt,
                 prompt_output=full_content,
-                cost=GenerationLog.calculate_cost(settings.openai_model, tokens_in, tokens_out),
+                cost=GenerationLog.calculate_cost(settings.anthropic_model if settings.llm_provider == "anthropic" else settings.openai_model, tokens_in, tokens_out),
                 status="success",
             )
             db.add(gen_log)
@@ -1196,7 +1205,7 @@ async def generate_block_content_stream(
                                 field_id=save_block.id,
                                 phase=save_block.parent_id or "content_block",
                                 operation=f"block_generate_stream_interrupted_{save_block.name}",
-                                model=settings.openai_model,
+                                model=settings.anthropic_model if settings.llm_provider == "anthropic" else settings.openai_model,
                                 tokens_in=len(system_prompt) // 4,
                                 tokens_out=len(partial_content) // 4,
                                 duration_ms=duration_ms,
@@ -1666,7 +1675,10 @@ async def generate_ai_prompt(
     except Exception as llm_err:
         raise HTTPException(status_code=502, detail=f"LLM 调用失败: {str(llm_err)[:200]}")
     
-    generated_prompt = response.content.strip()
+    _raw_prompt = response.content
+    if isinstance(_raw_prompt, list):
+        _raw_prompt = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in _raw_prompt)
+    generated_prompt = _raw_prompt.strip()
     
     # 从 AIMessage.usage_metadata 提取 token 用量（langchain 标准字段）
     usage = getattr(response, "usage_metadata", None) or {}
@@ -1679,7 +1691,7 @@ async def generate_ai_prompt(
         project_id=request.project_id or "global",
         phase="utility",
         operation="generate_ai_prompt",
-        model=settings.openai_model,
+        model=settings.anthropic_model if settings.llm_provider == "anthropic" else settings.openai_model,
         prompt_input=f"[System]\n{system_content}\n\n[User]\n{user_msg}",
         prompt_output=generated_prompt,
         tokens_in=tokens_in,
@@ -1691,8 +1703,9 @@ async def generate_ai_prompt(
     db.add(gen_log)
     db.commit()
     
+    _current_model = settings.anthropic_model if settings.llm_provider == "anthropic" else settings.openai_model
     return {
         "prompt": generated_prompt,
-        "model": settings.openai_model,
+        "model": _current_model,
         "tokens_used": tokens_in + tokens_out,
     }

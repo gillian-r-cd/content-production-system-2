@@ -96,18 +96,23 @@ async def _call_llm(
     ]
     
     start_time = time.time()
-    llm_t = get_chat_model(model=settings.openai_model, temperature=temperature)
+    llm_t = get_chat_model(temperature=temperature)  # 自动选择 provider 对应的默认模型
     response = await llm_t.ainvoke(messages)
     duration_ms = int((time.time() - start_time) * 1000)
     
     # 提取 token 用量（如可用）
     usage = getattr(response, "usage_metadata", {}) or {}
     
+    # ChatAnthropic 的 content 可能是 list，归一化为 str
+    output = response.content
+    if isinstance(output, list):
+        output = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in output)
+    
     call = LLMCall(
         step=step,
         input_system=system_prompt,
         input_user=user_message,
-        output=response.content,
+        output=output,
         tokens_in=usage.get("input_tokens", 0),
         tokens_out=usage.get("output_tokens", 0),
         cost=0.0,  # LangChain 不直接提供 cost
@@ -115,7 +120,7 @@ async def _call_llm(
         timestamp=datetime.now().isoformat(),
     )
     
-    return response.content, call
+    return output, call
 
 
 async def _call_llm_multi(
@@ -125,7 +130,7 @@ async def _call_llm_multi(
 ) -> Tuple[str, LLMCall]:
     """多消息版本的 LLM 调用（用于多轮对话）"""
     start_time = time.time()
-    llm_t = get_chat_model(model=settings.openai_model, temperature=temperature)
+    llm_t = get_chat_model(temperature=temperature)  # 自动选择 provider 对应的默认模型
     response = await llm_t.ainvoke(messages)
     duration_ms = int((time.time() - start_time) * 1000)
     
@@ -134,7 +139,7 @@ async def _call_llm_multi(
     conversation_parts = []
     for m in messages:
         if isinstance(m, SystemMessage):
-            system_prompt = m.content
+            system_prompt = m.content if isinstance(m.content, str) else str(m.content)
         elif isinstance(m, AIMessage):
             conversation_parts.append(f"[我方(assistant)]: {m.content}")
         elif isinstance(m, HumanMessage):
@@ -144,11 +149,16 @@ async def _call_llm_multi(
     
     usage = getattr(response, "usage_metadata", {}) or {}
     
+    # ChatAnthropic 的 content 可能是 list，归一化为 str
+    output = response.content
+    if isinstance(output, list):
+        output = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in output)
+    
     call = LLMCall(
         step=step,
         input_system=system_prompt,
         input_user=full_history,
-        output=response.content,
+        output=output,
         tokens_in=usage.get("input_tokens", 0),
         tokens_out=usage.get("output_tokens", 0),
         cost=0.0,
@@ -156,7 +166,7 @@ async def _call_llm_multi(
         timestamp=datetime.now().isoformat(),
     )
     
-    return response.content, call
+    return output, call
 
 
 # ============== 核心执行函数 ==============

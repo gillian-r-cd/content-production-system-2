@@ -1,16 +1,26 @@
 # Content Production System - 环境变量配置
 # 复制此文件为 .env 并填写实际值
 
-# ========== LLM API ==========
-# 支持 OpenAI 直连 和 OpenRouter (OpenAI 兼容接口)
-#
-# --- 方式一: OpenAI 直连 ---
+# ========== LLM Provider ==========
+# 选择 LLM 供应商: "openai" | "anthropic"
+# - openai: 使用 OpenAI 直连或 OpenRouter（OpenAI 兼容接口）
+# - anthropic: 使用 Anthropic 原生 API
+LLM_PROVIDER=openai
+
+# ========== 方式一: Anthropic 原生 API ==========
+# LLM_PROVIDER=anthropic
+# ANTHROPIC_API_KEY=sk-ant-xxxx
+# ANTHROPIC_MODEL=claude-opus-4-6
+# ANTHROPIC_MINI_MODEL=claude-sonnet-4-6
+
+# ========== 方式二: OpenAI 直连 ==========
+# LLM_PROVIDER=openai
 # OPENAI_API_KEY=sk-xxxx
-# OPENAI_API_BASE=
 # OPENAI_MODEL=gpt-5.1
 # OPENAI_MINI_MODEL=gpt-4o-mini
-#
-# --- 方式二: OpenRouter ---
+
+# ========== 方式三: OpenRouter (OpenAI 兼容) ==========
+# LLM_PROVIDER=openai
 # OPENAI_API_KEY=sk-or-v1-xxxx
 # OPENAI_API_BASE=https://openrouter.ai/api/v1
 # OPENAI_MODEL=anthropic/claude-sonnet-4
@@ -18,19 +28,23 @@
 #
 # 注意: 通过 OpenRouter 使用时，模型名需用 OpenRouter 格式 (provider/model)
 # 完整模型列表: https://openrouter.ai/models
+
 # Agent 核心依赖 tool calling，请选择支持 tool use 的模型
 
-# 必填: API Key (OpenAI 或 OpenRouter)
+# ---- 必填: API Key (根据 LLM_PROVIDER 选择填哪个) ----
 OPENAI_API_KEY=sk-xxxx
+# ANTHROPIC_API_KEY=sk-ant-xxxx
 
-# 可选: OpenAI组织ID (OpenRouter 时留空)
+# 可选: OpenAI 组织ID (OpenRouter/Anthropic 时留空)
 OPENAI_ORG_ID=
 
 # 可选: 默认模型
 OPENAI_MODEL=gpt-5.1
+# ANTHROPIC_MODEL=claude-opus-4-6
 
 # 可选: 轻量模型 (用于摘要、分类等，降低成本)
 OPENAI_MINI_MODEL=gpt-4o-mini
+# ANTHROPIC_MINI_MODEL=claude-sonnet-4-6
 
 # 可选: API Base URL (OpenRouter 填 https://openrouter.ai/api/v1)
 OPENAI_API_BASE=

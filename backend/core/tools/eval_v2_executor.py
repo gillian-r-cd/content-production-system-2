@@ -38,11 +38,18 @@ class ExperienceExecutionResult:
 
 async def _call_json(system_prompt: str, user_prompt: str, step: str, temperature: float = 0.6) -> tuple[dict, dict]:
     start = time.time()
-    model = get_chat_model(model=settings.openai_model, temperature=temperature)
+    model = get_chat_model(temperature=temperature)  # 自动选择 provider 对应的默认模型
     response = await model.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
     duration_ms = int((time.time() - start) * 1000)
     usage = getattr(response, "usage_metadata", {}) or {}
-    text = response.content if isinstance(response.content, str) else str(response.content)
+    # ChatAnthropic 的 content 可能是 list，归一化为 str
+    raw = response.content
+    if isinstance(raw, list):
+        text = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in raw)
+    elif isinstance(raw, str):
+        text = raw
+    else:
+        text = str(raw)
     parsed = _parse_json(text)
     call = {
         "step": step,

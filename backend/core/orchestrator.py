@@ -596,10 +596,16 @@ async def agent_node(state: AgentState, config: RunnableConfig) -> dict:
     response = await llm_with_tools.ainvoke(messages_with_system, config=config)
 
     has_tool_calls = hasattr(response, "tool_calls") and response.tool_calls
-    content_preview = (response.content or "")[:200]
+    # ChatAnthropic 的 content 可能是 list（含 tool_use 块），需要归一化为 str
+    _content = response.content
+    if isinstance(_content, list):
+        _content = "".join(
+            b.get("text", "") if isinstance(b, dict) else str(b) for b in _content
+        )
+    content_preview = (_content or "")[:200]
     logger.info(
         "[agent_node] LLM 返回: content=%d chars, tool_calls=%s, preview='%s'",
-        len(response.content) if response.content else 0,
+        len(_content) if _content else 0,
         [tc["name"] for tc in response.tool_calls] if has_tool_calls else "none",
         content_preview,
     )

@@ -152,7 +152,13 @@ class GenerationLogCallback(AsyncCallbackHandler):
                     # 尝试从 AIMessage 提取
                     if not output_text and hasattr(gen[0], "message"):
                         msg = gen[0].message
-                        output_text = msg.content if hasattr(msg, "content") else ""
+                        raw_content = msg.content if hasattr(msg, "content") else ""
+                        # ChatAnthropic 的 content 可能是 list
+                        if isinstance(raw_content, list):
+                            raw_content = "".join(
+                                b.get("text", "") if isinstance(b, dict) else str(b) for b in raw_content
+                            )
+                        output_text = raw_content
                     # 如果有 tool_calls，也记录到输出
                     if hasattr(gen[0], "message") and hasattr(gen[0].message, "tool_calls"):
                         tool_calls = gen[0].message.tool_calls
