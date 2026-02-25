@@ -21,6 +21,7 @@ from core.models import (
     generate_uuid,
 )
 from core.models.content_block import ContentBlock
+from core.llm_compat import get_model_name
 
 
 router = APIRouter()
@@ -228,7 +229,7 @@ async def run_simulation_task(simulation_id: str, db: Session = Depends(get_db))
         project_id=record.project_id,
         phase="simulate",
         operation=f"simulation_{simulator.interaction_type}",
-        model="gpt-5.1",  # 或从配置获取
+        model=get_model_name(),
         prompt_input=log_input,
         prompt_output=log_output if not error_msg else f"Error: {error_msg}",
         tokens_used=0,  # 模拟器内部调用，无法精确统计

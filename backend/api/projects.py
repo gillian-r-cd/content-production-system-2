@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db
 from core.models import Project, CreatorProfile, PROJECT_PHASES, generate_uuid
+from core.llm_compat import get_model_name
 
 
 router = APIRouter()
@@ -1256,7 +1257,7 @@ def import_project(
                 field_id=_map_id(log.get("field_id")),
                 phase=log.get("phase", ""),
                 operation=log.get("operation", ""),
-                model=log.get("model", "gpt-5.1"),
+                model=log.get("model", get_model_name()),
                 prompt_input=log.get("prompt_input", ""),
                 prompt_output=log.get("prompt_output", ""),
                 tokens_in=log.get("tokens_in", 0),

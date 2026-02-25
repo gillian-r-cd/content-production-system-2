@@ -28,6 +28,7 @@ from core.database import get_db, Base
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from core.llm import llm
+from core.llm_compat import normalize_content
 
 
 class SkillOperation(str, Enum):
@@ -496,7 +497,7 @@ async def apply_skill(
             success=True,
             message=f"已使用技能「{skill.name}」",
             skill=Skill.from_model(skill),
-            output=response.content,
+            output=normalize_content(response.content),
         )
         
     except Exception as e:

@@ -34,6 +34,7 @@ from typing import Optional, List, Annotated
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool, InjectedToolArg
 from langchain_core.runnables import RunnableConfig
+from core.llm_compat import normalize_content, get_stop_reason
 
 logger = logging.getLogger("agent_tools")
 
@@ -387,15 +388,11 @@ async def _rewrite_field_impl(
             HumanMessage(content=f"请按要求修改「{field_name}」的内容。"),
         ], config=config)
 
-        new_content = response.content
-        if isinstance(new_content, list):
-            new_content = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in new_content)
+        new_content = normalize_content(response.content)
 
-        # 截断检测：OpenAI 用 finish_reason=="length"，Anthropic 用 stop_reason=="max_tokens"
-        meta = response.response_metadata or {}
-        finish_reason = meta.get("finish_reason", meta.get("stop_reason", "stop"))
-        if finish_reason in ("length", "max_tokens"):
-            logger.warning(f"[rewrite_field] 输出被截断（{finish_reason}），不保存，内容 {len(new_content)} 字")
+        reason, truncated = get_stop_reason(response)
+        if truncated:
+            logger.warning(f"[rewrite_field] 输出被截断（{reason}），不保存，内容 {len(new_content)} 字")
             return _json_err(f"修改内容被截断（{len(new_content)} 字），内容过长。建议拆分内容块或使用更简洁的指令。")
 
         # 走 SuggestionCard 确认流程，不直接写 DB
@@ -547,15 +544,11 @@ async def _generate_field_impl(
             HumanMessage(content=f"请生成「{field_name}」的内容。"),
         ], config=config)
 
-        new_content = response.content
-        if isinstance(new_content, list):
-            new_content = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in new_content)
+        new_content = normalize_content(response.content)
 
-        # 截断检测：OpenAI 用 finish_reason=="length"，Anthropic 用 stop_reason=="max_tokens"
-        meta = response.response_metadata or {}
-        finish_reason = meta.get("finish_reason", meta.get("stop_reason", "stop"))
-        if finish_reason in ("length", "max_tokens"):
-            logger.warning(f"[generate_field_content] 输出被截断 ({finish_reason}), {len(new_content)} 字")
+        reason, truncated = get_stop_reason(response)
+        if truncated:
+            logger.warning(f"[generate_field_content] 输出被截断 ({reason}), {len(new_content)} 字")
             return _json_err(f"生成内容被截断（{len(new_content)} 字），内容过长。建议拆分内容块。")
 
         if entity.content and entity.content.strip():
@@ -625,10 +618,7 @@ async def _query_field_impl(field_name: str, question: str, config: RunnableConf
             SystemMessage(content=f"你是内容分析助手。以下是内容块「{field_name}」的内容：\n\n{content[:4000]}"),
             HumanMessage(content=question),
         ], config=config)
-        result = response.content
-        if isinstance(result, list):
-            result = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in result)
-        return result
+        return normalize_content(response.content)
     except Exception as e:
         return f"查询失败: {e}"
     finally:

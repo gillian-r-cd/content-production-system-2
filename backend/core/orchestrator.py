@@ -39,6 +39,7 @@ from langchain_core.messages import (
 from langchain_core.runnables import RunnableConfig
 
 from core.llm import llm
+from core.llm_compat import normalize_content, sanitize_messages
 from core.agent_tools import AGENT_TOOLS
 
 logger = logging.getLogger("orchestrator")
@@ -486,7 +487,7 @@ def _count_tokens_approx(messages: list) -> int:
     enc = tiktoken.get_encoding("cl100k_base")
     total = 0
     for msg in messages:
-        content = msg.content if isinstance(msg.content, str) else str(msg.content)
+        content = normalize_content(msg.content)
         total += len(enc.encode(content, disallowed_special=())) + 4  # 4 tokens overhead per message
     return total
 
@@ -589,6 +590,8 @@ async def agent_node(state: AgentState, config: RunnableConfig) -> dict:
 
     # 将 system prompt 作为第一条消息注入
     messages_with_system = [SystemMessage(content=system_prompt)] + trimmed
+    # 防御性清理：合并多余 SystemMessage（防止 Checkpointer 恢复旧消息导致 Anthropic 报错）
+    messages_with_system = sanitize_messages(messages_with_system)
 
     # LLM 调用（bind_tools 让 LLM 自动决定是否调用工具）
     # ⚠️ 必须传 config，否则 astream_events 的 callback 链断裂，无法流式输出
@@ -596,12 +599,7 @@ async def agent_node(state: AgentState, config: RunnableConfig) -> dict:
     response = await llm_with_tools.ainvoke(messages_with_system, config=config)
 
     has_tool_calls = hasattr(response, "tool_calls") and response.tool_calls
-    # ChatAnthropic 的 content 可能是 list（含 tool_use 块），需要归一化为 str
-    _content = response.content
-    if isinstance(_content, list):
-        _content = "".join(
-            b.get("text", "") if isinstance(b, dict) else str(b) for b in _content
-        )
+    _content = normalize_content(response.content)
     content_preview = (_content or "")[:200]
     logger.info(
         "[agent_node] LLM 返回: content=%d chars, tool_calls=%s, preview='%s'",

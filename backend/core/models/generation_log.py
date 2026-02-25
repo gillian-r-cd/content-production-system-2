@@ -75,22 +75,28 @@ class GenerationLog(BaseModel):
         tokens_out: int
     ) -> float:
         """
-        计算API调用成本
-        基于OpenAI定价（2026年）
+        计算 API 调用成本。
+        支持 OpenAI 和 Anthropic 模型定价（每 1M tokens，美元）。
         """
-        # GPT定价（每1M tokens）
         pricing = {
-            "gpt-5.1": {"input": 5.00, "output": 15.00},  # GPT-5.1定价（预估）
+            # OpenAI
+            "gpt-5.1": {"input": 5.00, "output": 15.00},
             "gpt-4o": {"input": 2.50, "output": 10.00},
             "gpt-4o-mini": {"input": 0.15, "output": 0.60},
             "gpt-4-turbo": {"input": 10.00, "output": 30.00},
+            # Anthropic (2026 pricing per 1M tokens)
+            "claude-opus-4-6": {"input": 15.00, "output": 75.00},
+            "claude-sonnet-4-6": {"input": 3.00, "output": 15.00},
+            "claude-haiku-3-5": {"input": 0.80, "output": 4.00},
         }
-        
+
         if model not in pricing:
-            model = "gpt-5.1"  # 默认
-        
+            from core.llm_compat import get_model_name
+            fallback = get_model_name()
+            model = fallback if fallback in pricing else "gpt-4o"
+
         cost_in = (tokens_in / 1_000_000) * pricing[model]["input"]
         cost_out = (tokens_out / 1_000_000) * pricing[model]["output"]
-        
+
         return round(cost_in + cost_out, 6)
 

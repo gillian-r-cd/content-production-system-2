@@ -23,6 +23,7 @@ from core.database import get_db
 from core.models import ProjectField, Project, FieldTemplate, generate_uuid, GenerationLog, ContentVersion
 from core.tools import generate_field, generate_field_stream, resolve_field_order
 from core.prompt_engine import prompt_engine, PromptContext, GoldenContext
+from core.llm_compat import get_model_name
 from datetime import datetime
 import logging
 
@@ -430,13 +431,13 @@ async def generate_field_stream_api(
                     field_id=field.id,
                     phase=field.phase,
                     operation=f"field_generate_{field.name}",
-                    model="gpt-5.1",
+                    model=get_model_name(),
                     tokens_in=len(full_prompt) // 4,
                     tokens_out=len(full_content) // 4,
                     duration_ms=duration_ms,
                     prompt_input=full_prompt,
                     prompt_output=full_content,
-                    cost=GenerationLog.calculate_cost("gpt-5.1", len(full_prompt) // 4, len(full_content) // 4),
+                    cost=GenerationLog.calculate_cost(get_model_name(), len(full_prompt) // 4, len(full_content) // 4),
                     status="success",
                 )
                 db.add(gen_log)
@@ -606,7 +607,7 @@ async def batch_generate_fields(
                     field_id=field.id,
                     phase=field.phase,
                     operation=f"batch_generate_{field.name}",
-                    model=result.response.model or "gpt-5.1",
+                    model=result.response.model or get_model_name(),
                     tokens_in=result.response.tokens_in,
                     tokens_out=result.response.tokens_out,
                     duration_ms=result.response.duration_ms,

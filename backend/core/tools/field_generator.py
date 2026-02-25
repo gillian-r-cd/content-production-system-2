@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from core.llm import llm
+from core.llm_compat import normalize_content
 from core.prompt_engine import prompt_engine, PromptContext
 # 鸭子类型 — 函数接受任何有 .id/.name/.content/.ai_prompt 的对象（实际只传 ContentBlock）
 
@@ -58,7 +59,7 @@ async def generate_field(
         
         return FieldGenerationResult(
             field_id=field.id,
-            content=response.content,
+            content=normalize_content(response.content),
             success=True,
         )
         
@@ -95,8 +96,9 @@ async def generate_field_stream(
     ]
     
     async for chunk in llm.bind(temperature=temperature).astream(messages):
-        if chunk.content:
-            yield chunk.content
+        piece = normalize_content(chunk.content)
+        if piece:
+            yield piece
 
 
 async def generate_fields_parallel(

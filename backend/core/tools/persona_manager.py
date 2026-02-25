@@ -27,6 +27,7 @@ from core.models.content_block import ContentBlock
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from core.llm import llm
+from core.llm_compat import normalize_content
 
 
 class PersonaOperation(str, Enum):
@@ -480,7 +481,7 @@ async def generate_persona(
     
     try:
         response = await llm.bind(temperature=0.8).ainvoke(messages)
-        content = response.content.strip()
+        content = normalize_content(response.content).strip()
         
         # 提取 JSON
         if "```json" in content:

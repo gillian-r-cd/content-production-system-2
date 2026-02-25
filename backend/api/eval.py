@@ -69,6 +69,7 @@ from core.tools.eval_v2_service import (
 from core.tools.eval_v2_executor import run_experience_trial
 from core.models.grader import Grader
 from core.llm import get_chat_model
+from core.llm_compat import normalize_content, get_model_name
 from core.config import settings
 
 
@@ -302,15 +303,13 @@ async def test_eval_provider():
     model = get_chat_model(temperature=0.0, streaming=False)
     reply = await model.ainvoke([HumanMessage(content="Reply exactly: OK")])
     # 获取当前使用的模型名
-    current_model = (settings.anthropic_model if settings.llm_provider == "anthropic" else settings.openai_model)
-    raw_content = getattr(reply, "content", "")
-    if isinstance(raw_content, list):
-        raw_content = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in raw_content)
+    current_model = get_model_name()
+    raw_content = normalize_content(getattr(reply, "content", ""))
     return {
         "ok": True,
         "model": current_model,
         "provider": settings.llm_provider,
-        "reply": str(raw_content)[:120],
+        "reply": raw_content[:120],
     }
 
 
@@ -2052,7 +2051,7 @@ async def _handle_eval_report(block, project, db):
                         field_id=block.id,
                         phase="evaluate",
                         operation=f"eval_{task_name}_{lc.get('step', 'unknown')}",
-                        model="gpt-5.1",
+                        model=get_model_name(),
                         prompt_input=f"[SYSTEM]\n{inp.get('system_prompt', '')}\n\n[USER]\n{inp.get('user_message', '')}",
                         prompt_output=lc.get("output", ""),
                         tokens_in=lc.get("tokens_in", 0),
@@ -2360,10 +2359,8 @@ async def _generate_persona_with_llm(project_name: str, project_intent: str, exi
     try:
         model = get_chat_model(temperature=0.8)
         response = await model.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
-        raw = response.content
-        if isinstance(raw, list):
-            raw = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in raw)
-        parsed = _parse_json_response(raw if isinstance(raw, str) else str(raw))
+        raw = normalize_content(response.content)
+        parsed = _parse_json_response(raw)
         name = str(parsed.get("name", "")).strip()
         prompt = str(parsed.get("prompt", "")).strip()
         if not name:
@@ -2414,10 +2411,8 @@ async def _generate_prompt_with_llm(prompt_type: str, context: dict) -> str:
     try:
         model = get_chat_model(temperature=0.7)
         response = await model.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
-        raw = response.content
-        if isinstance(raw, list):
-            raw = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in raw)
-        parsed = _parse_json_response(raw if isinstance(raw, str) else str(raw))
+        raw = normalize_content(response.content)
+        parsed = _parse_json_response(raw)
         generated = str(parsed.get("generated_prompt", "")).strip()
         if generated:
             return generated

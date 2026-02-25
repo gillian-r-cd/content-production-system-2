@@ -29,6 +29,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 
 from core.llm import llm
+from core.llm_compat import normalize_content
 
 logger = logging.getLogger("deep_research")
 
@@ -185,7 +186,7 @@ async def plan_search_queries(
     ]
     
     response = await llm.ainvoke(messages, config=config)
-    queries = [q.strip().lstrip("0123456789.-、) ") for q in response.content.strip().split("\n") if q.strip()]
+    queries = [q.strip().lstrip("0123456789.-、) ") for q in normalize_content(response.content).strip().split("\n") if q.strip()]
     # 过滤掉太短或方法论类的查询词
     queries = [q for q in queries if len(q) >= 4]
     

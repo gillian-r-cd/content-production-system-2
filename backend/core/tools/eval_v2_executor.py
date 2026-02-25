@@ -25,6 +25,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 from core.config import settings
 from core.llm import get_chat_model
+from core.llm_compat import normalize_content
 
 
 @dataclass
@@ -42,14 +43,7 @@ async def _call_json(system_prompt: str, user_prompt: str, step: str, temperatur
     response = await model.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
     duration_ms = int((time.time() - start) * 1000)
     usage = getattr(response, "usage_metadata", {}) or {}
-    # ChatAnthropic 的 content 可能是 list，归一化为 str
-    raw = response.content
-    if isinstance(raw, list):
-        text = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in raw)
-    elif isinstance(raw, str):
-        text = raw
-    else:
-        text = str(raw)
+    text = normalize_content(response.content)
     parsed = _parse_json(text)
     call = {
         "step": step,

@@ -28,6 +28,7 @@ import logging
 from typing import Optional
 
 from langchain_core.messages import HumanMessage
+from core.llm_compat import normalize_content
 
 logger = logging.getLogger("memory_service")
 
@@ -99,7 +100,7 @@ async def extract_memories(
     try:
         from core.llm import llm_mini
         response = await llm_mini.ainvoke([HumanMessage(content=prompt)])
-        raw = response.content.strip()
+        raw = normalize_content(response.content).strip()
 
         # 尝试提取 JSON（兼容 markdown code block 包裹）
         if raw.startswith("```"):
@@ -478,7 +479,7 @@ async def consolidate_memories(project_id: str) -> int:
 
         from core.llm import llm_mini
         response = await llm_mini.ainvoke([HumanMessage(content=prompt)])
-        raw = response.content.strip()
+        raw = normalize_content(response.content).strip()
 
         # 解析 JSON
         if raw.startswith("```"):
@@ -584,7 +585,7 @@ async def filter_memories_by_relevance(
     try:
         from core.llm import llm_mini
         response = await llm_mini.ainvoke([HumanMessage(content=prompt)])
-        raw = response.content.strip()
+        raw = normalize_content(response.content).strip()
 
         if raw.startswith("```"):
             lines = raw.split("\n")

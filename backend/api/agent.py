@@ -34,6 +34,7 @@ from core.models import (
 from core.models.content_block import ContentBlock
 from core.orchestrator import get_agent_graph
 from core.agent_tools import PRODUCE_TOOLS
+from core.llm_compat import normalize_content
 
 router = APIRouter()
 logger = logging.getLogger("agent")
@@ -41,26 +42,8 @@ logger = logging.getLogger("agent")
 
 # ============== Helpers ==============
 
-def _normalize_content(content) -> str:
-    """
-    将 LLM 返回的 content 归一化为 str。
-
-    ChatOpenAI 返回 str，ChatAnthropic 可能返回 list[dict]（内容块列表）。
-    本函数统一处理，确保下游代码始终拿到 str。
-    """
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for block in content:
-            if isinstance(block, dict):
-                parts.append(block.get("text", ""))
-            elif isinstance(block, str):
-                parts.append(block)
-            else:
-                parts.append(str(block))
-        return "".join(parts)
-    return str(content) if content else ""
+# normalize_content 已移至 core.llm_compat 统一管理
+_normalize_content = normalize_content  # 向后兼容别名
 
 
 async def _extract_and_save_memories(
@@ -1817,7 +1800,7 @@ async def inline_edit(
             SystemMessage(content=system),
             HumanMessage(content=user_content),
         ])
-        replacement = response.content.strip()
+        replacement = normalize_content(response.content).strip()
     except Exception as e:
         logger.error("[inline-edit] LLM 调用失败: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"AI 处理失败: {str(e)[:200]}")

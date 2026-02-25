@@ -27,6 +27,7 @@ from uuid import UUID
 
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import BaseMessage
+from core.llm_compat import normalize_content
 from langchain_core.outputs import LLMResult
 
 logger = logging.getLogger("llm_logger")
@@ -153,12 +154,7 @@ class GenerationLogCallback(AsyncCallbackHandler):
                     if not output_text and hasattr(gen[0], "message"):
                         msg = gen[0].message
                         raw_content = msg.content if hasattr(msg, "content") else ""
-                        # ChatAnthropic 的 content 可能是 list
-                        if isinstance(raw_content, list):
-                            raw_content = "".join(
-                                b.get("text", "") if isinstance(b, dict) else str(b) for b in raw_content
-                            )
-                        output_text = raw_content
+                        output_text = normalize_content(raw_content)
                     # 如果有 tool_calls，也记录到输出
                     if hasattr(gen[0], "message") and hasattr(gen[0].message, "tool_calls"):
                         tool_calls = gen[0].message.tool_calls

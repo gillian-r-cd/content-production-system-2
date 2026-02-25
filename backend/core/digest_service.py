@@ -13,6 +13,7 @@ import logging
 import time
 
 from core.llm import llm_mini
+from core.llm_compat import normalize_content
 from langchain_core.messages import HumanMessage
 from core.models.content_block import ContentBlock
 from core.database import get_db
@@ -36,7 +37,7 @@ async def generate_digest(content: str) -> str:
     ]
     try:
         response = await llm_mini.ainvoke(messages)
-        return response.content.strip()[:200]
+        return normalize_content(response.content).strip()[:200]
     except Exception as e:
         logger.warning(f"[Digest] 生成摘要失败: {e}")
         return ""

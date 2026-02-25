@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 from core.llm import llm
+from core.llm_compat import normalize_content
 from core.models import Simulator, SimulationRecord
 
 
@@ -86,7 +87,7 @@ async def run_reading_simulation(
         
         # 解析反馈
         import json
-        feedback_data = json.loads(response.content)
+        feedback_data = json.loads(normalize_content(response.content))
         feedback = SimulationFeedback(
             scores=feedback_data.get("scores", {}),
             comments=feedback_data.get("comments", {}),
@@ -99,7 +100,7 @@ async def run_reading_simulation(
                 "input": content,
                 "system_prompt": system_prompt,
                 "user_instruction": eval_instruction,
-                "output": response.content,
+                "output": normalize_content(response.content),
             },
             feedback=feedback,
             success=True,
@@ -227,7 +228,7 @@ async def run_dialogue_simulation(
                 ))
             
             user_response = await llm.bind(temperature=0.8).ainvoke(user_messages)
-            user_msg = user_response.content
+            user_msg = normalize_content(user_response.content)
             
             interaction_log.append({
                 "role": "user",
@@ -252,7 +253,7 @@ async def run_dialogue_simulation(
                     content_messages.append(AIMessage(content=log["content"]))
             
             content_response = await llm.bind(temperature=0.5).ainvoke(content_messages)
-            content_msg = content_response.content
+            content_msg = normalize_content(content_response.content)
             
             interaction_log.append({
                 "role": "content",
@@ -303,7 +304,7 @@ async def run_dialogue_simulation(
         eval_response = await llm.bind(temperature=0.5).ainvoke(eval_messages)
         
         import json
-        feedback_data = json.loads(eval_response.content)
+        feedback_data = json.loads(normalize_content(eval_response.content))
         
         feedback = SimulationFeedback(
             scores=feedback_data.get("scores", {}),
@@ -328,7 +329,7 @@ async def run_dialogue_simulation(
                 "content_system_prompt": content_system,
                 "eval_system_prompt": eval_system,
                 "dialogue": interaction_log,
-                "eval_output": eval_response.content,
+                "eval_output": normalize_content(eval_response.content),
             },
             feedback=feedback,
             success=True,
@@ -404,7 +405,7 @@ async def run_decision_simulation(
         response = await llm.ainvoke(messages)
         
         import json
-        feedback_data = json.loads(response.content)
+        feedback_data = json.loads(normalize_content(response.content))
         feedback = SimulationFeedback(
             scores=feedback_data.get("scores", {}),
             comments={
@@ -422,7 +423,7 @@ async def run_decision_simulation(
                 "input": content,
                 "system_prompt": system_prompt,
                 "user_instruction": eval_instruction,
-                "output": response.content,
+                "output": normalize_content(response.content),
                 "decision_details": feedback_data,
             },
             feedback=feedback,
@@ -515,7 +516,7 @@ async def run_exploration_simulation(
         response = await llm.ainvoke(messages)
         
         import json
-        feedback_data = json.loads(response.content)
+        feedback_data = json.loads(normalize_content(response.content))
         
         feedback = SimulationFeedback(
             scores=feedback_data.get("scores", {}),
@@ -535,7 +536,7 @@ async def run_exploration_simulation(
                 "input": content,
                 "system_prompt": system_prompt,
                 "user_instruction": eval_instruction,
-                "output": response.content,
+                "output": normalize_content(response.content),
                 "task": task,
                 "exploration_path": feedback_data.get("exploration_path", []),
                 "attention_points": feedback_data.get("attention_points", []),
@@ -634,7 +635,7 @@ async def run_experience_simulation(
         response = await llm.ainvoke(messages)
         
         import json
-        feedback_data = json.loads(response.content)
+        feedback_data = json.loads(normalize_content(response.content))
         
         feedback = SimulationFeedback(
             scores=feedback_data.get("scores", {}),
@@ -655,7 +656,7 @@ async def run_experience_simulation(
                 "input": content,
                 "system_prompt": system_prompt,
                 "user_instruction": eval_instruction,
-                "output": response.content,
+                "output": normalize_content(response.content),
                 "task": task,
                 # 完整保存所有结构化数据
                 "steps": feedback_data.get("steps", []),

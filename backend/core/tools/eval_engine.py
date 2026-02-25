@@ -28,6 +28,7 @@ from datetime import datetime
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage
 
 from core.llm import llm, get_chat_model
+from core.llm_compat import normalize_content
 from core.config import settings
 from core.models.eval_task import SIMULATOR_TYPES
 
@@ -103,10 +104,7 @@ async def _call_llm(
     # 提取 token 用量（如可用）
     usage = getattr(response, "usage_metadata", {}) or {}
     
-    # ChatAnthropic 的 content 可能是 list，归一化为 str
-    output = response.content
-    if isinstance(output, list):
-        output = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in output)
+    output = normalize_content(response.content)
     
     call = LLMCall(
         step=step,
@@ -139,20 +137,17 @@ async def _call_llm_multi(
     conversation_parts = []
     for m in messages:
         if isinstance(m, SystemMessage):
-            system_prompt = m.content if isinstance(m.content, str) else str(m.content)
+            system_prompt = normalize_content(m.content)
         elif isinstance(m, AIMessage):
-            conversation_parts.append(f"[我方(assistant)]: {m.content}")
+            conversation_parts.append(f"[我方(assistant)]: {normalize_content(m.content)}")
         elif isinstance(m, HumanMessage):
-            conversation_parts.append(f"[对方(user)]: {m.content}")
+            conversation_parts.append(f"[对方(user)]: {normalize_content(m.content)}")
     
     full_history = "\n---\n".join(conversation_parts) if conversation_parts else ""
     
     usage = getattr(response, "usage_metadata", {}) or {}
     
-    # ChatAnthropic 的 content 可能是 list，归一化为 str
-    output = response.content
-    if isinstance(output, list):
-        output = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in output)
+    output = normalize_content(response.content)
     
     call = LLMCall(
         step=step,

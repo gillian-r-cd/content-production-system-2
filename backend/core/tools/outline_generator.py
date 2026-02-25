@@ -27,6 +27,7 @@ from core.phase_config import PHASE_DISPLAY_NAMES
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from core.llm import llm
+from core.llm_compat import normalize_content
 from core.tools.architecture_reader import get_project_architecture
 
 
@@ -229,7 +230,7 @@ async def generate_outline(
     
     # 解析响应
     try:
-        content = response.content.strip()
+        content = normalize_content(response.content).strip()
         # 提取 JSON
         if "```json" in content:
             content = content.split("```json")[1].split("```")[0]
@@ -256,7 +257,7 @@ async def generate_outline(
     except Exception as e:
         return ContentOutline(
             title="大纲生成失败",
-            summary=f"解析错误: {str(e)}\n\n原始输出:\n{response.content[:500]}",
+            summary=f"解析错误: {str(e)}\n\n原始输出:\n{normalize_content(response.content)[:500]}",
             content_type=content_type,
         )
 
