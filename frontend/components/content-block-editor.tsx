@@ -835,8 +835,8 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
             {block.need_review ? "需要人工确认" : "自动执行"}
           </span>
 
-          {/* M5: 模型覆盖选择 */}
-          {block.block_type === "field" && (
+          {/* M5: 模型覆盖选择（group 类型纯分组无内容，不显示） */}
+          {block.block_type !== "group" && (
             <div className="relative" data-model-selector>
               <button
                 onClick={() => setShowModelSelector(!showModelSelector)}

@@ -1,17 +1,18 @@
 // frontend/components/content-block-card.tsx
 // 功能: 紧凑版 ContentBlock 卡片，用于阶段视图中显示字段的所有设置
 // 支持不同类型：phase（阶段）显示子节点数量和进入按钮，field（字段）显示完整编辑功能
-// 包含：名称、状态、AI提示词、依赖、约束、need_review、生成/编辑/删除按钮
+// 包含：名称、状态、AI提示词、依赖、约束、need_review、模型覆盖(M5)、生成/编辑/删除按钮
 
 "use client";
 
 import { useState, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { blockAPI, runAutoTriggerChain } from "@/lib/api";
+import { blockAPI, runAutoTriggerChain, modelsAPI } from "@/lib/api";
 import { useBlockGeneration } from "@/lib/hooks/useBlockGeneration";
-import type { ContentBlock } from "@/lib/api";
+import type { ContentBlock, ModelInfo } from "@/lib/api";
 import { VersionHistoryButton } from "./version-history";
+import { sendNotification } from "@/lib/utils";
 import { 
   Play,
   Square,
@@ -32,7 +33,8 @@ import {
   FileText,
   Layers,
   Copy,
-  Check
+  Check,
+  Cpu,
 } from "lucide-react";
 
 interface ContentBlockCardProps {
@@ -62,18 +64,6 @@ export function ContentBlockCard({
   const [showPromptModal, setShowPromptModal] = useState(false);
   const [showDependencyModal, setShowDependencyModal] = useState(false);
   
-  // Escape 键关闭弹窗
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        if (showPromptModal) setShowPromptModal(false);
-        else if (showDependencyModal) setShowDependencyModal(false);
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [showPromptModal, showDependencyModal]);
-  
   // 编辑状态
   const [editedPrompt, setEditedPrompt] = useState(block.ai_prompt || "");
   const [savedPrompt, setSavedPrompt] = useState(block.ai_prompt || ""); // 本地追踪已保存的提示词
@@ -86,6 +76,36 @@ export function ContentBlockCard({
   const [isSavingPreAnswers, setIsSavingPreAnswers] = useState(false);
   const [preAnswersSaved, setPreAnswersSaved] = useState(false);
   const hasPreQuestions = (block.pre_questions?.length || 0) > 0;
+
+  // M5: 模型覆盖
+  const [modelOverride, setModelOverride] = useState<string>(block.model_override || "");
+  const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
+  const [showModelSelector, setShowModelSelector] = useState(false);
+
+  // Escape 键关闭弹窗 + 点击外部关闭模型选择器
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (showModelSelector) setShowModelSelector(false);
+        else if (showPromptModal) setShowPromptModal(false);
+        else if (showDependencyModal) setShowDependencyModal(false);
+      }
+    };
+    const clickHandler = (e: MouseEvent) => {
+      if (showModelSelector) {
+        const target = e.target as HTMLElement;
+        if (!target.closest("[data-model-selector]")) {
+          setShowModelSelector(false);
+        }
+      }
+    };
+    window.addEventListener("keydown", handler);
+    document.addEventListener("mousedown", clickHandler);
+    return () => {
+      window.removeEventListener("keydown", handler);
+      document.removeEventListener("mousedown", clickHandler);
+    };
+  }, [showPromptModal, showDependencyModal, showModelSelector]);
 
   // ---- 生成逻辑（通过 Hook 统一管理） ----
   const {
@@ -171,9 +191,33 @@ export function ContentBlockCard({
     setSavedPrompt(block.ai_prompt || "");
     setSelectedDependencies(block.depends_on || []);
     setPreAnswers(block.pre_answers || {});
+    // M5: 同步 model_override
+    setModelOverride(block.model_override || "");
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [block.id, block.content, block.name, block.ai_prompt, block.depends_on, block.pre_answers]);
-  
+
+  // M5: 加载可用模型列表
+  useEffect(() => {
+    modelsAPI.list().then((data) => {
+      setAvailableModels(data.models);
+    }).catch(console.error);
+  }, []);
+
+  // M5: 保存模型覆盖
+  const handleSaveModelOverride = async (modelId: string) => {
+    try {
+      // 空字符串 "" 表示清除覆盖（恢复使用全局默认），后端会转为 null
+      await blockAPI.update(block.id, { model_override: modelId });
+      setModelOverride(modelId);
+      setShowModelSelector(false);
+      onUpdate?.();
+      sendNotification(modelId ? `已设置模型: ${modelId}` : "已恢复为默认模型", "success");
+    } catch (err: unknown) {
+      console.error("保存模型覆盖失败:", err);
+      sendNotification("保存模型失败: " + (err instanceof Error ? err.message : "未知错误"), "error");
+    }
+  };
+
   // ===== 关键修复：如果 block 状态是 in_progress 但当前组件没在流式生成，则轮询刷新 =====
   useEffect(() => {
     if (block.status === "in_progress" && !isGenerating) {
@@ -564,6 +608,55 @@ export function ContentBlockCard({
             >
               {block.need_review ? <ShieldCheck className="w-4 h-4" /> : <Zap className="w-4 h-4" />}
             </button>
+
+            {/* M5: 模型覆盖 */}
+            <div className="relative" data-model-selector>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowModelSelector(!showModelSelector);
+                }}
+                className={`p-1.5 rounded transition-colors ${
+                  modelOverride
+                    ? "text-purple-400 hover:bg-purple-600/20"
+                    : "text-zinc-500 hover:bg-surface-3"
+                }`}
+                title={modelOverride ? `模型: ${modelOverride}` : "使用默认模型（点击切换）"}
+              >
+                <Cpu className="w-4 h-4" />
+              </button>
+              {showModelSelector && (
+                <div className="absolute top-full right-0 mt-1 z-50 w-56 bg-surface-1 border border-surface-3 rounded-lg shadow-xl overflow-hidden"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="p-2 border-b border-surface-3">
+                    <p className="text-xs text-zinc-500">为此内容块选择模型</p>
+                  </div>
+                  <div className="max-h-48 overflow-y-auto">
+                    <button
+                      onClick={() => handleSaveModelOverride("")}
+                      className={`w-full text-left px-3 py-2 text-xs hover:bg-surface-3 transition-colors ${
+                        !modelOverride ? "text-brand-400 bg-brand-600/10" : "text-zinc-300"
+                      }`}
+                    >
+                      跟随全局默认
+                    </button>
+                    {availableModels.map((m) => (
+                      <button
+                        key={m.id}
+                        onClick={() => handleSaveModelOverride(m.id)}
+                        className={`w-full text-left px-3 py-2 text-xs hover:bg-surface-3 transition-colors ${
+                          modelOverride === m.id ? "text-brand-400 bg-brand-600/10" : "text-zinc-300"
+                        }`}
+                      >
+                        <span>{m.name}</span>
+                        <span className="ml-2 text-zinc-600">{m.provider}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
             
             {/* 生成按钮 */}
             {!isGenerating && (
