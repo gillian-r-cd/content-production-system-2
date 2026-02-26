@@ -1,7 +1,8 @@
 # backend/core/llm_compat.py
-# 功能: LLM Provider 兼容性工具函数
-# 主要导出: normalize_content, get_stop_reason, get_model_name, sanitize_messages
-# 设计: 屏蔽 OpenAI / Anthropic 返回值差异，让下游代码无需感知 Provider
+# 功能: LLM Provider 兼容性工具函数 + 模型选择覆盖链
+# 主要导出: normalize_content, get_stop_reason, get_model_name, sanitize_messages, resolve_model
+# 设计: 屏蔽 OpenAI / Anthropic 返回值差异，让下游代码无需感知 Provider；
+#        resolve_model() 实现 "内容块覆盖 → 用户全局默认 → .env" 三级回退链
 
 """
 LLM Provider 兼容层。
@@ -10,20 +11,27 @@ LLM Provider 兼容层。
 而非直接访问 response.content / response.response_metadata 等字段。
 
 用法:
-    from core.llm_compat import normalize_content, get_stop_reason, get_model_name
+    from core.llm_compat import normalize_content, get_stop_reason, get_model_name, resolve_model
 
     text = normalize_content(response.content)
     reason, truncated = get_stop_reason(response)
     model = get_model_name()
+
+    # 模型选择覆盖链
+    model_name = resolve_model(model_override=block.model_override)
 """
 
 from __future__ import annotations
 
-from typing import Any, List, Tuple
+import logging
+import time
+from typing import Any, List, Optional, Tuple
 
 from langchain_core.messages import BaseMessage, SystemMessage
 
 from core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 def normalize_content(content: Any) -> str:
@@ -89,9 +97,12 @@ def get_model_name(mini: bool = False) -> str:
         return settings.openai_model or "gpt-5.1"
 
 
-def sanitize_messages(messages: List[BaseMessage]) -> List[BaseMessage]:
+def sanitize_messages(
+    messages: List[BaseMessage],
+    model: Optional[str] = None,
+) -> List[BaseMessage]:
     """
-    清理消息列表，确保符合当前 Provider 的约束。
+    清理消息列表，确保符合 Provider 的约束。
 
     对 Anthropic:
       - 将所有 SystemMessage 的内容合并为一条
@@ -99,9 +110,18 @@ def sanitize_messages(messages: List[BaseMessage]) -> List[BaseMessage]:
       - 移除其他位置的 SystemMessage
     对 OpenAI: 不做处理（无约束）。
 
+    Args:
+        messages: 消息列表
+        model: 实际使用的模型名。传入时按模型名判断 provider；
+               不传时回退到全局 settings.llm_provider
+
     这是防御性措施，防止 Checkpointer 恢复的历史消息中混入多条 SystemMessage。
     """
-    provider = (settings.llm_provider or "openai").lower().strip()
+    if model:
+        provider = _infer_provider(model)
+    else:
+        provider = (settings.llm_provider or "openai").lower().strip()
+
     if provider != "anthropic":
         return messages
 
@@ -120,3 +140,106 @@ def sanitize_messages(messages: List[BaseMessage]) -> List[BaseMessage]:
         merged = SystemMessage(content="\n\n".join(system_parts))
         return [merged] + non_system
     return non_system
+
+
+# ============== Provider 推断 ==============
+
+def _infer_provider(model: str) -> str:
+    """根据模型名前缀推断 provider。claude-* → anthropic，其余 → openai"""
+    if model and model.startswith("claude-"):
+        return "anthropic"
+    return "openai"
+
+
+# ============== 模型选择覆盖链 ==============
+
+# 进程内缓存：存储从 DB 读取的 AgentSettings 默认模型
+# 格式: {"default_model": str|None, "default_mini_model": str|None, "_ts": float}
+_agent_settings_cache: dict = {}
+_CACHE_TTL_SECONDS = 60  # 缓存有效期（秒）
+
+
+def _get_agent_settings_model(use_mini: bool = False) -> Optional[str]:
+    """
+    从 AgentSettings 单例读取用户全局默认模型。
+    带进程内缓存（TTL 60s），写入时通过 invalidate_model_cache() 立即失效。
+    """
+    global _agent_settings_cache
+
+    now = time.time()
+    if _agent_settings_cache and (now - _agent_settings_cache.get("_ts", 0)) < _CACHE_TTL_SECONDS:
+        key = "default_mini_model" if use_mini else "default_model"
+        return _agent_settings_cache.get(key)
+
+    # 缓存过期或不存在，查 DB
+    try:
+        from core.database import get_session_maker
+        from core.models.agent_settings import AgentSettings
+
+        SessionLocal = get_session_maker()
+        db = SessionLocal()
+        try:
+            row = db.query(AgentSettings).filter(AgentSettings.name == "default").first()
+            if row:
+                _agent_settings_cache = {
+                    "default_model": row.default_model,
+                    "default_mini_model": row.default_mini_model,
+                    "_ts": now,
+                }
+            else:
+                _agent_settings_cache = {
+                    "default_model": None,
+                    "default_mini_model": None,
+                    "_ts": now,
+                }
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"读取 AgentSettings 默认模型失败: {e}")
+        _agent_settings_cache = {
+            "default_model": None,
+            "default_mini_model": None,
+            "_ts": now,
+        }
+
+    key = "default_mini_model" if use_mini else "default_model"
+    return _agent_settings_cache.get(key)
+
+
+def invalidate_model_cache() -> None:
+    """
+    使模型缓存立即失效。
+    在 AgentSettings 更新 default_model / default_mini_model 时调用。
+    """
+    global _agent_settings_cache
+    _agent_settings_cache = {}
+
+
+def resolve_model(
+    model_override: Optional[str] = None,
+    use_mini: bool = False,
+) -> str:
+    """
+    解析最终模型名。覆盖链优先级：
+      1. model_override（内容块级）
+      2. AgentSettings.default_model（用户全局级）
+      3. settings.xxx_model（.env 级）
+
+    Args:
+        model_override: 内容块的 model_override 值（可能为 None）
+        use_mini: 是否使用轻量模型
+
+    Returns:
+        最终模型名（如 "gpt-5.2" 或 "claude-opus-4-6"）
+    """
+    # 级别 1: 内容块覆盖
+    if model_override:
+        return model_override
+
+    # 级别 2: 用户全局默认（从 DB 读取，带缓存）
+    db_default = _get_agent_settings_model(use_mini)
+    if db_default:
+        return db_default
+
+    # 级别 3: .env 默认
+    return get_model_name(mini=use_mini)

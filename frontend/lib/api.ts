@@ -499,8 +499,9 @@ export interface AgentSettingsData {
   tools?: string[];
   skills?: AgentSkillItem[];
   tool_prompts?: Record<string, string>;
+  default_model?: string | null;
+  default_mini_model?: string | null;
 }
-
 export interface SettingsLogItem {
   id: string;
   [key: string]: unknown;
@@ -736,6 +737,8 @@ export interface ContentBlock {
   children: ContentBlock[];
   created_at: string | null;
   updated_at: string | null;
+  // M5: 模型覆盖（内容块级别）
+  model_override?: string | null;
   // 版本警告（当修改影响下游内容块时）
   version_warning?: string | null;
   affected_blocks?: string[] | null;
@@ -817,6 +820,7 @@ export const blockAPI = {
     pre_answers: Record<string, string>;
     need_review: boolean;
     is_collapsed: boolean;
+    model_override: string | null;
   }>) =>
     fetchAPI<ContentBlock>(`/api/blocks/${blockId}`, {
       method: "PUT",
@@ -1448,6 +1452,25 @@ export const modesAPI = {
     fetchAPI<{ message: string }>(`/api/modes/${id}`, { method: "DELETE" }),
 };
 
+
+// ============== Models API (M5) ==============
+
+export interface ModelInfo {
+  id: string;
+  provider: string;
+  name: string;
+  tier: "main" | "mini";
+}
+
+export interface ModelsResponse {
+  models: ModelInfo[];
+  current_default: { main: string; mini: string };
+  env_provider: string;
+}
+
+export const modelsAPI = {
+  list: () => fetchAPI<ModelsResponse>("/api/models/"),
+};
 // ============== Memory Types & API ==============
 
 export interface MemoryItemInfo {

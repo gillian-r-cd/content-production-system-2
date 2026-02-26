@@ -1,7 +1,8 @@
 # backend/core/llm.py
 # 功能: 统一的 LLM 实例管理，支持 OpenAI 和 Anthropic
 # 主要导出: llm (主模型), llm_mini (轻量模型), get_chat_model()
-# 设计: 通过 LLM_PROVIDER 环境变量切换 provider，所有调用走 LangChain ChatModel 接口
+# 设计: 通过 LLM_PROVIDER 环境变量切换全局默认 provider；
+#        传入具体 model 名时，自动根据前缀判断 provider（claude-* → Anthropic，其余 → OpenAI）
 #
 # 支持的 provider:
 # 1. openai  — ChatOpenAI（支持 OpenAI 直连和 OpenRouter）
@@ -32,6 +33,13 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from core.config import settings
 
 
+def _infer_provider(model: str) -> str:
+    """根据模型名前缀推断 provider。claude-* → anthropic，其余 → openai"""
+    if model and model.startswith("claude-"):
+        return "anthropic"
+    return "openai"
+
+
 def get_chat_model(
     model: str = None,
     temperature: float = 0.7,
@@ -39,10 +47,14 @@ def get_chat_model(
     **kwargs,
 ) -> BaseChatModel:
     """
-    获取 LLM 实例（根据 LLM_PROVIDER 自动选择 ChatOpenAI 或 ChatAnthropic）。
+    获取 LLM 实例。
+
+    provider 判断逻辑：
+      1. 传入了 model 参数 → 根据模型名前缀自动判断（claude-* → Anthropic，其余 → OpenAI）
+      2. 未传入 model → 沿用全局 LLM_PROVIDER（.env 配置）
 
     Args:
-        model: 模型名称，默认用配置中的对应 provider 默认模型
+        model: 模型名称。传入时自动判断 provider；不传时用全局默认
         temperature: 温度
         streaming: 是否启用流式（默认开启，astream_events 需要）
         **kwargs: 其他参数
@@ -50,7 +62,10 @@ def get_chat_model(
     Returns:
         BaseChatModel 实例（ChatOpenAI 或 ChatAnthropic）
     """
-    provider = (settings.llm_provider or "openai").lower().strip()
+    if model:
+        provider = _infer_provider(model)
+    else:
+        provider = (settings.llm_provider or "openai").lower().strip()
 
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic

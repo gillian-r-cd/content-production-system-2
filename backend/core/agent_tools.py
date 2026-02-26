@@ -34,7 +34,7 @@ from typing import Optional, List, Annotated
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool, InjectedToolArg
 from langchain_core.runnables import RunnableConfig
-from core.llm_compat import normalize_content, get_stop_reason
+from core.llm_compat import normalize_content, get_stop_reason, resolve_model
 
 logger = logging.getLogger("agent_tools")
 
@@ -335,7 +335,7 @@ async def _rewrite_field_impl(
     reference_fields: List[str],
     config: RunnableConfig,
 ) -> str:
-    from core.llm import llm
+    from core.llm import get_chat_model
     from langchain_core.messages import SystemMessage, HumanMessage
 
     project_id = _get_project_id(config)
@@ -383,7 +383,9 @@ async def _rewrite_field_impl(
 请直接输出修改后的完整内容，不要添加任何解释或前缀。"""
 
         # ⚠️ 传 config 给 LLM 调用，确保 astream_events 能捕获工具内 LLM 的流式 token
-        response = await llm.ainvoke([
+        effective_model = resolve_model(model_override=getattr(entity, 'model_override', None))
+        chat_model = get_chat_model(model=effective_model)
+        response = await chat_model.ainvoke([
             SystemMessage(content=system_prompt),
             HumanMessage(content=f"请按要求修改「{field_name}」的内容。"),
         ], config=config)
@@ -479,7 +481,7 @@ async def _generate_field_impl(
     instruction: str,
     config: RunnableConfig,
 ) -> str:
-    from core.llm import llm
+    from core.llm import get_chat_model
     from langchain_core.messages import SystemMessage, HumanMessage
     from core.models import Project
 
@@ -539,7 +541,9 @@ async def _generate_field_impl(
         system_prompt = "\n\n".join(sections)
 
         # ⚠️ 传 config 给 LLM 调用，确保 astream_events 能捕获工具内 LLM 的流式 token
-        response = await llm.ainvoke([
+        effective_model = resolve_model(model_override=getattr(entity, 'model_override', None))
+        chat_model = get_chat_model(model=effective_model)
+        response = await chat_model.ainvoke([
             SystemMessage(content=system_prompt),
             HumanMessage(content=f"请生成「{field_name}」的内容。"),
         ], config=config)
@@ -599,7 +603,7 @@ async def query_field(
 
 
 async def _query_field_impl(field_name: str, question: str, config: RunnableConfig) -> str:
-    from core.llm import llm
+    from core.llm import get_chat_model
     from langchain_core.messages import SystemMessage, HumanMessage
 
     project_id = _get_project_id(config)
@@ -613,8 +617,11 @@ async def _query_field_impl(field_name: str, question: str, config: RunnableConf
         if not content.strip():
             return f"内容块「{field_name}」为空，还没有生成内容。"
 
+        # query 使用轻量模型（仅做内容分析，不需要主模型）
+        effective_model = resolve_model(use_mini=True)
+        chat_model = get_chat_model(model=effective_model)
         # ⚠️ 传 config 给 LLM 调用
-        response = await llm.ainvoke([
+        response = await chat_model.ainvoke([
             SystemMessage(content=f"你是内容分析助手。以下是内容块「{field_name}」的内容：\n\n{content[:4000]}"),
             HumanMessage(content=question),
         ], config=config)

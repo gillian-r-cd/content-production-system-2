@@ -14,8 +14,8 @@ from dataclasses import dataclass
 
 from langchain_core.messages import SystemMessage, HumanMessage
 
-from core.llm import llm
-from core.llm_compat import normalize_content
+from core.llm import get_chat_model
+from core.llm_compat import normalize_content, resolve_model
 from core.prompt_engine import prompt_engine, PromptContext
 # 鸭子类型 — 函数接受任何有 .id/.name/.content/.ai_prompt 的对象（实际只传 ContentBlock）
 
@@ -33,6 +33,7 @@ async def generate_field(
     field,  # ContentBlock（鸭子类型：需要 .id/.name/.content/.ai_prompt）
     context: PromptContext,
     temperature: float = 0.7,
+    model: Optional[str] = None,
 ) -> FieldGenerationResult:
     """
     生成单个字段内容
@@ -41,6 +42,7 @@ async def generate_field(
         field: 要生成的字段
         context: 提示词上下文
         temperature: 温度
+        model: 显式指定模型名（如 block.model_override），为 None 时走 resolve_model 覆盖链
     
     Returns:
         FieldGenerationResult
@@ -54,8 +56,10 @@ async def generate_field(
             HumanMessage(content=f"请生成「{field.name}」的内容。"),
         ]
         
-        # 使用 bind 覆盖温度
-        response = await llm.bind(temperature=temperature).ainvoke(messages)
+        # 按覆盖链解析模型
+        effective_model = resolve_model(model_override=model or getattr(field, 'model_override', None))
+        chat_model = get_chat_model(model=effective_model, temperature=temperature)
+        response = await chat_model.ainvoke(messages)
         
         return FieldGenerationResult(
             field_id=field.id,
@@ -76,6 +80,7 @@ async def generate_field_stream(
     field,  # ContentBlock（鸭子类型）
     context: PromptContext,
     temperature: float = 0.7,
+    model: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
     """
     流式生成字段内容
@@ -84,6 +89,7 @@ async def generate_field_stream(
         field: 要生成的字段
         context: 提示词上下文
         temperature: 温度
+        model: 显式指定模型名，为 None 时走 resolve_model 覆盖链
     
     Yields:
         内容片段
@@ -95,7 +101,9 @@ async def generate_field_stream(
         HumanMessage(content=f"请生成「{field.name}」的内容。"),
     ]
     
-    async for chunk in llm.bind(temperature=temperature).astream(messages):
+    effective_model = resolve_model(model_override=model or getattr(field, 'model_override', None))
+    chat_model = get_chat_model(model=effective_model, temperature=temperature)
+    async for chunk in chat_model.astream(messages):
         piece = normalize_content(chunk.content)
         if piece:
             yield piece

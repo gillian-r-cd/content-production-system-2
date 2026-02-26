@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from core.database import get_db
-from core.llm_compat import normalize_content, get_model_name
+from core.llm_compat import normalize_content, resolve_model
 from datetime import datetime
 
 logger = logging.getLogger("blocks")
@@ -83,6 +83,7 @@ class BlockUpdate(BaseModel):
     depends_on: Optional[List[str]] = None
     need_review: Optional[bool] = None
     is_collapsed: Optional[bool] = None
+    model_override: Optional[str] = None
 
 
 class BlockMove(BaseModel):
@@ -110,6 +111,7 @@ class BlockResponse(BaseModel):
     special_handler: Optional[str]
     need_review: bool
     is_collapsed: bool
+    model_override: Optional[str] = None
     children: List["BlockResponse"] = Field(default_factory=list)
     created_at: Optional[str]
     updated_at: Optional[str]
@@ -161,6 +163,7 @@ def _block_to_response(
         special_handler=block.special_handler,
         need_review=block.need_review,
         is_collapsed=block.is_collapsed,
+        model_override=getattr(block, 'model_override', None),
         children=children,
         created_at=block.created_at.isoformat() if block.created_at else None,
         updated_at=block.updated_at.isoformat() if block.updated_at else None,
@@ -496,6 +499,9 @@ def update_block(
         block.need_review = data.need_review
     if data.is_collapsed is not None:
         block.is_collapsed = data.is_collapsed
+    if data.model_override is not None:
+        # 空字符串表示清除覆盖（恢复使用全局默认）
+        block.model_override = data.model_override if data.model_override else None
     
     db.commit()
     db.refresh(block)
@@ -955,9 +961,12 @@ async def generate_block_content(
 {MARKDOWN_FORMAT_INSTRUCTIONS}
 """
     
-    # 调用 AI
-    from core.llm import llm
+    # 调用 AI（按 block.model_override → AgentSettings → .env 覆盖链选模型）
+    from core.llm import get_chat_model
     from langchain_core.messages import SystemMessage, HumanMessage
+    
+    effective_model = resolve_model(model_override=getattr(block, 'model_override', None))
+    chat_model = get_chat_model(model=effective_model)
     
     # ===== 生成前保存旧版本 =====
     _save_content_version(block, "ai_regenerate", db, source_detail="重新生成前的版本")
@@ -970,7 +979,7 @@ async def generate_block_content(
             SystemMessage(content=system_prompt),
             HumanMessage(content=f"请生成「{block.name}」的内容。"),
         ]
-        response = await llm.ainvoke(messages)
+        response = await chat_model.ainvoke(messages)
         
         gen_content = normalize_content(response.content)
 
@@ -988,13 +997,13 @@ async def generate_block_content(
             field_id=block.id,
             phase=block.parent_id or "content_block",
             operation=f"block_generate_{block.name}",
-            model=response.response_metadata.get("model_name", ""),
+            model=effective_model,
             tokens_in=usage.get("input_tokens", 0),
             tokens_out=usage.get("output_tokens", 0),
             duration_ms=0,
             prompt_input=system_prompt,
             prompt_output=gen_content,
-            cost=0.0,
+            cost=GenerationLog.calculate_cost(effective_model, usage.get("input_tokens", 0), usage.get("output_tokens", 0)),
             status="success",
         )
         db.add(gen_log)
@@ -1087,8 +1096,11 @@ async def generate_block_content_stream(
 {MARKDOWN_FORMAT_INSTRUCTIONS}
 """
     
-    from core.llm import llm
+    from core.llm import get_chat_model
     from langchain_core.messages import SystemMessage, HumanMessage
+    
+    effective_model = resolve_model(model_override=getattr(block, 'model_override', None))
+    chat_model = get_chat_model(model=effective_model)
     
     # ===== 流式生成前保存旧版本 =====
     _save_content_version(block, "ai_regenerate", db, source_detail="重新生成前的版本")
@@ -1108,7 +1120,7 @@ async def generate_block_content_stream(
                 HumanMessage(content=f"请生成「{block.name}」的内容。"),
             ]
             
-            async for chunk in llm.astream(messages):
+            async for chunk in chat_model.astream(messages):
                 piece = normalize_content(chunk.content)
                 if piece:
                     content_parts.append(piece)
@@ -1137,13 +1149,13 @@ async def generate_block_content_stream(
                 field_id=block.id,
                 phase=block.parent_id or "content_block",
                 operation=f"block_generate_stream_{block.name}",
-                model=get_model_name(),
+                model=effective_model,
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
                 duration_ms=duration_ms,
                 prompt_input=system_prompt,
                 prompt_output=full_content,
-                cost=GenerationLog.calculate_cost(get_model_name(), tokens_in, tokens_out),
+                cost=GenerationLog.calculate_cost(effective_model, tokens_in, tokens_out),
                 status="success",
             )
             db.add(gen_log)
@@ -1199,7 +1211,7 @@ async def generate_block_content_stream(
                                 field_id=save_block.id,
                                 phase=save_block.parent_id or "content_block",
                                 operation=f"block_generate_stream_interrupted_{save_block.name}",
-                                model=get_model_name(),
+                                model=effective_model,
                                 tokens_in=len(system_prompt) // 4,
                                 tokens_out=len(partial_content) // 4,
                                 duration_ms=duration_ms,
@@ -1622,8 +1634,12 @@ async def generate_ai_prompt(
     - 记录日志
     """
     from core.models import SystemPrompt, GenerationLog
-    from core.llm import llm
+    from core.llm import get_chat_model
     from langchain_core.messages import SystemMessage, HumanMessage
+    
+    # 提示词生成使用轻量模型（无 block 级覆盖，走全局默认 mini）
+    effective_model = resolve_model(use_mini=True)
+    chat_model = get_chat_model(model=effective_model)
     
     # 1. 从后台获取「AI生成提示词」的系统提示词
     prompt_template = db.query(SystemPrompt).filter(
@@ -1665,7 +1681,7 @@ async def generate_ai_prompt(
     ]
     
     try:
-        response = await llm.ainvoke(messages)
+        response = await chat_model.ainvoke(messages)
     except Exception as llm_err:
         raise HTTPException(status_code=502, detail=f"LLM 调用失败: {str(llm_err)[:200]}")
     
@@ -1682,21 +1698,20 @@ async def generate_ai_prompt(
         project_id=request.project_id or "global",
         phase="utility",
         operation="generate_ai_prompt",
-        model=get_model_name(),
+        model=effective_model,
         prompt_input=f"[System]\n{system_content}\n\n[User]\n{user_msg}",
         prompt_output=generated_prompt,
         tokens_in=tokens_in,
         tokens_out=tokens_out,
         duration_ms=0,
-        cost=0.0,
+        cost=GenerationLog.calculate_cost(effective_model, tokens_in, tokens_out),
         status="success",
     )
     db.add(gen_log)
     db.commit()
     
-    _current_model = get_model_name()
     return {
         "prompt": generated_prompt,
-        "model": _current_model,
+        "model": effective_model,
         "tokens_used": tokens_in + tokens_out,
     }

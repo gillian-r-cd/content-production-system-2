@@ -1,7 +1,7 @@
 # backend/core/models/content_block.py
 # 功能: 统一的内容块模型，替代固定的阶段结构
 # 主要类: ContentBlock
-# 数据结构: 支持无限层级的树形内容结构
+# 数据结构: 支持无限层级的树形内容结构，每个块可独立选择 LLM 模型 (model_override)
 
 """
 ContentBlock 模型
@@ -122,6 +122,12 @@ class ContentBlock(BaseModel):
     need_review: Mapped[bool] = mapped_column(Boolean, default=True)
     is_collapsed: Mapped[bool] = mapped_column(Boolean, default=False)
     
+    # 模型覆盖（M5: 模型选择功能）
+    # None = 回退到用户全局默认 → .env 默认
+    model_override: Mapped[Optional[str]] = mapped_column(
+        String(100), nullable=True, default=None
+    )
+
     # 内容摘要（digest_service 自动生成，用于内容块索引）
     digest: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
@@ -229,6 +235,7 @@ class ContentBlock(BaseModel):
             "special_handler": self.special_handler,
             "need_review": self.need_review,
             "is_collapsed": self.is_collapsed,
+            "model_override": self.model_override,
             "children": [child.to_tree_dict() for child in self.children],
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,

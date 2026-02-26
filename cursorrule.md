@@ -99,6 +99,8 @@
 | `docs/eval_system_design.md` | Eval V2 评估系统设计 | 实现评估功能时 |
 | `docs/user_guide.md` | 使用者指南 | 了解用户视角时 |
 | `docs/design-system.md` | 前端设计系统 | 实现界面时 |
+| `docs/llm_provider_compatibility.md` | LLM Provider 兼容性优化方案 (M4) | 处理 OpenAI/Anthropic 差异时 |
+| `docs/model_selection_feature.md` | 模型选择功能设计 (M5) | 实现模型选择功能时 |
 
 ## 当前开发重点（会话体系 + 预算控制 + DeepResearch 工程化）
 

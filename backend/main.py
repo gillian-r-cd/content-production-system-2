@@ -279,6 +279,7 @@ def create_app() -> FastAPI:
     from api import graders as graders_api
     from api import modes as modes_api
     from api import memories as memories_api
+    from api import models as models_api
     
     app.include_router(projects.router, prefix="/api/projects", tags=["projects"])
     app.include_router(fields.router, prefix="/api/fields", tags=["fields"])  # [已废弃] P0-1: 统一使用 blocks.router，保留兼容
@@ -304,6 +305,9 @@ def create_app() -> FastAPI:
     
     # 项目记忆管理
     app.include_router(memories_api.router)
+    
+    # 可用模型列表
+    app.include_router(models_api.router)
 
     # 启动时同步评估模板
     @app.on_event("startup")

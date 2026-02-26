@@ -16,9 +16,10 @@ import { ChannelsSection } from "@/components/settings/channels-section";
 import { GradersSection } from "@/components/settings/graders-section";
 import { EvalPromptsSection } from "@/components/settings/eval-prompts-section";
 import { AgentSettingsSection } from "@/components/settings/agent-settings-section";
+import { ModelSettingsSection } from "@/components/settings/model-settings-section";
 import { LogsSection } from "@/components/settings/logs-section";
 
-type Tab = "prompts" | "profiles" | "templates" | "phase_templates" | "channels" | "graders" | "eval_prompts" | "agent" | "logs";
+type Tab = "prompts" | "profiles" | "templates" | "phase_templates" | "channels" | "graders" | "eval_prompts" | "agent" | "models" | "logs";
 type SystemPromptItem = { id: string; name: string; phase: string; content?: string };
 type EvalPromptItem = {
   id: string;
@@ -83,6 +84,7 @@ export default function SettingsPage() {
           setEvalPrompts(await settingsAPI.listEvalPrompts());
           break;
         case "agent":
+        case "models":
           setAgentSettings(await settingsAPI.getAgentSettings());
           break;
         case "logs":
@@ -109,6 +111,7 @@ export default function SettingsPage() {
     { id: "graders", label: "评分器", icon: "⚖️" },
     { id: "eval_prompts", label: "评估提示词", icon: "🧪" },
     { id: "agent", label: "Agent设置", icon: "🤖" },
+    { id: "models", label: "模型配置", icon: "🧠" },
     { id: "logs", label: "调试日志", icon: "📊" },
   ];
 
@@ -156,6 +159,7 @@ export default function SettingsPage() {
               {activeTab === "graders" && <GradersSection graders={graders} onRefresh={loadData} />}
               {activeTab === "eval_prompts" && <EvalPromptsSection prompts={evalPrompts} onRefresh={loadData} />}
               {activeTab === "agent" && <AgentSettingsSection settings={agentSettings} onRefresh={loadData} />}
+              {activeTab === "models" && <ModelSettingsSection settings={agentSettings} onRefresh={loadData} />}
               {activeTab === "logs" && <LogsSection logs={logs} onRefresh={loadData} />}
             </>
           )}

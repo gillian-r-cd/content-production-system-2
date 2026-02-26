@@ -1,6 +1,6 @@
 # backend/scripts/init_db.py
-# 功能: 初始化数据库，创建表，插入预置数据（含评分器 Grader）
-# 主要函数: init_database(), seed_default_data()
+# 功能: 初始化数据库，创建表，插入预置数据（含评分器 Grader），增量迁移新列
+# 主要函数: init_database(), seed_default_data(), _migrate_add_columns()
 # 注意: 综合评估模板使用 EVAL_TEMPLATE_V2 常量（单一事实来源），已有过期版本会自动更新
 
 """
@@ -37,12 +37,50 @@ from core.models.field_template import (
 )
 
 
+def _migrate_add_columns():
+    """
+    增量迁移：为已有表添加新列（M5 模型选择功能）。
+    使用 ALTER TABLE ... ADD COLUMN，SQLite 不支持 IF NOT EXISTS，
+    所以通过 try/except 忽略 "duplicate column name" 错误。
+    """
+    from sqlalchemy import text
+
+    engine = get_engine()
+    migrations = [
+        # M5: AgentSettings 新增 default_model / default_mini_model
+        ("agent_settings", "default_model", "VARCHAR(100)"),
+        ("agent_settings", "default_mini_model", "VARCHAR(100)"),
+        # M5: ContentBlock 新增 model_override
+        ("content_blocks", "model_override", "VARCHAR(100)"),
+    ]
+
+    with engine.connect() as conn:
+        for table, column, col_type in migrations:
+            try:
+                conn.execute(text(
+                    f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"
+                ))
+                conn.commit()
+                print(f"  - 迁移: {table}.{column} 已添加")
+            except Exception as e:
+                # SQLite: "duplicate column name" 表示列已存在，跳过
+                if "duplicate column" in str(e).lower():
+                    pass
+                else:
+                    print(f"  - 迁移警告 {table}.{column}: {e}")
+
+
 def init_database():
     """创建所有数据库表"""
     print("正在创建数据库表...")
     engine = get_engine()
     Base.metadata.create_all(bind=engine)
     print("数据库表创建完成！")
+
+    # 增量迁移：为已有表添加新列
+    print("正在执行增量迁移...")
+    _migrate_add_columns()
+    print("增量迁移完成！")
 
 
 def seed_default_data():

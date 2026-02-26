@@ -8,10 +8,10 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { blockAPI, projectAPI, runAutoTriggerChain, agentAPI } from "@/lib/api";
+import { blockAPI, projectAPI, runAutoTriggerChain, agentAPI, modelsAPI } from "@/lib/api";
 import { useBlockGeneration } from "@/lib/hooks/useBlockGeneration";
 import { sendNotification } from "@/lib/utils";
-import type { ContentBlock } from "@/lib/api";
+import type { ContentBlock, ModelInfo } from "@/lib/api";
 import { getEvalFieldEditor } from "./eval-field-editors";
 import { VersionHistoryButton } from "./version-history";
 import { 
@@ -34,6 +34,7 @@ import {
   Check,
   Sparkles,
   Loader2,
+  Cpu,
 } from "lucide-react";
 
 // ===== 版本警告弹窗组件（含保存新版本功能） =====
@@ -165,6 +166,11 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
   const [aiPromptPurpose, setAiPromptPurpose] = useState("");
   const [generatingPrompt, setGeneratingPrompt] = useState(false);
   
+  // M5: 模型覆盖
+  const [modelOverride, setModelOverride] = useState<string>(block.model_override || "");
+  const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
+  const [showModelSelector, setShowModelSelector] = useState(false);
+
   // M4: Inline AI 编辑状态
   const [selectedText, setSelectedText] = useState("");
   const [inlineEditLoading, setInlineEditLoading] = useState(false);
@@ -249,8 +255,19 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
     setToolbarPosition(null);
     setInlineEditResult(null);
     setInlineEditLoading(false);
+    // M5: 同步 model_override
+    setModelOverride(block.model_override || "");
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [block.id, block.content, block.name, block.ai_prompt, block.depends_on, block.pre_answers]);
+
+  // M5: 加载可用模型列表（仅在组件挂载时加载一次）
+  useEffect(() => {
+    modelsAPI.list().then(resp => {
+      setAvailableModels(resp.models);
+    }).catch(() => {
+      // 静默忽略（可能后端未启动）
+    });
+  }, []);
   
   // ===== 关键修复 1：挂载或切换 block 时，从 API 获取最新状态 =====
   // 解决：用户导航到其他块再回来时，本地缓存的 block 数据可能是旧的
@@ -365,14 +382,28 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        if (showPromptModal) setShowPromptModal(false);
+        if (showModelSelector) setShowModelSelector(false);
+        else if (showPromptModal) setShowPromptModal(false);
         else if (showDependencyModal) setShowDependencyModal(false);
         else if (versionWarning) setVersionWarning(null);
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [showPromptModal, showDependencyModal, versionWarning]);
+  }, [showModelSelector, showPromptModal, showDependencyModal, versionWarning]);
+
+  // M5: 点击外部关闭模型选择器
+  useEffect(() => {
+    if (!showModelSelector) return;
+    const handler = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest("[data-model-selector]")) {
+        setShowModelSelector(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showModelSelector]);
 
   // 保存内容
   const handleSaveContent = async () => {
@@ -442,6 +473,21 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
     } catch (err) {
       console.error("保存依赖失败:", err);
       alert("保存依赖失败: " + (err instanceof Error ? err.message : "未知错误"));
+    }
+  };
+
+  // M5: 保存模型覆盖
+  const handleSaveModelOverride = async (modelId: string) => {
+    try {
+      // 空字符串 "" 表示清除覆盖（恢复使用全局默认），后端会转为 null
+      await blockAPI.update(block.id, { model_override: modelId });
+      setModelOverride(modelId);
+      setShowModelSelector(false);
+      onUpdate?.();
+      sendNotification(modelId ? `已设置模型: ${modelId}` : "已恢复为默认模型", "success");
+    } catch (err) {
+      console.error("保存模型覆盖失败:", err);
+      sendNotification("保存模型失败: " + (err instanceof Error ? err.message : "未知错误"), "error");
     }
   };
 
@@ -788,6 +834,57 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
             {block.need_review ? <ShieldCheck className="w-3.5 h-3.5" /> : <Zap className="w-3.5 h-3.5" />}
             {block.need_review ? "需要人工确认" : "自动执行"}
           </span>
+
+          {/* M5: 模型覆盖选择 */}
+          {block.block_type === "field" && (
+            <div className="relative" data-model-selector>
+              <button
+                onClick={() => setShowModelSelector(!showModelSelector)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-colors ${
+                  modelOverride
+                    ? "border-purple-500/30 bg-purple-600/10 text-purple-400 hover:bg-purple-600/20"
+                    : "border-surface-4 bg-surface-2 text-zinc-500 hover:bg-surface-3 hover:text-zinc-400"
+                }`}
+              >
+                <Cpu className="w-3.5 h-3.5" />
+                {modelOverride ? modelOverride : "默认模型"}
+              </button>
+
+              {showModelSelector && (
+                <div className="absolute top-full left-0 mt-1 z-50 w-64 bg-surface-1 border border-surface-3 rounded-lg shadow-xl overflow-hidden">
+                  <div className="p-2 border-b border-surface-3">
+                    <p className="text-xs text-zinc-500">为此内容块选择模型</p>
+                  </div>
+                  <div className="max-h-60 overflow-y-auto">
+                    <button
+                      onClick={() => handleSaveModelOverride("")}
+                      className={`w-full px-3 py-2 text-left text-sm hover:bg-surface-3 transition-colors flex items-center justify-between ${
+                        !modelOverride ? "text-brand-400" : "text-zinc-300"
+                      }`}
+                    >
+                      <span>使用默认模型</span>
+                      {!modelOverride && <Check className="w-3.5 h-3.5" />}
+                    </button>
+                    {availableModels.map(m => (
+                      <button
+                        key={m.id}
+                        onClick={() => handleSaveModelOverride(m.id)}
+                        className={`w-full px-3 py-2 text-left text-sm hover:bg-surface-3 transition-colors flex items-center justify-between ${
+                          modelOverride === m.id ? "text-brand-400" : "text-zinc-300"
+                        }`}
+                      >
+                        <span>
+                          {m.name}
+                          <span className="text-zinc-500 ml-1 text-xs">({m.provider})</span>
+                        </span>
+                        {modelOverride === m.id && <Check className="w-3.5 h-3.5" />}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* 生成前提问区域（可折叠） */}

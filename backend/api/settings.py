@@ -235,6 +235,8 @@ class AgentSettingsUpdate(BaseModel):
     tools: Optional[list] = None
     skills: Optional[list] = None
     tool_prompts: Optional[dict] = None
+    default_model: Optional[str] = None
+    default_mini_model: Optional[str] = None
 
 
 class AgentSettingsResponse(BaseModel):
@@ -244,6 +246,8 @@ class AgentSettingsResponse(BaseModel):
     skills: list
     autonomy_defaults: dict = {}  # [已废弃] 保留兼容旧数据
     tool_prompts: dict
+    default_model: Optional[str] = None
+    default_mini_model: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -289,6 +293,12 @@ def update_agent_settings(
     
     db.commit()
     db.refresh(settings)
+
+    # 如果更新了默认模型，立即使缓存失效
+    if "default_model" in update_data or "default_mini_model" in update_data:
+        from core.llm_compat import invalidate_model_cache
+        invalidate_model_cache()
+
     return _to_agent_settings_response(settings)
 
 
@@ -887,6 +897,8 @@ def _to_agent_settings_response(s: AgentSettings) -> AgentSettingsResponse:
         skills=s.skills or [],
         autonomy_defaults=s.autonomy_defaults or {},
         tool_prompts=s.tool_prompts or {},
+        default_model=getattr(s, 'default_model', None),
+        default_mini_model=getattr(s, 'default_mini_model', None),
     )
 
 

@@ -81,12 +81,14 @@ class GenerationLog(BaseModel):
         pricing = {
             # OpenAI
             "gpt-5.1": {"input": 5.00, "output": 15.00},
+            "gpt-5.2": {"input": 5.00, "output": 15.00},
             "gpt-4o": {"input": 2.50, "output": 10.00},
             "gpt-4o-mini": {"input": 0.15, "output": 0.60},
             "gpt-4-turbo": {"input": 10.00, "output": 30.00},
             # Anthropic (2026 pricing per 1M tokens)
             "claude-opus-4-6": {"input": 15.00, "output": 75.00},
             "claude-sonnet-4-6": {"input": 3.00, "output": 15.00},
+            "claude-sonnet-4-5": {"input": 3.00, "output": 15.00},
             "claude-haiku-3-5": {"input": 0.80, "output": 4.00},
         }
 
