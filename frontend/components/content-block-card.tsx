@@ -5,7 +5,7 @@
 
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { blockAPI, runAutoTriggerChain, modelsAPI } from "@/lib/api";
@@ -81,6 +81,8 @@ export function ContentBlockCard({
   const [modelOverride, setModelOverride] = useState<string>(block.model_override || "");
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
   const [showModelSelector, setShowModelSelector] = useState(false);
+  const modelBtnRef = useRef<HTMLButtonElement>(null);
+  const [modelDropdownPos, setModelDropdownPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
 
   // Escape 键关闭弹窗 + 点击外部关闭模型选择器
   useEffect(() => {
@@ -202,6 +204,15 @@ export function ContentBlockCard({
       setAvailableModels(data.models);
     }).catch(console.error);
   }, []);
+
+  // M5: 打开模型选择器（计算按钮位置，用 fixed 定位避免 overflow-hidden 裁剪）
+  const handleToggleModelSelector = useCallback(() => {
+    if (!showModelSelector && modelBtnRef.current) {
+      const rect = modelBtnRef.current.getBoundingClientRect();
+      setModelDropdownPos({ top: rect.bottom + 4, left: Math.max(8, rect.right - 224) }); // 224 = w-56
+    }
+    setShowModelSelector(prev => !prev);
+  }, [showModelSelector]);
 
   // M5: 保存模型覆盖
   const handleSaveModelOverride = async (modelId: string) => {
@@ -610,11 +621,12 @@ export function ContentBlockCard({
             </button>
 
             {/* M5: 模型覆盖 */}
-            <div className="relative" data-model-selector>
+            <div data-model-selector>
               <button
+                ref={modelBtnRef}
                 onClick={(e) => {
                   e.stopPropagation();
-                  setShowModelSelector(!showModelSelector);
+                  handleToggleModelSelector();
                 }}
                 className={`p-1.5 rounded transition-colors ${
                   modelOverride
@@ -625,37 +637,6 @@ export function ContentBlockCard({
               >
                 <Cpu className="w-4 h-4" />
               </button>
-              {showModelSelector && (
-                <div className="absolute top-full right-0 mt-1 z-50 w-56 bg-surface-1 border border-surface-3 rounded-lg shadow-xl overflow-hidden"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <div className="p-2 border-b border-surface-3">
-                    <p className="text-xs text-zinc-500">为此内容块选择模型</p>
-                  </div>
-                  <div className="max-h-48 overflow-y-auto">
-                    <button
-                      onClick={() => handleSaveModelOverride("")}
-                      className={`w-full text-left px-3 py-2 text-xs hover:bg-surface-3 transition-colors ${
-                        !modelOverride ? "text-brand-400 bg-brand-600/10" : "text-zinc-300"
-                      }`}
-                    >
-                      跟随全局默认
-                    </button>
-                    {availableModels.map((m) => (
-                      <button
-                        key={m.id}
-                        onClick={() => handleSaveModelOverride(m.id)}
-                        className={`w-full text-left px-3 py-2 text-xs hover:bg-surface-3 transition-colors ${
-                          modelOverride === m.id ? "text-brand-400 bg-brand-600/10" : "text-zinc-300"
-                        }`}
-                      >
-                        <span>{m.name}</span>
-                        <span className="ml-2 text-zinc-600">{m.provider}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
             </div>
             
             {/* 生成按钮 */}
@@ -1028,6 +1009,42 @@ export function ContentBlockCard({
                 保存
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* M5: 模型选择器下拉菜单 — 用 fixed 定位脱离 overflow-hidden 裁剪 */}
+      {showModelSelector && (
+        <div
+          className="fixed z-[100] w-56 bg-surface-1 border border-surface-3 rounded-lg shadow-xl"
+          style={{ top: modelDropdownPos.top, left: modelDropdownPos.left }}
+          data-model-selector
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="p-2 border-b border-surface-3">
+            <p className="text-xs text-zinc-500">为「{block.name}」选择模型</p>
+          </div>
+          <div className="max-h-48 overflow-y-auto">
+            <button
+              onClick={() => handleSaveModelOverride("")}
+              className={`w-full text-left px-3 py-2 text-xs hover:bg-surface-3 transition-colors ${
+                !modelOverride ? "text-brand-400 bg-brand-600/10" : "text-zinc-300"
+              }`}
+            >
+              跟随全局默认
+            </button>
+            {availableModels.map((m) => (
+              <button
+                key={m.id}
+                onClick={() => handleSaveModelOverride(m.id)}
+                className={`w-full text-left px-3 py-2 text-xs hover:bg-surface-3 transition-colors ${
+                  modelOverride === m.id ? "text-brand-400 bg-brand-600/10" : "text-zinc-300"
+                }`}
+              >
+                <span>{m.name}</span>
+                <span className="ml-2 text-zinc-600">{m.provider}</span>
+              </button>
+            ))}
           </div>
         </div>
       )}
