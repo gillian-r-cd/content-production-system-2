@@ -1,7 +1,7 @@
 // frontend/components/content-block-card.tsx
 // 功能: 紧凑版 ContentBlock 卡片，用于阶段视图中显示字段的所有设置
 // 支持不同类型：phase（阶段）显示子节点数量和进入按钮，field（字段）显示完整编辑功能
-// 包含：名称、状态、AI提示词、依赖、约束、need_review、模型覆盖(M5)、生成/编辑/删除按钮
+// 包含：名称、状态、AI提示词、依赖、约束、need_review、auto_generate、模型覆盖(M5)、生成/编辑/删除按钮
 
 "use client";
 
@@ -345,6 +345,16 @@ export function ContentBlockCard({
     }
   };
 
+  // 切换 auto_generate 状态
+  const handleToggleAutoGenerate = async () => {
+    try {
+      await blockAPI.update(block.id, { auto_generate: !block.auto_generate });
+      onUpdate?.();
+    } catch (err) {
+      console.error("切换自动生成失败:", err);
+    }
+  };
+
   // 判断是否是容器类型（阶段、分组）
   const isContainer = block.block_type === "phase" || block.block_type === "group";
   const childCount = block.children?.length || 0;
@@ -619,6 +629,24 @@ export function ContentBlockCard({
             >
               {block.need_review ? <ShieldCheck className="w-4 h-4" /> : <Zap className="w-4 h-4" />}
             </button>
+
+            {/* 自动生成标记：仅对有依赖的 field 类型块显示 */}
+            {block.block_type === "field" && (block.depends_on || []).length > 0 && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleToggleAutoGenerate();
+                }}
+                className={`p-1.5 rounded transition-colors ${
+                  block.auto_generate
+                    ? "text-blue-400 hover:bg-blue-600/20"
+                    : "text-zinc-500 hover:bg-surface-3"
+                }`}
+                title={block.auto_generate ? "自动生成（依赖就绪时自动触发，点击切换）" : "手动生成（点击切换为自动）"}
+              >
+                <Workflow className="w-4 h-4" />
+              </button>
+            )}
 
             {/* M5: 模型覆盖 */}
             <div data-model-selector>

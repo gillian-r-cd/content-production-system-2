@@ -374,6 +374,7 @@ def duplicate_project(
             depends_on=new_depends_on,
             special_handler=old_block.special_handler,
             need_review=old_block.need_review,
+            auto_generate=getattr(old_block, 'auto_generate', False),
             is_collapsed=old_block.is_collapsed,
             digest=old_block.digest,
         )
@@ -694,6 +695,7 @@ def create_new_version(
             depends_on=new_depends_on,
             special_handler=old_block.special_handler,
             need_review=old_block.need_review,
+            auto_generate=getattr(old_block, 'auto_generate', False),
             is_collapsed=old_block.is_collapsed,
             digest=old_block.digest,
         )
@@ -1037,6 +1039,7 @@ def import_project(
                 depends_on=_map_list(b.get("depends_on", [])),
                 special_handler=b.get("special_handler"),
                 need_review=b.get("need_review", True),
+                auto_generate=b.get("auto_generate", False),
                 is_collapsed=b.get("is_collapsed", False),
                 digest=b.get("digest"),
             )

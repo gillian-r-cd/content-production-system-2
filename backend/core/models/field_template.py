@@ -77,6 +77,8 @@ class FieldTemplate(BaseModel):
             - pre_questions: 生成前提问列表
             - depends_on: 依赖的字段名列表
             - dependency_type: 依赖类型 (all/any)
+            - need_review: 是否需要人工确认（默认 True）
+            - auto_generate: 是否自动生成（当依赖就绪时自动触发 AI 生成，默认 False）
     
     Example fields:
         [

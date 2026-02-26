@@ -271,6 +271,7 @@ def get_field_content(project_id: str, field_name: str, db: Optional[Session] = 
             "ai_prompt": block.ai_prompt,
             "dependencies": {"depends_on": block.depends_on or []},
             "need_review": block.need_review,
+            "auto_generate": getattr(block, 'auto_generate', False),
             "source": "content_block",
         }
     

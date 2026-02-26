@@ -160,6 +160,7 @@ class PhaseTemplate(BaseModel):
                     "depends_on": field.get("depends_on", []),
                     "constraints": field.get("constraints", {}),
                     "need_review": field.get("need_review", True),
+                    "auto_generate": field.get("auto_generate", False),
                     "status": (
                         ("in_progress" if field.get("need_review", True) else "completed")
                         if template_content else "pending"

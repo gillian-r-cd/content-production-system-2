@@ -2,6 +2,7 @@
 # 功能: 统一的内容块模型，替代固定的阶段结构
 # 主要类: ContentBlock
 # 数据结构: 支持无限层级的树形内容结构，每个块可独立选择 LLM 模型 (model_override)
+# 关键字段: auto_generate（是否自动生成）与 need_review（生成后是否需人工确认）正交控制
 
 """
 ContentBlock 模型
@@ -72,7 +73,8 @@ class ContentBlock(BaseModel):
         constraints: 生成约束配置
         depends_on: 依赖的其他内容块ID列表
         special_handler: 特殊处理器（intent/research/simulate/evaluate）
-        need_review: 是否需要人工确认
+        need_review: 是否需要人工确认（生成后状态为 in_progress 还是 completed）
+        auto_generate: 是否自动生成（依赖就绪时自动触发 AI 生成，与 need_review 正交）
         is_collapsed: UI是否折叠显示
     """
     __tablename__ = "content_blocks"
@@ -120,6 +122,9 @@ class ContentBlock(BaseModel):
     
     # 控制（默认 True：新建内容块需要人工确认后才生成，避免自动执行浪费 token）
     need_review: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 自动生成：当所有依赖完成时，是否自动触发 AI 生成
+    # 与 need_review 正交：auto_generate 控制"是否自动开始"，need_review 控制"生成后是否需人工确认"
+    auto_generate: Mapped[bool] = mapped_column(Boolean, default=False)
     is_collapsed: Mapped[bool] = mapped_column(Boolean, default=False)
     
     # 模型覆盖（M5: 模型选择功能）
@@ -234,6 +239,7 @@ class ContentBlock(BaseModel):
             "depends_on": self.depends_on,
             "special_handler": self.special_handler,
             "need_review": self.need_review,
+            "auto_generate": self.auto_generate,
             "is_collapsed": self.is_collapsed,
             "model_override": self.model_override,
             "children": [child.to_tree_dict() for child in self.children],

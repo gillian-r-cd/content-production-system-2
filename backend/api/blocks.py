@@ -67,6 +67,7 @@ class BlockCreate(BaseModel):
     depends_on: List[str] = Field(default_factory=list)
     special_handler: Optional[str] = None
     need_review: bool = True
+    auto_generate: bool = False  # 是否自动生成（依赖就绪时自动触发）
     order_index: Optional[int] = None
     pre_questions: List[str] = Field(default_factory=list)  # 生成前提问
 
@@ -82,6 +83,7 @@ class BlockUpdate(BaseModel):
     pre_answers: Optional[Dict] = None
     depends_on: Optional[List[str]] = None
     need_review: Optional[bool] = None
+    auto_generate: Optional[bool] = None  # 是否自动生成
     is_collapsed: Optional[bool] = None
     model_override: Optional[str] = None
 
@@ -110,6 +112,7 @@ class BlockResponse(BaseModel):
     depends_on: List[str]
     special_handler: Optional[str]
     need_review: bool
+    auto_generate: bool = False  # 是否自动生成
     is_collapsed: bool
     model_override: Optional[str] = None
     children: List["BlockResponse"] = Field(default_factory=list)
@@ -162,6 +165,7 @@ def _block_to_response(
         depends_on=block.depends_on or [],
         special_handler=block.special_handler,
         need_review=block.need_review,
+        auto_generate=getattr(block, 'auto_generate', False),
         is_collapsed=block.is_collapsed,
         model_override=getattr(block, 'model_override', None),
         children=children,
@@ -312,7 +316,7 @@ def check_auto_triggers(
     不做任何生成！生成由前端逐个调用 generateStream 完成。
     
     自动触发条件：
-    1. need_review = False
+    1. auto_generate = True（与 need_review 正交：auto_generate 控制是否自动开始，need_review 控制生成后是否需人工确认）
     2. status 是 pending/failed（或 in_progress 但无内容）
     3. 没有已有内容
     4. 有依赖且所有依赖都有内容
@@ -326,8 +330,8 @@ def check_auto_triggers(
     
     eligible_ids = []
     for block in all_blocks:
-        # need_review=True 的块需要人工确认，不自动触发
-        if block.need_review:
+        # auto_generate=False 的块不自动触发，需用户手动操作
+        if not getattr(block, 'auto_generate', False):
             continue
         # 只触发 pending 和 failed 的块；in_progress 的块说明正在生成中，不重复触发
         if block.status not in ("pending", "failed"):
@@ -427,6 +431,7 @@ def create_block(
         depends_on=data.depends_on,
         special_handler=data.special_handler,
         need_review=data.need_review,
+        auto_generate=data.auto_generate,
         pre_questions=data.pre_questions,  # 保存生成前提问
     )
     
@@ -497,6 +502,8 @@ def update_block(
         flag_modified(block, "depends_on")
     if data.need_review is not None:
         block.need_review = data.need_review
+    if data.auto_generate is not None:
+        block.auto_generate = data.auto_generate
     if data.is_collapsed is not None:
         block.is_collapsed = data.is_collapsed
     if data.model_override is not None:
@@ -725,6 +732,7 @@ def duplicate_block(
             depends_on=new_depends_on,
             special_handler=node.special_handler,
             need_review=node.need_review,
+            auto_generate=getattr(node, 'auto_generate', False),
             is_collapsed=node.is_collapsed,
         )
         new_blocks.append(new_block)
@@ -1354,6 +1362,7 @@ def _field_template_to_blocks(field_template: "FieldTemplate", project_id: str) 
             "depends_on": field.get("depends_on", []),
             "constraints": field.get("constraints", {}),
             "need_review": field.get("need_review", True),
+            "auto_generate": field.get("auto_generate", False),
             "status": (
                 ("in_progress" if field.get("need_review", True) else "completed")
                 if template_content else "pending"

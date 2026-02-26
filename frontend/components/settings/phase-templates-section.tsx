@@ -98,7 +98,7 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
       ...phases[pIdx],
       default_fields: [
         ...(phases[pIdx].default_fields || []),
-        { name: "", block_type: "field", ai_prompt: "", content: "", pre_questions: [], depends_on: [] },
+        { name: "", block_type: "field", ai_prompt: "", content: "", pre_questions: [], depends_on: [], auto_generate: false },
       ],
     };
     setEditForm({ ...editForm, phases });
@@ -114,6 +114,15 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
     const phases = JSON.parse(JSON.stringify(editForm.phases));
     phases[pIdx].default_fields.splice(fIdx, 1);
     setEditForm({ ...editForm, phases });
+  };
+
+  // 计算字段在全模板中的全局索引（用于判定是否为"第一个内容块"）
+  const getGlobalFieldIndex = (pIdx: number, fIdx: number): number => {
+    let count = 0;
+    for (let i = 0; i < pIdx; i++) {
+      count += (editForm.phases[i]?.default_fields || []).length;
+    }
+    return count + fIdx;
   };
 
   // 收集所有字段名（用于依赖选择）
@@ -280,15 +289,28 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
                         );
                       })()}
 
-                      {/* need_review */}
-                      <label className="flex items-center gap-2 text-xs text-zinc-400">
-                        <input
-                          type="checkbox"
-                          checked={field.need_review !== false}
-                          onChange={(e) => updateField(pIdx, fIdx, "need_review", e.target.checked)}
-                        />
-                        需要人工确认
-                      </label>
+                      {/* need_review + auto_generate */}
+                      <div className="flex items-center gap-4">
+                        <label className="flex items-center gap-2 text-xs text-zinc-400">
+                          <input
+                            type="checkbox"
+                            checked={field.need_review !== false}
+                            onChange={(e) => updateField(pIdx, fIdx, "need_review", e.target.checked)}
+                          />
+                          需要人工确认
+                        </label>
+                        {/* 自动生成：仅非首个内容块显示（第一个内容块没有上游依赖，无法自动触发） */}
+                        {getGlobalFieldIndex(pIdx, fIdx) > 0 && (
+                          <label className="flex items-center gap-2 text-xs text-zinc-400">
+                            <input
+                              type="checkbox"
+                              checked={field.auto_generate === true}
+                              onChange={(e) => updateField(pIdx, fIdx, "auto_generate", e.target.checked)}
+                            />
+                            自动生成（依赖就绪时自动触发）
+                          </label>
+                        )}
+                      </div>
                     </div>
                   ))}
 
@@ -394,6 +416,7 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
                           <span>{f.name}</span>
                           {f.ai_prompt && <span className="text-brand-400/60">✨</span>}
                           {f.content && <span className="text-emerald-400/60">📝</span>}
+                          {f.auto_generate && <span className="text-blue-400/60" title="自动生成">⚡</span>}
                         </div>
                       ))}
                     </div>

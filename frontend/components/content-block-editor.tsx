@@ -835,6 +835,18 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
             {block.need_review ? "需要人工确认" : "自动执行"}
           </span>
 
+          {/* auto_generate 状态：仅对有依赖的 field 类型块显示 */}
+          {block.block_type === "field" && (block.depends_on || []).length > 0 && (
+            <span className={`flex items-center gap-1 px-2 py-1 text-xs rounded ${
+              block.auto_generate
+                ? "bg-blue-600/10 text-blue-400"
+                : "bg-zinc-600/10 text-zinc-400"
+            }`}>
+              <Workflow className="w-3.5 h-3.5" />
+              {block.auto_generate ? "自动生成" : "手动生成"}
+            </span>
+          )}
+
           {/* M5: 模型覆盖选择（group 类型纯分组无内容，不显示） */}
           {block.block_type !== "group" && (
             <div className="relative" data-model-selector>

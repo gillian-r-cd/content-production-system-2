@@ -14,6 +14,8 @@ interface TemplateField {
   content?: string;
   pre_questions?: string[];
   depends_on?: string[];
+  need_review?: boolean;
+  auto_generate?: boolean;
 }
 
 interface FieldTemplateItem {
@@ -104,7 +106,7 @@ export function TemplatesSection({ templates, onRefresh }: { templates: FieldTem
   const addField = () => {
     setEditForm({
       ...editForm,
-      fields: [...(editForm.fields || []), { name: "", type: "richtext", ai_prompt: "", content: "", pre_questions: [], depends_on: [] }],
+      fields: [...(editForm.fields || []), { name: "", type: "richtext", ai_prompt: "", content: "", pre_questions: [], depends_on: [], auto_generate: false }],
     });
   };
 
@@ -283,6 +285,29 @@ export function TemplatesSection({ templates, onRefresh }: { templates: FieldTem
                       </FormField>
                     </div>
                   )}
+
+                  {/* need_review + auto_generate */}
+                  <div className="mt-3 flex items-center gap-4">
+                    <label className="flex items-center gap-2 text-xs text-zinc-400">
+                      <input
+                        type="checkbox"
+                        checked={field.need_review !== false}
+                        onChange={(e) => updateField(index, "need_review", e.target.checked)}
+                      />
+                      需要人工确认
+                    </label>
+                    {/* 自动生成：仅非首个内容块显示（第一个内容块没有上游依赖，无法自动触发） */}
+                    {index > 0 && (
+                      <label className="flex items-center gap-2 text-xs text-zinc-400">
+                        <input
+                          type="checkbox"
+                          checked={field.auto_generate === true}
+                          onChange={(e) => updateField(index, "auto_generate", e.target.checked)}
+                        />
+                        自动生成（依赖就绪时自动触发）
+                      </label>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>

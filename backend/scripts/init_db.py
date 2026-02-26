@@ -52,6 +52,8 @@ def _migrate_add_columns():
         ("agent_settings", "default_mini_model", "VARCHAR(100)"),
         # M5: ContentBlock 新增 model_override
         ("content_blocks", "model_override", "VARCHAR(100)"),
+        # auto_generate: 是否自动生成（依赖就绪时自动触发 AI 生成，默认 False）
+        ("content_blocks", "auto_generate", "BOOLEAN DEFAULT 0"),
     ]
 
     with engine.connect() as conn:
