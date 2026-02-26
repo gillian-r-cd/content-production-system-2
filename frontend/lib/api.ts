@@ -85,6 +85,8 @@ export interface ChatMessageRecord {
     skill_used?: string;
     references?: string[];
     is_retry?: boolean;
+    suggestion_cards?: any[];
+    [key: string]: any;
   };
   created_at: string;
 }
@@ -183,6 +185,38 @@ export const projectAPI = {
     fetchAPI<Project>(`/api/projects/${id}/versions`, {
       method: "POST",
       body: JSON.stringify({ version_note }),
+    }),
+
+  duplicate: (id: string) =>
+    fetchAPI<Project>(`/api/projects/${id}/duplicate`, { method: "POST" }),
+
+  exportProject: (id: string, includeVersions: boolean = false) =>
+    fetchAPI<any>(`/api/projects/${id}/export${includeVersions ? "?include_versions=true" : ""}`),
+
+  importProject: (data: any, asNew: boolean = true) =>
+    fetchAPI<any>("/api/projects/import", {
+      method: "POST",
+      body: JSON.stringify({ data, as_new: asNew }),
+    }),
+
+  search: (projectId: string, query: string, caseSensitive: boolean = false) =>
+    fetchAPI<{ results: SearchResult[]; total_matches: number }>(`/api/projects/${projectId}/search`, {
+      method: "POST",
+      body: JSON.stringify({ query, case_sensitive: caseSensitive }),
+    }),
+
+  replace: (projectId: string, query: string, replacement: string, options?: {
+    caseSensitive?: boolean;
+    targets?: { type: string; id: string; indices?: number[] }[];
+  }) =>
+    fetchAPI<{ replaced_count: number; affected_items: any[] }>(`/api/projects/${projectId}/replace`, {
+      method: "POST",
+      body: JSON.stringify({
+        query,
+        replacement,
+        case_sensitive: options?.caseSensitive || false,
+        targets: options?.targets,
+      }),
     }),
 };
 
@@ -312,6 +346,26 @@ export const agentAPI = {
         parameters,
       }),
     }),
+
+  // 会话管理
+  listConversations: (projectId: string, mode: string = "assistant") =>
+    fetchAPI<ConversationRecord[]>(`/api/agent/conversations?project_id=${projectId}&mode=${mode}`),
+
+  createConversation: (data: { project_id: string; mode?: string; title?: string; bootstrap_policy?: string }) =>
+    fetchAPI<ConversationRecord>("/api/agent/conversations", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  getConversationMessages: (conversationId: string, limit: number = 200) =>
+    fetchAPI<ChatMessageRecord[]>(`/api/agent/conversations/${conversationId}/messages?limit=${limit}`),
+
+  // Inline AI 编辑
+  inlineEdit: (data: { text: string; operation: string; context?: string; project_id?: string }) =>
+    fetchAPI<{ original: string; replacement: string; diff_preview: string }>("/api/agent/inline-edit", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
 };
 
 // ============== Settings API ==============
@@ -423,6 +477,71 @@ export const settingsAPI = {
     const query = projectId ? `?project_id=${projectId}` : "";
     return fetchAPI<any>(`/api/settings/logs/export${query}`);
   },
+
+  // Eval Prompts
+  listEvalPrompts: () =>
+    fetchAPI<any[]>("/api/settings/eval-prompts"),
+
+  updateEvalPrompt: (id: string, data: any) =>
+    fetchAPI<any>(`/api/settings/eval-prompts/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+
+  // Eval 预置同步
+  syncEvalPresets: () =>
+    fetchAPI<{
+      imported_graders: number;
+      updated_graders: number;
+      imported_simulators: number;
+      updated_simulators: number;
+    }>("/api/settings/eval-presets/sync", {
+      method: "POST",
+    }),
+
+  // Field Templates 导入/导出
+  exportFieldTemplates: (templateId?: string) => {
+    const query = templateId ? `?template_id=${templateId}` : "";
+    return fetchAPI<any>(`/api/settings/field-templates/export${query}`);
+  },
+  importFieldTemplates: (data: any) =>
+    fetchAPI<any>("/api/settings/field-templates/import", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  // Creator Profiles 导入/导出
+  exportCreatorProfiles: (profileId?: string) => {
+    const query = profileId ? `?profile_id=${profileId}` : "";
+    return fetchAPI<any>(`/api/settings/creator-profiles/export${query}`);
+  },
+  importCreatorProfiles: (data: any) =>
+    fetchAPI<any>("/api/settings/creator-profiles/import", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  // Simulators 导入/导出
+  exportSimulators: (simulatorId?: string) => {
+    const query = simulatorId ? `?simulator_id=${simulatorId}` : "";
+    return fetchAPI<any>(`/api/settings/simulators/export${query}`);
+  },
+  importSimulators: (data: any) =>
+    fetchAPI<any>("/api/settings/simulators/import", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  // System Prompts 导入/导出
+  exportSystemPrompts: (promptId?: string) => {
+    const query = promptId ? `?prompt_id=${promptId}` : "";
+    return fetchAPI<any>(`/api/settings/system-prompts/export${query}`);
+  },
+  importSystemPrompts: (data: any) =>
+    fetchAPI<any>("/api/settings/system-prompts/import", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
 };
 
 // ============== Simulation API ==============
@@ -478,7 +597,7 @@ export interface ContentBlock {
   pre_questions?: string[];
   pre_answers?: Record<string, string>;
   depends_on: string[];
-  special_handler: "intent" | "research" | "simulate" | "evaluate" | null;
+  special_handler: string | null;
   need_review: boolean;
   auto_generate: boolean;  // 是否自动生成（依赖就绪时自动触发）
   is_collapsed: boolean;
@@ -546,6 +665,9 @@ export const blockAPI = {
     special_handler?: string | null;
     need_review?: boolean;
     auto_generate?: boolean;
+    pre_questions?: string[];
+    pre_answers?: Record<string, string>;
+    model_override?: string | null;
     order_index?: number;
   }) =>
     fetchAPI<ContentBlock>("/api/blocks/", {
@@ -603,10 +725,30 @@ export const blockAPI = {
     }),
 
   // 流式生成内容块内容（返回原始 Response 用于 SSE 读取）
-  generateStream: (blockId: string): Promise<Response> =>
+  generateStream: (blockId: string, signal?: AbortSignal): Promise<Response> =>
     fetch(`${API_BASE}/api/blocks/${blockId}/generate/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal,
+    }),
+
+  // 确认内容块（need_review 流程中用户手动确认）
+  confirm: (blockId: string) =>
+    fetchAPI<ContentBlock>(`/api/blocks/${blockId}/confirm`, {
+      method: "POST",
+    }),
+
+  // 撤回删除
+  undo: (historyId: string) =>
+    fetchAPI<any>(`/api/blocks/undo/${historyId}`, {
+      method: "POST",
+    }),
+
+  // AI 生成提示词
+  generatePrompt: (data: { purpose: string; field_name?: string; project_id?: string }) =>
+    fetchAPI<{ prompt: string }>("/api/blocks/generate-prompt", {
+      method: "POST",
+      body: JSON.stringify(data),
     }),
 
   // 应用模板到项目
@@ -615,6 +757,12 @@ export const blockAPI = {
       `/api/blocks/project/${projectId}/apply-template?template_id=${templateId}`,
       { method: "POST" }
     ),
+
+  // 复制内容块
+  duplicate: (blockId: string) =>
+    fetchAPI<ContentBlock>(`/api/blocks/${blockId}/duplicate`, {
+      method: "POST",
+    }),
 
   // 迁移传统项目到 content_blocks 架构
   migrateProject: (projectId: string) =>
@@ -671,18 +819,443 @@ export const phaseTemplateAPI = {
     ),
 };
 
+// ============== Grader Types & API ==============
+
+export interface GraderData {
+  id: string;
+  name: string;
+  grader_type: string;
+  prompt_template: string;
+  dimensions: any[];
+  scoring_criteria: Record<string, any>;
+  is_preset: boolean;
+  project_id: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export const graderAPI = {
+  list: () =>
+    fetchAPI<GraderData[]>("/api/graders"),
+
+  get: (id: string) =>
+    fetchAPI<GraderData>(`/api/graders/${id}`),
+
+  create: (data: Partial<GraderData>) =>
+    fetchAPI<GraderData>("/api/graders", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  update: (id: string, data: Partial<GraderData>) =>
+    fetchAPI<GraderData>(`/api/graders/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+
+  delete: (id: string) =>
+    fetchAPI<{ ok: boolean; deleted: string }>(`/api/graders/${id}`, {
+      method: "DELETE",
+    }),
+
+  listForProject: (projectId: string) =>
+    fetchAPI<GraderData[]>(`/api/graders/project/${projectId}`),
+
+  exportAll: (graderId?: string) => {
+    const query = graderId ? `?grader_id=${graderId}` : "";
+    return fetchAPI<{ type: string; data: any[]; count: number }>(`/api/graders/export/all${query}`);
+  },
+
+  importAll: (data: any[]) =>
+    fetchAPI<{ message: string; imported: number; updated: number }>("/api/graders/import/all", {
+      method: "POST",
+      body: JSON.stringify({ data }),
+    }),
+};
+
+// ============== Eval API ==============
+
+export const evalAPI = {
+  // 人物画像
+  getPersonas: (projectId: string) =>
+    fetchAPI<{ personas: any[] }>(`/api/eval/personas/${projectId}`),
+
+  generatePersona: (projectId: string, avoidNames: string[]) =>
+    fetchAPI<{ persona: any }>("/api/eval/personas/generate", {
+      method: "POST",
+      body: JSON.stringify({ project_id: projectId, avoid_names: avoidNames }),
+    }),
+
+  // 提示词生成
+  generatePrompt: (promptType: string, data: { form_type: string; description: string }) =>
+    fetchAPI<{ generated_prompt: string }>("/api/eval/prompts/generate", {
+      method: "POST",
+      body: JSON.stringify({ prompt_type: promptType, ...data }),
+    }),
+
+  // 为内容块生成评估
+  generateForBlock: (blockId: string) =>
+    fetchAPI<any>(`/api/eval/generate-for-block/${blockId}`, {
+      method: "POST",
+    }),
+};
+
+// ============== Eval V2 API ==============
+
+export interface EvalV2TrialConfig {
+  id?: string;
+  name: string;
+  form_type: string;
+  target_block_ids: string[];
+  grader_ids: string[];
+  grader_weights: Record<string, number>;
+  repeat_count: number;
+  probe: string;
+  form_config: Record<string, any>;
+  order_index: number;
+}
+
+export interface EvalV2Task {
+  id: string;
+  project_id: string;
+  name: string;
+  description: string;
+  order_index: number;
+  status: string;
+  last_error: string;
+  content_hash: string;
+  last_executed_at: string;
+  latest_scores: Record<string, any>;
+  latest_overall: number | null;
+  latest_batch_id: string;
+  progress: Record<string, any>;
+  can_stop: boolean;
+  can_pause: boolean;
+  can_resume: boolean;
+  trial_configs: EvalV2TrialConfig[];
+}
+
+export const evalV2API = {
+  listTasks: (projectId: string) =>
+    fetchAPI<{ tasks: EvalV2Task[] }>(`/api/eval/tasks/${projectId}`),
+
+  createTask: (projectId: string, data: Partial<EvalV2Task>) =>
+    fetchAPI<EvalV2Task>(`/api/eval/tasks/${projectId}`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  updateTask: (taskId: string, data: Partial<EvalV2Task>) =>
+    fetchAPI<EvalV2Task>(`/api/eval/task/${taskId}/v2`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+
+  deleteTask: (taskId: string) =>
+    fetchAPI<any>(`/api/eval/task/${taskId}`, {
+      method: "DELETE",
+    }),
+
+  startTask: (taskId: string) =>
+    fetchAPI<any>(`/api/eval/task/${taskId}/start`, {
+      method: "POST",
+    }),
+
+  pauseTask: (taskId: string) =>
+    fetchAPI<any>(`/api/eval/task/${taskId}/pause`, {
+      method: "POST",
+    }),
+
+  resumeTask: (taskId: string) =>
+    fetchAPI<any>(`/api/eval/task/${taskId}/resume`, {
+      method: "POST",
+    }),
+
+  stopTask: (taskId: string) =>
+    fetchAPI<any>(`/api/eval/task/${taskId}/stop`, {
+      method: "POST",
+    }),
+
+  executeAll: (projectId: string) =>
+    fetchAPI<any>(`/api/eval/tasks/${projectId}/execute-all`, {
+      method: "POST",
+    }),
+
+  executionReport: (projectId: string) =>
+    fetchAPI<{ executions: any[] }>(`/api/eval/tasks/${projectId}/executions`),
+
+  taskBatch: (taskId: string, batchId: string) =>
+    fetchAPI<any>(`/api/eval/task/${taskId}/batch/${batchId}`),
+
+  deleteTaskBatch: (taskId: string, batchId: string) =>
+    fetchAPI<any>(`/api/eval/task/${taskId}/batch/${batchId}`, {
+      method: "DELETE",
+    }),
+
+  batchDeleteExecutions: (projectId: string, items: { task_id: string; batch_id: string }[]) =>
+    fetchAPI<any>(`/api/eval/tasks/${projectId}/executions/delete`, {
+      method: "POST",
+      body: JSON.stringify({ items }),
+    }),
+
+  getTaskDiagnosis: (taskId: string, batchId?: string) => {
+    const query = batchId ? `?batch_id=${batchId}` : "";
+    return fetchAPI<{ analysis: any }>(`/api/eval/task/${taskId}/diagnosis${query}`);
+  },
+
+  runTaskDiagnosisForBatch: (taskId: string, batchId: string) =>
+    fetchAPI<{ analysis: any }>(`/api/eval/task/${taskId}/diagnose`, {
+      method: "POST",
+      body: JSON.stringify({ batch_id: batchId }),
+    }),
+
+  getSuggestionStates: (taskId: string, batchId: string) =>
+    fetchAPI<{ states: any[] }>(`/api/eval/task/${taskId}/batch/${batchId}/suggestion-states`),
+
+  markSuggestionApplied: (taskId: string, batchId: string, data: { source: string; suggestion: string; status: string }) =>
+    fetchAPI<any>(`/api/eval/task/${taskId}/batch/${batchId}/suggestion-state`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+};
+
+// ============== Version API ==============
+
+export interface VersionItem {
+  id: string;
+  version_number: number;
+  content: string;
+  source: string;
+  source_detail: string | null;
+  created_at: string;
+}
+
+export const versionAPI = {
+  list: (entityId: string) =>
+    fetchAPI<{
+      entity_id: string;
+      entity_name: string;
+      entity_type: string;
+      current_content: string;
+      versions: VersionItem[];
+    }>(`/api/versions/${entityId}`),
+
+  rollback: (entityId: string, versionId: string) =>
+    fetchAPI<{
+      success: boolean;
+      entity_id: string;
+      restored_version: number;
+      message: string;
+    }>(`/api/versions/${entityId}/rollback/${versionId}`, {
+      method: "POST",
+    }),
+};
+
+// ============== Memories API ==============
+
+export interface MemoryItemInfo {
+  id: string;
+  project_id: string | null;
+  content: string;
+  source_mode: string;
+  source_phase: string;
+  related_blocks: any[];
+  created_at: string;
+  updated_at: string;
+}
+
+export const memoriesAPI = {
+  list: (projectId: string, includeGlobal: boolean = false) =>
+    fetchAPI<MemoryItemInfo[]>(`/api/memories/${projectId}${includeGlobal ? "?include_global=true" : ""}`),
+
+  create: (projectId: string, data: { content: string; source_mode?: string; source_phase?: string; related_blocks?: any[] }) =>
+    fetchAPI<MemoryItemInfo>(`/api/memories/${projectId}`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  update: (scope: string, memoryId: string, data: { content?: string; related_blocks?: any[] }) =>
+    fetchAPI<MemoryItemInfo>(`/api/memories/${scope}/${memoryId}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+
+  delete: (scope: string, memoryId: string) =>
+    fetchAPI<{ message: string }>(`/api/memories/${scope}/${memoryId}`, {
+      method: "DELETE",
+    }),
+};
+
+// ============== Modes API ==============
+
+export interface AgentModeInfo {
+  id: string;
+  name: string;
+  display_name: string;
+  description: string;
+  system_prompt: string;
+  icon: string;
+  is_system: boolean;
+  sort_order: number;
+}
+
+export const modesAPI = {
+  list: () =>
+    fetchAPI<AgentModeInfo[]>("/api/modes/"),
+
+  get: (modeId: string) =>
+    fetchAPI<AgentModeInfo>(`/api/modes/${modeId}`),
+
+  create: (data: Partial<AgentModeInfo>) =>
+    fetchAPI<AgentModeInfo>("/api/modes/", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  update: (modeId: string, data: Partial<AgentModeInfo>) =>
+    fetchAPI<AgentModeInfo>(`/api/modes/${modeId}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+
+  delete: (modeId: string) =>
+    fetchAPI<{ message: string }>(`/api/modes/${modeId}`, {
+      method: "DELETE",
+    }),
+};
+
+// ============== Models API ==============
+
+export interface ModelInfo {
+  id: string;
+  provider: string;
+  name: string;
+  tier: string;
+}
+
+export const modelsAPI = {
+  list: () =>
+    fetchAPI<{
+      models: ModelInfo[];
+      current_default: { main: string; mini: string };
+      env_provider: string;
+    }>("/api/models/"),
+};
+
+// ============== Agent Settings Types ==============
+
+export interface AgentSettingsData {
+  tools?: string[];
+  skills?: { name: string; description: string; prompt: string }[];
+  tool_prompts?: Record<string, string>;
+  [key: string]: any;
+}
+
+// ============== Conversation Record ==============
+
+export interface ConversationRecord {
+  id: string;
+  project_id: string;
+  mode: string;
+  title: string;
+  status: string;
+  bootstrap_policy: string;
+  last_message_at: string | null;
+  message_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+// ============== Search Types ==============
+
+export interface SearchResult {
+  type: "field" | "block";
+  id: string;
+  name: string;
+  phase: string;
+  parent_id?: string;
+  match_count: number;
+  snippets: {
+    index: number;
+    offset: number;
+    prefix: string;
+    match: string;
+    suffix: string;
+    line: number;
+  }[];
+}
+
+// ============== Auto Trigger Chain ==============
+
+/**
+ * 前端驱动的自动触发链：
+ * 1. 调用 check-auto-triggers 获取满足条件的块 ID
+ * 2. 逐个触发流式生成
+ * 3. 每个生成完成后递归检查是否有新的可触发块
+ */
+export async function runAutoTriggerChain(
+  projectId: string,
+  onUpdate?: () => void,
+): Promise<void> {
+  try {
+    const resp = await fetchAPI<{ eligible_ids: string[] }>(
+      `/api/blocks/project/${projectId}/check-auto-triggers`,
+      { method: "POST" }
+    );
+    const ids = resp.eligible_ids || [];
+    if (ids.length === 0) return;
+
+    for (const blockId of ids) {
+      try {
+        const genResp = await blockAPI.generateStream(blockId);
+        // 读完流
+        const reader = genResp.body?.getReader();
+        if (reader) {
+          while (true) {
+            const { done } = await reader.read();
+            if (done) break;
+          }
+        }
+        onUpdate?.();
+      } catch (e) {
+        console.error(`Auto-trigger generation failed for block ${blockId}:`, e);
+      }
+    }
+
+    // 递归检查：刚完成的生成可能解锁了新的块
+    await runAutoTriggerChain(projectId, onUpdate);
+  } catch (e) {
+    console.error("Auto-trigger chain failed:", e);
+  }
+}
+
 // ============== Utilities ==============
 
 /**
  * 解析消息中的 @引用
  * 例如: "请参考 @标题 和 @正文 生成内容" => ["标题", "正文"]
  */
-export function parseReferences(message: string): string[] {
-  const pattern = /@([^\s@]+)/g;
+export function parseReferences(message: string, knownNames?: string[]): string[] {
   const matches: string[] = [];
+
+  // 先匹配已知名称（支持含空格的名称）
+  if (knownNames && knownNames.length > 0) {
+    // 按长度降序排列，优先匹配更长的名称
+    const sorted = [...knownNames].sort((a, b) => b.length - a.length);
+    for (const name of sorted) {
+      if (message.includes(`@${name}`)) {
+        matches.push(name);
+      }
+    }
+  }
+
+  // 再用正则匹配简单的 @引用（不含空格）
+  const pattern = /@([^\s@]+)/g;
   let match;
   while ((match = pattern.exec(message)) !== null) {
-    matches.push(match[1]);
+    if (!matches.includes(match[1])) {
+      matches.push(match[1]);
+    }
   }
   return matches;
 }
