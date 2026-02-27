@@ -18,60 +18,77 @@
 | 层级 | 技术 |
 |------|------|
 | 前端 | Next.js 16 + TypeScript + Radix UI + Tailwind CSS |
-| 后端 | Python 3.14 + FastAPI + LangGraph |
+| 后端 | Python 3.9+ + FastAPI + LangGraph |
 | 数据库 | SQLite + SQLAlchemy |
 | AI | OpenAI GPT-5.1 |
 
 ## 快速开始
 
-### 1. 环境准备
+### 前置条件
+
+- Python 3.9+
+- Node.js 18+
+- npm
+
+### 首次部署（两条命令）
 
 ```bash
-# 克隆项目
-cd 202601_content_production_system_2
+# 1. 初始化：创建虚拟环境、安装所有依赖、生成 .env 模板
+./scripts/setup.sh
 
-# 复制环境变量 (进入backend目录)
-cd backend
-cp env_example.txt .env
-# 编辑 .env 填写你的 OPENAI_API_KEY
+# 2. 编辑 .env 填入你的 API Key
+vim backend/.env
+
+# 3. 启动前后端
+./scripts/sync.sh start
 ```
 
-### 2. 启动后端
+### 日常更新（一条命令）
 
 ```bash
-cd backend
-
-# 创建虚拟环境
-python -m venv venv
-.\venv\Scripts\activate  # Windows
-# source venv/bin/activate  # Linux/Mac
-
-# 安装依赖
-pip install -r requirements.txt
-
-# 启动服务
-python main.py
+# 拉取最新代码 + 同步依赖 + 启动前后端
+./scripts/sync.sh start
 ```
 
-### 3. 启动前端
+数据库 schema 和种子数据会在后端启动时自动同步，本地数据不受影响。
+
+### 停止服务
 
 ```bash
-cd frontend
-
-# 安装依赖
-npm install
-
-# 启动开发服务器
-npm run dev
+./scripts/stop.sh
 ```
 
-### 4. 访问
+### 访问
 
 - 前端: http://localhost:3000
 - 后端API: http://localhost:8000
 - API文档: http://localhost:8000/docs
 
-### 5. 开始使用
+### 手动部署（不使用脚本）
+
+<details>
+<summary>展开查看手动步骤</summary>
+
+```bash
+# 后端
+cd backend
+python3 -m venv venv
+source venv/bin/activate  # macOS/Linux
+# .\venv\Scripts\activate  # Windows
+pip install -r requirements.txt
+cp env_example.txt .env
+# 编辑 .env 填入 API Key
+python main.py
+
+# 前端（另一个终端）
+cd frontend
+npm install
+npm run dev
+```
+
+</details>
+
+### 开始使用
 
 📖 **首次使用请阅读 [使用者指南](docs/user_guide.md)**，包含：
 - 后台设置步骤

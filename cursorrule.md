@@ -28,7 +28,7 @@
 | 层级 | 技术 |
 |------|------|
 | 前端 | Next.js 16 + TypeScript + Radix UI + Tailwind CSS |
-| 后端 | Python 3.14 + FastAPI + LangGraph |
+| 后端 | Python 3.9+ + FastAPI + LangGraph |
 | 数据库 | SQLite + SQLAlchemy |
 | AI | OpenAI Compatible API（当前默认：火山方舟 Kimi） |
 

@@ -1,5 +1,6 @@
 #!/bin/bash
-# scripts/sync.sh - 同步代码、清理缓存、启动服务
+# scripts/sync.sh - 同步代码、安装依赖、清理缓存、启动服务
+# 功能: 日常更新一键脚本，拉取最新代码并同步依赖
 # 用法: 
 #   ./scripts/sync.sh        - 只同步和清理
 #   ./scripts/sync.sh start  - 同步后启动前后端
@@ -15,20 +16,47 @@ cd "$PROJECT_DIR"
 # 颜色定义
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 sync_code() {
-    echo -e "${BLUE}🔄 同步代码...${NC}"
-    git pull
+    echo -e "${BLUE}[1/4] 同步代码...${NC}"
     
-    echo -e "${BLUE}🧹 清理 Python 缓存...${NC}"
+    # 自动跟踪 GitHub 上的默认分支（发布分支）
+    git fetch origin
+    git remote set-head origin --auto 2>/dev/null || true
+    RELEASE_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||')
+    CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+    
+    if [ -n "$RELEASE_BRANCH" ] && [ "$CURRENT_BRANCH" != "$RELEASE_BRANCH" ]; then
+        echo -e "  ${YELLOW}发布分支已切换: $CURRENT_BRANCH -> $RELEASE_BRANCH${NC}"
+        git checkout "$RELEASE_BRANCH"
+    fi
+    
+    git pull origin "$RELEASE_BRANCH"
+    
+    echo -e "${BLUE}[2/4] 安装/更新后端依赖...${NC}"
+    cd "$PROJECT_DIR/backend"
+    if [ ! -d "venv" ]; then
+        echo -e "${YELLOW}  venv 不存在，请先运行 ./scripts/setup.sh${NC}"
+        exit 1
+    fi
+    source venv/bin/activate
+    pip install -r requirements.txt --quiet
+    deactivate
+    cd "$PROJECT_DIR"
+    
+    echo -e "${BLUE}[3/4] 安装/更新前端依赖...${NC}"
+    cd "$PROJECT_DIR/frontend"
+    npm install --silent
+    cd "$PROJECT_DIR"
+    
+    echo -e "${BLUE}[4/4] 清理缓存...${NC}"
     find backend -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
     find backend -name "*.pyc" -delete 2>/dev/null || true
-    
-    echo -e "${BLUE}🧹 清理 Next.js 缓存...${NC}"
     rm -rf frontend/.next 2>/dev/null || true
     
-    echo -e "${GREEN}✅ 同步完成！${NC}"
+    echo -e "${GREEN}同步完成！数据库 schema 和种子数据会在后端启动时自动同步。${NC}"
 }
 
 start_services() {

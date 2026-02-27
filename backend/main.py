@@ -1,6 +1,6 @@
 # backend/main.py
-# 功能: FastAPI应用入口，含启动时自动同步评估模板
-# 主要函数: create_app(), _sync_eval_template_on_startup(), main()
+# 功能: FastAPI应用入口，含启动时自动同步评估模板和种子数据
+# 主要函数: create_app(), _seed_default_data_on_startup(), _sync_eval_template_on_startup(), main()
 # 数据结构: 无
 
 """
@@ -62,6 +62,22 @@ def _ensure_db_schema_on_startup():
     except Exception as e:
         logging.getLogger("startup").warning(
             f"启动时校验数据库 schema 失败（不影响运行）: {e}"
+        )
+
+
+def _seed_default_data_on_startup():
+    """
+    启动时检查并填充预置数据（创作者特质、系统提示词、Agent 设置等）。
+    复用 scripts/init_db.py 的 seed_default_data()，该函数是幂等的：
+    每个表都先 count() == 0 再插入，已有数据不受影响。
+    """
+    try:
+        from scripts.init_db import seed_default_data
+        seed_default_data()
+        logging.getLogger("startup").info("预置数据校验完成")
+    except Exception as e:
+        logging.getLogger("startup").warning(
+            f"启动时填充预置数据失败（不影响运行）: {e}"
         )
 
 
@@ -309,10 +325,11 @@ def create_app() -> FastAPI:
     # 可用模型列表
     app.include_router(models_api.router)
 
-    # 启动时同步评估模板
+    # 启动时确保数据库就绪：schema -> 种子数据 -> 评估模板同步 -> 清理
     @app.on_event("startup")
     def on_startup():
         _ensure_db_schema_on_startup()
+        _seed_default_data_on_startup()
         _sync_eval_template_on_startup()
         _cleanup_legacy_eval_templates_on_startup()
         _dedupe_eval_anchor_blocks_on_startup()
