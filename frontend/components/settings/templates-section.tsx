@@ -3,8 +3,9 @@
 
 "use client";
 
-import { useState } from "react";
-import { settingsAPI } from "@/lib/api";
+import { useState, useEffect } from "react";
+import { settingsAPI, modelsAPI } from "@/lib/api";
+import type { ModelInfo } from "@/lib/api";
 import { FormField, TagInput, ImportExportButtons, SingleExportButton, downloadJSON } from "./shared";
 
 interface TemplateField {
@@ -15,6 +16,7 @@ interface TemplateField {
   depends_on?: string[];
   need_review?: boolean;
   auto_generate?: boolean;
+  model_override?: string | null;
 }
 
 interface FieldTemplateItem {
@@ -36,6 +38,14 @@ export function TemplatesSection({ templates, onRefresh }: { templates: FieldTem
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<TemplateEditForm>({ name: "", description: "", category: "通用", fields: [] });
   const [isCreating, setIsCreating] = useState(false);
+  const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
+
+  // 加载可用模型列表
+  useEffect(() => {
+    modelsAPI.list().then(resp => {
+      setAvailableModels(resp.models || []);
+    }).catch(() => { /* 模型列表加载失败不阻塞页面 */ });
+  }, []);
 
   const handleExportAll = async () => {
     try {
@@ -105,7 +115,7 @@ export function TemplatesSection({ templates, onRefresh }: { templates: FieldTem
   const addField = () => {
     setEditForm({
       ...editForm,
-      fields: [...(editForm.fields || []), { name: "", ai_prompt: "", content: "", pre_questions: [], depends_on: [], auto_generate: false }],
+      fields: [...(editForm.fields || []), { name: "", ai_prompt: "", content: "", pre_questions: [], depends_on: [], auto_generate: false, model_override: null }],
     });
   };
 
@@ -294,6 +304,22 @@ export function TemplatesSection({ templates, onRefresh }: { templates: FieldTem
                         自动生成（依赖就绪时自动触发）
                       </label>
                     )}
+                    {/* 模型选择 */}
+                    {availableModels.length > 0 && (
+                      <label className="flex items-center gap-2 text-xs text-zinc-400">
+                        模型
+                        <select
+                          value={field.model_override || ""}
+                          onChange={(e) => updateField(index, "model_override", e.target.value || null)}
+                          className="px-2 py-1 bg-surface-2 border border-surface-3 rounded text-zinc-300 text-xs"
+                        >
+                          <option value="">默认</option>
+                          {availableModels.map(m => (
+                            <option key={m.id} value={m.id}>{m.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
                   </div>
                 </div>
               ))}
@@ -347,6 +373,9 @@ export function TemplatesSection({ templates, onRefresh }: { templates: FieldTem
                         {(template.fields || []).map((f, i: number) => (
                           <span key={i} className="text-xs bg-brand-600/10 text-brand-400 px-2 py-1 rounded">
                             {f.name}
+                            {f.model_override && (
+                              <span className="ml-1 text-zinc-500" title={`模型: ${f.model_override}`}>[{f.model_override}]</span>
+                            )}
                           </span>
                         ))}
                       </div>

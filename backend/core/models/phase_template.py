@@ -161,6 +161,7 @@ class PhaseTemplate(BaseModel):
                     "constraints": field.get("constraints", {}),
                     "need_review": field.get("need_review", True),
                     "auto_generate": field.get("auto_generate", False),
+                    "model_override": field.get("model_override"),
                     "status": (
                         ("in_progress" if field.get("need_review", True) else "completed")
                         if template_content else "pending"

@@ -376,6 +376,7 @@ def duplicate_project(
             need_review=old_block.need_review,
             auto_generate=getattr(old_block, 'auto_generate', False),
             is_collapsed=old_block.is_collapsed,
+            model_override=getattr(old_block, 'model_override', None),
             digest=old_block.digest,
         )
         db.add(new_block)
@@ -697,6 +698,7 @@ def create_new_version(
             need_review=old_block.need_review,
             auto_generate=getattr(old_block, 'auto_generate', False),
             is_collapsed=old_block.is_collapsed,
+            model_override=getattr(old_block, 'model_override', None),
             digest=old_block.digest,
         )
         db.add(new_block)
@@ -1041,6 +1043,7 @@ def import_project(
                 need_review=b.get("need_review", True),
                 auto_generate=b.get("auto_generate", False),
                 is_collapsed=b.get("is_collapsed", False),
+                model_override=b.get("model_override"),
                 digest=b.get("digest"),
             )
             _set_timestamps(new_block, b)

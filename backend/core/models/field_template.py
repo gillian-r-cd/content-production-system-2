@@ -75,6 +75,7 @@ class FieldTemplate(BaseModel):
             - dependency_type: 依赖类型 (all/any)
             - need_review: 是否需要人工确认（默认 True）
             - auto_generate: 是否自动生成（当依赖就绪时自动触发 AI 生成，默认 False）
+            - model_override: 模型覆盖（应用模板时写入 ContentBlock.model_override，默认 None 走覆盖链）
     
     Example fields:
         [

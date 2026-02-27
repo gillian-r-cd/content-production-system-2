@@ -629,6 +629,7 @@ export interface PhaseTemplate {
       content?: string;
       need_review?: boolean;
       auto_generate?: boolean;
+      model_override?: string | null;
       pre_questions?: string[];
       depends_on?: string[];
       constraints?: Record<string, unknown>;

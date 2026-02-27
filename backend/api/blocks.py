@@ -68,6 +68,7 @@ class BlockCreate(BaseModel):
     special_handler: Optional[str] = None
     need_review: bool = True
     auto_generate: bool = False  # 是否自动生成（依赖就绪时自动触发）
+    model_override: Optional[str] = None  # 模型覆盖（来自模板或用户手动设置）
     order_index: Optional[int] = None
     pre_questions: List[str] = Field(default_factory=list)  # 生成前提问
 
@@ -432,6 +433,7 @@ def create_block(
         special_handler=data.special_handler,
         need_review=data.need_review,
         auto_generate=data.auto_generate,
+        model_override=data.model_override,
         pre_questions=data.pre_questions,  # 保存生成前提问
     )
     
@@ -734,6 +736,7 @@ def duplicate_block(
             need_review=node.need_review,
             auto_generate=getattr(node, 'auto_generate', False),
             is_collapsed=node.is_collapsed,
+            model_override=getattr(node, 'model_override', None),
         )
         new_blocks.append(new_block)
         db.add(new_block)
@@ -1363,6 +1366,7 @@ def _field_template_to_blocks(field_template: "FieldTemplate", project_id: str) 
             "constraints": field.get("constraints", {}),
             "need_review": field.get("need_review", True),
             "auto_generate": field.get("auto_generate", False),
+            "model_override": field.get("model_override"),
             "status": (
                 ("in_progress" if field.get("need_review", True) else "completed")
                 if template_content else "pending"
