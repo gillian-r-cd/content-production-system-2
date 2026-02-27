@@ -50,6 +50,8 @@ def init_db():
     from core.models import base  # noqa
     Base.metadata.create_all(bind=engine)
     _ensure_conversation_schema(engine)
+    _ensure_content_block_columns(engine)
+    _ensure_agent_settings_columns(engine)
 
 
 def _ensure_conversation_schema(engine) -> None:
@@ -84,6 +86,35 @@ def _ensure_conversation_schema(engine) -> None:
                 "ON conversations(project_id, mode, status)"
             )
         )
+
+
+def _ensure_content_block_columns(engine) -> None:
+    """兼容旧库：为 content_blocks 补齐 0225-compatible 新增列。"""
+    new_columns = {
+        "auto_generate": "BOOLEAN DEFAULT 0",
+        "model_override": "VARCHAR(100)",
+        "digest": "TEXT",
+    }
+    _add_missing_columns(engine, "content_blocks", new_columns)
+
+
+def _ensure_agent_settings_columns(engine) -> None:
+    """兼容旧库：为 agent_settings 补齐模型选择列。"""
+    new_columns = {
+        "default_model": "VARCHAR(100)",
+        "default_mini_model": "VARCHAR(100)",
+    }
+    _add_missing_columns(engine, "agent_settings", new_columns)
+
+
+def _add_missing_columns(engine, table: str, columns: dict[str, str]) -> None:
+    """通用：检查并补齐缺失列。columns = {col_name: col_definition}"""
+    with engine.begin() as conn:
+        rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+        existing = {row[1] for row in rows}
+        for col_name, col_def in columns.items():
+            if col_name not in existing:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_def}"))
 
 
 # 依赖注入用的Session生成器

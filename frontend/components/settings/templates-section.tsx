@@ -9,7 +9,6 @@ import { FormField, TagInput, ImportExportButtons, SingleExportButton, downloadJ
 
 interface TemplateField {
   name: string;
-  type?: string;
   ai_prompt?: string;
   content?: string;
   pre_questions?: string[];
@@ -106,7 +105,7 @@ export function TemplatesSection({ templates, onRefresh }: { templates: FieldTem
   const addField = () => {
     setEditForm({
       ...editForm,
-      fields: [...(editForm.fields || []), { name: "", type: "richtext", ai_prompt: "", content: "", pre_questions: [], depends_on: [], auto_generate: false }],
+      fields: [...(editForm.fields || []), { name: "", ai_prompt: "", content: "", pre_questions: [], depends_on: [], auto_generate: false }],
     });
   };
 
@@ -204,7 +203,7 @@ export function TemplatesSection({ templates, onRefresh }: { templates: FieldTem
                     </button>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-4 mb-3">
+                  <div className="mb-3">
                     <FormField label="内容块名称">
                       <input
                         type="text"
@@ -213,18 +212,6 @@ export function TemplatesSection({ templates, onRefresh }: { templates: FieldTem
                         placeholder="如：产品定位"
                         className="w-full px-3 py-2 bg-surface-2 border border-surface-3 rounded-lg text-zinc-200 text-sm"
                       />
-                    </FormField>
-                    <FormField label="内容块类型">
-                      <select
-                        value={field.type || "text"}
-                        onChange={(e) => updateField(index, "type", e.target.value)}
-                        className="w-full px-3 py-2 bg-surface-2 border border-surface-3 rounded-lg text-zinc-200 text-sm"
-                      >
-                        <option value="text">短文本</option>
-                        <option value="longtext">长文本</option>
-                        <option value="markdown">Markdown</option>
-                        <option value="list">列表</option>
-                      </select>
                     </FormField>
                   </div>
 

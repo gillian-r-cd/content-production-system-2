@@ -1353,7 +1353,7 @@ def _field_template_to_blocks(field_template: "FieldTemplate", project_id: str) 
             "project_id": project_id,
             "parent_id": phase_id,
             "name": field.get("name", f"内容块 {idx + 1}"),
-            "block_type": field.get("type", "field"),
+            "block_type": "field",
             "depth": 1,
             "order_index": idx,
             "ai_prompt": field.get("ai_prompt", ""),

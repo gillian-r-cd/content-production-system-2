@@ -31,7 +31,6 @@ EVAL_TEMPLATE_V2_CATEGORY = "评估"
 EVAL_TEMPLATE_V2_FIELDS = [
     {
         "name": "人物画像设置",
-        "type": "richtext",
         "ai_prompt": "管理评估用人物画像，可从调研加载或手动创建，并支持 AI 生成画像。",
         "pre_questions": [],
         "depends_on": [],
@@ -41,7 +40,6 @@ EVAL_TEMPLATE_V2_FIELDS = [
     },
     {
         "name": "评估任务配置",
-        "type": "richtext",
         "ai_prompt": "配置 Eval V2 任务与 Trial：按评估形态组织，设置目标内容、画像、评分器与权重。",
         "pre_questions": [],
         "depends_on": ["人物画像设置"],
@@ -51,7 +49,6 @@ EVAL_TEMPLATE_V2_FIELDS = [
     },
     {
         "name": "评估报告",
-        "type": "richtext",
         "ai_prompt": "统一评估报告：查看批次结果、Trial 详情、评分汇总与跨 Trial 分析，并支持让 Agent 修改。",
         "pre_questions": [],
         "depends_on": ["评估任务配置"],
@@ -72,7 +69,6 @@ class FieldTemplate(BaseModel):
         category: 分类（如"课程"、"文章"、"营销"）
         fields: 字段定义列表，每个字段包含:
             - name: 字段名
-            - type: 类型 (text/richtext/list/structured)
             - ai_prompt: AI生成提示词
             - pre_questions: 生成前提问列表
             - depends_on: 依赖的字段名列表
@@ -84,7 +80,6 @@ class FieldTemplate(BaseModel):
         [
             {
                 "name": "课程目标",
-                "type": "text",
                 "ai_prompt": "基于项目意图，明确课程的核心学习目标...",
                 "pre_questions": ["目标学员的现有水平是？"],
                 "depends_on": [],
@@ -92,7 +87,6 @@ class FieldTemplate(BaseModel):
             },
             {
                 "name": "课程大纲",
-                "type": "structured",
                 "ai_prompt": "根据课程目标，设计详细的课程大纲...",
                 "pre_questions": [],
                 "depends_on": ["课程目标"],

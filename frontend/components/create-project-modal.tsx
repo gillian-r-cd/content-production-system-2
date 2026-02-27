@@ -23,7 +23,6 @@ interface TemplateItem {
 
 interface FieldTemplateLikeField {
   name: string;
-  type?: string;
   ai_prompt?: string;
   content?: string;
 }
@@ -157,7 +156,7 @@ export function CreateProjectModal({
               order_index: 0,
               default_fields: fields.map((f: FieldTemplateLikeField) => ({
                 name: f.name,
-                block_type: f.type || "field",
+                block_type: "field",
                 ai_prompt: f.ai_prompt,
                 content: f.content,
               })),
