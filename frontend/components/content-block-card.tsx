@@ -35,6 +35,7 @@ import {
   Copy,
   Check,
   Cpu,
+  Sparkles,
 } from "lucide-react";
 
 interface ContentBlockCardProps {
@@ -625,13 +626,13 @@ export function ContentBlockCard({
                   ? "text-amber-400 hover:bg-amber-600/20" 
                   : "text-emerald-400 hover:bg-emerald-600/20"
               }`}
-              title={block.need_review ? "需要人工确认（点击切换）" : "自动执行（点击切换）"}
+              title={block.need_review ? "需要人工确认（点击切换）" : "无需确认（点击切换）"}
             >
               {block.need_review ? <ShieldCheck className="w-4 h-4" /> : <Zap className="w-4 h-4" />}
             </button>
 
-            {/* 自动生成标记：仅对有依赖的 field 类型块显示 */}
-            {block.block_type === "field" && (block.depends_on || []).length > 0 && (
+            {/* 自动生成标记：所有 field 类型块均可切换 */}
+            {block.block_type === "field" && (
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -642,9 +643,9 @@ export function ContentBlockCard({
                     ? "text-blue-400 hover:bg-blue-600/20"
                     : "text-zinc-500 hover:bg-surface-3"
                 }`}
-                title={block.auto_generate ? "自动生成（依赖就绪时自动触发，点击切换）" : "手动生成（点击切换为自动）"}
+                title={block.auto_generate ? "自动生成（依赖就绪时自动触发，点击切换）" : "手动触发（点击切换为自动生成）"}
               >
-                <Workflow className="w-4 h-4" />
+                <Sparkles className="w-4 h-4" />
               </button>
             )}
 

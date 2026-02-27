@@ -6,6 +6,7 @@
 import { useState, useEffect } from "react";
 import { phaseTemplateAPI, modelsAPI } from "@/lib/api";
 import type { PhaseTemplate, ModelInfo } from "@/lib/api";
+import { Sparkles } from "lucide-react";
 import { FormField } from "./shared";
 
 type TemplatePhase = PhaseTemplate["phases"][number];
@@ -440,7 +441,7 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
                           <span>{f.name}</span>
                           {f.ai_prompt && <span className="text-brand-400/60">✨</span>}
                           {f.content && <span className="text-emerald-400/60">📝</span>}
-                          {f.auto_generate && <span className="text-blue-400/60" title="自动生成">⚡</span>}
+                          {f.auto_generate && <span className="text-blue-400/60" title="自动生成"><Sparkles className="w-3 h-3 inline" /></span>}
                           {f.model_override && <span className="text-amber-400/60" title={`模型: ${f.model_override}`}>[{String(f.model_override)}]</span>}
                         </div>
                       ))}

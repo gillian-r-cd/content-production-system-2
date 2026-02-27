@@ -825,26 +825,48 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
             )}
           </button>
           
-          {/* need_review 状态 */}
-          <span className={`flex items-center gap-1 px-2 py-1 text-xs rounded ${
-            block.need_review 
-              ? "bg-amber-600/10 text-amber-400"
-              : "bg-emerald-600/10 text-emerald-400"
-          }`}>
+          {/* need_review 状态（可切换） */}
+          <button
+            onClick={async () => {
+              try {
+                await blockAPI.update(block.id, { need_review: !block.need_review });
+                onUpdate?.();
+              } catch (err) {
+                console.error("切换确认状态失败:", err);
+              }
+            }}
+            className={`flex items-center gap-1 px-2 py-1 text-xs rounded cursor-pointer transition-colors ${
+              block.need_review 
+                ? "bg-amber-600/10 text-amber-400 hover:bg-amber-600/20"
+                : "bg-emerald-600/10 text-emerald-400 hover:bg-emerald-600/20"
+            }`}
+            title={block.need_review ? "需要人工确认（点击切换）" : "无需确认（点击切换）"}
+          >
             {block.need_review ? <ShieldCheck className="w-3.5 h-3.5" /> : <Zap className="w-3.5 h-3.5" />}
-            {block.need_review ? "需要人工确认" : "自动执行"}
-          </span>
+            {block.need_review ? "需要人工确认" : "无需确认"}
+          </button>
 
-          {/* auto_generate 状态：仅对有依赖的 field 类型块显示 */}
-          {block.block_type === "field" && (block.depends_on || []).length > 0 && (
-            <span className={`flex items-center gap-1 px-2 py-1 text-xs rounded ${
-              block.auto_generate
-                ? "bg-blue-600/10 text-blue-400"
-                : "bg-zinc-600/10 text-zinc-400"
-            }`}>
-              <Workflow className="w-3.5 h-3.5" />
-              {block.auto_generate ? "自动生成" : "手动生成"}
-            </span>
+          {/* auto_generate 状态（可切换）：所有 field 类型块均可切换 */}
+          {block.block_type === "field" && (
+            <button
+              onClick={async () => {
+                try {
+                  await blockAPI.update(block.id, { auto_generate: !block.auto_generate });
+                  onUpdate?.();
+                } catch (err) {
+                  console.error("切换自动生成失败:", err);
+                }
+              }}
+              className={`flex items-center gap-1 px-2 py-1 text-xs rounded cursor-pointer transition-colors ${
+                block.auto_generate
+                  ? "bg-blue-600/10 text-blue-400 hover:bg-blue-600/20"
+                  : "bg-zinc-600/10 text-zinc-400 hover:bg-zinc-600/20"
+              }`}
+              title={block.auto_generate ? "自动生成（依赖就绪时自动触发，点击切换）" : "手动触发（点击切换为自动生成）"}
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              {block.auto_generate ? "自动生成" : "手动触发"}
+            </button>
           )}
 
           {/* M5: 模型覆盖选择（group 类型纯分组无内容，不显示） */}
