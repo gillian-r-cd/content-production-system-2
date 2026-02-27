@@ -111,6 +111,23 @@ sync_code() {
     echo -e "${GREEN}同步完成！数据库 schema 和种子数据会在后端启动时自动同步。${NC}"
 }
 
+wait_for_port() {
+    # 用法: wait_for_port 端口号 PID 服务名 最大等待秒数
+    local PORT=$1 PID=$2 NAME=$3 MAX=$4
+    local COUNT=0
+    while [ $COUNT -lt $MAX ]; do
+        if lsof -i :"$PORT" | grep -q LISTEN 2>/dev/null; then
+            return 0  # 成功
+        fi
+        if ! kill -0 "$PID" 2>/dev/null; then
+            return 1  # 进程已死
+        fi
+        sleep 2
+        COUNT=$((COUNT + 2))
+    done
+    return 2  # 超时
+}
+
 start_services() {
     echo ""
     echo -e "${BLUE}🚀 启动服务...${NC}"
@@ -121,7 +138,7 @@ start_services() {
     lsof -i :3000 | grep LISTEN | awk '{print $2}' | xargs kill -9 2>/dev/null || true
     sleep 1
     
-    # 启动后端
+    # ===== 启动后端 =====
     echo -e "  ${BLUE}🐍 启动后端 (localhost:8000)...${NC}"
     cd "$PROJECT_DIR/backend"
     source venv/bin/activate
@@ -129,39 +146,54 @@ start_services() {
     BACKEND_PID=$!
     echo "     后端 PID: $BACKEND_PID"
     
-    # 等待后端启动
-    sleep 3
+    # 等待后端真正就绪（检测端口 8000，最多等 60 秒）
+    echo "  ⏳ 等待后端启动..."
+    wait_for_port 8000 $BACKEND_PID "后端" 60
+    BACKEND_STATUS=$?
     
-    # 启动前端
+    if [ $BACKEND_STATUS -eq 1 ]; then
+        echo -e "  ${RED}❌ 后端启动失败！错误日志:${NC}"
+        echo -e "${RED}-------------------------------------------${NC}"
+        tail -30 /tmp/backend.log
+        echo -e "${RED}-------------------------------------------${NC}"
+        echo -e "  ${YELLOW}完整日志: cat /tmp/backend.log${NC}"
+        echo -e "  ${YELLOW}请检查 backend/.env 中的 API Key 配置是否正确。${NC}"
+        exit 1
+    elif [ $BACKEND_STATUS -eq 2 ]; then
+        echo -e "  ${YELLOW}⚠️  后端启动超时，可能仍在初始化中...${NC}"
+    else
+        echo -e "  ${GREEN}✅ 后端已就绪${NC}"
+    fi
+    
+    # ===== 启动前端 =====
     echo -e "  ${BLUE}⚛️  启动前端 (localhost:3000)...${NC}"
     cd "$PROJECT_DIR/frontend"
     npm run dev > /tmp/frontend.log 2>&1 &
     FRONTEND_PID=$!
     echo "     前端 PID: $FRONTEND_PID"
     
-    # 等待前端真正就绪（检测端口可用，最多等 120 秒）
+    # 等待前端真正就绪（检测端口 3000，最多等 120 秒）
     echo "  ⏳ 等待前端编译完成（首次可能需要 30~60 秒）..."
-    WAIT_COUNT=0
-    MAX_WAIT=120
-    while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
-        if lsof -i :3000 | grep -q LISTEN 2>/dev/null; then
-            break
-        fi
-        # 检查进程是否还活着
-        if ! kill -0 $FRONTEND_PID 2>/dev/null; then
-            echo -e "  ${RED}❌ 前端启动失败，请检查日志: cat /tmp/frontend.log${NC}"
-            break
-        fi
-        sleep 2
-        WAIT_COUNT=$((WAIT_COUNT + 2))
-    done
+    wait_for_port 3000 $FRONTEND_PID "前端" 120
+    FRONTEND_STATUS=$?
     
-    if [ $WAIT_COUNT -ge $MAX_WAIT ]; then
+    if [ $FRONTEND_STATUS -eq 1 ]; then
+        echo -e "  ${RED}❌ 前端启动失败！错误日志:${NC}"
+        echo -e "${RED}-------------------------------------------${NC}"
+        tail -30 /tmp/frontend.log
+        echo -e "${RED}-------------------------------------------${NC}"
+        echo -e "  ${YELLOW}完整日志: cat /tmp/frontend.log${NC}"
+        exit 1
+    elif [ $FRONTEND_STATUS -eq 2 ]; then
         echo -e "  ${YELLOW}⚠️  前端编译超时，可能仍在编译中。请稍后刷新浏览器。${NC}"
+    else
+        echo -e "  ${GREEN}✅ 前端已就绪${NC}"
     fi
     
     echo ""
-    echo -e "${GREEN}✅ 服务已启动！${NC}"
+    echo -e "${GREEN}=========================================="
+    echo -e "  ✅ 服务已启动！"
+    echo -e "==========================================${NC}"
     echo ""
     echo "  🌐 前端: http://localhost:3000"
     echo "  🔌 后端: http://localhost:8000"
