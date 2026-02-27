@@ -62,7 +62,7 @@ sync_code() {
     echo -e "${BLUE}[4/4] 清理缓存...${NC}"
     find backend -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
     find backend -name "*.pyc" -delete 2>/dev/null || true
-    rm -rf frontend/.next 2>/dev/null || true
+    # 注意: 不删除 frontend/.next，保留编译缓存以加速前端启动
     
     echo -e "${GREEN}同步完成！数据库 schema 和种子数据会在后端启动时自动同步。${NC}"
 }
@@ -95,8 +95,26 @@ start_services() {
     FRONTEND_PID=$!
     echo "     前端 PID: $FRONTEND_PID"
     
-    # 等待前端启动
-    sleep 3
+    # 等待前端真正就绪（检测端口可用，最多等 120 秒）
+    echo "  ⏳ 等待前端编译完成（首次可能需要 30~60 秒）..."
+    WAIT_COUNT=0
+    MAX_WAIT=120
+    while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
+        if lsof -i :3000 | grep -q LISTEN 2>/dev/null; then
+            break
+        fi
+        # 检查进程是否还活着
+        if ! kill -0 $FRONTEND_PID 2>/dev/null; then
+            echo -e "  ${RED}❌ 前端启动失败，请检查日志: cat /tmp/frontend.log${NC}"
+            break
+        fi
+        sleep 2
+        WAIT_COUNT=$((WAIT_COUNT + 2))
+    done
+    
+    if [ $WAIT_COUNT -ge $MAX_WAIT ]; then
+        echo -e "  ${YELLOW}⚠️  前端编译超时，可能仍在编译中。请稍后刷新浏览器。${NC}"
+    fi
     
     echo ""
     echo -e "${GREEN}✅ 服务已启动！${NC}"

@@ -37,7 +37,16 @@ else
 fi
 
 PYTHON_VERSION=$($PYTHON_CMD --version 2>&1 | awk '{print $2}')
+PYTHON_MAJOR=$(echo "$PYTHON_VERSION" | cut -d. -f1)
+PYTHON_MINOR=$(echo "$PYTHON_VERSION" | cut -d. -f2)
 echo "  Python: $PYTHON_VERSION ($PYTHON_CMD)"
+
+if [ "$PYTHON_MAJOR" -lt 3 ] || { [ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 10 ]; }; then
+    echo -e "${RED}  错误: Python 版本过低 ($PYTHON_VERSION)，本项目需要 Python 3.10 或更高版本。${NC}"
+    echo -e "${YELLOW}  推荐使用 Homebrew 安装: brew install python@3.12${NC}"
+    echo -e "${YELLOW}  安装后重新运行此脚本即可。${NC}"
+    exit 1
+fi
 
 # 检查 Node.js
 if ! command -v node &> /dev/null; then
