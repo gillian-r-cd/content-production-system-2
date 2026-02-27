@@ -41,7 +41,25 @@ sync_code() {
     
     # 确保 upstream tracking 正确（防止 git pull 报 no tracking 错误）
     git branch --set-upstream-to="origin/$RELEASE_BRANCH" "$RELEASE_BRANCH" 2>/dev/null || true
+    
+    # 自动暂存本地变更（自动生成的文件如 .db-wal、next-env.d.ts 等）
+    # 防止 git pull 因工作区脏文件而失败
+    STASHED=false
+    if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+        echo -e "  ${YELLOW}检测到本地变更，自动暂存...${NC}"
+        git stash push -m "sync.sh auto-stash $(date +%Y%m%d-%H%M%S)" --quiet
+        STASHED=true
+    fi
+    
     git pull origin "$RELEASE_BRANCH"
+    
+    # 恢复暂存的本地变更
+    if [ "$STASHED" = true ]; then
+        echo -e "  ${YELLOW}恢复本地变更...${NC}"
+        git stash pop --quiet 2>/dev/null || {
+            echo -e "  ${YELLOW}自动恢复冲突，已保留在 git stash 中（不影响使用）${NC}"
+        }
+    fi
     
     echo -e "${BLUE}[2/4] 安装/更新后端依赖...${NC}"
     cd "$PROJECT_DIR/backend"

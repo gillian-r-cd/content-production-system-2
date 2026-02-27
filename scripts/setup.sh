@@ -26,13 +26,28 @@ echo ""
 # ===== 步骤 1: 检查前置依赖 =====
 echo -e "${BLUE}[1/4] 检查前置依赖...${NC}"
 
+# 检查 git
+if ! command -v git &> /dev/null; then
+    echo -e "${RED}  错误: 未找到 git。${NC}"
+    if [[ "$(uname)" == "Darwin" ]]; then
+        echo -e "${YELLOW}  macOS 用户请先安装 Xcode Command Line Tools:${NC}"
+        echo -e "${YELLOW}    xcode-select --install${NC}"
+        echo -e "${YELLOW}  安装完成后重新打开终端，再运行此脚本。${NC}"
+    else
+        echo -e "${YELLOW}  请先安装 git，然后重新运行此脚本。${NC}"
+    fi
+    exit 1
+fi
+echo "  git: $(git --version | awk '{print $3}')"
+
 # 检查 Python 3
 if command -v python3 &> /dev/null; then
     PYTHON_CMD="python3"
 elif command -v python &> /dev/null; then
     PYTHON_CMD="python"
 else
-    echo -e "${RED}错误: 未找到 Python。请先安装 Python 3.9 或更高版本。${NC}"
+    echo -e "${RED}错误: 未找到 Python。请先安装 Python 3.10 或更高版本。${NC}"
+    echo -e "${YELLOW}  推荐使用 Homebrew 安装: brew install python@3.12${NC}"
     exit 1
 fi
 
