@@ -191,8 +191,9 @@ start_services() {
     
     # 等待后端真正就绪（检测端口 8000，最多等 60 秒）
     echo "  ⏳ 等待后端启动..."
-    wait_for_port 8000 $BACKEND_PID "后端" 60
-    BACKEND_STATUS=$?
+    # 注意: 用 || true 防止 set -e 在非零返回时直接退出脚本
+    BACKEND_STATUS=0
+    wait_for_port 8000 $BACKEND_PID "后端" 60 || BACKEND_STATUS=$?
     
     if [ $BACKEND_STATUS -eq 1 ]; then
         echo -e "  ${RED}❌ 后端启动失败！错误日志:${NC}"
@@ -217,8 +218,8 @@ start_services() {
     
     # 等待前端真正就绪（检测端口 3000，最多等 120 秒）
     echo "  ⏳ 等待前端编译完成（首次可能需要 30~60 秒）..."
-    wait_for_port 3000 $FRONTEND_PID "前端" 120
-    FRONTEND_STATUS=$?
+    FRONTEND_STATUS=0
+    wait_for_port 3000 $FRONTEND_PID "前端" 120 || FRONTEND_STATUS=$?
     
     if [ $FRONTEND_STATUS -eq 1 ]; then
         echo -e "  ${RED}❌ 前端启动失败！错误日志:${NC}"
