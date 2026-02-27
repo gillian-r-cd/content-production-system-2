@@ -18,7 +18,7 @@
 | 层级 | 技术 |
 |------|------|
 | 前端 | Next.js 16 + TypeScript + Radix UI + Tailwind CSS |
-| 后端 | Python 3.9+ + FastAPI + LangGraph |
+| 后端 | Python 3.10+ + FastAPI + LangGraph |
 | 数据库 | SQLite + SQLAlchemy |
 | AI | OpenAI GPT-5.1 |
 
@@ -26,7 +26,7 @@
 
 ### 前置条件
 
-- Python 3.9+
+- Python 3.10+
 - Node.js 18+
 - npm
 
