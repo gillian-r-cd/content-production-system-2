@@ -26,13 +26,21 @@ sync_code() {
     git fetch origin
     git remote set-head origin --auto 2>/dev/null || true
     RELEASE_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||')
+    
+    # 如果无法确定默认分支，回退到当前分支
+    if [ -z "$RELEASE_BRANCH" ]; then
+        RELEASE_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+    fi
+    
     CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
     
-    if [ -n "$RELEASE_BRANCH" ] && [ "$CURRENT_BRANCH" != "$RELEASE_BRANCH" ]; then
+    if [ "$CURRENT_BRANCH" != "$RELEASE_BRANCH" ]; then
         echo -e "  ${YELLOW}发布分支已切换: $CURRENT_BRANCH -> $RELEASE_BRANCH${NC}"
         git checkout "$RELEASE_BRANCH"
     fi
     
+    # 确保 upstream tracking 正确（防止 git pull 报 no tracking 错误）
+    git branch --set-upstream-to="origin/$RELEASE_BRANCH" "$RELEASE_BRANCH" 2>/dev/null || true
     git pull origin "$RELEASE_BRANCH"
     
     echo -e "${BLUE}[2/4] 安装/更新后端依赖...${NC}"
