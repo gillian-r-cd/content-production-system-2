@@ -40,28 +40,37 @@ if ! command -v git &> /dev/null; then
 fi
 echo "  git: $(git --version | awk '{print $3}')"
 
-# 检查 Python 3
-if command -v python3 &> /dev/null; then
-    PYTHON_CMD="python3"
-elif command -v python &> /dev/null; then
-    PYTHON_CMD="python"
-else
-    echo -e "${RED}错误: 未找到 Python。请先安装 Python 3.10 或更高版本。${NC}"
-    echo -e "${YELLOW}  推荐使用 Homebrew 安装: brew install python@3.12${NC}"
-    exit 1
-fi
+# 检查 Python >= 3.10
+# 策略: 按优先级逐个尝试 python3 -> python3.12 -> python3.11 -> python3.10 -> python
+# 找到第一个版本 >= 3.10 的就用它（解决 macOS 系统 python3 是 3.9 但 Homebrew 装了 3.12 的情况）
+PYTHON_CMD=""
+for candidate in python3 python3.12 python3.11 python3.10 python; do
+    if command -v "$candidate" &> /dev/null; then
+        VER=$("$candidate" --version 2>&1 | awk '{print $2}')
+        MAJOR=$(echo "$VER" | cut -d. -f1)
+        MINOR=$(echo "$VER" | cut -d. -f2)
+        if [ "$MAJOR" -ge 3 ] 2>/dev/null && [ "$MINOR" -ge 10 ] 2>/dev/null; then
+            PYTHON_CMD="$candidate"
+            PYTHON_VERSION="$VER"
+            break
+        fi
+    fi
+done
 
-PYTHON_VERSION=$($PYTHON_CMD --version 2>&1 | awk '{print $2}')
-PYTHON_MAJOR=$(echo "$PYTHON_VERSION" | cut -d. -f1)
-PYTHON_MINOR=$(echo "$PYTHON_VERSION" | cut -d. -f2)
-echo "  Python: $PYTHON_VERSION ($PYTHON_CMD)"
-
-if [ "$PYTHON_MAJOR" -lt 3 ] || { [ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 10 ]; }; then
-    echo -e "${RED}  错误: Python 版本过低 ($PYTHON_VERSION)，本项目需要 Python 3.10 或更高版本。${NC}"
+if [ -z "$PYTHON_CMD" ]; then
+    # 显示当前 python3 版本（如果有）帮助用户理解问题
+    if command -v python3 &> /dev/null; then
+        CURRENT_VER=$(python3 --version 2>&1 | awk '{print $2}')
+        echo -e "${RED}  错误: 当前 Python 版本 ($CURRENT_VER) 过低，本项目需要 Python 3.10 或更高版本。${NC}"
+    else
+        echo -e "${RED}  错误: 未找到 Python，本项目需要 Python 3.10 或更高版本。${NC}"
+    fi
     echo -e "${YELLOW}  推荐使用 Homebrew 安装: brew install python@3.12${NC}"
     echo -e "${YELLOW}  安装后重新运行此脚本即可。${NC}"
     exit 1
 fi
+
+echo "  Python: $PYTHON_VERSION ($PYTHON_CMD)"
 
 # 检查 Node.js
 if ! command -v node &> /dev/null; then

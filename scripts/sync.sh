@@ -67,6 +67,32 @@ sync_code() {
         echo -e "${YELLOW}  venv 不存在，请先运行 ./scripts/setup.sh${NC}"
         exit 1
     fi
+    
+    # 检查 venv 中的 Python 版本是否 >= 3.10，不满足则自动重建
+    VENV_PY_VER=$(venv/bin/python3 --version 2>&1 | awk '{print $2}')
+    VENV_PY_MINOR=$(echo "$VENV_PY_VER" | cut -d. -f2)
+    if [ "$VENV_PY_MINOR" -lt 10 ] 2>/dev/null; then
+        echo -e "  ${YELLOW}venv 中的 Python ($VENV_PY_VER) 版本过低，自动重建...${NC}"
+        rm -rf venv
+        # 查找可用的 Python >= 3.10
+        REBUILD_PY=""
+        for candidate in python3 python3.12 python3.11 python3.10; do
+            if command -v "$candidate" &> /dev/null; then
+                CAND_MINOR=$("$candidate" --version 2>&1 | awk '{print $2}' | cut -d. -f2)
+                if [ "$CAND_MINOR" -ge 10 ] 2>/dev/null; then
+                    REBUILD_PY="$candidate"
+                    break
+                fi
+            fi
+        done
+        if [ -z "$REBUILD_PY" ]; then
+            echo -e "  ${RED}未找到 Python >= 3.10，请先安装: brew install python@3.12${NC}"
+            exit 1
+        fi
+        echo -e "  ${YELLOW}使用 $REBUILD_PY 重建 venv...${NC}"
+        "$REBUILD_PY" -m venv venv
+    fi
+    
     source venv/bin/activate
     pip install -r requirements.txt --quiet
     deactivate
