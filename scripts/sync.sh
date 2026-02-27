@@ -14,6 +14,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
 # 颜色定义
+RED='\033[0;31m'
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
@@ -128,9 +129,51 @@ wait_for_port() {
     return 2  # 超时
 }
 
+check_env() {
+    # 检查 .env 文件是否存在且 API Key 已配置
+    local ENV_FILE="$PROJECT_DIR/backend/.env"
+    
+    if [ ! -f "$ENV_FILE" ]; then
+        echo -e "${RED}❌ 错误: backend/.env 文件不存在！${NC}"
+        echo -e "${YELLOW}  请将收到的 .env 文件复制到 backend/ 目录:${NC}"
+        echo -e "${YELLOW}    cp ~/Downloads/.env backend/.env${NC}"
+        echo -e "${YELLOW}  或从模板创建:${NC}"
+        echo -e "${YELLOW}    cp backend/env_example.txt backend/.env${NC}"
+        echo -e "${YELLOW}    然后编辑 backend/.env 填入你的 API Key${NC}"
+        exit 1
+    fi
+    
+    # 读取 LLM_PROVIDER（默认 openai）
+    local PROVIDER=$(grep -E "^LLM_PROVIDER=" "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' | tr -d '"' | tr -d "'")
+    PROVIDER=${PROVIDER:-openai}
+    
+    if [ "$PROVIDER" = "anthropic" ]; then
+        local KEY=$(grep -E "^ANTHROPIC_API_KEY=" "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' | tr -d '"' | tr -d "'")
+        if [ -z "$KEY" ] || [ "$KEY" = "sk-ant-xxxx" ]; then
+            echo -e "${RED}❌ 错误: backend/.env 中的 ANTHROPIC_API_KEY 未配置！${NC}"
+            echo -e "${YELLOW}  当前值: ${KEY:-（空）}${NC}"
+            echo -e "${YELLOW}  请编辑 backend/.env 填入真实的 API Key${NC}"
+            exit 1
+        fi
+    else
+        local KEY=$(grep -E "^OPENAI_API_KEY=" "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' | tr -d '"' | tr -d "'")
+        if [ -z "$KEY" ] || [ "$KEY" = "sk-xxxx" ]; then
+            echo -e "${RED}❌ 错误: backend/.env 中的 OPENAI_API_KEY 未配置！${NC}"
+            echo -e "${YELLOW}  当前值: ${KEY:-（空）}${NC}"
+            echo -e "${YELLOW}  请编辑 backend/.env 填入真实的 API Key${NC}"
+            exit 1
+        fi
+    fi
+    
+    echo -e "  ${GREEN}✅ .env 配置检查通过 (provider: $PROVIDER)${NC}"
+}
+
 start_services() {
     echo ""
     echo -e "${BLUE}🚀 启动服务...${NC}"
+    
+    # 启动前检查 .env 配置
+    check_env
     
     # 杀掉占用端口的进程
     echo "  清理端口 8000 和 3000..."
