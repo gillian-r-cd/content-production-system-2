@@ -214,7 +214,7 @@ export function EvalPersonaSetup({ block, projectId, onUpdate }: EvalFieldProps)
   };
 
   const addPersona = () => {
-    setPersonas([...personas, { name: "新画像", background: "", pain_points: [] }]);
+    setPersonas([...personas, { id: `p_${Date.now()}`, name: "新画像", background: "", pain_points: [] }]);
     setEditingIdx(personas.length);
   };
 
@@ -234,8 +234,14 @@ export function EvalPersonaSetup({ block, projectId, onUpdate }: EvalFieldProps)
   const handleSave = async () => {
     setSaving(true);
     try {
+      // 保存前确保每个画像都有 id（兜底：从调研加载等路径可能缺少 id）
+      const ensuredPersonas = personas.map(p => ({
+        ...p,
+        id: p.id || `p_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      }));
+      setPersonas(ensuredPersonas);
       await blockAPI.update(block.id, {
-        content: JSON.stringify({ personas, source: "user_configured" }, null, 2),
+        content: JSON.stringify({ personas: ensuredPersonas, source: "user_configured" }, null, 2),
         status: "completed",
       });
       onUpdate?.();
