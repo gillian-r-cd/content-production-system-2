@@ -40,8 +40,11 @@ interface FieldTemplate {
     content?: string;          // 预置内容（模板自带的初始内容）
     depends_on?: string[];
     need_review?: boolean;
+    auto_generate?: boolean;   // 是否自动生成（依赖就绪时自动触发）
     special_handler?: string;
     pre_questions?: string[];  // 生成前提问
+    model_override?: string | null;  // 模型覆盖
+    constraints?: Record<string, unknown>;  // 约束配置
   }[];
 }
 
@@ -183,8 +186,11 @@ function BlockNode({
           ai_prompt: field.ai_prompt || "",
           depends_on: mappedDependsOn,
           need_review: field.need_review !== undefined ? field.need_review : true,
+          auto_generate: field.auto_generate === true,  // 传递自动生成设置
           special_handler: field.special_handler || null,
           pre_questions: field.pre_questions || [],  // 传递生成前提问
+          model_override: field.model_override || undefined,  // 传递模型覆盖
+          constraints: field.constraints || undefined,  // 传递约束配置
         });
         
         createdBlocks.push(createdBlock.id);

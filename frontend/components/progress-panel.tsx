@@ -74,7 +74,7 @@ export function ProgressPanel({
   // 辅助函数：计算 blocks 签名，用于比较是否实际变化
   const computeBlocksSignature = useCallback((blocks: ContentBlock[]): string => {
     return flattenBlocks(blocks)
-      .map(b => `${b.id}|${b.status}|${(b.content || "").length}|${b.name}|${b.ai_prompt ? 1 : 0}|${b.need_review ? 1 : 0}|${(b.depends_on || []).length}`)
+      .map(b => `${b.id}|${b.status}|${(b.content || "").length}|${b.name}|${b.ai_prompt ? 1 : 0}|${b.need_review ? 1 : 0}|${b.auto_generate ? 1 : 0}|${(b.depends_on || []).length}`)
       .join(",");
   }, []);
   
