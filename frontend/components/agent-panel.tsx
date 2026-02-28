@@ -1302,7 +1302,7 @@ export function AgentPanel({
 
       {/* 头部 + 模式切换（记忆面板隐藏时显示） */}
       {!showMemoryPanel && (
-      <div className="border-b border-surface-3">
+      <div className="border-b border-surface-3 relative">
         <div className="px-4 pt-3 pb-2 flex items-center justify-between">
           <div>
             <h2 className="font-semibold text-zinc-100">AI Agent</h2>
@@ -1321,7 +1321,7 @@ export function AgentPanel({
           )}
         </div>
         {/* 模式切换标签栏 + 会话历史时钟 icon */}
-        <div className="px-3 flex items-center gap-1 overflow-x-auto relative">
+        <div className="px-3 flex items-center gap-1">
           <div className="flex gap-1 flex-1 overflow-x-auto">
             {availableModes.length > 0 ? (
               availableModes.map((mode) => (
@@ -1372,12 +1372,13 @@ export function AgentPanel({
               <Clock size={14} />
             </button>
           </div>
-          {/* 会话历史下拉列表 */}
-          {showConversationList && (
-            <div
-              ref={conversationListRef}
-              className="absolute top-full right-0 mt-1 w-64 z-50 bg-surface-1 border border-surface-3 rounded-lg shadow-xl"
-            >
+        </div>
+        {/* 会话历史下拉列表（挂在 relative 的外层 header 上，避免被 overflow 裁剪） */}
+        {showConversationList && (
+          <div
+            ref={conversationListRef}
+            className="absolute top-full right-2 mt-1 w-64 z-50 bg-surface-1 border border-surface-3 rounded-lg shadow-xl"
+          >
               {/* 列表头 */}
               <div className="flex items-center justify-between px-3 py-2 border-b border-surface-3">
                 <span className="text-xs font-medium text-zinc-400">会话历史</span>
@@ -1441,7 +1442,6 @@ export function AgentPanel({
               </div>
             </div>
           )}
-        </div>
       </div>
       )}
 
