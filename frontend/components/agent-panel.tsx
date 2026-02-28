@@ -1,7 +1,7 @@
 // frontend/components/agent-panel.tsx
 // 功能: 右栏AI Agent对话面板
 // 主要组件: AgentPanel, MessageBubble, MentionDropdown, ToolSelector
-// 支持: @引用、对话历史加载、编辑重发、再试一次、一键复制、Tool调用、流式输出、Markdown渲染、顶部模式切换标签栏
+// 支持: @引用、对话历史加载、编辑重发、再试一次、一键复制、Tool调用、流式输出、Markdown渲染、顶部模式切换标签栏、会话历史下拉列表（单删/批量删除）
 
 "use client";
 
@@ -13,7 +13,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import { settingsAPI } from "@/lib/api";
-import { Square } from "lucide-react";
+import { Square, Clock, Trash2, X, Plus } from "lucide-react";
 import { MemoryPanel } from "./memory-panel";
 import { SuggestionCard, UndoToast } from "./suggestion-card";
 import type { SuggestionCardData, SuggestionStatus, RollbackTarget } from "./suggestion-card";
@@ -98,6 +98,9 @@ export function AgentPanel({
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
   const [availableTools, setAvailableTools] = useState<{ id: string; name: string; desc: string }[]>([]);
   const [showMemoryPanel, setShowMemoryPanel] = useState(false);
+  const [showConversationList, setShowConversationList] = useState(false);
+  const [selectedConvIds, setSelectedConvIds] = useState<Set<string>>(new Set());
+  const conversationListRef = useRef<HTMLDivElement>(null);
   const [suggestions, setSuggestions] = useState<SuggestionCardData[]>([]);
   // M6 T6.7: UndoToast 队列（FIFO）— 连续接受多张卡片时依次显示撤回 toast
   const [undoQueue, setUndoQueue] = useState<{
@@ -1203,6 +1206,73 @@ export function AgentPanel({
     }
   };
 
+  // ---- 会话删除 ----
+  const handleDeleteConversation = async (convId: string) => {
+    try {
+      await agentAPI.deleteConversation(convId);
+      setConversations((prev) => prev.filter((c) => c.id !== convId));
+      setSelectedConvIds((prev) => { const next = new Set(prev); next.delete(convId); return next; });
+      // 如果删除的是当前激活的会话，自动切换
+      if (activeConversationId === convId) {
+        const remaining = conversations.filter((c) => c.id !== convId);
+        if (remaining.length > 0) {
+          setActiveConversationId(remaining[0].id);
+        } else {
+          // 全部删完了，创建一个新的
+          setActiveConversationId(null);
+          setMessages([]);
+          setSuggestions([]);
+        }
+      }
+    } catch (err) {
+      console.error("删除会话失败:", err);
+    }
+  };
+
+  const handleBatchDeleteConversations = async () => {
+    if (selectedConvIds.size === 0) return;
+    const ids = Array.from(selectedConvIds);
+    try {
+      await agentAPI.batchDeleteConversations(ids);
+      setConversations((prev) => prev.filter((c) => !selectedConvIds.has(c.id)));
+      // 如果当前会话被删了，切换
+      if (activeConversationId && selectedConvIds.has(activeConversationId)) {
+        const remaining = conversations.filter((c) => !selectedConvIds.has(c.id));
+        if (remaining.length > 0) {
+          setActiveConversationId(remaining[0].id);
+        } else {
+          setActiveConversationId(null);
+          setMessages([]);
+          setSuggestions([]);
+        }
+      }
+      setSelectedConvIds(new Set());
+    } catch (err) {
+      console.error("批量删除会话失败:", err);
+    }
+  };
+
+  const toggleConvSelection = (convId: string) => {
+    setSelectedConvIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(convId)) { next.delete(convId); } else { next.add(convId); }
+      return next;
+    });
+  };
+
+  // 点击外部关闭会话列表
+  useEffect(() => {
+    if (!showConversationList) return;
+    const handler = (e: MouseEvent) => {
+      if (conversationListRef.current && !conversationListRef.current.contains(e.target as Node)) {
+        setShowConversationList(false);
+        setSelectedConvIds(new Set());
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showConversationList]);
+
   return (
     <div className="flex flex-col h-full relative">
       {/* Toast 通知 */}
@@ -1250,61 +1320,127 @@ export function AgentPanel({
             </button>
           )}
         </div>
-        {/* 模式切换标签栏 */}
-        <div className="px-3 flex gap-1 overflow-x-auto">
-          {availableModes.length > 0 ? (
-            availableModes.map((mode) => (
+        {/* 模式切换标签栏 + 会话历史时钟 icon */}
+        <div className="px-3 flex items-center gap-1 overflow-x-auto relative">
+          <div className="flex gap-1 flex-1 overflow-x-auto">
+            {availableModes.length > 0 ? (
+              availableModes.map((mode) => (
+                <button
+                  key={mode.name}
+                  onClick={() => setChatMode(mode.name)}
+                  title={mode.description}
+                  className={cn(
+                    "flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-t-lg transition-all whitespace-nowrap border-b-2",
+                    chatMode === mode.name
+                      ? "border-brand-500 text-brand-300 bg-brand-500/10"
+                      : "border-transparent text-zinc-500 hover:text-zinc-300 hover:bg-surface-2"
+                  )}
+                >
+                  <span className="text-base leading-none">{mode.icon}</span>
+                  <span>{mode.display_name}</span>
+                </button>
+              ))
+            ) : (
               <button
-                key={mode.name}
-                onClick={() => setChatMode(mode.name)}
-                title={mode.description}
-                className={cn(
-                  "flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-t-lg transition-all whitespace-nowrap border-b-2",
-                  chatMode === mode.name
-                    ? "border-brand-500 text-brand-300 bg-brand-500/10"
-                    : "border-transparent text-zinc-500 hover:text-zinc-300 hover:bg-surface-2"
-                )}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-t-lg border-b-2 border-brand-500 text-brand-300 bg-brand-500/10"
               >
-                <span className="text-base leading-none">{mode.icon}</span>
-                <span>{mode.display_name}</span>
+                <span className="text-base leading-none">🛠️</span>
+                <span>助手</span>
               </button>
-            ))
-          ) : (
-            <button
-              className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-t-lg border-b-2 border-brand-500 text-brand-300 bg-brand-500/10"
-            >
-              <span className="text-base leading-none">🛠️</span>
-              <span>助手</span>
-            </button>
-          )}
-        </div>
-        <div className="px-3 py-2 border-t border-surface-3">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs text-zinc-500">会话历史</span>
+            )}
+          </div>
+          {/* 新建会话 + 会话历史 icon */}
+          <div className="flex items-center gap-1 shrink-0 pb-1">
             <button
               onClick={handleCreateConversation}
               disabled={!projectId || sending}
-              className="text-xs px-2 py-1 rounded border border-surface-3 text-zinc-300 hover:bg-surface-2 disabled:opacity-50"
+              title="新建会话"
+              className="p-1.5 rounded text-zinc-500 hover:text-zinc-300 hover:bg-surface-2 disabled:opacity-50 transition"
             >
-              新建会话
+              <Plus size={14} />
+            </button>
+            <button
+              onClick={() => { setShowConversationList((v) => !v); setSelectedConvIds(new Set()); }}
+              title="会话历史"
+              className={cn(
+                "p-1.5 rounded transition",
+                showConversationList
+                  ? "text-brand-300 bg-brand-500/10"
+                  : "text-zinc-500 hover:text-zinc-300 hover:bg-surface-2"
+              )}
+            >
+              <Clock size={14} />
             </button>
           </div>
-          <div className="max-h-28 overflow-y-auto space-y-1">
-            {conversations.map((conv) => (
-              <button
-                key={conv.id}
-                onClick={() => setActiveConversationId(conv.id)}
-                className={cn(
-                  "w-full text-left px-2 py-1 rounded text-xs border",
-                  activeConversationId === conv.id
-                    ? "border-brand-500 bg-brand-500/10 text-brand-300"
-                    : "border-surface-3 text-zinc-400 hover:bg-surface-2"
+          {/* 会话历史下拉列表 */}
+          {showConversationList && (
+            <div
+              ref={conversationListRef}
+              className="absolute top-full right-0 mt-1 w-64 z-50 bg-surface-1 border border-surface-3 rounded-lg shadow-xl"
+            >
+              {/* 列表头 */}
+              <div className="flex items-center justify-between px-3 py-2 border-b border-surface-3">
+                <span className="text-xs font-medium text-zinc-400">会话历史</span>
+                <div className="flex items-center gap-1">
+                  {selectedConvIds.size > 0 && (
+                    <button
+                      onClick={handleBatchDeleteConversations}
+                      title={`删除选中的 ${selectedConvIds.size} 个会话`}
+                      className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/20 transition"
+                    >
+                      <Trash2 size={11} />
+                      <span>删除({selectedConvIds.size})</span>
+                    </button>
+                  )}
+                  <button
+                    onClick={() => { setShowConversationList(false); setSelectedConvIds(new Set()); }}
+                    className="p-1 rounded text-zinc-500 hover:text-zinc-300 hover:bg-surface-2 transition"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              </div>
+              {/* 会话列表 */}
+              <div className="max-h-60 overflow-y-auto p-1.5 space-y-0.5">
+                {conversations.length === 0 ? (
+                  <div className="text-center text-zinc-500 text-xs py-4">暂无会话</div>
+                ) : (
+                  conversations.map((conv) => (
+                    <div
+                      key={conv.id}
+                      className={cn(
+                        "group flex items-center gap-1.5 px-2 py-1.5 rounded text-xs transition",
+                        activeConversationId === conv.id
+                          ? "bg-brand-500/10 text-brand-300"
+                          : "text-zinc-400 hover:bg-surface-2"
+                      )}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedConvIds.has(conv.id)}
+                        onChange={() => toggleConvSelection(conv.id)}
+                        onClick={(e) => e.stopPropagation()}
+                        className="shrink-0 accent-brand-500"
+                      />
+                      <button
+                        onClick={() => { setActiveConversationId(conv.id); setShowConversationList(false); setSelectedConvIds(new Set()); }}
+                        className="flex-1 text-left truncate min-w-0"
+                      >
+                        {conv.title || "新会话"}
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleDeleteConversation(conv.id); }}
+                        title="删除此会话"
+                        className="shrink-0 p-0.5 rounded text-zinc-600 hover:text-red-400 hover:bg-red-500/10 opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  ))
                 )}
-              >
-                <div className="truncate">{conv.title || "新会话"}</div>
-              </button>
-            ))}
-          </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
       )}

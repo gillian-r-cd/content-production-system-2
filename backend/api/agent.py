@@ -430,6 +430,42 @@ def update_conversation(
     return _to_conversation_response(conv)
 
 
+@router.delete("/conversations/{conversation_id}")
+def delete_conversation(
+    conversation_id: str,
+    db: Session = Depends(get_db),
+):
+    """删除单个会话及其全部消息。"""
+    conv = db.query(Conversation).filter(Conversation.id == conversation_id).first()
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    # 先删除关联的消息
+    db.query(ChatMessage).filter(ChatMessage.conversation_id == conversation_id).delete()
+    db.delete(conv)
+    db.commit()
+    return {"ok": True, "deleted_id": conversation_id}
+
+
+class BatchDeleteConversationsRequest(BaseModel):
+    conversation_ids: List[str]
+
+
+@router.post("/conversations/batch-delete")
+def batch_delete_conversations(
+    request: BatchDeleteConversationsRequest,
+    db: Session = Depends(get_db),
+):
+    """批量删除多个会话及其全部消息。"""
+    ids = request.conversation_ids
+    if not ids:
+        return {"ok": True, "deleted_count": 0}
+    # 先删除关联消息
+    db.query(ChatMessage).filter(ChatMessage.conversation_id.in_(ids)).delete(synchronize_session=False)
+    deleted = db.query(Conversation).filter(Conversation.id.in_(ids)).delete(synchronize_session=False)
+    db.commit()
+    return {"ok": True, "deleted_count": deleted}
+
+
 @router.get("/conversations/{conversation_id}/messages", response_model=List[ChatMessageResponse])
 def get_conversation_messages(
     conversation_id: str,

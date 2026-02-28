@@ -360,6 +360,17 @@ export const agentAPI = {
   getConversationMessages: (conversationId: string, limit: number = 200) =>
     fetchAPI<ChatMessageRecord[]>(`/api/agent/conversations/${conversationId}/messages?limit=${limit}`),
 
+  // 删除单个会话
+  deleteConversation: (conversationId: string) =>
+    fetchAPI<{ ok: boolean; deleted_id: string }>(`/api/agent/conversations/${conversationId}`, { method: "DELETE" }),
+
+  // 批量删除会话
+  batchDeleteConversations: (conversationIds: string[]) =>
+    fetchAPI<{ ok: boolean; deleted_count: number }>("/api/agent/conversations/batch-delete", {
+      method: "POST",
+      body: JSON.stringify({ conversation_ids: conversationIds }),
+    }),
+
   // Inline AI 编辑
   inlineEdit: (data: { text: string; operation: string; context?: string; project_id?: string }) =>
     fetchAPI<{ original: string; replacement: string; diff_preview: string }>("/api/agent/inline-edit", {
