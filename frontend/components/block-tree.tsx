@@ -5,7 +5,7 @@
 
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import {
   ChevronRight,
   ChevronDown,
@@ -126,6 +126,19 @@ function BlockNode({
   const [templates, setTemplates] = useState<FieldTemplate[]>([]);
   const [templatesLoading, setTemplatesLoading] = useState(false);
   
+  // 点击外部关闭下拉菜单
+  const menuContainerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!showMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (menuContainerRef.current && !menuContainerRef.current.contains(e.target as Node)) {
+        setShowMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showMenu]);
+
   // Escape 键关闭弹窗
   useEffect(() => {
     if (!showTemplateModal) return;
@@ -435,7 +448,7 @@ function BlockNode({
 
         {/* 菜单按钮 */}
         {editable && (
-          <div className="relative">
+          <div className="relative" ref={menuContainerRef}>
             <button
               onClick={(e) => {
                 e.stopPropagation();
