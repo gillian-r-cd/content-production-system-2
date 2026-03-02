@@ -65,8 +65,17 @@ if [ -z "$PYTHON_CMD" ]; then
     else
         echo -e "${RED}  错误: 未找到 Python，本项目需要 Python 3.10 或更高版本。${NC}"
     fi
-    echo -e "${YELLOW}  推荐使用 Homebrew 安装: brew install python@3.12${NC}"
-    echo -e "${YELLOW}  安装后重新运行此脚本即可。${NC}"
+    # 检查是否有 Homebrew，没有的话先提示装 Homebrew
+    if ! command -v brew &> /dev/null; then
+        echo -e "${YELLOW}  ① 先安装 Homebrew（macOS 包管理器）:${NC}"
+        echo -e "${YELLOW}     /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"${NC}"
+        echo -e "${YELLOW}  ② 重新打开终端，然后安装 Python:${NC}"
+        echo -e "${YELLOW}     brew install python@3.12${NC}"
+    else
+        echo -e "${YELLOW}  运行以下命令安装 Python 3.12:${NC}"
+        echo -e "${YELLOW}     brew install python@3.12${NC}"
+    fi
+    echo -e "${YELLOW}  完成后重新运行: ./scripts/setup.sh${NC}"
     exit 1
 fi
 
