@@ -27,7 +27,7 @@ import logging
 import time
 from typing import Any, List, Optional, Tuple
 
-from langchain_core.messages import BaseMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
 
 from core.config import settings
 
@@ -105,17 +105,19 @@ def sanitize_messages(
     清理消息列表，确保符合 Provider 的约束。
 
     对 Anthropic:
-      - 将所有 SystemMessage 的内容合并为一条
-      - 确保合并后的 SystemMessage 在列表首位
+      - 将所有 SystemMessage 的内容合并为一条，确保在列表首位
       - 移除其他位置的 SystemMessage
-    对 OpenAI: 不做处理（无约束）。
+      - 修复孤立的 tool_use/tool_result：
+          * 没有紧跟 ToolMessage 的 AIMessage(tool_calls) → 丢弃（防止 400 错误）
+          * 没有对应 AIMessage 的孤立 ToolMessage → 丢弃
+    对 OpenAI: 不做任何处理。
 
     Args:
         messages: 消息列表
         model: 实际使用的模型名。传入时按模型名判断 provider；
                不传时回退到全局 settings.llm_provider
 
-    这是防御性措施，防止 Checkpointer 恢复的历史消息中混入多条 SystemMessage。
+    这是防御性措施，防止 Checkpointer 恢复的历史消息中出现格式违规。
     """
     if model:
         provider = _infer_provider(model)
@@ -138,8 +140,65 @@ def sanitize_messages(
 
     if system_parts:
         merged = SystemMessage(content="\n\n".join(system_parts))
-        return [merged] + non_system
-    return non_system
+        return [merged] + _repair_tool_pairs(non_system)
+    return _repair_tool_pairs(non_system)
+
+
+def _repair_tool_pairs(messages: List[BaseMessage]) -> List[BaseMessage]:
+    """
+    修复 Anthropic 要求的 tool_use → tool_result 配对约束。
+
+    Anthropic API 要求：每个含 tool_calls 的 AIMessage（tool_use）必须
+    紧跟对应的 ToolMessage（tool_result）。如果 Checkpointer 恢复的状态
+    中存在孤立的 tool_use（例如服务重启导致工具未执行），直接发给 Anthropic
+    会触发 400 错误。
+
+    本函数扫描消息列表，移除任何没有紧跟完整 ToolMessage 的 AIMessage(tool_calls)，
+    以及任何前面没有对应 AIMessage(tool_calls) 的孤立 ToolMessage。
+    对 OpenAI/其他 provider 调用时本函数是恒等操作（不做任何修改）。
+    """
+    if not messages:
+        return messages
+
+    repaired: List[BaseMessage] = []
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
+        # 检查是否是含 tool_calls 的 AIMessage
+        if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+            tool_call_ids = {tc["id"] for tc in msg.tool_calls if "id" in tc}
+            # 收集紧随其后的所有 ToolMessage
+            j = i + 1
+            tool_results: List[ToolMessage] = []
+            while j < len(messages) and isinstance(messages[j], ToolMessage):
+                tool_results.append(messages[j])
+                j += 1
+            result_ids = {tm.tool_call_id for tm in tool_results if hasattr(tm, "tool_call_id")}
+            # 只有当所有 tool_call_id 都有对应的 tool_result 时才保留这组消息
+            if tool_call_ids and tool_call_ids.issubset(result_ids):
+                repaired.append(msg)
+                repaired.extend(tool_results)
+            else:
+                # 孤立的 tool_use：丢弃（同时丢弃其后不完整的 ToolMessage）
+                logger.warning(
+                    "[sanitize_messages] 丢弃孤立 tool_use: tool_call_ids=%s, "
+                    "found_result_ids=%s",
+                    tool_call_ids,
+                    result_ids,
+                )
+            i = j  # 跳过已处理的 ToolMessage
+        elif isinstance(msg, ToolMessage):
+            # 到达这里说明 ToolMessage 前面没有对应的 AIMessage(tool_calls)，属于孤立消息
+            logger.warning(
+                "[sanitize_messages] 丢弃孤立 tool_result: tool_call_id=%s",
+                getattr(msg, "tool_call_id", "unknown"),
+            )
+            i += 1
+        else:
+            repaired.append(msg)
+            i += 1
+
+    return repaired
 
 
 # ============== Provider 推断 ==============
