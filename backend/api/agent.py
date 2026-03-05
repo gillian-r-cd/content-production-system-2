@@ -1167,9 +1167,14 @@ async def stream_chat(
                                 }
                                 yield sse_event(card_sse)
                                 # 收集卡片数据用于持久化到 message_metadata（刷新后可恢复）
+                                # ===== 关键修复：同时持久化操作数据，使卡片在后端重启后仍可应用 =====
+                                _card_id = result.get("id")
+                                from core.agent_tools import PENDING_SUGGESTIONS as _PS_ref
+                                _full_card = _PS_ref.get(_card_id, {})
                                 suggestion_cards_emitted.append({
-                                    "id": result.get("id"),
+                                    "id": _card_id,
                                     "target_field": result.get("target_field"),
+                                    "target_entity_id": result.get("target_entity_id") or _full_card.get("target_entity_id"),
                                     "summary": result.get("summary"),
                                     "reason": result.get("reason"),
                                     "diff_preview": result.get("diff_preview"),
@@ -1177,6 +1182,11 @@ async def stream_chat(
                                     "group_id": result.get("group_id"),
                                     "group_summary": result.get("group_summary"),
                                     "status": "pending",
+                                    # 操作数据（confirm-suggestion 需要）
+                                    "original_content": _full_card.get("original_content", ""),
+                                    "modified_content": _full_card.get("modified_content", ""),
+                                    "edits": _full_card.get("edits", []),
+                                    "card_type": _full_card.get("card_type", "anchor_edit"),
                                 })
                             else:
                                 # propose_edit 返回错误
@@ -1214,14 +1224,25 @@ async def stream_chat(
                                     "failed_count": result.get("failed_count", 0),
                                 }
                                 yield sse_event(card_sse)
+                                # ===== 关键修复：同时持久化操作数据（rewrite_field） =====
+                                _rw_card_id = result.get("id")
+                                _rw_full_card = _PS_ref.get(_rw_card_id, {})
                                 suggestion_cards_emitted.append({
-                                    "id": result.get("id"),
+                                    "id": _rw_card_id,
                                     "target_field": result.get("target_field"),
+                                    "target_entity_id": result.get("target_entity_id") or _rw_full_card.get("target_entity_id"),
                                     "summary": result.get("summary"),
                                     "reason": result.get("reason"),
                                     "diff_preview": result.get("diff_preview"),
                                     "edits_count": result.get("edits_count", 0),
+                                    "group_id": result.get("group_id"),
+                                    "group_summary": result.get("group_summary"),
                                     "status": "pending",
+                                    # 操作数据（confirm-suggestion 需要）
+                                    "original_content": _rw_full_card.get("original_content", ""),
+                                    "modified_content": _rw_full_card.get("modified_content", ""),
+                                    "edits": _rw_full_card.get("edits", []),
+                                    "card_type": _rw_full_card.get("card_type", "full_rewrite"),
                                 })
                             elif result.get("status") == "error":
                                 yield sse_event({
@@ -1597,6 +1618,48 @@ async def confirm_suggestion(
             if cdata.get("group_id") == suggestion_id:
                 cards_to_process.append((cid, cdata))
 
+    # ===== DB 回退：内存缓存丢失时（后端重启等），从 ChatMessage.message_metadata 恢复 =====
+    if not cards_to_process:
+        logger.info(
+            "[confirm-suggestion] 内存未找到 %s，尝试从 DB message_metadata 恢复...",
+            suggestion_id[:8],
+        )
+        recent_msgs = (
+            db.query(ChatMessage)
+            .filter(
+                ChatMessage.project_id == request.project_id,
+                ChatMessage.role == "assistant",
+            )
+            .order_by(ChatMessage.created_at.desc())
+            .limit(50)
+            .all()
+        )
+        for msg in recent_msgs:
+            if not msg.message_metadata:
+                continue
+            for card_meta in msg.message_metadata.get("suggestion_cards", []):
+                # 按 card_id 或 group_id 匹配
+                if card_meta.get("id") == suggestion_id:
+                    if card_meta.get("target_entity_id") and card_meta.get("modified_content") is not None:
+                        restored = {**card_meta, "message_id": msg.id}
+                        cards_to_process = [(suggestion_id, restored)]
+                        # 同时恢复到内存缓存
+                        PENDING_SUGGESTIONS[suggestion_id] = restored
+                        logger.info("[confirm-suggestion] 从 DB 恢复单卡: %s", suggestion_id[:8])
+                    break
+                if card_meta.get("group_id") == suggestion_id:
+                    if card_meta.get("target_entity_id") and card_meta.get("modified_content") is not None:
+                        cid = card_meta["id"]
+                        restored = {**card_meta, "message_id": msg.id}
+                        cards_to_process.append((cid, restored))
+                        PENDING_SUGGESTIONS[cid] = restored
+            if cards_to_process:
+                logger.info(
+                    "[confirm-suggestion] 从 DB 恢复 %d 张卡 (group %s)",
+                    len(cards_to_process), suggestion_id[:8],
+                )
+                break
+
     # --- undo / supersede: 仅持久化状态变更（不操作 DB 内容） ---
     # M6b T6b.2: 这些 action 不需要 PENDING_SUGGESTIONS 中的 edits/content 数据，
     # 只需要更新 message_metadata 中的 status 字段。
@@ -1633,11 +1696,15 @@ async def confirm_suggestion(
             message=f"已标记为 {new_status}",
         )
 
-    # --- accept / reject / partial 需要 PENDING_SUGGESTIONS 中的完整数据 ---
+    # --- accept / reject / partial 需要完整的 card 数据 ---
     if not cards_to_process:
         raise HTTPException(
             status_code=404,
-            detail=f"Suggestion {suggestion_id} not found (may have expired or already processed)",
+            detail=(
+                f"修改建议 {suggestion_id[:8]}... 未找到。"
+                "可能原因：后端重启后旧建议数据丢失，或建议已被处理。"
+                "请让 AI 重新生成修改建议。"
+            ),
         )
 
     # --- reject: 标记所有相关 card 为已拒绝 ---
