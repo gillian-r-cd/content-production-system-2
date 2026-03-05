@@ -383,9 +383,10 @@ async def _rewrite_field_impl(
 请直接输出修改后的完整内容，不要添加任何解释或前缀。"""
 
         # ⚠️ 传 config 给 LLM 调用，确保 astream_events 能捕获工具内 LLM 的流式 token
+        from core.llm import ainvoke_with_retry
         effective_model = resolve_model(model_override=getattr(entity, 'model_override', None))
         chat_model = get_chat_model(model=effective_model)
-        response = await chat_model.ainvoke([
+        response = await ainvoke_with_retry(chat_model, [
             SystemMessage(content=system_prompt),
             HumanMessage(content=f"请按要求修改「{field_name}」的内容。"),
         ], config=config)
@@ -541,9 +542,10 @@ async def _generate_field_impl(
         system_prompt = "\n\n".join(sections)
 
         # ⚠️ 传 config 给 LLM 调用，确保 astream_events 能捕获工具内 LLM 的流式 token
+        from core.llm import ainvoke_with_retry
         effective_model = resolve_model(model_override=getattr(entity, 'model_override', None))
         chat_model = get_chat_model(model=effective_model)
-        response = await chat_model.ainvoke([
+        response = await ainvoke_with_retry(chat_model, [
             SystemMessage(content=system_prompt),
             HumanMessage(content=f"请生成「{field_name}」的内容。"),
         ], config=config)
@@ -621,7 +623,8 @@ async def _query_field_impl(field_name: str, question: str, config: RunnableConf
         effective_model = resolve_model(use_mini=True)
         chat_model = get_chat_model(model=effective_model)
         # ⚠️ 传 config 给 LLM 调用
-        response = await chat_model.ainvoke([
+        from core.llm import ainvoke_with_retry
+        response = await ainvoke_with_retry(chat_model, [
             SystemMessage(content=f"你是内容分析助手。以下是内容块「{field_name}」的内容：\n\n{content[:4000]}"),
             HumanMessage(content=question),
         ], config=config)

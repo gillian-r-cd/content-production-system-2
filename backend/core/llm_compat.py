@@ -1,7 +1,7 @@
 # backend/core/llm_compat.py
 # 功能: LLM Provider 兼容性工具函数 + 模型选择覆盖链
 # 主要导出: normalize_content, get_stop_reason, get_model_name, sanitize_messages, resolve_model
-# 设计: 屏蔽 OpenAI / Anthropic 返回值差异，让下游代码无需感知 Provider；
+# 设计: 屏蔽 OpenAI / Anthropic / Google 返回值差异，让下游代码无需感知 Provider；
 #        resolve_model() 实现 "内容块覆盖 → 用户全局默认 → .env" 三级回退链
 
 """
@@ -91,6 +91,10 @@ def get_model_name(mini: bool = False) -> str:
         if mini:
             return settings.anthropic_mini_model or "claude-sonnet-4-6"
         return settings.anthropic_model or "claude-opus-4-6"
+    elif provider == "google":
+        if mini:
+            return settings.google_mini_model or "gemini-3-flash-preview"
+        return settings.google_model or "gemini-3.1-pro-preview"
     else:
         if mini:
             return settings.openai_mini_model or "gpt-4o-mini"
@@ -204,9 +208,11 @@ def _repair_tool_pairs(messages: List[BaseMessage]) -> List[BaseMessage]:
 # ============== Provider 推断 ==============
 
 def _infer_provider(model: str) -> str:
-    """根据模型名前缀推断 provider。claude-* → anthropic，其余 → openai"""
+    """根据模型名前缀推断 provider。claude-* → anthropic，gemini-* → google，其余 → openai"""
     if model and model.startswith("claude-"):
         return "anthropic"
+    if model and model.startswith("gemini-"):
+        return "google"
     return "openai"
 
 

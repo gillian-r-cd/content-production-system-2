@@ -57,9 +57,10 @@ async def generate_field(
         ]
         
         # 按覆盖链解析模型
+        from core.llm import ainvoke_with_retry
         effective_model = resolve_model(model_override=model or getattr(field, 'model_override', None))
         chat_model = get_chat_model(model=effective_model, temperature=temperature)
-        response = await chat_model.ainvoke(messages)
+        response = await ainvoke_with_retry(chat_model, messages)
         
         return FieldGenerationResult(
             field_id=field.id,
@@ -101,9 +102,10 @@ async def generate_field_stream(
         HumanMessage(content=f"请生成「{field.name}」的内容。"),
     ]
     
+    from core.llm import astream_with_retry
     effective_model = resolve_model(model_override=model or getattr(field, 'model_override', None))
     chat_model = get_chat_model(model=effective_model, temperature=temperature)
-    async for chunk in chat_model.astream(messages):
+    async for chunk in astream_with_retry(chat_model, messages):
         piece = normalize_content(chunk.content)
         if piece:
             yield piece

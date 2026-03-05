@@ -1,7 +1,7 @@
 # backend/core/models/generation_log.py
 # 功能: 生成日志模型，记录每次LLM调用
 # 主要类: GenerationLog
-# 数据结构: 存储输入输出、token数、耗时、成本
+# 数据结构: 存储输入输出、token数、耗时、成本；calculate_cost 支持 OpenAI/Anthropic/Google 定价
 
 """
 生成日志模型
@@ -90,6 +90,10 @@ class GenerationLog(BaseModel):
             "claude-sonnet-4-6": {"input": 3.00, "output": 15.00},
             "claude-sonnet-4-5": {"input": 3.00, "output": 15.00},
             "claude-haiku-3-5": {"input": 0.80, "output": 4.00},
+            # Google (Gemini, 2026 pricing per 1M tokens)
+            "gemini-3.1-pro-preview": {"input": 1.25, "output": 10.00},
+            "gemini-3-pro-preview": {"input": 1.25, "output": 10.00},
+            "gemini-3-flash-preview": {"input": 0.15, "output": 0.60},
         }
 
         if model not in pricing:

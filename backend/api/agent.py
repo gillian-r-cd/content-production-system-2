@@ -1390,9 +1390,10 @@ async def stream_chat(
             import traceback
             tb = traceback.format_exc()
             logger.error("[stream] EXCEPTION: %s\n%s", e, tb)
+            from core.llm import parse_llm_error
             yield sse_event({
                 "type": "error",
-                "error": str(e),
+                "error": parse_llm_error(e),
                 "traceback": tb[:500],
             })
 

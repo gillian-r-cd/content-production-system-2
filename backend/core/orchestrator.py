@@ -595,8 +595,9 @@ async def agent_node(state: AgentState, config: RunnableConfig) -> dict:
 
     # LLM 调用（bind_tools 让 LLM 自动决定是否调用工具）
     # ⚠️ 必须传 config，否则 astream_events 的 callback 链断裂，无法流式输出
+    from core.llm import ainvoke_with_retry
     llm_with_tools = llm.bind_tools(AGENT_TOOLS)
-    response = await llm_with_tools.ainvoke(messages_with_system, config=config)
+    response = await ainvoke_with_retry(llm_with_tools, messages_with_system, config=config)
 
     has_tool_calls = hasattr(response, "tool_calls") and response.tool_calls
     _content = normalize_content(response.content)

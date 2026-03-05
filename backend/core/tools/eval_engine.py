@@ -96,9 +96,10 @@ async def _call_llm(
         HumanMessage(content=user_message),
     ]
     
+    from core.llm import ainvoke_with_retry
     start_time = time.time()
     llm_t = get_chat_model(temperature=temperature)  # 自动选择 provider 对应的默认模型
-    response = await llm_t.ainvoke(messages)
+    response = await ainvoke_with_retry(llm_t, messages)
     duration_ms = int((time.time() - start_time) * 1000)
     
     # 提取 token 用量（如可用）
@@ -127,9 +128,10 @@ async def _call_llm_multi(
     temperature: float = 0.6,
 ) -> Tuple[str, LLMCall]:
     """多消息版本的 LLM 调用（用于多轮对话）"""
+    from core.llm import ainvoke_with_retry
     start_time = time.time()
     llm_t = get_chat_model(temperature=temperature)  # 自动选择 provider 对应的默认模型
-    response = await llm_t.ainvoke(messages)
+    response = await ainvoke_with_retry(llm_t, messages)
     duration_ms = int((time.time() - start_time) * 1000)
     
     # 提取完整对话历史用于日志

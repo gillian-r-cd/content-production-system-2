@@ -18,7 +18,7 @@ from core.llm_compat import resolve_model
 router = APIRouter(prefix="/api/models", tags=["models"])
 
 
-# 已验证可用的模型列表（2026-02-26 API 测试确认）
+# 已验证可用的模型列表（2026-03-03 API 测试确认）
 AVAILABLE_MODELS = [
     # OpenAI
     {"id": "gpt-5.1", "provider": "openai", "name": "GPT-5.1", "tier": "main"},
@@ -28,6 +28,10 @@ AVAILABLE_MODELS = [
     {"id": "claude-opus-4-6", "provider": "anthropic", "name": "Claude Opus 4.6", "tier": "main"},
     {"id": "claude-sonnet-4-6", "provider": "anthropic", "name": "Claude Sonnet 4.6", "tier": "main"},
     {"id": "claude-sonnet-4-5", "provider": "anthropic", "name": "Claude Sonnet 4.5", "tier": "mini"},
+    # Google (Gemini 3.x)
+    {"id": "gemini-3.1-pro-preview", "provider": "google", "name": "Gemini 3.1 Pro", "tier": "main"},
+    {"id": "gemini-3-pro-preview", "provider": "google", "name": "Gemini 3 Pro", "tier": "main"},
+    {"id": "gemini-3-flash-preview", "provider": "google", "name": "Gemini 3 Flash", "tier": "mini"},
 ]
 
 
@@ -42,11 +46,14 @@ def list_available_models():
 
     has_openai = bool(settings.openai_api_key)
     has_anthropic = bool(settings.anthropic_api_key)
+    has_google = bool(settings.google_api_key)
 
     for m in AVAILABLE_MODELS:
         if m["provider"] == "openai" and has_openai:
             models.append(m)
         elif m["provider"] == "anthropic" and has_anthropic:
+            models.append(m)
+        elif m["provider"] == "google" and has_google:
             models.append(m)
 
     return {

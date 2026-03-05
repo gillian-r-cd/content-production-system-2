@@ -990,7 +990,8 @@ async def generate_block_content(
             SystemMessage(content=system_prompt),
             HumanMessage(content=f"请生成「{block.name}」的内容。"),
         ]
-        response = await chat_model.ainvoke(messages)
+        from core.llm import ainvoke_with_retry
+        response = await ainvoke_with_retry(chat_model, messages)
         
         gen_content = normalize_content(response.content)
 
@@ -1038,7 +1039,8 @@ async def generate_block_content(
     except Exception as e:
         block.status = "failed"
         db.commit()
-        raise HTTPException(status_code=500, detail=str(e))
+        from core.llm import parse_llm_error
+        raise HTTPException(status_code=500, detail=parse_llm_error(e))
 
 
 @router.post("/{block_id}/generate/stream")
@@ -1131,7 +1133,8 @@ async def generate_block_content_stream(
                 HumanMessage(content=f"请生成「{block.name}」的内容。"),
             ]
             
-            async for chunk in chat_model.astream(messages):
+            from core.llm import astream_with_retry
+            async for chunk in astream_with_retry(chat_model, messages):
                 piece = normalize_content(chunk.content)
                 if piece:
                     content_parts.append(piece)
@@ -1192,7 +1195,9 @@ async def generate_block_content_stream(
         except Exception as e:
             block.status = "failed"
             db.commit()
-            error_data = json.dumps({"error": str(e)}, ensure_ascii=False)
+            from core.llm import parse_llm_error
+            friendly_msg = parse_llm_error(e)
+            error_data = json.dumps({"error": friendly_msg}, ensure_ascii=False)
             yield f"data: {error_data}\n\n"
             
         except BaseException:
@@ -1694,9 +1699,10 @@ async def generate_ai_prompt(
     ]
     
     try:
-        response = await chat_model.ainvoke(messages)
+        from core.llm import ainvoke_with_retry, parse_llm_error
+        response = await ainvoke_with_retry(chat_model, messages)
     except Exception as llm_err:
-        raise HTTPException(status_code=502, detail=f"LLM 调用失败: {str(llm_err)[:200]}")
+        raise HTTPException(status_code=502, detail=parse_llm_error(llm_err))
     
     generated_prompt = normalize_content(response.content).strip()
     
