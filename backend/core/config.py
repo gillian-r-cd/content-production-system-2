@@ -15,7 +15,7 @@ from functools import lru_cache
 class Settings(BaseSettings):
     """应用配置"""
 
-    # LLM Provider: "openai" | "anthropic"
+    # LLM Provider: "openai" | "anthropic" | "google"
     llm_provider: str = "openai"
 
     # OpenAI
@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-opus-4-6"
     anthropic_mini_model: str = "claude-sonnet-4-6"
+
+    # Google (Gemini)
+    google_api_key: str = ""
+    google_model: str = "gemini-3.1-pro-preview"
+    google_mini_model: str = "gemini-3-flash-preview"
+    google_thinking_budget: int = -1  # Gemini 3.x thinking token 预算。-1=模型默认，0=关闭思考（更快首token）
 
     # Tavily Search API (DeepResearch)
     tavily_api_key: str = ""

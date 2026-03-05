@@ -2,9 +2,10 @@
 # 复制此文件为 .env 并填写实际值
 
 # ========== LLM Provider ==========
-# 选择 LLM 供应商: "openai" | "anthropic"
+# 选择 LLM 供应商: "openai" | "anthropic" | "google"
 # - openai: 使用 OpenAI 直连或 OpenRouter（OpenAI 兼容接口）
 # - anthropic: 使用 Anthropic 原生 API
+# - google: 使用 Google AI 直连（Gemini 系列）
 LLM_PROVIDER=openai
 
 # ========== 方式一: Anthropic 原生 API ==========
@@ -28,6 +29,17 @@ LLM_PROVIDER=openai
 #
 # 注意: 通过 OpenRouter 使用时，模型名需用 OpenRouter 格式 (provider/model)
 # 完整模型列表: https://openrouter.ai/models
+
+# ========== 方式四: Google AI 直连 (Gemini) ==========
+# LLM_PROVIDER=google
+# GOOGLE_API_KEY=AIzaSy-xxxx
+# GOOGLE_MODEL=gemini-3.1-pro-preview
+# GOOGLE_MINI_MODEL=gemini-3-flash-preview
+# GOOGLE_THINKING_BUDGET=-1    # Gemini 3.x thinking 预算: -1=模型默认, 0=关闭(首token更快), 1024~8192=控制思考量
+#
+# 注意: Google AI Studio 免费层可用（有速率限制）
+# API Key 申请: https://aistudio.google.com/app/apikey
+# 完整模型列表: https://ai.google.dev/models
 
 # Agent 核心依赖 tool calling，请选择支持 tool use 的模型
 
