@@ -8,6 +8,7 @@
 使用 pydantic-settings 从 .env 文件加载配置
 """
 
+from typing import Optional
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 
@@ -36,6 +37,9 @@ class Settings(BaseSettings):
     google_mini_model: str = "gemini-3-flash-preview"
     google_thinking_budget: int = -1  # Gemini 3.x thinking token 预算。-1=模型默认，0=关闭思考（更快首token）
 
+    # LLM 超时（秒）— 思考模型（Gemini 3.1 等）建议 300+
+    llm_timeout: int = 300
+
     # Tavily Search API (DeepResearch)
     tavily_api_key: str = ""
 
@@ -62,4 +66,47 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
+
+
+# ============== API Key 校验工具 ==============
+
+_PLACEHOLDER_KEYS = {"sk-xxxx", "sk-ant-xxxx", "AIzaSy-xxxx", "", "xxxx"}
+
+
+def validate_llm_config() -> Optional[str]:
+    """
+    校验当前 LLM 配置是否可用。
+
+    Returns:
+        None  — 配置正常
+        str   — 人类可读的错误说明（可直接发给前端）
+    """
+    provider = (settings.llm_provider or "openai").lower().strip()
+
+    if provider == "anthropic":
+        key = (settings.anthropic_api_key or "").strip()
+        if not key or key in _PLACEHOLDER_KEYS:
+            return (
+                f"Anthropic API Key 未配置。"
+                f"请编辑 backend/.env，将 ANTHROPIC_API_KEY 设为真实密钥"
+                f"（当前值: '{key or '(空)'}' ）。"
+            )
+    elif provider == "google":
+        key = (settings.google_api_key or "").strip()
+        if not key or key in _PLACEHOLDER_KEYS:
+            return (
+                f"Google API Key 未配置。"
+                f"请编辑 backend/.env，将 GOOGLE_API_KEY 设为真实密钥"
+                f"（当前值: '{key or '(空)'}' ）。"
+            )
+    else:
+        key = (settings.openai_api_key or "").strip()
+        if not key or key in _PLACEHOLDER_KEYS:
+            return (
+                f"OpenAI API Key 未配置。"
+                f"请编辑 backend/.env，将 OPENAI_API_KEY 设为真实密钥"
+                f"（当前值: '{key or '(空)'}' ）。"
+            )
+
+    return None
 

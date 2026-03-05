@@ -70,6 +70,9 @@ def get_chat_model(
     else:
         provider = (settings.llm_provider or "openai").lower().strip()
 
+    # 统一超时配置（从 .env 读取，默认 300s，思考模型友好）
+    timeout = float(settings.llm_timeout or 300)
+
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
@@ -78,7 +81,7 @@ def get_chat_model(
             api_key=settings.anthropic_api_key,
             temperature=temperature,
             streaming=streaming,
-            timeout=120.0,
+            timeout=timeout,
             max_retries=3,
             max_tokens=16384,
             **kwargs,
@@ -101,7 +104,7 @@ def get_chat_model(
             google_api_key=settings.google_api_key,
             temperature=temperature,
             streaming=streaming,
-            timeout=120.0,
+            timeout=timeout,
             max_retries=3,
             max_output_tokens=16384,
             **thinking_kwargs,
@@ -118,7 +121,7 @@ def get_chat_model(
             organization=settings.openai_org_id or None,
             temperature=temperature,
             streaming=streaming,
-            timeout=120.0,
+            timeout=timeout,
             max_retries=3,
             max_tokens=16384,
             **kwargs,
@@ -150,9 +153,9 @@ _RETRYABLE_PATTERNS = [
     "api_error",            # Anthropic error type = api_error（内部错误）
     "UNAVAILABLE",          # Google 503
     "RESOURCE_EXHAUSTED",   # Google quota
-    "DeadlineExceeded",
-    "timeout",
-    "timed out",
+    # 注意：timeout / timed out / DeadlineExceeded 已从可重试列表中移除！
+    # 原因：思考模型（Gemini 3.1 等）的超时通常不是瞬态问题，
+    # 重试只会让用户等 4×timeout ≈ 8 分钟，应该快速失败并提示用户。
 ]
 
 
@@ -174,9 +177,39 @@ def parse_llm_error(error: Exception) -> str:
     将 LLM API 原始异常转为用户友好的中文错误信息。
     返回的字符串可直接发给前端展示。
     """
-    err_str = str(error)
+    err_str = str(error).strip()
+
+    # ===== 补充诊断：当 str(error) 为空时，从异常属性中提取有用信息 =====
+    if not err_str:
+        # 许多 LLM SDK 的异常有 status_code / body / message 等属性
+        parts = []
+        err_type = type(error).__name__
+        parts.append(err_type)
+
+        status = getattr(error, "status_code", None) or getattr(error, "status", None)
+        if status:
+            parts.append(f"HTTP {status}")
+
+        body = getattr(error, "body", None)
+        if body:
+            if isinstance(body, dict):
+                parts.append(body.get("message", "") or body.get("error", ""))
+            else:
+                parts.append(str(body)[:200])
+
+        msg_attr = getattr(error, "message", None)
+        if msg_attr:
+            parts.append(str(msg_attr))
+
+        err_str = " | ".join(p for p in parts if p)
+
+    # ===== 如果仍然为空，给出最有可能的诊断 =====
+    if not err_str:
+        err_str = f"(异常类型: {type(error).__name__})"
+
     err_lower = err_str.lower()
 
+    # ===== 常见错误模式匹配 =====
     if "overloaded" in err_lower or "529" in err_lower:
         return "AI 服务当前过载，请等待 1-2 分钟后重试。"
     if "rate_limit" in err_lower or "rate limit" in err_lower or "429" in err_lower or "too many requests" in err_lower:
@@ -185,14 +218,20 @@ def parse_llm_error(error: Exception) -> str:
         return "AI 服务暂时不可用，请稍后重试。"
     if "timeout" in err_lower or "timed out" in err_lower or "deadline" in err_lower:
         return "AI 服务响应超时，请缩短输入内容后重试。"
-    if "invalid_api_key" in err_lower or "authentication" in err_lower or "401" in err_lower:
-        return "API 密钥无效，请检查 .env 中的 API Key 配置。"
+    if "invalid_api_key" in err_lower or "authentication" in err_lower or "401" in err_lower or "incorrect api key" in err_lower:
+        return "API 密钥无效，请检查 backend/.env 中的 API Key 配置。"
+    if "api key" in err_lower and ("not" in err_lower or "miss" in err_lower or "empty" in err_lower or "invalid" in err_lower):
+        return "API 密钥无效或未配置，请检查 backend/.env 中的 API Key 配置。"
+    if "connection" in err_lower or "connect" in err_lower or "resolve" in err_lower or "refused" in err_lower:
+        return f"无法连接到 AI 服务（网络错误），请检查网络连接和 API Base URL 配置。({err_str[:100]})"
     if "insufficient_quota" in err_lower or "billing" in err_lower or "402" in err_lower:
         return "API 额度不足，请检查账户余额。"
     if "context_length" in err_lower or "too long" in err_lower or "max.*token" in err_lower:
         return "输入内容过长，超出模型上下文窗口，请精简内容后重试。"
     if "content_policy" in err_lower or "safety" in err_lower or "blocked" in err_lower:
         return "内容被 AI 安全策略拦截，请调整输入内容。"
+    if "not found" in err_lower and ("model" in err_lower or "404" in err_lower):
+        return f"模型不存在或不可用，请检查 backend/.env 中的模型名称配置。({err_str[:100]})"
 
     # 兜底：去除 JSON 格式噪音，保留核心错误信息
     # 尝试提取 'message' 字段

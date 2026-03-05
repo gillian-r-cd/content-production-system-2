@@ -908,6 +908,13 @@ async def generate_block_content(
     db: Session = Depends(get_db),
 ):
     """生成内容块内容"""
+    from core.config import validate_llm_config
+
+    # ===== 前置校验：API Key 是否已正确配置 =====
+    config_error = validate_llm_config()
+    if config_error:
+        raise HTTPException(status_code=422, detail=config_error)
+
     block = db.query(ContentBlock).filter(
         ContentBlock.id == block_id,
         ContentBlock.deleted_at == None,
@@ -1051,7 +1058,14 @@ async def generate_block_content_stream(
     """流式生成内容块内容"""
     import json
     import time
+    import traceback
     from fastapi.responses import StreamingResponse
+    from core.config import validate_llm_config
+    
+    # ===== 前置校验：API Key 是否已正确配置 =====
+    config_error = validate_llm_config()
+    if config_error:
+        raise HTTPException(status_code=422, detail=config_error)
     
     block = db.query(ContentBlock).filter(
         ContentBlock.id == block_id,
@@ -1195,6 +1209,11 @@ async def generate_block_content_stream(
         except Exception as e:
             block.status = "failed"
             db.commit()
+            # 详细日志：记录完整异常信息便于排查
+            logger.error(
+                "[STREAM] 生成失败: block=%s, error_type=%s, error=%s\n%s",
+                block.name, type(e).__name__, e, traceback.format_exc(),
+            )
             from core.llm import parse_llm_error
             friendly_msg = parse_llm_error(e)
             error_data = json.dumps({"error": friendly_msg}, ensure_ascii=False)

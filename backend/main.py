@@ -260,6 +260,35 @@ def _dedupe_eval_anchor_blocks_on_startup():
         )
 
 
+def _check_llm_config_on_startup():
+    """
+    启动时检查 LLM 配置，在日志中给出明确警告。
+    不阻止启动（允许先启动再配置），但让用户立刻看到问题。
+    """
+    import os
+    startup_logger = logging.getLogger("startup")
+
+    # 检查 .env 文件是否存在
+    env_path = os.path.join(os.getcwd(), ".env")
+    if not os.path.exists(env_path):
+        startup_logger.warning(
+            "⚠️  未找到 .env 文件（当前目录: %s）。"
+            "请确保在 backend/ 目录下启动，或将 .env 放到 %s",
+            os.getcwd(), env_path,
+        )
+
+    from core.config import validate_llm_config
+    config_error = validate_llm_config()
+    if config_error:
+        startup_logger.warning("⚠️  LLM 配置问题: %s", config_error)
+        startup_logger.warning(
+            "⚠️  AI 生成功能将不可用，请先正确配置 backend/.env 中的 API Key。"
+        )
+    else:
+        provider = (settings.llm_provider or "openai").lower().strip()
+        startup_logger.info("✅ LLM 配置检查通过 (provider: %s)", provider)
+
+
 def create_app() -> FastAPI:
     """创建FastAPI应用实例"""
     app = FastAPI(
@@ -333,6 +362,8 @@ def create_app() -> FastAPI:
         _sync_eval_template_on_startup()
         _cleanup_legacy_eval_templates_on_startup()
         _dedupe_eval_anchor_blocks_on_startup()
+        # ===== 启动时校验 LLM 配置，提前暴露 .env 问题 =====
+        _check_llm_config_on_startup()
 
     return app
 

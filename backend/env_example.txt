@@ -61,6 +61,12 @@ OPENAI_MINI_MODEL=gpt-4o-mini
 # 可选: API Base URL (OpenRouter 填 https://openrouter.ai/api/v1)
 OPENAI_API_BASE=
 
+# ========== LLM 超时 ==========
+# 单次 LLM 调用的超时时间（秒），默认 300
+# 思考模型（Gemini 3.1 等）复杂 prompt 可能需要 2-5 分钟，建议 300+
+# 如果频繁超时可以增大到 600
+# LLM_TIMEOUT=300
+
 # ========== Tavily Search API (DeepResearch) ==========
 TAVILY_API_KEY=
 
