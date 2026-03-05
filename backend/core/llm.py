@@ -86,10 +86,14 @@ def get_chat_model(
     elif provider == "google":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
-        # Gemini 3.x thinking 配置：-1 表示模型默认，0 表示关闭思考（更快首token）
+        # Gemini 3.x thinking 配置：
+        #   -1 = 模型默认（推荐，兼容所有 Gemini 模型）
+        #    0 = 关闭思考（仅部分模型支持，gemini-3.1-pro 等纯思考模型不支持）
+        #   >0 = 指定 thinking token 预算
+        # 安全策略: budget=0 时不传参（防止纯思考模型报错），让模型使用默认行为
         thinking_budget = settings.google_thinking_budget
         thinking_kwargs = {}
-        if thinking_budget >= 0:
+        if thinking_budget > 0:
             thinking_kwargs["thinking_budget"] = thinking_budget
 
         return ChatGoogleGenerativeAI(
