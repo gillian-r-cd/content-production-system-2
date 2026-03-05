@@ -7,7 +7,7 @@
 
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { settingsAPI } from "@/lib/api";
 
 // ---- 角色配色与标签 ----
@@ -196,14 +196,83 @@ function LogDetailModal({ log, onClose }: { log: LogItem; onClose: () => void })
   );
 }
 
+// ---- 下载工具函数 ----
+
+/** 将单条日志格式化为可读 JSON 对象 */
+function formatLogForDownload(log: LogItem) {
+  // 尝试解析 prompt_input 为结构化数据
+  let parsedInput: unknown = log.prompt_input;
+  if (log.prompt_input) {
+    try {
+      parsedInput = JSON.parse(log.prompt_input);
+    } catch {
+      // 保持原始字符串
+    }
+  }
+
+  return {
+    id: log.id,
+    created_at: log.created_at,
+    phase: log.phase,
+    operation: log.operation,
+    model: log.model,
+    tokens_in: log.tokens_in || 0,
+    tokens_out: log.tokens_out || 0,
+    total_tokens: (log.tokens_in || 0) + (log.tokens_out || 0),
+    duration_ms: log.duration_ms || 0,
+    cost: log.cost || 0,
+    status: log.error_message ? "failed" : "success",
+    error_message: log.error_message || null,
+    prompt_input: parsedInput,
+    prompt_output: log.prompt_output || null,
+  };
+}
+
+/** 触发浏览器下载 JSON 文件 */
+function downloadJSON(data: unknown, filename: string) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 // ---- 主组件 ----
 export function LogsSection({ logs, onRefresh }: { logs: LogItem[]; onRefresh?: () => void }) {
   const [selectedLog, setSelectedLog] = useState<LogItem | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  // 全选/反选
+  const allSelected = logs.length > 0 && selectedIds.size === logs.length;
+  const someSelected = selectedIds.size > 0 && selectedIds.size < logs.length;
+
+  const toggleSelectAll = useCallback(() => {
+    if (allSelected) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(logs.map((l) => l.id)));
+    }
+  }, [allSelected, logs]);
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }, []);
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
     await onRefresh?.();
+    setSelectedIds(new Set()); // 刷新后清除选中
     setIsRefreshing(false);
   };
 
@@ -211,17 +280,34 @@ export function LogsSection({ logs, onRefresh }: { logs: LogItem[]; onRefresh?: 
     try {
       const data = await settingsAPI.exportLogs();
       if (format === "json") {
-        const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `logs_${new Date().toISOString().split("T")[0]}.json`;
-        a.click();
+        downloadJSON(data, `logs_${new Date().toISOString().split("T")[0]}.json`);
       }
     } catch {
       alert("导出失败");
     }
   };
+
+  // 单项下载
+  const handleDownloadSingle = useCallback((log: LogItem) => {
+    const data = formatLogForDownload(log);
+    const ts = (log.created_at || "").replace(/[:.]/g, "-").slice(0, 19);
+    const op = log.operation || "log";
+    downloadJSON(data, `log_${op}_${ts}.json`);
+  }, []);
+
+  // 批量下载选中项
+  const handleDownloadSelected = useCallback(() => {
+    if (selectedIds.size === 0) return;
+    const selectedLogs = logs.filter((l) => selectedIds.has(l.id));
+    const data = {
+      exported_at: new Date().toISOString(),
+      count: selectedLogs.length,
+      total_cost: selectedLogs.reduce((sum, l) => sum + (l.cost || 0), 0),
+      total_tokens: selectedLogs.reduce((sum, l) => sum + (l.tokens_in || 0) + (l.tokens_out || 0), 0),
+      logs: selectedLogs.map(formatLogForDownload),
+    };
+    downloadJSON(data, `logs_batch_${selectedLogs.length}条_${new Date().toISOString().split("T")[0]}.json`);
+  }, [logs, selectedIds]);
 
   return (
     <div>
@@ -230,7 +316,16 @@ export function LogsSection({ logs, onRefresh }: { logs: LogItem[]; onRefresh?: 
           <h2 className="text-xl font-semibold text-zinc-100">调试日志</h2>
           <p className="text-sm text-zinc-500 mt-1">查看每次 AI 调用的详细信息</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 items-center">
+          {/* 批量下载按钮 — 仅选中时显示 */}
+          {selectedIds.size > 0 && (
+            <button
+              onClick={handleDownloadSelected}
+              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 rounded-lg text-white transition-colors text-sm"
+            >
+              ⬇ 下载选中 ({selectedIds.size})
+            </button>
+          )}
           <button
             onClick={handleRefresh}
             disabled={isRefreshing}
@@ -248,6 +343,15 @@ export function LogsSection({ logs, onRefresh }: { logs: LogItem[]; onRefresh?: 
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-surface-3">
+              <th className="py-3 px-2 w-8">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  ref={(el) => { if (el) el.indeterminate = someSelected; }}
+                  onChange={toggleSelectAll}
+                  className="rounded border-zinc-600 bg-surface-2 text-brand-500 focus:ring-brand-500 cursor-pointer"
+                />
+              </th>
               <th className="text-left py-3 px-3 text-zinc-500">时间</th>
               <th className="text-left py-3 px-3 text-zinc-500">组</th>
               <th className="text-left py-3 px-3 text-zinc-500">操作</th>
@@ -261,11 +365,19 @@ export function LogsSection({ logs, onRefresh }: { logs: LogItem[]; onRefresh?: 
           <tbody>
             {logs.length === 0 ? (
               <tr>
-                <td colSpan={8} className="py-12 text-center text-zinc-500">暂无日志记录</td>
+                <td colSpan={9} className="py-12 text-center text-zinc-500">暂无日志记录</td>
               </tr>
             ) : (
               logs.map((log) => (
-                <tr key={log.id} className="border-b border-surface-3/50 hover:bg-surface-2">
+                <tr key={log.id} className={`border-b border-surface-3/50 hover:bg-surface-2 ${selectedIds.has(log.id) ? "bg-brand-600/5" : ""}`}>
+                  <td className="py-3 px-2">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(log.id)}
+                      onChange={() => toggleSelect(log.id)}
+                      className="rounded border-zinc-600 bg-surface-2 text-brand-500 focus:ring-brand-500 cursor-pointer"
+                    />
+                  </td>
                   <td className="py-3 px-3 text-zinc-400">{log.created_at?.slice(0, 19)}</td>
                   <td className="py-3 px-3 text-zinc-300">{log.phase}</td>
                   <td className="py-3 px-3 text-zinc-300">{log.operation}</td>
@@ -273,7 +385,14 @@ export function LogsSection({ logs, onRefresh }: { logs: LogItem[]; onRefresh?: 
                   <td className="py-3 px-3 text-right text-zinc-400">{(log.tokens_in || 0) + (log.tokens_out || 0)}</td>
                   <td className="py-3 px-3 text-right text-zinc-400">{log.duration_ms}ms</td>
                   <td className="py-3 px-3 text-right text-green-400">${(log.cost || 0).toFixed(4)}</td>
-                  <td className="py-3 px-3">
+                  <td className="py-3 px-3 flex items-center gap-2">
+                    <button
+                      onClick={() => handleDownloadSingle(log)}
+                      className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+                      title="下载此条日志"
+                    >
+                      ⬇
+                    </button>
                     <button onClick={() => setSelectedLog(log)} className="text-xs text-brand-400 hover:text-brand-300">
                       详情
                     </button>
