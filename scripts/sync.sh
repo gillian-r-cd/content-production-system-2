@@ -155,6 +155,14 @@ check_env() {
             echo -e "${YELLOW}  请编辑 backend/.env 填入真实的 API Key${NC}"
             exit 1
         fi
+    elif [ "$PROVIDER" = "google" ]; then
+        local KEY=$(grep -E "^GOOGLE_API_KEY=" "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' | tr -d '"' | tr -d "'")
+        if [ -z "$KEY" ] || [ "$KEY" = "xxxx" ]; then
+            echo -e "${RED}❌ 错误: backend/.env 中的 GOOGLE_API_KEY 未配置！${NC}"
+            echo -e "${YELLOW}  当前值: ${KEY:-（空）}${NC}"
+            echo -e "${YELLOW}  请编辑 backend/.env 填入真实的 API Key${NC}"
+            exit 1
+        fi
     else
         local KEY=$(grep -E "^OPENAI_API_KEY=" "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' | tr -d '"' | tr -d "'")
         if [ -z "$KEY" ] || [ "$KEY" = "sk-xxxx" ]; then

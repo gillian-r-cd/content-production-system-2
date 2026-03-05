@@ -122,7 +122,7 @@ PROVIDER_REGISTRY = {
     # 未来扩展：
     # "gemini": {
     #     "class": "langchain_google_genai.ChatGoogleGenerativeAI",
-    #     "default_model": "gemini-2.0-flash",
+    #     "default_model": "gemini-3.1-pro-preview",
     #     "env_key": "GOOGLE_API_KEY",
     # },
     # "qwen": {
