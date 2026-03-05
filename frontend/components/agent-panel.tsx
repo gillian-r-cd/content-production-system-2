@@ -407,6 +407,9 @@ export function AgentPanel({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // 输入法组合中（如中文/日文候选确认）不处理任何快捷键
+    if (e.nativeEvent.isComposing) return;
+
     if (showMentions && filteredMentionItems.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -429,7 +432,8 @@ export function AgentPanel({
       }
     }
 
-    if (e.key === "Enter" && !e.shiftKey && !showMentions) {
+    // Cmd/Ctrl+Enter 发送；纯 Enter 换行（默认行为，无需处理）
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !showMentions) {
       e.preventDefault();
       handleSend();
     }
@@ -1611,12 +1615,12 @@ export function AgentPanel({
               onKeyDown={handleKeyDown}
               placeholder={projectId ? `输入消息... 使用 @ 引用内容块${mentionItems.length > 0 ? ` (${mentionItems.length}个可用)` : ""}` : "请先选择项目"}
               disabled={!projectId || !activeConversationId || sending}
-              rows={1}
+              rows={2}
               className={cn(
-                "flex-1 px-4 py-2 bg-surface-2 border border-surface-3 text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:opacity-50 resize-none overflow-hidden",
+                "flex-1 px-4 py-2 bg-surface-2 border border-surface-3 text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:opacity-50 resize-none overflow-y-auto",
                 followUpTarget ? "rounded-b-lg rounded-t-none" : "rounded-lg"
               )}
-              style={{ minHeight: "40px", maxHeight: "160px" }}
+              style={{ minHeight: "56px", maxHeight: "160px" }}
             />
             {sending ? (
               <button
@@ -1631,9 +1635,11 @@ export function AgentPanel({
               <button
                 onClick={() => handleSend()}
                 disabled={!projectId || !activeConversationId || !input.trim()}
-                className="px-4 py-2 bg-brand-600 hover:bg-brand-700 disabled:bg-surface-3 disabled:cursor-not-allowed rounded-lg transition-colors"
+                className="px-4 py-2 bg-brand-600 hover:bg-brand-700 disabled:bg-surface-3 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center gap-1.5"
+                title="发送消息 (⌘/Ctrl+Enter)"
               >
                 发送
+                <kbd className="text-[10px] opacity-60 font-sans">⌘↵</kbd>
               </button>
             )}
           </div>
@@ -1683,7 +1689,6 @@ function MessageBubble({
   onCopy,
 }: MessageBubbleProps) {
   const isUser = message.role === "user";
-  const [showActions, setShowActions] = useState(false);
 
   // 渲染用户消息（高亮 @ 引用）
   const renderUserContent = (content: string) => {
@@ -1751,9 +1756,7 @@ function MessageBubble({
 
   return (
     <div
-      className={cn("flex group", isUser ? "justify-end" : "justify-start")}
-      onMouseEnter={() => setShowActions(true)}
-      onMouseLeave={() => setShowActions(false)}
+      className={cn("flex group/msg", isUser ? "justify-end" : "justify-start")}
     >
       <div className="relative max-w-[85%]">
         {/* 消息气泡 */}
@@ -1783,7 +1786,7 @@ function MessageBubble({
             </div>
           ) : (
             <>
-              <div className="text-sm">
+              <div className={cn("text-sm", isUser && "whitespace-pre-wrap")}>
                 {isUser ? renderUserContent(message.content) : renderAiContent(message.content)}
               </div>
               {message.is_edited && (
@@ -1804,11 +1807,12 @@ function MessageBubble({
           )}
         </div>
 
-        {/* 操作按钮 */}
-        {showActions && !isEditing && (
+        {/* 操作按钮 — 纯 CSS hover 控制显隐，避免 JS 状态重渲染导致文本选区丢失 */}
+        {!isEditing && (
           <div
             className={cn(
               "absolute top-0 flex gap-1 bg-surface-2 rounded-lg shadow-lg p-1 z-10",
+              "opacity-0 pointer-events-none group-hover/msg:opacity-100 group-hover/msg:pointer-events-auto transition-opacity",
               isUser ? "left-0 -translate-x-full -ml-2" : "right-0 translate-x-full ml-2"
             )}
           >
