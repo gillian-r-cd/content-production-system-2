@@ -195,28 +195,6 @@ export function ProgressPanel({
         </div>
       )}
 
-      {/* 分隔线 */}
-      <div className="my-6 border-t border-surface-3" />
-
-      {/* 快捷操作 */}
-      <div className="space-y-2">
-        <h3 className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-3">
-          快捷操作
-        </h3>
-        
-        <button className="w-full px-3 py-2 text-sm text-left text-zinc-400 hover:text-zinc-200 hover:bg-surface-3 rounded-lg transition-colors">
-          + 新建版本
-        </button>
-        
-        <button className="w-full px-3 py-2 text-sm text-left text-zinc-400 hover:text-zinc-200 hover:bg-surface-3 rounded-lg transition-colors">
-          查看历史版本
-        </button>
-        
-        <button className="w-full px-3 py-2 text-sm text-left text-zinc-400 hover:text-zinc-200 hover:bg-surface-3 rounded-lg transition-colors">
-          导出内容
-        </button>
-      </div>
-
     </div>
   );
 }

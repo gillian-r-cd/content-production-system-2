@@ -53,6 +53,7 @@ class ProjectResponse(BaseModel):
     name: str
     version: int
     version_note: str
+    parent_version_id: Optional[str] = None  # 父版本 ID，用于版本族谱分组
     creator_profile_id: Optional[str]
     current_phase: str
     phase_order: List[str]
@@ -714,18 +715,42 @@ def list_project_versions(
     project_id: str,
     db: Session = Depends(get_db),
 ):
-    """获取项目的所有版本"""
-    # 获取当前项目
+    """
+    获取项目的所有版本（沿 parent_version_id 链追溯版本族谱）
+
+    1. 从当前项目向上追溯到根版本（parent_version_id 为空的祖先）
+    2. 从根向下收集所有后代版本（BFS）
+    3. 按 version 降序返回
+    """
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    
-    # 获取所有相关版本（相同名称）
-    versions = db.query(Project).filter(
-        Project.name == project.name
-    ).order_by(Project.version.desc()).all()
-    
-    return [_project_to_response(p) for p in versions]
+
+    # 1. 向上追溯到根版本
+    root = project
+    visited_up = {root.id}
+    while root.parent_version_id:
+        parent = db.query(Project).filter(Project.id == root.parent_version_id).first()
+        if not parent or parent.id in visited_up:
+            break  # 防止循环引用
+        visited_up.add(parent.id)
+        root = parent
+
+    # 2. 从根向下 BFS 收集所有后代
+    all_versions = [root]
+    queue = [root.id]
+    visited = {root.id}
+    while queue:
+        pid = queue.pop(0)
+        children = db.query(Project).filter(Project.parent_version_id == pid).all()
+        for child in children:
+            if child.id not in visited:
+                visited.add(child.id)
+                all_versions.append(child)
+                queue.append(child.id)
+
+    all_versions.sort(key=lambda p: p.version, reverse=True)
+    return [_project_to_response(p) for p in all_versions]
 
 
 # ============== 项目导入导出 ==============
@@ -1564,6 +1589,7 @@ def _project_to_response(project: Project) -> ProjectResponse:
         name=project.name,
         version=project.version,
         version_note=project.version_note or "",
+        parent_version_id=project.parent_version_id,
         creator_profile_id=project.creator_profile_id,
         current_phase=project.current_phase,
         phase_order=project.phase_order if project.phase_order is not None else PROJECT_PHASES.copy(),

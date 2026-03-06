@@ -12,6 +12,7 @@ export interface Project {
   name: string;
   version: number;
   version_note: string;
+  parent_version_id: string | null;  // 父版本 ID，用于版本族谱分组
   creator_profile_id: string | null;
   current_phase: string;
   phase_order: string[];

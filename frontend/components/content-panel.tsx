@@ -23,6 +23,8 @@ interface ContentPanelProps {
   selectedBlock?: ContentBlock | null;
   allBlocks?: ContentBlock[];
   onFieldsChange?: () => void;
+  /** 版本创建后通知父组件刷新项目列表 */
+  onVersionCreated?: () => void;
   onPhaseAdvance?: () => void;
   onBlockSelect?: (block: ContentBlock) => void;
   /** M3: 将消息发送到 Agent 对话面板（Eval 诊断→Agent 修改桥接） */
@@ -35,6 +37,7 @@ export function ContentPanel({
   selectedBlock,
   allBlocks = [],
   onFieldsChange,
+  onVersionCreated,
   onPhaseAdvance,
   onBlockSelect,
   onSendToAgent,
@@ -85,6 +88,7 @@ export function ContentPanel({
             projectId={projectId}
             allBlocks={allBlocks}
             onUpdate={onFieldsChange}
+            onVersionCreated={onVersionCreated}
             onSendToAgent={onSendToAgent}
           />
         );
@@ -142,6 +146,7 @@ export function ContentPanel({
             projectId={projectId}
             allBlocks={allBlocks}
             onUpdate={onFieldsChange}
+            onVersionCreated={onVersionCreated}
             onSendToAgent={onSendToAgent}
           />
         );
@@ -387,6 +392,7 @@ export function ContentPanel({
         projectId={projectId}
         allBlocks={allBlocks}
         onUpdate={onFieldsChange}
+        onVersionCreated={onVersionCreated}
         onSendToAgent={onSendToAgent}
       />
     );
@@ -412,6 +418,7 @@ export function ContentPanel({
       projectId={projectId}
       allBlocks={allBlocks}
       onUpdate={onFieldsChange}
+      onVersionCreated={onVersionCreated}
       onSendToAgent={onSendToAgent}
     />
   );

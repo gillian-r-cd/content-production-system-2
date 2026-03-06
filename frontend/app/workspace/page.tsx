@@ -1,6 +1,8 @@
 // frontend/app/workspace/page.tsx
 // 功能: 内容生产工作台主页面
 // 主要组件: WorkspacePage
+// 主要数据结构: ProjectFamily（按 parent_version_id 链分组的版本族谱）
+// 版本管理: 项目选择器按版本族分组渲染，支持展开/折叠历史版本，支持创建新版本
 
 "use client";
 
@@ -14,7 +16,81 @@ import { GlobalSearchModal } from "@/components/global-search-modal";
 import { projectAPI } from "@/lib/api";
 import { requestNotificationPermission } from "@/lib/utils";
 import type { Project, ContentBlock } from "@/lib/api";
-import { Copy, Trash2, ChevronDown, CheckSquare, Square, X, Download, Upload, Search } from "lucide-react";
+import { Copy, Trash2, ChevronDown, ChevronRight, CheckSquare, Square, X, Download, Upload, Search, Plus, History } from "lucide-react";
+
+// ===== 版本族谱分组 =====
+// 将扁平的项目列表按 parent_version_id 链分组为版本族
+interface ProjectFamily {
+  rootId: string;       // 族谱根项目 ID（version 最小的那个）
+  name: string;         // 项目名称（取最新版本的名称）
+  latest: Project;      // 最新版本
+  versions: Project[];  // 所有版本，按 version 降序
+}
+
+function groupProjectsByFamily(projects: Project[]): ProjectFamily[] {
+  if (projects.length === 0) return [];
+
+  // 建立 id → project 映射
+  const byId = new Map<string, Project>();
+  for (const p of projects) byId.set(p.id, p);
+
+  // 检查是否有任何项目有 parent_version_id（用于判断是否需要 fallback）
+  const hasParentLinks = projects.some(p => p.parent_version_id !== null);
+
+  // 按族谱分组的映射：key → project[]
+  const familyMap = new Map<string, Project[]>();
+
+  if (hasParentLinks) {
+    // 优先使用 parent_version_id 链分组
+    const rootCache = new Map<string, string>();
+    function findRoot(pid: string): string {
+      if (rootCache.has(pid)) return rootCache.get(pid)!;
+      const p = byId.get(pid);
+      if (!p || !p.parent_version_id || !byId.has(p.parent_version_id)) {
+        rootCache.set(pid, pid);
+        return pid;
+      }
+      const root = findRoot(p.parent_version_id);
+      rootCache.set(pid, root);
+      return root;
+    }
+
+    for (const p of projects) {
+      const root = findRoot(p.id);
+      if (!familyMap.has(root)) familyMap.set(root, []);
+      familyMap.get(root)!.push(p);
+    }
+  } else {
+    // Fallback: 按项目名称分组（兼容旧数据，所有 parent_version_id 为 null 的情况）
+    for (const p of projects) {
+      if (!familyMap.has(p.name)) familyMap.set(p.name, []);
+      familyMap.get(p.name)!.push(p);
+    }
+  }
+
+  // 转换为 ProjectFamily 数组
+  const families: ProjectFamily[] = [];
+  for (const [key, members] of familyMap) {
+    members.sort((a, b) => b.version - a.version);
+    // rootId: 优先用版本最小的那个的 id，fallback 时用 name 作为 key 的替代
+    const rootProject = members[members.length - 1]; // version 最小的
+    families.push({
+      rootId: hasParentLinks ? key : rootProject.id,
+      name: members[0].name,  // 最新版本的名称
+      latest: members[0],
+      versions: members,
+    });
+  }
+
+  // 按最新版本的更新时间降序排列
+  families.sort((a, b) => {
+    const ta = new Date(a.latest.updated_at || a.latest.created_at).getTime();
+    const tb = new Date(b.latest.updated_at || b.latest.created_at).getTime();
+    return tb - ta;
+  });
+
+  return families;
+}
 
 export default function WorkspacePage() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -35,6 +111,12 @@ export default function WorkspacePage() {
   const [isBatchMode, setIsBatchMode] = useState(false);
   const [selectedProjectIds, setSelectedProjectIds] = useState<Set<string>>(new Set());
   const [isDeleting, setIsDeleting] = useState(false);
+  
+  // 版本分组: 展开的族谱 root ID 集合
+  const [expandedFamilies, setExpandedFamilies] = useState<Set<string>>(new Set());
+  // 版本分组: 新建版本备注输入（正在创建版本的项目 ID）
+  const [creatingVersionForId, setCreatingVersionForId] = useState<string | null>(null);
+  const [versionNote, setVersionNote] = useState("");
   
   // 全局搜索
   const [showSearch, setShowSearch] = useState(false);
@@ -262,6 +344,36 @@ export default function WorkspacePage() {
     }
   };
 
+  // ============== 创建项目新版本 ==============
+  const handleCreateVersion = async (projectId: string) => {
+    const note = versionNote.trim() || `版本快照 ${new Date().toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}`;
+    try {
+      const newVersion = await projectAPI.createVersion(projectId, note);
+      // 新版本加入列表并切换过去
+      setProjects(prev => [...prev, newVersion]);
+      setCurrentProject(newVersion);
+      setCreatingVersionForId(null);
+      setVersionNote("");
+    } catch (err) {
+      console.error("创建版本失败:", err);
+      setError("创建版本失败: " + (err instanceof Error ? err.message : "未知错误"));
+    }
+  };
+
+  // ============== 版本族谱展开/折叠 ==============
+  const toggleFamilyExpand = (rootId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setExpandedFamilies(prev => {
+      const next = new Set(prev);
+      if (next.has(rootId)) {
+        next.delete(rootId);
+      } else {
+        next.add(rootId);
+      }
+      return next;
+    });
+  };
+
   // ============== 项目导出 ==============
   const handleExportProject = async (projectId: string, projectName: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -388,7 +500,7 @@ export default function WorkspacePage() {
                     </>
                   ) : (
                     <>
-                      <span className="text-xs text-zinc-500">{projects.length} 个项目</span>
+                      <span className="text-xs text-zinc-500">{groupProjectsByFamily(projects).length} 个项目</span>
                       <button
                         onClick={() => setIsBatchMode(true)}
                         className="text-xs text-zinc-400 hover:text-zinc-200"
@@ -401,69 +513,192 @@ export default function WorkspacePage() {
                 </div>
                 
                 {/* 项目列表 */}
-                <div className="max-h-72 overflow-y-auto py-1">
+                <div className="max-h-80 overflow-y-auto py-1">
                   {projects.length === 0 ? (
                     <div className="px-3 py-4 text-sm text-zinc-500 text-center">暂无项目</div>
-                  ) : (
+                  ) : isBatchMode ? (
+                    /* 批量模式：扁平渲染所有项目（含版本） */
                     projects.map((p) => (
                       <div
                         key={p.id}
-                        className={`flex items-center gap-2 px-3 py-2 hover:bg-surface-2 cursor-pointer group ${
-                          !isBatchMode && currentProject?.id === p.id ? "bg-brand-600/10" : ""
-                        } ${isBatchMode && selectedProjectIds.has(p.id) ? "bg-brand-600/10" : ""}`}
-                        onClick={(e) => {
-                          if (isBatchMode) {
-                            toggleProjectSelection(p.id, e);
-                          } else {
-                            setCurrentProject(p);
-                            setShowProjectMenu(false);
-                          }
-                        }}
+                        className={`flex items-center gap-2 px-3 py-2 hover:bg-surface-2 cursor-pointer ${
+                          selectedProjectIds.has(p.id) ? "bg-brand-600/10" : ""
+                        }`}
+                        onClick={(e) => toggleProjectSelection(p.id, e)}
                       >
-                        {/* 批量选择复选框 */}
-                        {isBatchMode && (
-                          <div className="flex-shrink-0">
-                            {selectedProjectIds.has(p.id) ? (
-                              <CheckSquare className="w-4 h-4 text-brand-400" />
-                            ) : (
-                              <Square className="w-4 h-4 text-zinc-500" />
-                            )}
-                          </div>
-                        )}
-                        
+                        <div className="flex-shrink-0">
+                          {selectedProjectIds.has(p.id) ? (
+                            <CheckSquare className="w-4 h-4 text-brand-400" />
+                          ) : (
+                            <Square className="w-4 h-4 text-zinc-500" />
+                          )}
+                        </div>
                         <div className="flex-1 min-w-0">
                           <div className="text-sm text-zinc-200 truncate">{p.name}</div>
                           <div className="text-xs text-zinc-500">v{p.version}</div>
                         </div>
-                        
-                        {/* 单项操作按钮（非批量模式） */}
-                        {!isBatchMode && (
-                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button
-                              onClick={(e) => handleExportProject(p.id, p.name, e)}
-                              className="p-1.5 hover:bg-surface-3 rounded text-zinc-400 hover:text-green-400"
-                              title="导出项目"
-                            >
-                              <Download className="w-4 h-4" />
-                            </button>
-                            <button
-                              onClick={(e) => handleDuplicateProject(p.id, e)}
-                              className="p-1.5 hover:bg-surface-3 rounded text-zinc-400 hover:text-brand-400"
-                              title="复制项目"
-                            >
-                              <Copy className="w-4 h-4" />
-                            </button>
-                            <button
-                              onClick={(e) => handleDeleteProject(p.id, e)}
-                              className="p-1.5 hover:bg-surface-3 rounded text-zinc-400 hover:text-red-400"
-                              title="删除项目"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-                        )}
                       </div>
                     ))
+                  ) : (
+                    /* 正常模式：按版本族分组渲染 */
+                    groupProjectsByFamily(projects).map((family) => {
+                      const isExpanded = expandedFamilies.has(family.rootId);
+                      const hasMultipleVersions = family.versions.length > 1;
+                      const isFamilyActive = family.versions.some(v => v.id === currentProject?.id);
+
+                      return (
+                        <div key={family.rootId}>
+                          {/* 族谱主行（最新版本） */}
+                          <div
+                            className={`flex items-center gap-2 px-3 py-2 hover:bg-surface-2 cursor-pointer group ${
+                              isFamilyActive ? "bg-brand-600/10" : ""
+                            }`}
+                            onClick={() => {
+                              setCurrentProject(family.latest);
+                              setShowProjectMenu(false);
+                            }}
+                          >
+                            {/* 展开/折叠箭头 */}
+                            {hasMultipleVersions ? (
+                              <button
+                                onClick={(e) => toggleFamilyExpand(family.rootId, e)}
+                                className="flex-shrink-0 p-0.5 text-zinc-500 hover:text-zinc-300"
+                              >
+                                {isExpanded ? (
+                                  <ChevronDown className="w-3.5 h-3.5" />
+                                ) : (
+                                  <ChevronRight className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+                            ) : (
+                              <div className="flex-shrink-0 w-[18px]" />
+                            )}
+
+                            <div className="flex-1 min-w-0">
+                              <div className="text-sm text-zinc-200 truncate">{family.name}</div>
+                              <div className="text-xs text-zinc-500">
+                                v{family.latest.version}
+                                {hasMultipleVersions && !isExpanded && (
+                                  <span className="ml-1.5 text-zinc-600">({family.versions.length} 个版本)</span>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* 操作按钮 */}
+                            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <button
+                                onClick={(e) => handleExportProject(family.latest.id, family.name, e)}
+                                className="p-1.5 hover:bg-surface-3 rounded text-zinc-400 hover:text-green-400"
+                                title="导出项目"
+                              >
+                                <Download className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={(e) => handleDuplicateProject(family.latest.id, e)}
+                                className="p-1.5 hover:bg-surface-3 rounded text-zinc-400 hover:text-brand-400"
+                                title="复制项目"
+                              >
+                                <Copy className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={(e) => handleDeleteProject(family.latest.id, e)}
+                                className="p-1.5 hover:bg-surface-3 rounded text-zinc-400 hover:text-red-400"
+                                title="删除项目"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* 展开后的版本列表 */}
+                          {isExpanded && (
+                            <div className="bg-surface-0/50">
+                              {family.versions.map((v) => (
+                                <div
+                                  key={v.id}
+                                  className={`flex items-center gap-2 pl-9 pr-3 py-1.5 hover:bg-surface-2 cursor-pointer group/ver ${
+                                    currentProject?.id === v.id ? "bg-brand-600/10" : ""
+                                  }`}
+                                  onClick={() => {
+                                    setCurrentProject(v);
+                                    setShowProjectMenu(false);
+                                  }}
+                                >
+                                  <History className="w-3 h-3 text-zinc-600 flex-shrink-0" />
+                                  <div className="flex-1 min-w-0">
+                                    <span className="text-xs font-mono text-zinc-400">v{v.version}</span>
+                                    {v.version_note && (
+                                      <span className="ml-1.5 text-xs text-zinc-500 truncate">{v.version_note}</span>
+                                    )}
+                                  </div>
+                                  {currentProject?.id === v.id && (
+                                    <span className="text-[10px] text-brand-400 flex-shrink-0">当前</span>
+                                  )}
+                                  {/* 版本行操作 */}
+                                  <div className="flex items-center gap-1 opacity-0 group-hover/ver:opacity-100 transition-opacity">
+                                    <button
+                                      onClick={(e) => handleExportProject(v.id, `${family.name}_v${v.version}`, e)}
+                                      className="p-1 hover:bg-surface-3 rounded text-zinc-500 hover:text-green-400"
+                                      title="导出此版本"
+                                    >
+                                      <Download className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button
+                                      onClick={(e) => handleDeleteProject(v.id, e)}
+                                      className="p-1 hover:bg-surface-3 rounded text-zinc-500 hover:text-red-400"
+                                      title="删除此版本"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                              {/* 创建新版本 */}
+                              {creatingVersionForId === family.latest.id ? (
+                                <div className="pl-9 pr-3 py-2 flex items-center gap-2">
+                                  <input
+                                    type="text"
+                                    value={versionNote}
+                                    onChange={(e) => setVersionNote(e.target.value)}
+                                    placeholder="版本备注（可选）"
+                                    className="flex-1 px-2 py-1 text-xs bg-surface-2 border border-surface-3 rounded text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-brand-500"
+                                    autoFocus
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter") handleCreateVersion(family.latest.id);
+                                      if (e.key === "Escape") { setCreatingVersionForId(null); setVersionNote(""); }
+                                    }}
+                                  />
+                                  <button
+                                    onClick={() => handleCreateVersion(family.latest.id)}
+                                    className="px-2 py-1 text-xs bg-brand-600 hover:bg-brand-700 text-white rounded"
+                                  >
+                                    确定
+                                  </button>
+                                  <button
+                                    onClick={() => { setCreatingVersionForId(null); setVersionNote(""); }}
+                                    className="p-1 text-zinc-400 hover:text-zinc-200"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setCreatingVersionForId(family.latest.id);
+                                    setVersionNote("");
+                                  }}
+                                  className="w-full pl-9 pr-3 py-1.5 text-xs text-zinc-500 hover:text-zinc-300 hover:bg-surface-2 text-left flex items-center gap-1.5"
+                                >
+                                  <Plus className="w-3 h-3" />
+                                  创建新版本
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
                   )}
                 </div>
               </div>
@@ -545,6 +780,11 @@ export default function WorkspacePage() {
                   // 刷新 ContentBlocks（确保树形视图和内容面板同步）
                   setBlocksRefreshKey(prev => prev + 1);
                 }
+              }}
+              onVersionCreated={async () => {
+                // 弹窗创建版本后刷新项目列表，确保新版本可见
+                const updatedProjects = await projectAPI.list();
+                setProjects(updatedProjects);
               }}
               onBlockSelect={handleBlockSelect}
               onPhaseAdvance={async () => {

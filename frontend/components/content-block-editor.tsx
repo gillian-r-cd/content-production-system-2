@@ -145,11 +145,13 @@ interface ContentBlockEditorProps {
   projectId: string;
   allBlocks?: ContentBlock[];  // 用于依赖选择
   onUpdate?: () => void;
+  /** 版本创建后通知父组件刷新项目列表 */
+  onVersionCreated?: () => void;
   /** M3: 将消息发送到 Agent 对话面板（Eval 诊断→Agent 修改桥接） */
   onSendToAgent?: (message: string) => void;
 }
 
-export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate, onSendToAgent }: ContentBlockEditorProps) {
+export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate, onVersionCreated, onSendToAgent }: ContentBlockEditorProps) {
   // P0-1: 统一使用 blockAPI（已移除 fieldAPI/isVirtual 分支）
   const [isEditing, setIsEditing] = useState(false);
   const [isEditingName, setIsEditingName] = useState(false);
@@ -1297,6 +1299,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
             setVersionWarning(null);
             setAffectedBlocks(null);
             onUpdate?.();
+            onVersionCreated?.();  // 通知 workspace 刷新项目列表
           }}
         />
       )}
