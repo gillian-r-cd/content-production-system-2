@@ -33,6 +33,14 @@ from core.models import (
 )
 from core.prompt_engine import PromptEngine, GoldenContext
 from core.template_schema import instantiate_template_nodes, normalize_field_template_payload
+from core.block_generation_service import (
+    build_generation_system_prompt,
+    generate_block_content_sync,
+    list_ready_block_ids,
+    resolve_dependencies,
+    update_parent_status,
+)
+from core.project_run_service import run_project_blocks
 
 
 def _save_content_version(block: ContentBlock, source: str, db: Session, source_detail: str = None):
@@ -196,7 +204,7 @@ def _calculate_depth(block: ContentBlock, db: Session) -> int:
     return parent.depth + 1
 
 
-def _update_parent_status(parent_id: str, db: Session):
+def _deprecated_update_parent_status(parent_id: str, db: Session):
     """
     根据子级状态自动更新父级（阶段/组）状态：
     - 所有子级都 completed → 父级 completed
@@ -238,7 +246,7 @@ def _update_parent_status(parent_id: str, db: Session):
     
     # 递归向上更新
     if parent.parent_id:
-        _update_parent_status(parent.parent_id, db)
+        _deprecated_update_parent_status(parent.parent_id, db)
 
 
 def _get_next_order_index(project_id: str, parent_id: Optional[str], db: Session) -> int:
@@ -332,47 +340,33 @@ def check_auto_triggers(
     4. 有依赖且所有依赖都有内容
     5. pre_questions 都已回答
     """
-    all_blocks = db.query(ContentBlock).filter(
-        ContentBlock.project_id == project_id,
-        ContentBlock.deleted_at == None,
-    ).all()
-    blocks_by_id = {b.id: b for b in all_blocks}
-    
-    eligible_ids = []
-    for block in all_blocks:
-        # auto_generate=False 的块不自动触发，需用户手动操作
-        if not getattr(block, 'auto_generate', False):
-            continue
-        # 只触发 pending 和 failed 的块；in_progress 的块说明正在生成中，不重复触发
-        if block.status not in ("pending", "failed"):
-            continue
-        if block.content and block.content.strip():
-            continue
-        deps = block.depends_on or []
-        if not deps:
-            continue
-        # 核心改动：依赖检查同时要求「有内容」且「status=completed」
-        # 这样 need_review=True 的依赖块必须经过人工确认才算 ready
-        all_deps_ready = True
-        for dep_id in deps:
-            dep = blocks_by_id.get(dep_id)
-            if not dep or not dep.content or not dep.content.strip():
-                all_deps_ready = False
-                break
-            if dep.status != "completed":
-                all_deps_ready = False
-                break
-        if not all_deps_ready:
-            continue
-        if block.pre_questions and len(block.pre_questions) > 0:
-            answers = block.pre_answers or {}
-            if any(not answers.get(q, "").strip() for q in block.pre_questions):
-                continue
-        eligible_ids.append(block.id)
-    
+    eligible_ids = list_ready_block_ids(project_id=project_id, db=db, mode="auto_trigger")
+
     return {
         "eligible_ids": eligible_ids,
     }
+
+
+class ProjectRunRequest(BaseModel):
+    mode: str = "auto_trigger"
+    max_concurrency: int = 4
+
+
+@router.post("/project/{project_id}/run")
+async def run_project(
+    project_id: str,
+    request: ProjectRunRequest,
+    db: Session = Depends(get_db),
+):
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    return await run_project_blocks(
+        project_id=project_id,
+        mode=request.mode,
+        max_concurrency=request.max_concurrency,
+    )
 
 
 @router.get("/{block_id}", response_model=BlockResponse)
@@ -533,7 +527,7 @@ def update_block(
     # ===== 关键修复：更新父级（阶段/组）的状态 =====
     # 当字段状态变化时，检查父级的所有子级是否全部完成
     if block.parent_id and block.block_type == "field":
-        _update_parent_status(block.parent_id, db)
+        update_parent_status(block.parent_id, db)
     
     # ===== 版本警告：检查是否有下游已完成内容依赖于此块 =====
     version_warning = None
@@ -590,7 +584,7 @@ def confirm_block(
     
     # 更新父级状态
     if block.parent_id:
-        _update_parent_status(block.parent_id, db)
+        update_parent_status(block.parent_id, db)
     
     return _block_to_response(block)
 
@@ -843,7 +837,7 @@ def move_block(
     return _block_to_response(block)
 
 
-def _resolve_dependencies(block: ContentBlock, db: Session) -> tuple:
+def _deprecated_resolve_dependencies(block: ContentBlock, db: Session) -> tuple:
     """
     智能解析依赖关系，处理以下场景：
     1. depends_on 中的 ID 指向已删除的块 → 按名称在同项目中查找替代
@@ -925,146 +919,7 @@ async def generate_block_content(
     db: Session = Depends(get_db),
 ):
     """生成内容块内容"""
-    from core.config import validate_llm_config
-
-    # ===== 前置校验：API Key 是否已正确配置 =====
-    config_error = validate_llm_config()
-    if config_error:
-        raise HTTPException(status_code=422, detail=config_error)
-
-    block = db.query(ContentBlock).filter(
-        ContentBlock.id == block_id,
-        ContentBlock.deleted_at == None,
-    ).first()
-    if not block:
-        raise HTTPException(status_code=404, detail="内容块不存在")
-    
-    project = db.query(Project).filter(Project.id == block.project_id).first()
-    if not project:
-        raise HTTPException(status_code=404, detail="项目不存在")
-    
-    # 智能解析依赖（自动修复过期 ID、按名称查找替代）
-    resolved_deps, dependency_content, dep_error = _resolve_dependencies(block, db)
-    if dep_error:
-        raise HTTPException(status_code=400, detail=dep_error)
-    
-    # 获取创作者特质（从关系获取，转换为提示词格式）
-    creator_profile_text = ""
-    if project.creator_profile:
-        creator_profile_text = project.creator_profile.to_prompt_context()
-    
-    # 构建 Golden Context（只包含 creator_profile）
-    gc = GoldenContext(
-        creator_profile=creator_profile_text,
-    )
-    
-    # 构建预提问答案文本
-    pre_answers_text = ""
-    if block.pre_answers:
-        answers = [f"- {q}: {a}" for q, a in block.pre_answers.items() if a]
-        if answers:
-            pre_answers_text = "\n---\n# 用户补充信息（生成前提问的回答）\n" + "\n".join(answers)
-    
-    ai_prompt = block.ai_prompt or "请生成内容。"
-    
-    # 检查 ai_prompt 是否包含占位符（新格式：所见即所得）
-    has_placeholders = (
-        "{creator_profile}" in ai_prompt
-        or "{dependencies}" in ai_prompt
-    )
-    
-    if has_placeholders:
-        # 新格式：ai_prompt 就是完整模板，直接替换占位符
-        system_prompt = ai_prompt
-        system_prompt = system_prompt.replace("{creator_profile}", creator_profile_text or "（暂无创作者特质）")
-        system_prompt = system_prompt.replace("{dependencies}", dependency_content or "（无依赖内容）")
-        system_prompt += pre_answers_text
-        system_prompt += f"\n\n---\n{MARKDOWN_FORMAT_INSTRUCTIONS}"
-    else:
-        # 标准格式：引擎拼接各段
-        system_prompt = f"""{gc.to_prompt()}
-
----
-
-# 当前任务
-{ai_prompt}
-{pre_answers_text}
-
-{f'---{chr(10)}# 参考内容{chr(10)}{dependency_content}' if dependency_content else ''}
-
----
-{MARKDOWN_FORMAT_INSTRUCTIONS}
-"""
-    
-    # 调用 AI（按 block.model_override → AgentSettings → .env 覆盖链选模型）
-    from core.llm import get_chat_model
-    from langchain_core.messages import SystemMessage, HumanMessage
-    
-    effective_model = resolve_model(model_override=getattr(block, 'model_override', None))
-    chat_model = get_chat_model(model=effective_model)
-    
-    # ===== 生成前保存旧版本 =====
-    _save_content_version(block, "ai_regenerate", db, source_detail="重新生成前的版本")
-    
-    block.status = "in_progress"
-    db.commit()
-    
-    try:
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=f"请生成「{block.name}」的内容。"),
-        ]
-        from core.llm import ainvoke_with_retry
-        response = await ainvoke_with_retry(chat_model, messages)
-        
-        gen_content = normalize_content(response.content)
-
-        block.content = gen_content
-        # 关键逻辑：need_review=True 时，生成完成后状态为 in_progress（等待用户确认）
-        # need_review=False 时，才自动设为 completed
-        block.status = "completed" if not block.need_review else "in_progress"
-        
-        # 创建 GenerationLog 记录
-        from core.models import GenerationLog, generate_uuid
-        usage = getattr(response, "usage_metadata", {}) or {}
-        gen_log = GenerationLog(
-            id=generate_uuid(),
-            project_id=block.project_id,
-            field_id=block.id,
-            phase=block.parent_id or "content_block",
-            operation=f"block_generate_{block.name}",
-            model=effective_model,
-            tokens_in=usage.get("input_tokens", 0),
-            tokens_out=usage.get("output_tokens", 0),
-            duration_ms=0,
-            prompt_input=system_prompt,
-            prompt_output=gen_content,
-            cost=GenerationLog.calculate_cost(effective_model, usage.get("input_tokens", 0), usage.get("output_tokens", 0)),
-            status="success",
-        )
-        db.add(gen_log)
-        db.commit()
-        
-        # 更新父级状态（递归向上）
-        if block.parent_id:
-            _update_parent_status(block.parent_id, db)
-        
-        # 注意：不在后端触发下游块，由前端调用 check-auto-triggers 自行处理
-        
-        return {
-            "block_id": block.id,
-            "content": gen_content,
-            "status": block.status,
-            "tokens_in": usage.get("input_tokens", 0),
-            "tokens_out": usage.get("output_tokens", 0),
-            "cost": 0.0,
-        }
-        
-    except Exception as e:
-        block.status = "failed"
-        db.commit()
-        from core.llm import parse_llm_error
-        raise HTTPException(status_code=500, detail=parse_llm_error(e))
+    return await generate_block_content_sync(block_id=block_id, db=db)
 
 
 @router.post("/{block_id}/generate/stream")
@@ -1107,7 +962,7 @@ async def generate_block_content_stream(
         raise HTTPException(status_code=404, detail="项目不存在")
     
     # 智能解析依赖（自动修复过期 ID、按名称查找替代）
-    resolved_deps, dependency_content, dep_error = _resolve_dependencies(block, db)
+    resolved_deps, dependency_content, dep_error = resolve_dependencies(block, db)
     if dep_error:
         raise HTTPException(status_code=400, detail=dep_error)
     
@@ -1116,29 +971,11 @@ async def generate_block_content_stream(
     if project.creator_profile:
         creator_profile_text = project.creator_profile.to_prompt_context()
     
-    gc = GoldenContext(creator_profile=creator_profile_text)
-    
-    # 构建预提问答案文本
-    pre_answers_text = ""
-    if block.pre_answers:
-        answers = [f"- {q}: {a}" for q, a in block.pre_answers.items() if a]
-        if answers:
-            pre_answers_text = f"---\n# 用户补充信息（生成前提问的回答）\n" + "\n".join(answers)
-    
-    system_prompt = f"""{gc.to_prompt()}
-
----
-
-# 当前任务
-{block.ai_prompt or '请生成内容。'}
-
-{pre_answers_text}
-
-{f'---{chr(10)}# 参考内容{chr(10)}{dependency_content}' if dependency_content else ''}
-
----
-{MARKDOWN_FORMAT_INSTRUCTIONS}
-"""
+    system_prompt = build_generation_system_prompt(
+        block=block,
+        project=project,
+        dependency_content=dependency_content,
+    )
     
     from core.llm import get_chat_model
     from langchain_core.messages import SystemMessage, HumanMessage
@@ -1208,7 +1045,7 @@ async def generate_block_content_stream(
             
             # 更新父级状态（递归向上）
             if block.parent_id:
-                _update_parent_status(block.parent_id, db)
+                update_parent_status(block.parent_id, db)
             
             # 注意：不在后端触发下游块生成，由前端调用 check-auto-triggers 后自行触发
             

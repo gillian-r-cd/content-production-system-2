@@ -171,7 +171,7 @@ def delete_project(
 
     按依赖顺序删除：先删子表/关联表，再删主表。
     """
-    from core.models import ProjectField, ContentBlock, BlockHistory, MemoryItem
+    from core.models import ProjectField, ContentBlock, BlockHistory, MemoryItem, ProjectStructureDraft
     from core.models.chat_history import ChatMessage
     from core.models.generation_log import GenerationLog
     from core.models.simulation_record import SimulationRecord
@@ -220,6 +220,9 @@ def delete_project(
     
     # 删除项目记忆（仅项目级记忆，全局记忆不删）
     db.query(MemoryItem).filter(MemoryItem.project_id == project_id).delete()
+
+    # 删除项目级结构草稿
+    db.query(ProjectStructureDraft).filter(ProjectStructureDraft.project_id == project_id).delete()
     
     # 删除项目专用评分器
     db.query(Grader).filter(Grader.project_id == project_id).delete()
@@ -260,7 +263,7 @@ def duplicate_project(
     - 所有项目记忆 (MemoryItem)
     - 所有项目专用评分器 (Grader)
     """
-    from core.models import ProjectField, MemoryItem
+    from core.models import ProjectField, MemoryItem, ProjectStructureDraft
     from core.models.chat_history import ChatMessage
     from core.models.content_block import ContentBlock
     from core.models.content_version import ContentVersion
@@ -574,6 +577,27 @@ def duplicate_project(
             project_id=new_project.id,
         )
         db.add(new_grader)
+
+    # ---- 复制项目级结构草稿 ----
+    old_drafts = db.query(ProjectStructureDraft).filter(
+        ProjectStructureDraft.project_id == old_project.id,
+    ).all()
+    for old_draft in old_drafts:
+        new_draft = ProjectStructureDraft(
+            id=generate_uuid(),
+            project_id=new_project.id,
+            draft_type=old_draft.draft_type,
+            name=old_draft.name,
+            status=old_draft.status,
+            source_text=old_draft.source_text or "",
+            split_config=json.loads(json.dumps(old_draft.split_config or {})),
+            draft_payload=json.loads(json.dumps(old_draft.draft_payload or {})),
+            validation_errors=json.loads(json.dumps(old_draft.validation_errors or [])),
+            last_validated_at=old_draft.last_validated_at,
+            apply_count=old_draft.apply_count or 0,
+            last_applied_at=old_draft.last_applied_at,
+        )
+        db.add(new_draft)
     
     db.commit()
     db.refresh(new_project)
@@ -595,7 +619,7 @@ def create_new_version(
     - 所有字段 (ProjectField)
     - 所有内容块 (ContentBlock) — 灵活架构的核心数据
     """
-    from core.models import ProjectField
+    from core.models import ProjectField, ProjectStructureDraft
     from core.models.content_block import ContentBlock
 
     old_project = db.query(Project).filter(Project.id == project_id).first()
@@ -707,6 +731,27 @@ def create_new_version(
             digest=old_block.digest,
         )
         db.add(new_block)
+
+    # ---- 复制项目级结构草稿 ----
+    old_drafts = db.query(ProjectStructureDraft).filter(
+        ProjectStructureDraft.project_id == old_project.id,
+    ).all()
+    for old_draft in old_drafts:
+        new_draft = ProjectStructureDraft(
+            id=generate_uuid(),
+            project_id=new_project.id,
+            draft_type=old_draft.draft_type,
+            name=old_draft.name,
+            status=old_draft.status,
+            source_text=old_draft.source_text or "",
+            split_config=json.loads(json.dumps(old_draft.split_config or {})),
+            draft_payload=json.loads(json.dumps(old_draft.draft_payload or {})),
+            validation_errors=json.loads(json.dumps(old_draft.validation_errors or [])),
+            last_validated_at=old_draft.last_validated_at,
+            apply_count=old_draft.apply_count or 0,
+            last_applied_at=old_draft.last_applied_at,
+        )
+        db.add(new_draft)
     
     db.commit()
     db.refresh(new_project)
@@ -775,7 +820,7 @@ def export_project(
         ProjectField, ContentBlock, GenerationLog,
         SimulationRecord,
         EvalRun, EvalTask, EvalTrial,
-        MemoryItem,
+        MemoryItem, ProjectStructureDraft,
     )
     from core.models.chat_history import ChatMessage
     from core.models.content_version import ContentVersion
@@ -890,6 +935,11 @@ def export_project(
     ).all()
     graders_data = [_ser(g) for g in graders]
 
+    drafts = db.query(ProjectStructureDraft).filter(
+        ProjectStructureDraft.project_id == project_id,
+    ).all()
+    drafts_data = [_ser(d) for d in drafts]
+
     # GenerationLogs（可选，可能很大）
     logs_data = []
     if include_logs:
@@ -914,6 +964,7 @@ def export_project(
         "eval_trials": trials_data,
         "memory_items": memories_data,
         "graders": graders_data,
+        "project_structure_drafts": drafts_data,
         "generation_logs": logs_data,
     }
 
@@ -939,7 +990,7 @@ def import_project(
         ProjectField, ContentBlock, GenerationLog,
         SimulationRecord,
         EvalRun, EvalTask, EvalTrial,
-        MemoryItem,
+        MemoryItem, ProjectStructureDraft,
     )
     from core.models.chat_history import ChatMessage
     from core.models.content_version import ContentVersion
@@ -1269,6 +1320,26 @@ def import_project(
             _set_timestamps(new_mem, mem)
             db.add(new_mem)
 
+        # ============ 10a. ProjectStructureDrafts ============
+        for draft_data in data.get("project_structure_drafts", []):
+            old_id = draft_data.get("id", "")
+            new_draft = ProjectStructureDraft(
+                id=_new_id(old_id),
+                project_id=new_proj_id,
+                draft_type=draft_data.get("draft_type", "auto_split"),
+                name=draft_data.get("name", "自动拆分内容"),
+                status=draft_data.get("status", "draft"),
+                source_text=draft_data.get("source_text", ""),
+                split_config=draft_data.get("split_config", {}),
+                draft_payload=draft_data.get("draft_payload", {}),
+                validation_errors=draft_data.get("validation_errors", []),
+                last_validated_at=_parse_dt(draft_data.get("last_validated_at")),
+                apply_count=draft_data.get("apply_count", 0),
+                last_applied_at=_parse_dt(draft_data.get("last_applied_at")),
+            )
+            _set_timestamps(new_draft, draft_data)
+            db.add(new_draft)
+
         # ============ 10b. Graders（项目专用） ============
         for g in data.get("graders", []):
             old_id = g.get("id", "")
@@ -1321,6 +1392,7 @@ def import_project(
                 "simulation_records": len(data.get("simulation_records", [])),
                 "eval_runs": len(data.get("eval_runs", [])),
                 "memory_items": len(data.get("memory_items", [])),
+                "project_structure_drafts": len(data.get("project_structure_drafts", [])),
                 "graders": len(data.get("graders", [])),
                 "generation_logs": len(data.get("generation_logs", [])),
             },

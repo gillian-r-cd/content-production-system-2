@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from core.models.simulation_record import SimulationRecord
     from core.models.generation_log import GenerationLog
     from core.models.content_block import ContentBlock
+    from core.models.project_structure_draft import ProjectStructureDraft
 
 
 # 向后兼容别名（外部 import 不需要改）
@@ -98,6 +99,9 @@ class Project(BaseModel):
     # 新架构：统一内容块
     content_blocks: Mapped[list["ContentBlock"]] = relationship(
         "ContentBlock", back_populates="project", cascade="all, delete-orphan"
+    )
+    structure_drafts: Mapped[list["ProjectStructureDraft"]] = relationship(
+        "ProjectStructureDraft", back_populates="project", cascade="all, delete-orphan"
     )
 
     def get_phase_index(self, phase: str) -> int:

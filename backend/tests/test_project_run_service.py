@@ -1,0 +1,238 @@
+import asyncio
+from datetime import datetime
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from core.database import Base
+from core.models import ContentBlock, Project, ProjectStructureDraft
+from core.project_structure_apply_service import apply_project_structure_draft
+from core.project_run_service import list_ready_blocks, run_project_blocks
+
+
+@pytest.fixture
+def db_session():
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    session = SessionLocal()
+    yield session
+    session.close()
+
+
+def create_project(session):
+    project = Project(
+        id="project-1",
+        name="Run Service Project",
+        current_phase="intent",
+        phase_order=["intent"],
+        phase_status={"intent": "pending"},
+    )
+    session.add(project)
+    session.commit()
+    return project
+
+
+def test_list_ready_blocks_respects_mode(db_session):
+    project = create_project(db_session)
+    completed_dep = ContentBlock(
+        id="dep-1",
+        project_id=project.id,
+        parent_id=None,
+        name="依赖",
+        block_type="field",
+        depth=0,
+        order_index=0,
+        content="已有内容",
+        status="completed",
+    )
+    auto_block = ContentBlock(
+        id="auto-1",
+        project_id=project.id,
+        parent_id=None,
+        name="自动块",
+        block_type="field",
+        depth=0,
+        order_index=1,
+        status="pending",
+        auto_generate=True,
+        depends_on=["dep-1"],
+    )
+    manual_block = ContentBlock(
+        id="manual-1",
+        project_id=project.id,
+        parent_id=None,
+        name="手动块",
+        block_type="field",
+        depth=0,
+        order_index=2,
+        status="pending",
+        auto_generate=False,
+        depends_on=["dep-1"],
+    )
+    root_ready = ContentBlock(
+        id="root-ready",
+        project_id=project.id,
+        parent_id=None,
+        name="无依赖块",
+        block_type="field",
+        depth=0,
+        order_index=3,
+        status="pending",
+        auto_generate=False,
+        depends_on=[],
+    )
+    db_session.add_all([completed_dep, auto_block, manual_block, root_ready])
+    db_session.commit()
+
+    auto_ids = list_ready_blocks(project_id=project.id, mode="auto_trigger", db=db_session)
+    all_ids = list_ready_blocks(project_id=project.id, mode="start_all_ready", db=db_session)
+
+    assert auto_ids == ["auto-1"]
+    assert set(all_ids) == {"auto-1", "manual-1", "root-ready"}
+
+
+def test_run_project_blocks_scans_multiple_rounds(db_session, monkeypatch):
+    from core import project_run_service as run_service
+
+    project = create_project(db_session)
+    first = ContentBlock(
+        id="field-1",
+        project_id=project.id,
+        parent_id=None,
+        name="第一块",
+        block_type="field",
+        depth=0,
+        order_index=0,
+        status="pending",
+        depends_on=[],
+    )
+    second = ContentBlock(
+        id="field-2",
+        project_id=project.id,
+        parent_id=None,
+        name="第二块",
+        block_type="field",
+        depth=0,
+        order_index=1,
+        status="pending",
+        depends_on=["field-1"],
+    )
+    db_session.add_all([first, second])
+    db_session.commit()
+
+    session_factory = sessionmaker(
+        autocommit=False,
+        autoflush=False,
+        bind=db_session.get_bind(),
+    )
+
+    async def fake_generate_block_content_sync(*, block_id: str, db):
+        block = db.query(ContentBlock).filter(ContentBlock.id == block_id).first()
+        block.content = f"{block.name} 内容"
+        block.status = "completed"
+        db.commit()
+        return {"block_id": block_id, "status": "completed", "content": block.content}
+
+    monkeypatch.setattr(run_service, "get_session_maker", lambda: session_factory)
+    monkeypatch.setattr(run_service, "generate_block_content_sync", fake_generate_block_content_sync)
+
+    result = asyncio.run(run_project_blocks(
+        project_id=project.id,
+        mode="start_all_ready",
+        max_concurrency=2,
+    ))
+
+    assert result["started_count"] == 2
+    assert result["completed_count"] == 2
+    assert result["failed_count"] == 0
+    assert len(result["rounds"]) == 2
+    assert result["rounds"][0]["started_ids"] == ["field-1"]
+    assert result["rounds"][1]["started_ids"] == ["field-2"]
+
+
+def test_run_project_blocks_handles_auto_split_applied_blocks(db_session, monkeypatch):
+    from core import project_run_service as run_service
+
+    project = create_project(db_session)
+    draft = ProjectStructureDraft(
+        id="draft-run-1",
+        project_id=project.id,
+        draft_type="auto_split",
+        name="自动拆分内容",
+        status="validated",
+        validation_errors=[],
+        last_validated_at=datetime.now(),
+        draft_payload={
+            "chunks": [
+                {"chunk_id": "chunk-1", "title": "片段一", "content": "第一段内容", "order_index": 0},
+            ],
+            "plans": [
+                {
+                    "plan_id": "plan-1",
+                    "name": "摘要方案",
+                    "target_chunk_ids": ["chunk-1"],
+                    "root_nodes": [
+                        {
+                            "template_node_id": "summary-node",
+                            "name": "摘要",
+                            "block_type": "field",
+                            "ai_prompt": "请基于源内容生成摘要",
+                            "auto_generate": True,
+                            "draft_dependency_refs": [
+                                {"ref_type": "chunk_source", "chunk_id": "current"},
+                            ],
+                            "children": [],
+                        }
+                    ],
+                }
+            ],
+            "shared_root_nodes": [],
+            "aggregate_root_nodes": [],
+        },
+    )
+    db_session.add(draft)
+    db_session.commit()
+
+    apply_project_structure_draft(draft=draft, db=db_session)
+
+    session_factory = sessionmaker(
+        autocommit=False,
+        autoflush=False,
+        bind=db_session.get_bind(),
+    )
+
+    async def fake_generate_block_content_sync(*, block_id: str, db):
+        block = db.query(ContentBlock).filter(ContentBlock.id == block_id).first()
+        block.content = "自动生成的摘要内容"
+        block.status = "completed"
+        db.commit()
+        return {"block_id": block_id, "status": "completed", "content": block.content}
+
+    monkeypatch.setattr(run_service, "get_session_maker", lambda: session_factory)
+    monkeypatch.setattr(run_service, "generate_block_content_sync", fake_generate_block_content_sync)
+
+    result = asyncio.run(run_project_blocks(
+        project_id=project.id,
+        mode="start_all_ready",
+        max_concurrency=2,
+    ))
+
+    summary_block = db_session.query(ContentBlock).filter(
+        ContentBlock.project_id == project.id,
+        ContentBlock.name == "摘要",
+    ).first()
+
+    assert result["started_count"] == 1
+    assert result["completed_count"] == 1
+    assert result["failed_count"] == 0
+    assert result["rounds"][0]["started_ids"] == [summary_block.id]
+    assert summary_block is not None
+    assert summary_block.status == "completed"
+    assert summary_block.content == "自动生成的摘要内容"

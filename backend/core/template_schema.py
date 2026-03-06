@@ -78,6 +78,12 @@ def normalize_template_nodes(
             "model_override": raw.get("model_override"),
             "guidance_input": str(raw.get("guidance_input") or ""),
             "guidance_output": str(raw.get("guidance_output") or ""),
+            "external_depends_on_block_ids": _as_str_list(raw.get("external_depends_on_block_ids")),
+            "draft_dependency_refs": [
+                deepcopy(item)
+                for item in (raw.get("draft_dependency_refs") or raw.get("depends_on_refs") or [])
+                if isinstance(item, dict)
+            ],
             "children": [],
             "_legacy_depends_on": _as_str_list(raw.get("depends_on")),
             "_depends_on_template_node_ids": _as_str_list(raw.get("depends_on_template_node_ids")),
@@ -351,6 +357,7 @@ def instantiate_template_nodes(
                 "model_override": node.get("model_override"),
                 "guidance_input": node.get("guidance_input", ""),
                 "guidance_output": node.get("guidance_output", ""),
+                "external_depends_on_block_ids": _as_str_list(node.get("external_depends_on_block_ids")),
                 "_template_node_id": node["template_node_id"],
                 "_depends_on_template_node_ids": _as_str_list(node.get("depends_on_template_node_ids")),
             })
@@ -364,6 +371,11 @@ def instantiate_template_nodes(
             dep_block_id = node_to_block_id.get(dep_node_id)
             if dep_block_id:
                 dep_ids.append(dep_block_id)
+        dep_ids.extend(
+            dep_id
+            for dep_id in record.pop("external_depends_on_block_ids", [])
+            if dep_id and dep_id not in dep_ids
+        )
         record["depends_on"] = dep_ids
         record.pop("_template_node_id", None)
 

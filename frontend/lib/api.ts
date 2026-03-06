@@ -3,7 +3,7 @@
 // 主要函数: fetchAPI, streamAPI
 // 数据结构: Project, Field, ChatMessage
 
-export const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+export const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8002";
 
 // ============== Types ==============
 
@@ -414,16 +414,16 @@ export const settingsAPI = {
   
   // Field Templates
   listFieldTemplates: () =>
-    fetchAPI<any[]>("/api/settings/field-templates"),
+    fetchAPI<FieldTemplate[]>("/api/settings/field-templates"),
   
-  createFieldTemplate: (data: any) =>
-    fetchAPI<any>("/api/settings/field-templates", {
+  createFieldTemplate: (data: Partial<FieldTemplate>) =>
+    fetchAPI<FieldTemplate>("/api/settings/field-templates", {
       method: "POST",
       body: JSON.stringify(data),
     }),
   
-  updateFieldTemplate: (id: string, data: any) =>
-    fetchAPI<any>(`/api/settings/field-templates/${id}`, {
+  updateFieldTemplate: (id: string, data: Partial<FieldTemplate>) =>
+    fetchAPI<FieldTemplate>(`/api/settings/field-templates/${id}`, {
       method: "PUT",
       body: JSON.stringify(data),
     }),
@@ -656,6 +656,20 @@ export interface PhaseTemplate {
   updated_at: string | null;
 }
 
+export interface FieldTemplate {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  schema_version: number;
+  fields: Array<{
+    name: string;
+    model_override?: string | null;
+  }>;
+  root_nodes: TemplateNode[];
+  created_at: string | null;
+}
+
 export interface TemplateNode {
   template_node_id: string;
   name: string;
@@ -671,7 +685,70 @@ export interface TemplateNode {
   auto_generate?: boolean;
   is_collapsed?: boolean;
   model_override?: string | null;
+  guidance_input?: string;
+  guidance_output?: string;
+  external_depends_on_block_ids?: string[];
+  draft_dependency_refs?: DraftDependencyRef[];
   children?: TemplateNode[];
+}
+
+export interface DraftDependencyRef {
+  ref_type: "project_block" | "shared_node" | "aggregate_node" | "chunk_source" | "chunk_plan_node";
+  block_id?: string;
+  node_id?: string;
+  chunk_id?: string;
+}
+
+export interface DraftDependencyOption {
+  id: string;
+  label: string;
+  ref: DraftDependencyRef;
+}
+
+export interface ProjectStructureChunk {
+  chunk_id: string;
+  title: string;
+  content: string;
+  order_index: number;
+}
+
+export interface ProjectStructurePlan {
+  plan_id: string;
+  name: string;
+  target_chunk_ids: string[];
+  root_nodes: TemplateNode[];
+}
+
+export interface ProjectStructureDraftPayload {
+  chunks: ProjectStructureChunk[];
+  plans: ProjectStructurePlan[];
+  shared_root_nodes: TemplateNode[];
+  aggregate_root_nodes: TemplateNode[];
+  ui_state: Record<string, unknown>;
+}
+
+export interface ProjectStructureDraft {
+  id: string;
+  project_id: string;
+  draft_type: "auto_split";
+  name: string;
+  status: "draft" | "validated" | "applied";
+  source_text: string;
+  split_config: {
+    mode: "count" | "chars" | "rule";
+    target_count?: number;
+    max_chars_per_chunk?: number;
+    overlap_chars?: number;
+    title_prefix?: string;
+    rule_prompt?: string;
+  };
+  draft_payload: ProjectStructureDraftPayload;
+  validation_errors: string[];
+  last_validated_at: string | null;
+  apply_count: number;
+  last_applied_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
 }
 
 // ============== Content Block API (新架构) ==============
@@ -791,6 +868,23 @@ export const blockAPI = {
       { method: "POST" }
     ),
 
+  runProject: (projectId: string, data?: { mode?: "auto_trigger" | "start_all_ready"; max_concurrency?: number }) =>
+    fetchAPI<{
+      project_id: string;
+      mode: string;
+      rounds: { started_ids: string[]; succeeded_ids: string[]; failed_ids: string[] }[];
+      started_count: number;
+      completed_count: number;
+      failed_count: number;
+      failed_items: { block_id: string; error: string }[];
+    }>(`/api/blocks/project/${projectId}/run`, {
+      method: "POST",
+      body: JSON.stringify({
+        mode: data?.mode || "auto_trigger",
+        max_concurrency: data?.max_concurrency ?? 4,
+      }),
+    }),
+
   // 复制内容块
   duplicate: (blockId: string) =>
     fetchAPI<ContentBlock>(`/api/blocks/${blockId}/duplicate`, {
@@ -852,6 +946,57 @@ export const phaseTemplateAPI = {
       `/api/phase-templates/${templateId}/duplicate${newName ? `?new_name=${encodeURIComponent(newName)}` : ""}`,
       { method: "POST" }
     ),
+};
+
+// ============== Project Structure Draft API ==============
+
+export const projectStructureDraftAPI = {
+  getAutoSplitDraft: (projectId: string) =>
+    fetchAPI<ProjectStructureDraft>(`/api/project-structure-drafts/project/${projectId}/auto-split`),
+
+  updateAutoSplitDraft: (projectId: string, data: Partial<{
+    name: string;
+    source_text: string;
+    split_config: ProjectStructureDraft["split_config"];
+    draft_payload: ProjectStructureDraftPayload;
+  }>) =>
+    fetchAPI<ProjectStructureDraft>(`/api/project-structure-drafts/project/${projectId}/auto-split`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+
+  splitAutoSplitDraft: (projectId: string, data: Partial<{
+    source_text: string;
+    split_config: ProjectStructureDraft["split_config"];
+  }>) =>
+    fetchAPI<{ draft: ProjectStructureDraft; chunks: ProjectStructureChunk[] }>(
+      `/api/project-structure-drafts/project/${projectId}/auto-split/split`,
+      {
+        method: "POST",
+        body: JSON.stringify(data),
+      }
+    ),
+
+  validateAutoSplitDraft: (projectId: string) =>
+    fetchAPI<{
+      draft: ProjectStructureDraft;
+      validation_errors: string[];
+      summary: Record<string, number>;
+      preview_root_nodes: TemplateNode[];
+    }>(`/api/project-structure-drafts/project/${projectId}/auto-split/validate`, {
+      method: "POST",
+    }),
+
+  applyAutoSplitDraft: (projectId: string, data?: { parent_id?: string | null; batch_name?: string }) =>
+    fetchAPI<{
+      message: string;
+      blocks_created: number;
+      summary: Record<string, number>;
+      draft: ProjectStructureDraft;
+    }>(`/api/project-structure-drafts/project/${projectId}/auto-split/apply`, {
+      method: "POST",
+      body: JSON.stringify(data || {}),
+    }),
 };
 
 // ============== Grader Types & API ==============
@@ -1222,45 +1367,31 @@ export interface SearchResult {
 
 // ============== Auto Trigger Chain ==============
 
-/**
- * 前端驱动的自动触发链：
- * 1. 调用 check-auto-triggers 获取满足条件的块 ID
- * 2. 逐个触发流式生成
- * 3. 每个生成完成后递归检查是否有新的可触发块
- */
 export async function runAutoTriggerChain(
   projectId: string,
   onUpdate?: () => void,
 ): Promise<void> {
   try {
-    const resp = await fetchAPI<{ eligible_ids: string[] }>(
-      `/api/blocks/project/${projectId}/check-auto-triggers`,
-      { method: "POST" }
-    );
-    const ids = resp.eligible_ids || [];
-    if (ids.length === 0) return;
-
-    for (const blockId of ids) {
-      try {
-        const genResp = await blockAPI.generateStream(blockId);
-        // 读完流
-        const reader = genResp.body?.getReader();
-        if (reader) {
-          while (true) {
-            const { done } = await reader.read();
-            if (done) break;
-          }
-        }
-        onUpdate?.();
-      } catch (e) {
-        console.error(`Auto-trigger generation failed for block ${blockId}:`, e);
-      }
+    const resp = await blockAPI.runProject(projectId, { mode: "auto_trigger" });
+    if ((resp.started_count || 0) > 0) {
+      onUpdate?.();
     }
-
-    // 递归检查：刚完成的生成可能解锁了新的块
-    await runAutoTriggerChain(projectId, onUpdate);
   } catch (e) {
     console.error("Auto-trigger chain failed:", e);
+  }
+}
+
+export async function startAllReadyBlocks(
+  projectId: string,
+  onUpdate?: () => void,
+): Promise<void> {
+  try {
+    const resp = await blockAPI.runProject(projectId, { mode: "start_all_ready" });
+    if ((resp.started_count || 0) > 0) {
+      onUpdate?.();
+    }
+  } catch (e) {
+    console.error("Start all ready blocks failed:", e);
   }
 }
 

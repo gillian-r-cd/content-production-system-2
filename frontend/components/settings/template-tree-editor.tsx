@@ -1,12 +1,30 @@
 // frontend/components/settings/template-tree-editor.tsx
 // 功能: 模板树编辑器，统一编辑 FieldTemplate.root_nodes 与 PhaseTemplate.root_nodes
 // 主要组件: TemplateTreeEditor
-// 数据结构: TemplateNode（递归树节点，含 depends_on_template_node_ids / children）
+// 数据结构: TemplateNode（递归树节点，含 depends_on_template_node_ids / draft_dependency_refs / children）
 
 "use client";
 
-import type { ModelInfo, TemplateNode } from "@/lib/api";
+import type { DraftDependencyOption, ModelInfo, TemplateNode } from "@/lib/api";
+import { ProjectDraftDependencySelector } from "../project-draft-dependency-selector";
 import { FormField, TagInput } from "./shared";
+
+function refKey(ref: DraftDependencyOption["ref"]): string {
+  return JSON.stringify(ref || {});
+}
+
+function toggleDraftDependencyRef(
+  refs: TemplateNode["draft_dependency_refs"] = [],
+  ref: DraftDependencyOption["ref"],
+  checked: boolean,
+): NonNullable<TemplateNode["draft_dependency_refs"]> {
+  const next = [...(refs || [])];
+  const key = refKey(ref);
+  const index = next.findIndex((item) => refKey(item) === key);
+  if (checked && index < 0) next.push(ref);
+  if (!checked && index >= 0) next.splice(index, 1);
+  return next;
+}
 
 function createTemplateNode(blockType: TemplateNode["block_type"] = "field"): TemplateNode {
   return {
@@ -23,6 +41,9 @@ function createTemplateNode(blockType: TemplateNode["block_type"] = "field"): Te
     auto_generate: false,
     is_collapsed: false,
     model_override: null,
+    guidance_input: "",
+    guidance_output: "",
+    draft_dependency_refs: [],
     children: [],
   };
 }
@@ -92,6 +113,8 @@ interface TemplateTreeEditorProps {
   availableModels: ModelInfo[];
   topLevelLabel?: string;
   emptyText?: string;
+  externalDependencyOptions?: DraftDependencyOption[];
+  topLevelCreateTypes?: TemplateNode["block_type"][];
 }
 
 interface NodeEditorProps {
@@ -100,6 +123,7 @@ interface NodeEditorProps {
   nodes: TemplateNode[];
   onChange: (nodes: TemplateNode[]) => void;
   availableModels: ModelInfo[];
+  externalDependencyOptions?: DraftDependencyOption[];
 }
 
 /** 类型 → 名称 placeholder 映射 */
@@ -109,7 +133,26 @@ const TYPE_PLACEHOLDER: Record<string, string> = {
   field: "内容块名称",
 };
 
-function NodeEditor({ node, level, nodes, onChange, availableModels }: NodeEditorProps) {
+const CREATE_BUTTON_LABELS: Record<string, string> = {
+  phase: "+ 顶层阶段",
+  group: "+ 顶层分组",
+  field: "+ 顶层内容块",
+};
+
+const CREATE_BUTTON_STYLES: Record<string, string> = {
+  phase: "rounded-lg bg-brand-600 px-3 py-1.5 text-xs text-white",
+  group: "rounded-lg bg-surface-3 px-3 py-1.5 text-xs text-zinc-300",
+  field: "rounded-lg bg-emerald-600 px-3 py-1.5 text-xs text-white",
+};
+
+function NodeEditor({
+  node,
+  level,
+  nodes,
+  onChange,
+  availableModels,
+  externalDependencyOptions = [],
+}: NodeEditorProps) {
   const blockType = node.block_type || "field";
   const isContentBlock = blockType === "field";
   const hasChildren = (node.children || []).length > 0;
@@ -125,6 +168,15 @@ function NodeEditor({ node, level, nodes, onChange, availableModels }: NodeEdito
   const dependencyOptions = isContentBlock
     ? flattenNodes(nodes).filter((item) => item.template_node_id !== node.template_node_id && item.block_type === "field")
     : [];
+  const currentChunkDependencyOption = externalDependencyOptions.find((option) => (
+    option.ref?.ref_type === "chunk_source" && option.ref?.chunk_id === "current"
+  ));
+  const currentChunkChecked = !!currentChunkDependencyOption && (node.draft_dependency_refs || []).some((ref) => (
+    refKey(ref) === refKey(currentChunkDependencyOption.ref)
+  ));
+  const otherExternalDependencyOptions = externalDependencyOptions.filter((option) => (
+    refKey(option.ref) !== refKey(currentChunkDependencyOption?.ref || {})
+  ));
 
   return (
     <div className="space-y-3 rounded-xl border border-surface-3 bg-surface-1 p-4" style={{ marginLeft: level * 16 }}>
@@ -248,6 +300,34 @@ function NodeEditor({ node, level, nodes, onChange, availableModels }: NodeEdito
                 </FormField>
               )}
 
+              {currentChunkDependencyOption && (
+                <FormField
+                  label="当前 chunk 依赖"
+                  hint="逐个内容块决定是否依赖当前 chunk 的源内容块，不再由整个编排方案默认强制。"
+                >
+                  <label className="flex items-center gap-2 text-xs text-zinc-300">
+                    <input
+                      type="checkbox"
+                      checked={currentChunkChecked}
+                      onChange={(e) => patchNode({
+                        draft_dependency_refs: toggleDraftDependencyRef(
+                          node.draft_dependency_refs,
+                          currentChunkDependencyOption.ref,
+                          e.target.checked,
+                        ),
+                      })}
+                    />
+                    依赖当前 chunk 的源内容块
+                  </label>
+                </FormField>
+              )}
+
+              <ProjectDraftDependencySelector
+                value={node.draft_dependency_refs || []}
+                options={otherExternalDependencyOptions}
+                onChange={(draft_dependency_refs) => patchNode({ draft_dependency_refs })}
+              />
+
               <FormField label="AI 提示词" hint="生成此内容块时给 AI 的指令，会与项目上下文一起发送">
                 <textarea
                   value={node.ai_prompt || ""}
@@ -261,6 +341,24 @@ function NodeEditor({ node, level, nodes, onChange, availableModels }: NodeEdito
                   value={node.content || ""}
                   onChange={(e) => patchNode({ content: e.target.value })}
                   rows={4}
+                  className="w-full rounded-lg border border-surface-3 bg-surface-2 px-3 py-2 text-sm text-zinc-200"
+                />
+              </FormField>
+
+              <FormField label="输入指引" hint="生成时给模型看的输入背景说明">
+                <textarea
+                  value={node.guidance_input || ""}
+                  onChange={(e) => patchNode({ guidance_input: e.target.value })}
+                  rows={3}
+                  className="w-full rounded-lg border border-surface-3 bg-surface-2 px-3 py-2 text-sm text-zinc-200"
+                />
+              </FormField>
+
+              <FormField label="输出指引" hint="生成时对输出形式的额外说明">
+                <textarea
+                  value={node.guidance_output || ""}
+                  onChange={(e) => patchNode({ guidance_output: e.target.value })}
+                  rows={3}
                   className="w-full rounded-lg border border-surface-3 bg-surface-2 px-3 py-2 text-sm text-zinc-200"
                 />
               </FormField>
@@ -294,6 +392,7 @@ function NodeEditor({ node, level, nodes, onChange, availableModels }: NodeEdito
                   nodes={nodes}
                   onChange={onChange}
                   availableModels={availableModels}
+                  externalDependencyOptions={externalDependencyOptions}
                 />
               ))}
             </div>
@@ -310,24 +409,27 @@ export function TemplateTreeEditor({
   availableModels,
   topLevelLabel = "模板结构",
   emptyText = "还没有添加内容，先添加顶层阶段或分组。",
+  externalDependencyOptions = [],
+  topLevelCreateTypes = ["phase", "group"],
 }: TemplateTreeEditorProps) {
+  const createTypes = topLevelCreateTypes.filter((type, index, list) => (
+    ["phase", "group", "field"].includes(type) && list.indexOf(type) === index
+  ));
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h4 className="text-sm font-medium text-zinc-300">{topLevelLabel}</h4>
         <div className="flex gap-2">
-          <button
-            onClick={() => onChange([...(nodes || []), createTemplateNode("phase")])}
-            className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs text-white"
-          >
-            + 顶层阶段
-          </button>
-          <button
-            onClick={() => onChange([...(nodes || []), createTemplateNode("group")])}
-            className="rounded-lg bg-surface-3 px-3 py-1.5 text-xs text-zinc-300"
-          >
-            + 顶层分组
-          </button>
+          {createTypes.map((type) => (
+            <button
+              key={type}
+              onClick={() => onChange([...(nodes || []), createTemplateNode(type)])}
+              className={CREATE_BUTTON_STYLES[type]}
+            >
+              {CREATE_BUTTON_LABELS[type]}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -345,6 +447,7 @@ export function TemplateTreeEditor({
               nodes={nodes}
               onChange={onChange}
               availableModels={availableModels}
+              externalDependencyOptions={externalDependencyOptions}
             />
           ))}
         </div>

@@ -10,6 +10,11 @@
 from core.models.base import BaseModel, generate_uuid
 from core.models.creator_profile import CreatorProfile
 from core.models.project import Project, PROJECT_PHASES, PHASE_STATUS
+from core.models.project_structure_draft import (
+    ProjectStructureDraft,
+    PROJECT_STRUCTURE_DRAFT_STATUS,
+    PROJECT_STRUCTURE_DRAFT_TYPES,
+)
 from core.models.field_template import FieldTemplate
 from core.models.project_field import ProjectField, FIELD_STATUS
 from core.models.channel import Channel
@@ -58,6 +63,9 @@ __all__ = [
     "Project",
     "PROJECT_PHASES",
     "PHASE_STATUS",
+    "ProjectStructureDraft",
+    "PROJECT_STRUCTURE_DRAFT_TYPES",
+    "PROJECT_STRUCTURE_DRAFT_STATUS",
     
     # 字段
     "FieldTemplate",

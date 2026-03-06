@@ -5,7 +5,7 @@
 const nextConfig = {
   // 环境变量
   env: {
-    BACKEND_URL: process.env.BACKEND_URL || "http://localhost:8000",
+    BACKEND_URL: process.env.BACKEND_URL || "http://localhost:8002",
   },
 };
 

@@ -319,7 +319,7 @@ def create_app() -> FastAPI:
 
     # 注册路由
     from api import projects, fields, agent, settings as settings_api, simulation
-    from api import blocks, phase_templates, versions
+    from api import blocks, phase_templates, project_structure_drafts, versions
     from api import eval as eval_api
     from api import graders as graders_api
     from api import modes as modes_api
@@ -335,6 +335,7 @@ def create_app() -> FastAPI:
     # 新架构：内容块和阶段模板
     app.include_router(blocks.router)  # 路由前缀已在 blocks.py 中定义
     app.include_router(phase_templates.router)  # 路由前缀已在 phase_templates.py 中定义
+    app.include_router(project_structure_drafts.router)
     
     # 新 Eval 体系
     app.include_router(eval_api.router)  # 路由前缀已在 eval.py 中定义

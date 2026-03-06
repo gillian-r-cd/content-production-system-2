@@ -38,15 +38,18 @@ interface ProgressPanelProps {
   onBlockSelect?: (block: ContentBlock) => void;
   onBlocksChange?: (blocks: ContentBlock[]) => void;  // 当内容块加载/变化时通知父组件
   onProjectChange?: () => void;  // 项目数据变化时通知父组件刷新
+  onOpenAutoSplit?: () => void;
+  onStartAllReady?: () => void;
 }
 
 export function ProgressPanel({
   project,
   blocksRefreshKey = 0,
   onPhaseClick,
-  onPhaseReorder: _onPhaseReorder,
   onBlockSelect,
   onBlocksChange,
+  onOpenAutoSplit,
+  onStartAllReady,
 }: ProgressPanelProps) {
   // P0-1: 传统视图已移除，统一使用树形架构
   const [contentBlocks, setContentBlocks] = useState<ContentBlock[]>([]);
@@ -155,9 +158,27 @@ export function ProgressPanel({
           {project?.name || "未选择项目"}
         </h2>
         {project && (
-          <p className="text-sm text-zinc-500 mt-1">
-            版本 {project.version}
-          </p>
+          <div className="mt-2 space-y-3">
+            <p className="text-sm text-zinc-500">
+              版本 {project.version}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={onOpenAutoSplit}
+                className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs text-white hover:bg-brand-700"
+              >
+                自动拆分内容
+              </button>
+              <button
+                type="button"
+                onClick={onStartAllReady}
+                className="rounded-lg bg-surface-3 px-3 py-1.5 text-xs text-zinc-200 hover:bg-surface-4"
+              >
+                全部开始
+              </button>
+            </div>
+          </div>
         )}
       </div>
       

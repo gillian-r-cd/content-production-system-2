@@ -13,7 +13,8 @@ import { ContentPanel } from "@/components/content-panel";
 import { AgentPanel } from "@/components/agent-panel";
 import { CreateProjectModal } from "@/components/create-project-modal";
 import { GlobalSearchModal } from "@/components/global-search-modal";
-import { projectAPI } from "@/lib/api";
+import { ProjectAutoSplitModal } from "@/components/project-auto-split-modal";
+import { projectAPI, startAllReadyBlocks } from "@/lib/api";
 import { requestNotificationPermission } from "@/lib/utils";
 import type { Project, ContentBlock } from "@/lib/api";
 import { Copy, Trash2, ChevronDown, ChevronRight, CheckSquare, Square, X, Download, Upload, Search, Plus, History } from "lucide-react";
@@ -120,6 +121,7 @@ export default function WorkspacePage() {
   
   // 全局搜索
   const [showSearch, setShowSearch] = useState(false);
+  const [showAutoSplitModal, setShowAutoSplitModal] = useState(false);
   
   // M3: Eval 诊断→Agent 修改桥接（中栏组件设置消息，右栏 AgentPanel 消费）
   const [pendingAgentMessage, setPendingAgentMessage] = useState<string | null>(null);
@@ -766,6 +768,13 @@ export default function WorkspacePage() {
                   setCurrentProject(updatedProject);
                 }
               }}
+              onOpenAutoSplit={() => setShowAutoSplitModal(true)}
+              onStartAllReady={() => {
+                if (!currentProject) return;
+                startAllReadyBlocks(currentProject.id, () => {
+                  setBlocksRefreshKey(prev => prev + 1);
+                }).catch(console.error);
+              }}
             />
           }
           centerPanel={
@@ -866,6 +875,15 @@ export default function WorkspacePage() {
         isOpen={showCreateModal}
         onClose={() => setShowCreateModal(false)}
         onCreated={handleProjectCreated}
+      />
+
+      <ProjectAutoSplitModal
+        open={showAutoSplitModal}
+        projectId={currentProject?.id || null}
+        onClose={() => setShowAutoSplitModal(false)}
+        onApplied={() => {
+          setBlocksRefreshKey(prev => prev + 1);
+        }}
       />
 
       {/* 全局搜索替换 */}
