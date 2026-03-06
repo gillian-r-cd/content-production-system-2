@@ -52,6 +52,7 @@ def init_db():
     _ensure_conversation_schema(engine)
     _ensure_content_block_columns(engine)
     _ensure_agent_settings_columns(engine)
+    _ensure_field_template_columns(engine)
 
 
 def _ensure_conversation_schema(engine) -> None:
@@ -94,6 +95,8 @@ def _ensure_content_block_columns(engine) -> None:
         "auto_generate": "BOOLEAN DEFAULT 0",
         "model_override": "VARCHAR(100)",
         "digest": "TEXT",
+        "guidance_input": "TEXT DEFAULT ''",
+        "guidance_output": "TEXT DEFAULT ''",
     }
     _add_missing_columns(engine, "content_blocks", new_columns)
 
@@ -105,6 +108,15 @@ def _ensure_agent_settings_columns(engine) -> None:
         "default_mini_model": "VARCHAR(100)",
     }
     _add_missing_columns(engine, "agent_settings", new_columns)
+
+
+def _ensure_field_template_columns(engine) -> None:
+    """兼容旧库：为 field_templates 补齐树模板列。"""
+    new_columns = {
+        "schema_version": "INTEGER DEFAULT 1",
+        "root_nodes": "JSON",
+    }
+    _add_missing_columns(engine, "field_templates", new_columns)
 
 
 def _add_missing_columns(engine, table: str, columns: dict[str, str]) -> None:

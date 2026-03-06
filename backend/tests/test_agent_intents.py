@@ -116,6 +116,25 @@ class TestReferencesParsing:
         
         assert len(referenced) == 0
         assert "@nonexistent" in replaced
+
+    def test_parse_id_reference(self):
+        """测试稳定 ID 引用"""
+        field_a = ProjectField(
+            id="block-123",
+            project_id="test",
+            phase="produce_inner",
+            name="target",
+            content="Target content",
+        )
+
+        fields_by_name = {"target": field_a}
+
+        text = "Based on @id:block-123 generate more content."
+        replaced, referenced = prompt_engine.parse_references(text, fields_by_name)
+
+        assert len(referenced) == 1
+        assert referenced[0].id == "block-123"
+        assert "Target content" in replaced
     
     def test_parse_chinese_field_name(self):
         """测试中文字段名引用"""

@@ -26,6 +26,7 @@ from core.models import (
     generate_uuid,
 )
 from core.models.grader import PRESET_GRADERS
+from core.template_schema import normalize_field_template_payload
 
 
 router = APIRouter()
@@ -394,6 +395,8 @@ class FieldTemplateCreate(BaseModel):
     description: str = ""
     category: str = "通用"
     fields: list = []
+    root_nodes: list = []
+    schema_version: int = 2
 
 
 class FieldTemplateUpdate(BaseModel):
@@ -401,6 +404,8 @@ class FieldTemplateUpdate(BaseModel):
     description: Optional[str] = None
     category: Optional[str] = None
     fields: Optional[list] = None
+    root_nodes: Optional[list] = None
+    schema_version: Optional[int] = None
 
 
 class FieldTemplateResponse(BaseModel):
@@ -408,7 +413,9 @@ class FieldTemplateResponse(BaseModel):
     name: str
     description: str
     category: str
+    schema_version: int
     fields: list
+    root_nodes: list
     created_at: str
 
     model_config = {"from_attributes": True}
@@ -427,12 +434,22 @@ def create_field_template(
     db: Session = Depends(get_db),
 ):
     """创建字段模板"""
+    normalized, errors = normalize_field_template_payload(
+        template_name=template.name,
+        fields=template.fields,
+        root_nodes=template.root_nodes,
+    )
+    if errors:
+        raise HTTPException(status_code=400, detail="; ".join(errors))
+
     db_template = FieldTemplate(
         id=generate_uuid(),
         name=template.name,
         description=template.description,
         category=template.category,
-        fields=template.fields,
+        schema_version=normalized["schema_version"],
+        fields=normalized["fields"],
+        root_nodes=normalized["root_nodes"],
     )
     db.add(db_template)
     db.commit()
@@ -454,11 +471,26 @@ def update_field_template(
         raise HTTPException(status_code=404, detail="Not found")
     
     update_data = update.model_dump(exclude_unset=True)
+    merged_name = update_data.get("name", template.name)
+    if "fields" in update_data or "root_nodes" in update_data or "schema_version" in update_data:
+        normalized, errors = normalize_field_template_payload(
+            template_name=merged_name,
+            fields=update_data.get("fields", template.fields or []),
+            root_nodes=update_data.get("root_nodes", template.root_nodes or []),
+        )
+        if errors:
+            raise HTTPException(status_code=400, detail="; ".join(errors))
+        update_data["schema_version"] = normalized["schema_version"]
+        update_data["fields"] = normalized["fields"]
+        update_data["root_nodes"] = normalized["root_nodes"]
+
     for key, value in update_data.items():
         setattr(template, key, value)
-        # 对于 JSON 字段（如 fields），需要标记为已修改
+        # 对于 JSON 字段（如 fields / root_nodes），需要标记为已修改
         if key == "fields":
             flag_modified(template, "fields")
+        if key == "root_nodes":
+            flag_modified(template, "root_nodes")
     
     db.commit()
     db.refresh(template)
@@ -913,12 +945,19 @@ def _to_profile_response(p: CreatorProfile) -> CreatorProfileResponse:
 
 
 def _to_template_response(t: FieldTemplate) -> FieldTemplateResponse:
+    normalized, _ = normalize_field_template_payload(
+        template_name=t.name,
+        fields=t.fields or [],
+        root_nodes=getattr(t, "root_nodes", None) or [],
+    )
     return FieldTemplateResponse(
         id=t.id,
         name=t.name,
         description=t.description or "",
         category=t.category or "通用",
-        fields=t.fields or [],
+        schema_version=normalized["schema_version"],
+        fields=normalized["fields"],
+        root_nodes=normalized["root_nodes"],
         created_at=t.created_at.isoformat() if t.created_at else "",
     )
 
@@ -1015,11 +1054,14 @@ def export_field_templates(
     
     export_data = []
     for t in templates:
+        response = _to_template_response(t)
         export_data.append({
             "name": t.name,
             "description": t.description or "",
             "category": t.category or "通用",
-            "fields": t.fields or [],
+            "schema_version": response.schema_version,
+            "fields": response.fields,
+            "root_nodes": response.root_nodes,
         })
     
     return {"type": "field_templates", "data": export_data, "count": len(export_data)}
@@ -1033,12 +1075,21 @@ def import_field_templates(
     """导入字段模板"""
     imported = 0
     for item in request.data:
+        normalized, errors = normalize_field_template_payload(
+            template_name=item.get("name", "导入模板"),
+            fields=item.get("fields", []),
+            root_nodes=item.get("root_nodes", []),
+        )
+        if errors:
+            raise HTTPException(status_code=400, detail="; ".join(errors))
         db_template = FieldTemplate(
             id=generate_uuid(),
             name=item.get("name", "导入模板"),
             description=item.get("description", ""),
             category=item.get("category", "通用"),
-            fields=item.get("fields", []),
+            schema_version=normalized["schema_version"],
+            fields=normalized["fields"],
+            root_nodes=normalized["root_nodes"],
         )
         db.add(db_template)
         imported += 1

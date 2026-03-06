@@ -230,13 +230,19 @@ def get_phase_fields(project_id: str, phase: str, db: Optional[Session] = None) 
     ]
 
 
-def get_field_content(project_id: str, field_name: str, db: Optional[Session] = None) -> Optional[Dict[str, Any]]:
+def get_field_content(
+    project_id: str,
+    field_name: str = "",
+    field_id: str = "",
+    db: Optional[Session] = None,
+) -> Optional[Dict[str, Any]]:
     """
     根据字段名获取字段完整内容（统一搜索 ContentBlock）
     
     Args:
         project_id: 项目ID
         field_name: 字段名称
+        field_id: 字段 ID（优先于名称）
         db: 数据库会话
     
     Returns:
@@ -245,11 +251,20 @@ def get_field_content(project_id: str, field_name: str, db: Optional[Session] = 
     if db is None:
         db = next(get_db())
     
-    block = db.query(ContentBlock).filter(
-        ContentBlock.project_id == project_id,
-        ContentBlock.name == field_name,
-        ContentBlock.deleted_at == None,  # noqa: E711
-    ).first()
+    block = None
+    if field_id:
+        block = db.query(ContentBlock).filter(
+            ContentBlock.project_id == project_id,
+            ContentBlock.id == field_id,
+            ContentBlock.deleted_at == None,  # noqa: E711
+        ).first()
+
+    if not block and field_name:
+        block = db.query(ContentBlock).filter(
+            ContentBlock.project_id == project_id,
+            ContentBlock.name == field_name,
+            ContentBlock.deleted_at == None,  # noqa: E711
+        ).first()
     
     if block:
         # 推断 phase：通过父级阶段块
@@ -334,12 +349,23 @@ def get_dependency_contents(
     
     result = {}
     for name in dependency_names:
+        normalized_ref = (name or "").strip()
+        block = None
+        block_id = normalized_ref[3:] if normalized_ref.startswith("id:") else normalized_ref
+
         block = db.query(ContentBlock).filter(
             ContentBlock.project_id == project_id,
-            ContentBlock.name == name,
+            ContentBlock.id == block_id,
             ContentBlock.deleted_at == None,  # noqa: E711
         ).first()
-        
+
+        if not block:
+            block = db.query(ContentBlock).filter(
+                ContentBlock.project_id == project_id,
+                ContentBlock.name == normalized_ref,
+                ContentBlock.deleted_at == None,  # noqa: E711
+            ).first()
+
         if block and block.content:
             result[name] = block.content
     

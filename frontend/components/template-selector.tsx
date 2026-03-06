@@ -33,6 +33,18 @@ const specialHandlerIcons: Record<string, React.ReactNode> = {
   evaluate: <BarChart3 className="w-4 h-4 text-emerald-400" />,
 };
 
+function flattenTemplateNodes(nodes: PhaseTemplate["root_nodes"] = []): NonNullable<PhaseTemplate["root_nodes"]> {
+  return (nodes || []).flatMap((node) => [node, ...flattenTemplateNodes(node.children || [])]);
+}
+
+function countTemplateFields(nodes: PhaseTemplate["root_nodes"] = []): number {
+  return flattenTemplateNodes(nodes).filter((node) => node.block_type === "field" || node.block_type === "proposal").length;
+}
+
+function countTemplateContainers(nodes: PhaseTemplate["root_nodes"] = []): number {
+  return flattenTemplateNodes(nodes).filter((node) => node.block_type === "phase" || node.block_type === "group").length;
+}
+
 export default function TemplateSelector({
   projectId,
   onSelect,
@@ -136,6 +148,12 @@ export default function TemplateSelector({
         {templates.map((template) => {
           const isSelected = selectedId === template.id;
           const isExpanded = expandedId === template.id;
+          const fieldCount = template.root_nodes?.length
+            ? countTemplateFields(template.root_nodes)
+            : template.phases.reduce((sum, phase) => sum + (phase.default_fields?.length || 0), 0);
+          const containerCount = template.root_nodes?.length
+            ? countTemplateContainers(template.root_nodes)
+            : template.phases.length;
 
           return (
             <div
@@ -202,7 +220,7 @@ export default function TemplateSelector({
               {isExpanded && (
                 <div className="px-4 pb-4 pt-2 border-t border-surface-3">
                   <div className="text-xs text-zinc-500 mb-2">
-                    包含 {template.phases.length} 个组
+                    包含 {containerCount} 个容器节点 · {fieldCount} 个内容块
                   </div>
                   <div className="space-y-1">
                     {template.phases.map((phase, idx) => (

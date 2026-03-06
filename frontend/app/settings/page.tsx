@@ -6,7 +6,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { settingsAPI, graderAPI, phaseTemplateAPI } from "@/lib/api";
-import type { AgentSettingsData, CreatorProfile, GraderData, PhaseTemplate } from "@/lib/api";
+import type { AgentSettingsData, CreatorProfile, GraderData, PhaseTemplate, TemplateNode } from "@/lib/api";
 
 import { SystemPromptsSection } from "@/components/settings/system-prompts-section";
 import { ProfilesSection } from "@/components/settings/profiles-section";
@@ -33,6 +33,7 @@ type FieldTemplateItem = {
   name: string;
   description?: string;
   category?: string;
+  schema_version?: number;
   fields?: Array<{
     name: string;
     type?: string;
@@ -41,6 +42,7 @@ type FieldTemplateItem = {
     pre_questions?: string[];
     depends_on?: string[];
   }>;
+  root_nodes?: TemplateNode[];
 };
 type ChannelItem = { id: string; name: string; description?: string; platform?: string; prompt_template?: string };
 type LogItem = { id: string; [key: string]: unknown };

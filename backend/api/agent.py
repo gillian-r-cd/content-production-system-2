@@ -75,23 +75,37 @@ def _resolve_references(
 ) -> dict[str, str]:
     """统一的 @ 引用解析：ContentBlock → 方案JSON
 
-    返回 {name: 完整上下文文本}，包含内容和配置信息（ai_prompt等），
+    返回 {ref_key: 完整上下文文本}，包含内容和配置信息（ai_prompt等），
     确保 Agent 能充分了解引用块的全貌。
     P0-1: 统一使用 ContentBlock，已移除 ProjectField 查询。
+    已升级为 ID-first + 名称兜底。
     """
     if not references:
         return {}
 
     result = {}
 
-    # 1. ContentBlock
-    ref_blocks = db.query(ContentBlock).filter(
-        ContentBlock.project_id == project_id,
-        ContentBlock.name.in_(references),
-        ContentBlock.deleted_at == None,  # noqa: E711
-    ).all()
-    for b in ref_blocks:
-        result[b.name] = _build_ref_context(b)
+    # 1. ContentBlock — ID-first，名称兜底
+    for ref in references:
+        if ref in result:
+            continue
+        normalized = ref.strip()
+        block_id = normalized[3:] if normalized.startswith("id:") else normalized
+        # 先按 ID 查找
+        block = db.query(ContentBlock).filter(
+            ContentBlock.project_id == project_id,
+            ContentBlock.id == block_id,
+            ContentBlock.deleted_at == None,  # noqa: E711
+        ).first()
+        # 按名称兜底
+        if not block:
+            block = db.query(ContentBlock).filter(
+                ContentBlock.project_id == project_id,
+                ContentBlock.name == normalized,
+                ContentBlock.deleted_at == None,  # noqa: E711
+            ).first()
+        if block:
+            result[ref] = _build_ref_context(block)
 
     # 2. 方案引用（从 design_inner 阶段块中解析 JSON proposals）
     import re

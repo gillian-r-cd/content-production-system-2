@@ -20,6 +20,7 @@ from core.models import (
     Project,
     CreatorProfile,
     ProjectField,
+    ContentBlock,
     Channel,
 )
 
@@ -136,6 +137,23 @@ class TestPromptEngine:
         
         assert len(refs) == 0
         assert "@nonexistent_field" in replaced  # Keep original
+
+    def test_parse_references_by_stable_id(self, engine):
+        text = "Please refer to @id:block-123 for design"
+        field = ContentBlock(
+            id="block-123",
+            project_id="p1",
+            name="intent_analysis",
+            block_type="field",
+            content="Stable id content",
+        )
+
+        replaced, refs = engine.parse_references(text, {"intent_analysis": field})
+
+        assert len(refs) == 1
+        assert refs[0].id == "block-123"
+        assert "Stable id content" in replaced
+        assert "id:block-123" in replaced
     
     def test_phase_prompts_exist(self, engine):
         """验证所有阶段都有提示词"""
@@ -173,12 +191,13 @@ class TestPromptEngine:
     
     def test_get_field_generation_prompt(self, engine):
         """测试字段生成提示词"""
-        field = ProjectField(
+        field = ContentBlock(
             id="f1",
             project_id="p1",
-            phase="inner",
             name="测试字段",
+            block_type="field",
             ai_prompt="请生成一段测试内容",
+            pre_questions=["问题1", "问题2"],
             pre_answers={"问题1": "答案1", "问题2": "答案2"},
         )
         

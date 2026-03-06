@@ -111,6 +111,8 @@ class ContentBlock(BaseModel):
     # 生成前提问（来自字段模板）
     pre_questions: Mapped[list] = mapped_column(JSON, default=list)
     pre_answers: Mapped[dict] = mapped_column(JSON, default=dict)
+    guidance_input: Mapped[str] = mapped_column(Text, default="")
+    guidance_output: Mapped[str] = mapped_column(Text, default="")
     
     # 依赖关系
     depends_on: Mapped[list] = mapped_column(JSON, default=list)
@@ -236,6 +238,8 @@ class ContentBlock(BaseModel):
             "constraints": self.constraints,
             "pre_questions": self.pre_questions or [],
             "pre_answers": self.pre_answers or {},
+            "guidance_input": self.guidance_input or "",
+            "guidance_output": self.guidance_output or "",
             "depends_on": self.depends_on,
             "special_handler": self.special_handler,
             "need_review": self.need_review,

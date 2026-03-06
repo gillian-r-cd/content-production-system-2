@@ -1,26 +1,29 @@
 // frontend/components/settings/phase-templates-section.tsx
-// 功能: 流程模板管理（PhaseTemplate - 项目创建时使用的模板）
+// 功能: 流程模板管理，统一编辑 PhaseTemplate.root_nodes 树结构
+// 主要组件: PhaseTemplatesSection
+// 数据结构: PhaseTemplateEditForm（root_nodes 为单一编辑真相）
 
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import { phaseTemplateAPI, modelsAPI } from "@/lib/api";
-import type { PhaseTemplate, ModelInfo } from "@/lib/api";
-import { Sparkles } from "lucide-react";
+import type { PhaseTemplate, ModelInfo, TemplateNode } from "@/lib/api";
 import { FormField } from "./shared";
+import { TemplateTreeEditor } from "./template-tree-editor";
 
-type TemplatePhase = PhaseTemplate["phases"][number];
-type TemplateField = TemplatePhase["default_fields"][number];
+function flattenTemplateNodes(nodes: TemplateNode[] = []): TemplateNode[] {
+  return nodes.flatMap((node) => [node, ...flattenTemplateNodes(node.children || [])]);
+}
 
 interface PhaseTemplateEditForm {
   name: string;
   description: string;
-  phases: TemplatePhase[];
+  root_nodes: TemplateNode[];
 }
 
 export function PhaseTemplatesSection({ templates, onRefresh }: { templates: PhaseTemplate[]; onRefresh: () => void }) {
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState<PhaseTemplateEditForm>({ name: "", description: "", phases: [] });
+  const [editForm, setEditForm] = useState<PhaseTemplateEditForm>({ name: "", description: "", root_nodes: [] });
   const [isCreating, setIsCreating] = useState(false);
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
 
@@ -36,7 +39,7 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
     setEditForm({
       name: "",
       description: "",
-      phases: [{ name: "默认组", block_type: "phase", special_handler: null, order_index: 0, default_fields: [] }],
+      root_nodes: [],
     });
   };
 
@@ -45,7 +48,7 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
     setEditForm({
       name: template.name,
       description: template.description,
-      phases: JSON.parse(JSON.stringify(template.phases || [])),
+      root_nodes: JSON.parse(JSON.stringify(template.root_nodes || [])),
     });
   };
 
@@ -74,85 +77,6 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
     }
   };
 
-  // ---- Phase 操作 ----
-  const addPhase = () => {
-    const phases = [...(editForm.phases || [])];
-    phases.push({
-      name: "",
-      block_type: "phase",
-      special_handler: null,
-      order_index: phases.length,
-      default_fields: [],
-    });
-    setEditForm({ ...editForm, phases });
-  };
-
-  const updatePhase = (pIdx: number, key: keyof TemplatePhase, value: unknown) => {
-    const phases = [...editForm.phases];
-    phases[pIdx] = { ...phases[pIdx], [key]: value as never };
-    setEditForm({ ...editForm, phases });
-  };
-
-  const removePhase = (pIdx: number) => {
-    const phases = editForm.phases.filter((_, i: number) => i !== pIdx);
-    // 重新排序 order_index
-    phases.forEach((p, i: number) => { p.order_index = i; });
-    setEditForm({ ...editForm, phases });
-  };
-
-  // ---- Field 操作 ----
-  const addField = (pIdx: number) => {
-    const phases = [...editForm.phases];
-    phases[pIdx] = {
-      ...phases[pIdx],
-      default_fields: [
-        ...(phases[pIdx].default_fields || []),
-        { name: "", block_type: "field", ai_prompt: "", content: "", pre_questions: [], depends_on: [], auto_generate: false, model_override: null },
-      ],
-    };
-    setEditForm({ ...editForm, phases });
-  };
-
-  const updateField = (pIdx: number, fIdx: number, key: keyof TemplateField, value: unknown) => {
-    const phases = JSON.parse(JSON.stringify(editForm.phases));
-    phases[pIdx].default_fields[fIdx][key] = value;
-    setEditForm({ ...editForm, phases });
-  };
-
-  const removeField = (pIdx: number, fIdx: number) => {
-    const phases = JSON.parse(JSON.stringify(editForm.phases));
-    phases[pIdx].default_fields.splice(fIdx, 1);
-    setEditForm({ ...editForm, phases });
-  };
-
-  // 计算字段在全模板中的全局索引（用于判定是否为"第一个内容块"）
-  const getGlobalFieldIndex = (pIdx: number, fIdx: number): number => {
-    let count = 0;
-    for (let i = 0; i < pIdx; i++) {
-      count += (editForm.phases[i]?.default_fields || []).length;
-    }
-    return count + fIdx;
-  };
-
-  // 收集所有字段名（用于依赖选择）
-  const getAllFieldNames = (excludePIdx: number, excludeFIdx: number): string[] => {
-    const names: string[] = [];
-    (editForm.phases || []).forEach((phase, pIdx: number) => {
-      (phase.default_fields || []).forEach((field, fIdx: number) => {
-        if (pIdx === excludePIdx && fIdx === excludeFIdx) return;
-        if (field.name) names.push(field.name);
-      });
-    });
-    return names;
-  };
-
-  const SPECIAL_HANDLERS = [
-    { value: "", label: "无" },
-    { value: "intent", label: "意图分析" },
-    { value: "research", label: "消费者调研" },
-    { value: "evaluate", label: "评估" },
-  ];
-
   const renderForm = () => (
     <div className="p-5 bg-surface-2 border border-brand-500/50 rounded-xl mb-4">
       <div className="space-y-4">
@@ -176,180 +100,13 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
           </FormField>
         </div>
 
-        {/* 组（Phase）列表 */}
-        <div>
-          <div className="flex items-center justify-between mb-3">
-            <h4 className="text-sm font-semibold text-zinc-200">组结构</h4>
-            <button
-              onClick={addPhase}
-              className="px-3 py-1 text-xs bg-brand-600 hover:bg-brand-700 rounded-lg text-white"
-            >
-              + 添加组
-            </button>
-          </div>
-
-          <div className="space-y-4">
-            {(editForm.phases || []).map((phase, pIdx: number) => (
-              <div key={pIdx} className="bg-surface-1 border border-surface-3 rounded-xl p-4">
-                {/* Phase header */}
-                <div className="flex items-center gap-3 mb-3">
-                  <span className="text-xs text-zinc-500 font-mono">#{pIdx + 1}</span>
-                  <input
-                    value={phase.name || ""}
-                    onChange={(e) => updatePhase(pIdx, "name", e.target.value)}
-                    className="flex-1 px-3 py-1.5 bg-surface-2 border border-surface-3 rounded-lg text-zinc-200 text-sm"
-                    placeholder="组名称"
-                  />
-                  <select
-                    value={phase.special_handler || ""}
-                    onChange={(e) => updatePhase(pIdx, "special_handler", e.target.value || null)}
-                    className="px-2 py-1.5 bg-surface-2 border border-surface-3 rounded-lg text-zinc-300 text-xs"
-                  >
-                    {SPECIAL_HANDLERS.map((h) => (
-                      <option key={h.value} value={h.value}>{h.label}</option>
-                    ))}
-                  </select>
-                  <button
-                    onClick={() => removePhase(pIdx)}
-                    className="text-red-400 hover:text-red-300 text-xs"
-                  >
-                    删除组
-                  </button>
-                </div>
-
-                {/* Fields in this phase */}
-                <div className="ml-4 space-y-3">
-                  {(phase.default_fields || []).map((field, fIdx: number) => (
-                    <div key={fIdx} className="bg-surface-2 border border-surface-3 rounded-lg p-3 space-y-2">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-zinc-500 font-mono">
-                          #{pIdx + 1}.{fIdx + 1}
-                        </span>
-                        <input
-                          value={field.name || ""}
-                          onChange={(e) => updateField(pIdx, fIdx, "name", e.target.value)}
-                          className="flex-1 px-2 py-1 bg-surface-1 border border-surface-3 rounded text-zinc-200 text-sm"
-                          placeholder="内容块名称"
-                        />
-                        <select
-                          value={field.block_type || "field"}
-                          onChange={(e) => updateField(pIdx, fIdx, "block_type", e.target.value)}
-                          className="px-2 py-1 bg-surface-1 border border-surface-3 rounded text-zinc-300 text-xs"
-                        >
-                          <option value="field">内容块</option>
-                          <option value="phase">子组</option>
-                        </select>
-                        <button
-                          onClick={() => removeField(pIdx, fIdx)}
-                          className="text-red-400 hover:text-red-300 text-xs"
-                        >
-                          删除
-                        </button>
-                      </div>
-
-                      {/* AI 提示词 */}
-                      <FormField label="AI 生成提示词" hint="指导 AI 如何生成这个内容块的内容">
-                        <textarea
-                          value={field.ai_prompt || ""}
-                          onChange={(e) => updateField(pIdx, fIdx, "ai_prompt", e.target.value)}
-                          rows={2}
-                          className="w-full px-2 py-1.5 bg-surface-1 border border-surface-3 rounded text-zinc-200 text-sm resize-y"
-                          placeholder="请根据项目意图和消费者画像，生成..."
-                        />
-                      </FormField>
-
-                      {/* 预置内容 */}
-                      <FormField label="预置内容" hint="模板自带的初始内容（可选，应用模板时将自动填入编辑区）">
-                        <textarea
-                          value={field.content || ""}
-                          onChange={(e) => updateField(pIdx, fIdx, "content", e.target.value)}
-                          rows={3}
-                          className="w-full px-2 py-1.5 bg-surface-1 border border-surface-3 rounded text-zinc-200 text-sm resize-y"
-                          placeholder="此内容块的预置内容..."
-                        />
-                      </FormField>
-
-                      {/* 依赖 */}
-                      {(() => {
-                        const otherNames = getAllFieldNames(pIdx, fIdx);
-                        if (otherNames.length === 0) return null;
-                        return (
-                          <FormField label="依赖内容块" hint="选择这个内容块依赖的其他内容块">
-                            <div className="flex flex-wrap gap-2">
-                              {otherNames.map((name) => (
-                                <label key={name} className="flex items-center gap-1.5 text-xs text-zinc-300">
-                                  <input
-                                    type="checkbox"
-                                    checked={(field.depends_on || []).includes(name)}
-                                    onChange={(e) => {
-                                      const deps = field.depends_on || [];
-                                      if (e.target.checked) {
-                                        updateField(pIdx, fIdx, "depends_on", [...deps, name]);
-                                      } else {
-                                        updateField(pIdx, fIdx, "depends_on", deps.filter((d: string) => d !== name));
-                                      }
-                                    }}
-                                  />
-                                  {name}
-                                </label>
-                              ))}
-                            </div>
-                          </FormField>
-                        );
-                      })()}
-
-                      {/* need_review + auto_generate */}
-                      <div className="flex items-center gap-4">
-                        <label className="flex items-center gap-2 text-xs text-zinc-400">
-                          <input
-                            type="checkbox"
-                            checked={field.need_review !== false}
-                            onChange={(e) => updateField(pIdx, fIdx, "need_review", e.target.checked)}
-                          />
-                          需要人工确认
-                        </label>
-                        {/* 自动生成：仅非首个内容块显示（第一个内容块没有上游依赖，无法自动触发） */}
-                        {getGlobalFieldIndex(pIdx, fIdx) > 0 && (
-                          <label className="flex items-center gap-2 text-xs text-zinc-400">
-                            <input
-                              type="checkbox"
-                              checked={field.auto_generate === true}
-                              onChange={(e) => updateField(pIdx, fIdx, "auto_generate", e.target.checked)}
-                            />
-                            自动生成（依赖就绪时自动触发）
-                          </label>
-                        )}
-                        {/* 模型选择 */}
-                        {availableModels.length > 0 && (
-                          <label className="flex items-center gap-2 text-xs text-zinc-400">
-                            模型
-                            <select
-                              value={(field.model_override as string) || ""}
-                              onChange={(e) => updateField(pIdx, fIdx, "model_override", e.target.value || null)}
-                              className="px-2 py-1 bg-surface-1 border border-surface-3 rounded text-zinc-300 text-xs"
-                            >
-                              <option value="">默认</option>
-                              {availableModels.map(m => (
-                                <option key={m.id} value={m.id}>{m.name}</option>
-                              ))}
-                            </select>
-                          </label>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-
-                  <button
-                    onClick={() => addField(pIdx)}
-                    className="text-xs text-brand-400 hover:text-brand-300"
-                  >
-                    + 添加内容块
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+        <TemplateTreeEditor
+          nodes={editForm.root_nodes}
+          onChange={(root_nodes) => setEditForm({ ...editForm, root_nodes })}
+          availableModels={availableModels}
+          topLevelLabel="流程模板结构"
+          emptyText="还没有添加内容，先添加顶层阶段。"
+        />
 
         <div className="flex gap-2 pt-2">
           <button onClick={handleSave} className="px-4 py-2 bg-brand-600 hover:bg-brand-700 rounded-lg text-sm">保存</button>
@@ -388,19 +145,24 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
                   {template.is_system && (
                     <span className="px-1.5 py-0.5 text-xs bg-zinc-500/20 text-zinc-400 rounded">系统</span>
                   )}
+                  <span className="px-1.5 py-0.5 text-xs bg-brand-600/10 text-brand-400 rounded">v{template.schema_version}</span>
                 </div>
                 <p className="text-sm text-zinc-500 mt-1">{template.description}</p>
-                <div className="flex gap-3 mt-2 text-xs text-zinc-400">
-                  <span>{template.phases.length} 个组</span>
-                  <span>
-                    {template.phases.reduce((sum: number, p) => sum + (p.default_fields || []).length, 0)} 个内容块
-                  </span>
-                  <span>
-                    {template.phases.reduce((sum: number, p) =>
-                      sum + (p.default_fields || []).filter((f) => f.content).length, 0
-                    )} 个有预置内容
-                  </span>
-                </div>
+                {(() => {
+                  const flatNodes = flattenTemplateNodes(template.root_nodes || []);
+                  const containerCount = flatNodes.filter((node) => node.block_type === "phase" || node.block_type === "group").length;
+                  const fieldCount = flatNodes.filter((node) => node.block_type === "field" || node.block_type === "proposal").length;
+                  const contentCount = flatNodes.filter((node) => !!node.content).length;
+                  return (
+                    <div className="flex gap-3 mt-2 text-xs text-zinc-400">
+                      <span>{containerCount || template.phases.length} 个阶段/分组</span>
+                      <span>{fieldCount || template.phases.reduce((sum: number, p) => sum + (p.default_fields || []).length, 0)} 个内容块</span>
+                      <span>{contentCount || template.phases.reduce((sum: number, p) =>
+                        sum + (p.default_fields || []).filter((f) => f.content).length, 0
+                      )} 个有预置内容</span>
+                    </div>
+                  );
+                })()}
               </div>
               <div className="flex gap-2">
                 {!template.is_system && (

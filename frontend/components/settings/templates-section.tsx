@@ -1,42 +1,36 @@
 // frontend/components/settings/templates-section.tsx
-// 功能: 内容块模板管理（可视化编辑器）
+// 功能: 内容块模板管理，统一编辑 FieldTemplate.root_nodes 树结构
+// 主要组件: TemplatesSection
+// 数据结构: FieldTemplateItem / TemplateEditForm（使用 root_nodes 作为单一编辑真相）
 
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import { settingsAPI, modelsAPI } from "@/lib/api";
-import type { ModelInfo } from "@/lib/api";
-import { FormField, TagInput, ImportExportButtons, SingleExportButton, downloadJSON } from "./shared";
-
-interface TemplateField {
-  name: string;
-  ai_prompt?: string;
-  content?: string;
-  pre_questions?: string[];
-  depends_on?: string[];
-  need_review?: boolean;
-  auto_generate?: boolean;
-  model_override?: string | null;
-}
+import type { ModelInfo, TemplateNode } from "@/lib/api";
+import { FormField, ImportExportButtons, SingleExportButton, downloadJSON } from "./shared";
+import { TemplateTreeEditor } from "./template-tree-editor";
 
 interface FieldTemplateItem {
   id: string;
   name: string;
   description?: string;
   category?: string;
-  fields?: TemplateField[];
+  schema_version?: number;
+  fields?: Array<{ name: string; model_override?: string | null }>;
+  root_nodes?: TemplateNode[];
 }
 
 interface TemplateEditForm {
   name: string;
   description: string;
   category: string;
-  fields: TemplateField[];
+  root_nodes: TemplateNode[];
 }
 
 export function TemplatesSection({ templates, onRefresh }: { templates: FieldTemplateItem[]; onRefresh: () => void }) {
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState<TemplateEditForm>({ name: "", description: "", category: "通用", fields: [] });
+  const [editForm, setEditForm] = useState<TemplateEditForm>({ name: "", description: "", category: "通用", root_nodes: [] });
   const [isCreating, setIsCreating] = useState(false);
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
 
@@ -73,7 +67,7 @@ export function TemplatesSection({ templates, onRefresh }: { templates: FieldTem
 
   const handleCreate = () => {
     setIsCreating(true);
-    setEditForm({ name: "", description: "", category: "通用", fields: [] });
+    setEditForm({ name: "", description: "", category: "通用", root_nodes: [] });
   };
 
   const handleEdit = (template: FieldTemplateItem) => {
@@ -82,16 +76,16 @@ export function TemplatesSection({ templates, onRefresh }: { templates: FieldTem
       name: template.name || "",
       description: template.description || "",
       category: template.category || "通用",
-      fields: template.fields || [],
+      root_nodes: template.root_nodes || [],
     });
   };
 
   const handleSave = async () => {
     try {
       if (isCreating) {
-        await settingsAPI.createFieldTemplate(editForm);
+        await settingsAPI.createFieldTemplate({ ...editForm, schema_version: 2 });
       } else {
-        await settingsAPI.updateFieldTemplate(editingId!, editForm);
+        await settingsAPI.updateFieldTemplate(editingId!, { ...editForm, schema_version: 2 });
       }
       setEditingId(null);
       setIsCreating(false);
@@ -109,33 +103,6 @@ export function TemplatesSection({ templates, onRefresh }: { templates: FieldTem
     } catch {
       alert("删除失败");
     }
-  };
-
-  // 字段编辑辅助函数
-  const addField = () => {
-    setEditForm({
-      ...editForm,
-      fields: [...(editForm.fields || []), { name: "", ai_prompt: "", content: "", pre_questions: [], depends_on: [], auto_generate: false, model_override: null }],
-    });
-  };
-
-  const updateField = (index: number, key: keyof TemplateField, value: unknown) => {
-    const newFields = [...editForm.fields];
-    newFields[index] = { ...newFields[index], [key]: value as never };
-    setEditForm({ ...editForm, fields: newFields });
-  };
-
-  const removeField = (index: number) => {
-    const newFields = editForm.fields.filter((_, i: number) => i !== index);
-    setEditForm({ ...editForm, fields: newFields });
-  };
-
-  const moveField = (index: number, direction: "up" | "down") => {
-    const newIndex = direction === "up" ? index - 1 : index + 1;
-    if (newIndex < 0 || newIndex >= editForm.fields.length) return;
-    const newFields = [...editForm.fields];
-    [newFields[index], newFields[newIndex]] = [newFields[newIndex], newFields[index]];
-    setEditForm({ ...editForm, fields: newFields });
   };
 
   const renderForm = () => (
@@ -171,160 +138,15 @@ export function TemplatesSection({ templates, onRefresh }: { templates: FieldTem
           </FormField>
         </div>
 
-        {/* 内容块列表 */}
+        {/* 模板树 */}
         <div className="border-t border-surface-3 pt-4">
-          <div className="flex justify-between items-center mb-4">
-            <h4 className="text-sm font-medium text-zinc-300">内容块列表</h4>
-            <button onClick={addField} className="px-3 py-1 text-sm bg-brand-600 hover:bg-brand-700 rounded-lg">
-              + 添加内容块
-            </button>
-          </div>
-
-          {(editForm.fields || []).length === 0 ? (
-            <div className="text-center py-8 text-zinc-500 border border-dashed border-surface-3 rounded-lg">
-              还没有内容块，点击「添加内容块」开始
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {(editForm.fields || []).map((field, index: number) => (
-                <div key={index} className="p-4 bg-surface-1 border border-surface-3 rounded-lg">
-                  <div className="flex justify-between items-start mb-3">
-                    <div className="flex items-center gap-2">
-                      <span className="text-zinc-500 text-sm">#{index + 1}</span>
-                      <div className="flex gap-1">
-                        <button
-                          onClick={() => moveField(index, "up")}
-                          disabled={index === 0}
-                          className="px-2 py-1 text-xs bg-surface-3 rounded disabled:opacity-30"
-                        >
-                          ↑
-                        </button>
-                        <button
-                          onClick={() => moveField(index, "down")}
-                          disabled={index === editForm.fields.length - 1}
-                          className="px-2 py-1 text-xs bg-surface-3 rounded disabled:opacity-30"
-                        >
-                          ↓
-                        </button>
-                      </div>
-                    </div>
-                    <button onClick={() => removeField(index)} className="text-red-400 hover:text-red-300 text-sm">
-                      删除
-                    </button>
-                  </div>
-
-                  <div className="mb-3">
-                    <FormField label="内容块名称">
-                      <input
-                        type="text"
-                        value={field.name || ""}
-                        onChange={(e) => updateField(index, "name", e.target.value)}
-                        placeholder="如：产品定位"
-                        className="w-full px-3 py-2 bg-surface-2 border border-surface-3 rounded-lg text-zinc-200 text-sm"
-                      />
-                    </FormField>
-                  </div>
-
-                  <FormField label="AI 生成提示词" hint="指导 AI 如何生成这个内容块的内容">
-                    <textarea
-                      value={field.ai_prompt || ""}
-                      onChange={(e) => updateField(index, "ai_prompt", e.target.value)}
-                      placeholder="请根据项目意图和消费者画像，生成一段简洁有力的产品定位..."
-                      rows={3}
-                      className="w-full px-3 py-2 bg-surface-2 border border-surface-3 rounded-lg text-zinc-200 text-sm"
-                    />
-                  </FormField>
-
-                  <div className="mt-3">
-                    <FormField label="预置内容" hint="模板自带的初始内容（可选，应用模板时将自动填入编辑区）">
-                      <textarea
-                        value={field.content || ""}
-                        onChange={(e) => updateField(index, "content", e.target.value)}
-                        placeholder="在此输入模板自带的初始内容，如固定前置说明、框架模板等..."
-                        rows={3}
-                        className="w-full px-3 py-2 bg-surface-2 border border-surface-3 rounded-lg text-zinc-200 text-sm"
-                      />
-                    </FormField>
-                  </div>
-
-                  <div className="mt-3">
-                    <FormField label="生成前提问" hint="生成前需要用户回答的问题（可选）">
-                      <TagInput
-                        value={field.pre_questions || []}
-                        onChange={(v) => updateField(index, "pre_questions", v)}
-                        placeholder="输入问题后按回车，如：目标用户是谁？"
-                      />
-                    </FormField>
-                  </div>
-
-                  {index > 0 && (
-                    <div className="mt-3">
-                      <FormField label="依赖内容块" hint="选择这个内容块依赖的其他内容块（它们的内容会作为生成上下文）">
-                        <div className="flex flex-wrap gap-2">
-                          {editForm.fields.slice(0, index).map((f, i: number) => (
-                            <label key={i} className="flex items-center gap-2 text-sm text-zinc-300">
-                              <input
-                                type="checkbox"
-                                checked={(field.depends_on || []).includes(f.name)}
-                                onChange={(e) => {
-                                  const deps = field.depends_on || [];
-                                  if (e.target.checked) {
-                                    updateField(index, "depends_on", [...deps, f.name]);
-                                  } else {
-                                    updateField(index, "depends_on", deps.filter((d: string) => d !== f.name));
-                                  }
-                                }}
-                              />
-                              {f.name || `内容块 ${i + 1}`}
-                            </label>
-                          ))}
-                        </div>
-                      </FormField>
-                    </div>
-                  )}
-
-                  {/* need_review + auto_generate */}
-                  <div className="mt-3 flex items-center gap-4">
-                    <label className="flex items-center gap-2 text-xs text-zinc-400">
-                      <input
-                        type="checkbox"
-                        checked={field.need_review !== false}
-                        onChange={(e) => updateField(index, "need_review", e.target.checked)}
-                      />
-                      需要人工确认
-                    </label>
-                    {/* 自动生成：仅非首个内容块显示（第一个内容块没有上游依赖，无法自动触发） */}
-                    {index > 0 && (
-                      <label className="flex items-center gap-2 text-xs text-zinc-400">
-                        <input
-                          type="checkbox"
-                          checked={field.auto_generate === true}
-                          onChange={(e) => updateField(index, "auto_generate", e.target.checked)}
-                        />
-                        自动生成（依赖就绪时自动触发）
-                      </label>
-                    )}
-                    {/* 模型选择 */}
-                    {availableModels.length > 0 && (
-                      <label className="flex items-center gap-2 text-xs text-zinc-400">
-                        模型
-                        <select
-                          value={field.model_override || ""}
-                          onChange={(e) => updateField(index, "model_override", e.target.value || null)}
-                          className="px-2 py-1 bg-surface-2 border border-surface-3 rounded text-zinc-300 text-xs"
-                        >
-                          <option value="">默认</option>
-                          {availableModels.map(m => (
-                            <option key={m.id} value={m.id}>{m.name}</option>
-                          ))}
-                        </select>
-                      </label>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+          <TemplateTreeEditor
+            nodes={editForm.root_nodes}
+            onChange={(root_nodes) => setEditForm({ ...editForm, root_nodes })}
+            availableModels={availableModels}
+            topLevelLabel="模板结构"
+            emptyText="还没有添加内容，先添加顶层阶段或分组。"
+          />
         </div>
 
         <div className="flex gap-2 pt-2">
@@ -366,6 +188,9 @@ export function TemplatesSection({ templates, onRefresh }: { templates: FieldTem
                     <div className="flex items-center gap-2">
                       <h3 className="font-medium text-zinc-200">{template.name}</h3>
                       <span className="text-xs bg-surface-3 px-2 py-1 rounded-full text-zinc-400">{template.category}</span>
+                      <span className="text-xs bg-brand-600/10 px-2 py-1 rounded-full text-brand-400">
+                        v{template.schema_version || 1}
+                      </span>
                     </div>
                     <p className="text-sm text-zinc-500 mt-1">{template.description}</p>
                     {(template.fields || []).length > 0 && (

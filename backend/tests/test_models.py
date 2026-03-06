@@ -123,6 +123,8 @@ class TestFieldTemplate:
         assert template.id is not None
         assert template.get_field_names() == ["目标", "大纲"]
         assert template.get_field_by_name("目标")["type"] == "text"
+        assert len(template.get_root_nodes()) == 1
+        assert template.get_root_nodes()[0]["children"][1]["depends_on_template_node_ids"]
     
     def test_validate_dependencies(self, db_session):
         template = FieldTemplate(

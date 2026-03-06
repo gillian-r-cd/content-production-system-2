@@ -7,7 +7,7 @@
 
 import { useState, useEffect } from "react";
 import { settingsAPI, projectAPI, blockAPI, phaseTemplateAPI } from "@/lib/api";
-import type { CreatorProfile, Project, PhaseTemplate } from "@/lib/api";
+import type { CreatorProfile, Project, PhaseTemplate, TemplateNode } from "@/lib/api";
 
 // 统一模板项（同时展示 PhaseTemplate 和 FieldTemplate）
 interface TemplateItem {
@@ -16,6 +16,7 @@ interface TemplateItem {
   description: string;
   source: "phase" | "field"; // 区分来源
   phases: PhaseTemplate["phases"];
+  root_nodes?: TemplateNode[];
   is_default: boolean;
   fieldCount: number;
   contentCount: number; // 有预置内容的字段数
@@ -33,6 +34,7 @@ interface FieldTemplateLike {
   description?: string;
   category?: string;
   fields?: FieldTemplateLikeField[];
+  root_nodes?: TemplateNode[];
 }
 import { ChevronLeft, ChevronRight, Check, Folder, Lightbulb, Users, PlayCircle, BarChart3 } from "lucide-react";
 
@@ -51,6 +53,53 @@ const specialHandlerIcons: Record<string, React.ReactNode> = {
   simulate: <PlayCircle className="w-4 h-4 text-purple-400" />,
   evaluate: <BarChart3 className="w-4 h-4 text-emerald-400" />,
 };
+
+function flattenTemplateNodes(nodes: TemplateNode[] = []): TemplateNode[] {
+  return nodes.flatMap((node) => [node, ...flattenTemplateNodes(node.children || [])]);
+}
+
+function countFieldNodes(nodes: TemplateNode[] = []): number {
+  return flattenTemplateNodes(nodes).filter((node) => node.block_type === "field" || node.block_type === "proposal").length;
+}
+
+function countContentNodes(nodes: TemplateNode[] = []): number {
+  return flattenTemplateNodes(nodes).filter((node) => !!node.content).length;
+}
+
+function rootNodesToPreviewPhases(nodes: TemplateNode[] = [], fallbackName: string): PhaseTemplate["phases"] {
+  if (!nodes.length) return [];
+
+  const phaseLikeNodes = nodes.filter((node) => node.block_type === "phase");
+  if (phaseLikeNodes.length === nodes.length) {
+    return phaseLikeNodes.map((node, index) => ({
+      name: node.name,
+      block_type: node.block_type,
+      special_handler: node.special_handler || null,
+      order_index: index,
+      default_fields: (node.children || []).map((child) => ({
+        name: child.name,
+        block_type: child.block_type,
+        ai_prompt: child.ai_prompt,
+        content: child.content,
+      })),
+    }));
+  }
+
+  return [{
+    name: fallbackName,
+    block_type: "phase",
+    special_handler: null,
+    order_index: 0,
+    default_fields: flattenTemplateNodes(nodes)
+      .filter((node) => node.block_type === "field" || node.block_type === "proposal")
+      .map((node) => ({
+        name: node.name,
+        block_type: node.block_type,
+        ai_prompt: node.ai_prompt,
+        content: node.content,
+      })),
+  }];
+}
 
 export function CreateProjectModal({
   isOpen,
@@ -121,17 +170,23 @@ export function CreateProjectModal({
 
       // PhaseTemplate → TemplateItem
       for (const pt of phaseData) {
-        const fieldCount = pt.phases.reduce((sum, p) => sum + (p.default_fields || []).length, 0);
-        const contentCount = pt.phases.reduce(
-          (sum, p) => sum + (p.default_fields || []).filter((f) => f.content).length,
-          0
-        );
+        const previewPhases = pt.root_nodes?.length ? rootNodesToPreviewPhases(pt.root_nodes, pt.name) : pt.phases;
+        const fieldCount = pt.root_nodes?.length
+          ? countFieldNodes(pt.root_nodes)
+          : pt.phases.reduce((sum, p) => sum + (p.default_fields || []).length, 0);
+        const contentCount = pt.root_nodes?.length
+          ? countContentNodes(pt.root_nodes)
+          : pt.phases.reduce(
+              (sum, p) => sum + (p.default_fields || []).filter((f) => f.content).length,
+              0
+            );
         items.push({
           id: pt.id,
           name: pt.name,
           description: pt.description,
           source: "phase",
-          phases: pt.phases,
+          phases: previewPhases,
+          root_nodes: pt.root_nodes,
           is_default: pt.is_default,
           fieldCount,
           contentCount,
@@ -143,28 +198,33 @@ export function CreateProjectModal({
       for (const ft of fieldData) {
         if (phaseNames.has(ft.name)) continue; // 避免重复
         const fields = ft.fields || [];
+        const rootNodes = ft.root_nodes || [];
+        const previewPhases = rootNodes.length
+          ? rootNodesToPreviewPhases(rootNodes, ft.name)
+          : [
+              {
+                name: ft.name,
+                block_type: "phase",
+                special_handler: null,
+                order_index: 0,
+                default_fields: fields.map((f: FieldTemplateLikeField) => ({
+                  name: f.name,
+                  block_type: "field",
+                  ai_prompt: f.ai_prompt,
+                  content: f.content,
+                })),
+              },
+            ];
         items.push({
           id: ft.id,
           name: ft.name,
           description: ft.description || ft.category || "",
           source: "field",
-          phases: [
-            {
-              name: ft.name,
-              block_type: "phase",
-              special_handler: null,
-              order_index: 0,
-              default_fields: fields.map((f: FieldTemplateLikeField) => ({
-                name: f.name,
-                block_type: "field",
-                ai_prompt: f.ai_prompt,
-                content: f.content,
-              })),
-            },
-          ],
+          phases: previewPhases,
+          root_nodes: rootNodes,
           is_default: false,
-          fieldCount: fields.length,
-          contentCount: fields.filter((f: FieldTemplateLikeField) => f.content).length,
+          fieldCount: rootNodes.length ? countFieldNodes(rootNodes) : fields.length,
+          contentCount: rootNodes.length ? countContentNodes(rootNodes) : fields.filter((f: FieldTemplateLikeField) => f.content).length,
         });
       }
 

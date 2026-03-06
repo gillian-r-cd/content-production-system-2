@@ -15,6 +15,11 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db
 from core.models import PhaseTemplate, generate_uuid
+from core.template_schema import (
+    TEMPLATE_SCHEMA_VERSION,
+    phase_template_to_root_nodes,
+    root_nodes_to_phase_template_phases,
+)
 
 
 router = APIRouter(prefix="/api/phase-templates", tags=["phase-templates"])
@@ -35,7 +40,8 @@ class TemplateCreate(BaseModel):
     """创建模板请求"""
     name: str
     description: str = ""
-    phases: List[PhaseDefinition]
+    phases: List[PhaseDefinition] = Field(default_factory=list)
+    root_nodes: List[Dict] = Field(default_factory=list)
 
 
 class TemplateUpdate(BaseModel):
@@ -43,6 +49,7 @@ class TemplateUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     phases: Optional[List[PhaseDefinition]] = None
+    root_nodes: Optional[List[Dict]] = None
 
 
 class TemplateResponse(BaseModel):
@@ -50,7 +57,9 @@ class TemplateResponse(BaseModel):
     id: str
     name: str
     description: str
+    schema_version: int
     phases: List[Dict]
+    root_nodes: List[Dict]
     is_default: bool
     is_system: bool
     created_at: Optional[str]
@@ -77,7 +86,9 @@ def list_templates(
             id=t.id,
             name=t.name,
             description=t.description or "",
+            schema_version=TEMPLATE_SCHEMA_VERSION,
             phases=t.phases or [],
+            root_nodes=phase_template_to_root_nodes(t.phases or [])[0],
             is_default=t.is_default,
             is_system=t.is_system,
             created_at=t.created_at.isoformat() if t.created_at else None,
@@ -101,7 +112,9 @@ def get_template(
         id=template.id,
         name=template.name,
         description=template.description or "",
+        schema_version=TEMPLATE_SCHEMA_VERSION,
         phases=template.phases or [],
+        root_nodes=phase_template_to_root_nodes(template.phases or [])[0],
         is_default=template.is_default,
         is_system=template.is_system,
         created_at=template.created_at.isoformat() if template.created_at else None,
@@ -119,7 +132,11 @@ def create_template(
         id=generate_uuid(),
         name=data.name,
         description=data.description,
-        phases=[p.dict() for p in data.phases],
+        phases=(
+            root_nodes_to_phase_template_phases(data.root_nodes)
+            if data.root_nodes
+            else [p.dict() for p in data.phases]
+        ),
         is_default=False,
         is_system=False,
     )
@@ -132,7 +149,9 @@ def create_template(
         id=template.id,
         name=template.name,
         description=template.description or "",
+        schema_version=TEMPLATE_SCHEMA_VERSION,
         phases=template.phases or [],
+        root_nodes=phase_template_to_root_nodes(template.phases or [])[0],
         is_default=template.is_default,
         is_system=template.is_system,
         created_at=template.created_at.isoformat() if template.created_at else None,
@@ -158,7 +177,9 @@ def update_template(
         template.name = data.name
     if data.description is not None:
         template.description = data.description
-    if data.phases is not None:
+    if data.root_nodes is not None:
+        template.phases = root_nodes_to_phase_template_phases(data.root_nodes)
+    elif data.phases is not None:
         template.phases = [p.dict() for p in data.phases]
     
     db.commit()
@@ -168,7 +189,9 @@ def update_template(
         id=template.id,
         name=template.name,
         description=template.description or "",
+        schema_version=TEMPLATE_SCHEMA_VERSION,
         phases=template.phases or [],
+        root_nodes=phase_template_to_root_nodes(template.phases or [])[0],
         is_default=template.is_default,
         is_system=template.is_system,
         created_at=template.created_at.isoformat() if template.created_at else None,
@@ -223,7 +246,9 @@ def duplicate_template(
         id=new_template.id,
         name=new_template.name,
         description=new_template.description or "",
+        schema_version=TEMPLATE_SCHEMA_VERSION,
         phases=new_template.phases or [],
+        root_nodes=phase_template_to_root_nodes(new_template.phases or [])[0],
         is_default=new_template.is_default,
         is_system=new_template.is_system,
         created_at=new_template.created_at.isoformat() if new_template.created_at else None,

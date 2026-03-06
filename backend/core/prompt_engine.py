@@ -450,10 +450,28 @@ class PromptEngine:
             (替换后的文本, 引用的字段列表)
         """
         referenced_fields = []
-        
+        seen_field_ids = set()
+
+        # 兼容稳定 ID：无论调用方只传名称映射还是混合映射，都统一补齐 name/id/id: 三类引用键。
+        fields_by_ref: Dict[str, ContentBlock] = {}
+        for key, field in fields_by_name.items():
+            if not field:
+                continue
+            reference_keys = {
+                str(key).strip(),
+                getattr(field, "name", "") or "",
+                getattr(field, "id", "") or "",
+            }
+            field_id = getattr(field, "id", "") or ""
+            if field_id:
+                reference_keys.add(f"id:{field_id}")
+            for ref_key in reference_keys:
+                if ref_key:
+                    fields_by_ref[ref_key] = field
+
         # 按字段名长度降序排列，确保最长名称优先匹配
         # 这样 "Eval test" 会优先于 "Eval" 被匹配
-        sorted_names = sorted(fields_by_name.keys(), key=len, reverse=True)
+        sorted_names = sorted(fields_by_ref.keys(), key=len, reverse=True)
         
         # 边界字符（名称后必须跟这些字符或字符串结尾）
         boundary_chars = set(' \t\n，。！？、：；""''（）@')
@@ -485,43 +503,61 @@ class PromptEngine:
                         search_start = pos + 1
                         continue
                 
-                field = fields_by_name[name]
-                referenced_fields.append(field)
-                replacement = f"\n\n---\n引用 [{field.name}]:\n{field.content}\n---\n\n"
+                field = fields_by_ref[name]
+                field_id = getattr(field, "id", None)
+                if field_id not in seen_field_ids:
+                    referenced_fields.append(field)
+                    if field_id:
+                        seen_field_ids.add(field_id)
+                replacement = self._format_reference_block(field, name)
                 result = result[:pos] + replacement + result[end_pos:]
                 used_ranges.append((pos, pos + len(replacement)))
                 search_start = pos + len(replacement)
         
         # 第二遍：处理 @阶段.字段名 格式 和 未匹配的 @引用（回退正则）
-        word_chars = r'a-zA-Z0-9_\u4e00-\u9fff'
+        word_chars = r'a-zA-Z0-9_\-\u4e00-\u9fff'
         stop_chars_re = r'的了吗呢吧啊是在有和与或及到从把被让给对比跟向往于着过'
         punct_chars_re = r'，。！？、：；""''（）'
-        pattern = rf'@([{word_chars}]+(?:\.[{word_chars}]+)?)(?=[{stop_chars_re}]|[{punct_chars_re}\s]|$)'
+        pattern = rf'@((?:id:)?[{word_chars}]+(?:\.[{word_chars}]+)?)(?=[{stop_chars_re}]|[{punct_chars_re}\s]|$)'
         
         def replace_ref(match):
             ref = match.group(1)
             
             # 直接匹配（可能在第一遍已处理）
-            if ref in fields_by_name:
-                field = fields_by_name[ref]
-                if field not in referenced_fields:
+            if ref in fields_by_ref:
+                field = fields_by_ref[ref]
+                field_id = getattr(field, "id", None)
+                if field_id not in seen_field_ids:
                     referenced_fields.append(field)
-                return f"\n\n---\n引用 [{field.name}]:\n{field.content}\n---\n\n"
+                    if field_id:
+                        seen_field_ids.add(field_id)
+                return self._format_reference_block(field, ref)
             
             # 阶段.字段名 格式
             if '.' in ref:
                 _, field_name = ref.split('.', 1)
-                if field_name in fields_by_name:
-                    field = fields_by_name[field_name]
-                    if field not in referenced_fields:
+                if field_name in fields_by_ref:
+                    field = fields_by_ref[field_name]
+                    field_id = getattr(field, "id", None)
+                    if field_id not in seen_field_ids:
                         referenced_fields.append(field)
-                    return f"\n\n---\n引用 [{field.name}]:\n{field.content}\n---\n\n"
+                        if field_id:
+                            seen_field_ids.add(field_id)
+                    return self._format_reference_block(field, ref)
             
             return match.group(0)
         
         result = re.sub(pattern, replace_ref, result)
         
         return result, referenced_fields
+
+    def _format_reference_block(self, field: ContentBlock, reference_key: str) -> str:
+        """将引用块格式化为稳定、可回显的文本。"""
+        label = getattr(field, "name", "") or reference_key
+        field_id = getattr(field, "id", "") or ""
+        content = getattr(field, "content", "") or ""
+        id_suffix = f" | id:{field_id}" if field_id else ""
+        return f"\n\n---\n引用 [{label}{id_suffix}]:\n{content}\n---\n\n"
     
     def get_field_generation_prompt(
         self,
@@ -557,12 +593,14 @@ class PromptEngine:
         # 添加字段特定的AI提示词（核心指令）
         if field.ai_prompt and field.ai_prompt.strip() and field.ai_prompt != "请在这里编写生成提示词...":
             parts.append(f"# 具体生成要求\n{field.ai_prompt}")
-        
+
         # 添加用户回答的预问题
         if field.pre_answers:
+            ordered_questions = getattr(field, "pre_questions", None) or list(field.pre_answers.keys())
             answers_text = "\n".join(
-                f"- {q}: {a}" 
-                for q, a in field.pre_answers.items()
+                f"- {q}: {field.pre_answers.get(q, '')}"
+                for q in ordered_questions
+                if str(field.pre_answers.get(q, "")).strip()
             )
             parts.append(f"# 用户补充信息\n{answers_text}")
         

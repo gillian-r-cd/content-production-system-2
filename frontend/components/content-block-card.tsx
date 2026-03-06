@@ -271,7 +271,9 @@ export function ContentBlockCard({
   // 保存 AI 提示词
   const handleSavePrompt = async () => {
     try {
-      await blockAPI.update(block.id, { ai_prompt: editedPrompt });
+      await blockAPI.update(block.id, {
+        ai_prompt: editedPrompt,
+      });
       setSavedPrompt(editedPrompt); // 乐观更新本地状态，立即反映到 UI
       setShowPromptModal(false);
       onUpdate?.();

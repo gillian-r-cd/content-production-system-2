@@ -629,6 +629,7 @@ export interface PhaseTemplate {
   id: string;
   name: string;
   description: string;
+  schema_version: number;
   phases: Array<{
     name: string;
     block_type: string;
@@ -648,10 +649,29 @@ export interface PhaseTemplate {
       [key: string]: unknown;  // 允许模板中的其他自定义字段
     }>;
   }>;
+  root_nodes?: TemplateNode[];
   is_default: boolean;
   is_system: boolean;
   created_at: string | null;
   updated_at: string | null;
+}
+
+export interface TemplateNode {
+  template_node_id: string;
+  name: string;
+  block_type: "phase" | "group" | "field" | "proposal";
+  ai_prompt?: string;
+  content?: string;
+  pre_questions?: string[];
+  depends_on?: string[];
+  depends_on_template_node_ids?: string[];
+  constraints?: Record<string, unknown>;
+  special_handler?: string | null;
+  need_review?: boolean;
+  auto_generate?: boolean;
+  is_collapsed?: boolean;
+  model_override?: string | null;
+  children?: TemplateNode[];
 }
 
 // ============== Content Block API (新架构) ==============
@@ -765,9 +785,9 @@ export const blockAPI = {
     }),
 
   // 应用模板到项目
-  applyTemplate: (projectId: string, templateId: string) =>
+  applyTemplate: (projectId: string, templateId: string, parentId?: string | null) =>
     fetchAPI<{ message: string; blocks_created: number }>(
-      `/api/blocks/project/${projectId}/apply-template?template_id=${templateId}`,
+      `/api/blocks/project/${projectId}/apply-template?template_id=${templateId}${parentId ? `&parent_id=${encodeURIComponent(parentId)}` : ""}`,
       { method: "POST" }
     ),
 
@@ -796,21 +816,23 @@ export const phaseTemplateAPI = {
   get: (templateId: string) =>
     fetchAPI<PhaseTemplate>(`/api/phase-templates/${templateId}`),
 
-  // 创建模板
+  // 创建模板（优先使用 root_nodes 树结构，phases 仅兼容旧调用）
   create: (data: {
     name: string;
     description?: string;
-    phases: PhaseTemplate["phases"];
+    root_nodes?: TemplateNode[];
+    phases?: PhaseTemplate["phases"];
   }) =>
     fetchAPI<PhaseTemplate>("/api/phase-templates/", {
       method: "POST",
       body: JSON.stringify(data),
     }),
 
-  // 更新模板
+  // 更新模板（优先使用 root_nodes 树结构，phases 仅兼容旧调用）
   update: (templateId: string, data: Partial<{
     name: string;
     description: string;
+    root_nodes: TemplateNode[];
     phases: PhaseTemplate["phases"];
   }>) =>
     fetchAPI<PhaseTemplate>(`/api/phase-templates/${templateId}`, {

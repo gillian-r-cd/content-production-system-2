@@ -63,16 +63,29 @@ def _get_db():
     return next(get_db())
 
 
-def _find_block(db, project_id: str, name: str):
+def _find_block(db, project_id: str, identifier: str):
     """
-    根据名称查找 ContentBlock。
+    优先根据 ID 查找 ContentBlock，失败后按名称查找。
     返回 ContentBlock 或 None。
     """
     from core.models.content_block import ContentBlock
 
+    raw_identifier = (identifier or "").strip()
+    if not raw_identifier:
+        return None
+
+    block_id = raw_identifier[3:] if raw_identifier.startswith("id:") else raw_identifier
+    block = db.query(ContentBlock).filter(
+        ContentBlock.project_id == project_id,
+        ContentBlock.id == block_id,
+        ContentBlock.deleted_at == None,  # noqa: E711
+    ).first()
+    if block:
+        return block
+
     return db.query(ContentBlock).filter(
         ContentBlock.project_id == project_id,
-        ContentBlock.name == name,
+        ContentBlock.name == raw_identifier,
         ContentBlock.deleted_at == None,  # noqa: E711
     ).first()
 
@@ -106,6 +119,11 @@ def _set_content_status(entity) -> None:
         entity.status = "in_progress"
     else:
         entity.status = "completed"
+
+
+def _entity_label(entity, fallback: str) -> str:
+    """优先返回内容块当前名称，避免用户以 ID 调用时向用户回显原始 ID。"""
+    return getattr(entity, "name", None) or fallback
 
 
 # 使用结构化 JSON 内容的 special_handler 集合。
@@ -211,17 +229,18 @@ async def propose_edit(
         entity = _find_block(db, project_id, target_field)
         if not entity:
             return _json_err(f"找不到内容块「{target_field}」")
+        target_label = _entity_label(entity, target_field)
 
         # 防护：结构化 special_handler 块不能被纯文本编辑
         if _is_structured_handler(entity):
             return _json_err(
-                f"内容块「{target_field}」是结构化数据块（{entity.special_handler}），"
+                f"内容块「{target_label}」是结构化数据块（{entity.special_handler}），"
                 f"不能使用 propose_edit 修改。请使用对应的专用工具。"
             )
 
         original_content = entity.content or ""
         if not original_content.strip():
-            return _json_err(f"内容块「{target_field}」为空，请使用 generate_field_content 生成内容")
+            return _json_err(f"内容块「{target_label}」为空，请使用 generate_field_content 生成内容")
 
         # Pydantic 模型转 dict 供 edit_engine 使用
         edits_dicts = [e.model_dump() for e in edits]
@@ -251,7 +270,7 @@ async def propose_edit(
             "card_type": "anchor_edit",
             "group_id": group_id or None,
             "group_summary": group_summary or None,
-            "target_field": target_field,
+            "target_field": target_label,
             "target_entity_id": entity.id,
             "summary": summary,
             "reason": reason,
@@ -266,7 +285,7 @@ async def propose_edit(
 
         # 缓存到内存字典
         PENDING_SUGGESTIONS[suggestion_id] = card
-        logger.info(f"[propose_edit] 缓存建议 {suggestion_id[:8]}... 目标={target_field}, "
+        logger.info(f"[propose_edit] 缓存建议 {suggestion_id[:8]}... 目标={target_label}, "
                      f"edits={len(edits)}, applied={len(applied)}, failed={len(failed)}")
 
         # 返回结构化 JSON — SSE 层会解析这个输出
@@ -275,7 +294,7 @@ async def propose_edit(
             "id": suggestion_id,
             "group_id": group_id or None,
             "group_summary": group_summary or None,
-            "target_field": target_field,
+            "target_field": target_label,
             "target_entity_id": entity.id,
             "summary": summary,
             "reason": reason,
@@ -352,28 +371,30 @@ async def _rewrite_field_impl(
         entity = _find_block(db, project_id, field_name)
         if not entity:
             return _json_err(f"找不到内容块「{field_name}」")
+        target_label = _entity_label(entity, field_name)
+        target_label = _entity_label(entity, field_name)
 
         # 防护：结构化 special_handler 块不能用纯文本重写，应使用专用工具
         if _is_structured_handler(entity):
             return _json_err(
-                f"内容块「{field_name}」是结构化数据块（{entity.special_handler}），"
+                f"内容块「{target_label}」是结构化数据块（{entity.special_handler}），"
                 f"不能使用 rewrite_field 修改。请使用对应的专用工具（如 run_research / manage_persona）。"
             )
 
         current_content = entity.content or ""
         if not current_content.strip():
-            return _json_err(f"内容块「{field_name}」为空，请使用 generate_field_content 生成内容")
+            return _json_err(f"内容块「{target_label}」为空，请使用 generate_field_content 生成内容")
 
         # 读取参考内容
         ref_ctx = ""
         for ref_name in reference_fields:
             ref_entity = _find_block(db, project_id, ref_name)
             if ref_entity and ref_entity.content:
-                ref_ctx += f"\n\n### 参考内容块「{ref_name}」\n{ref_entity.content[:2000]}"
+                ref_ctx += f"\n\n### 参考内容块「{_entity_label(ref_entity, ref_name)}」\n{ref_entity.content[:2000]}"
 
         system_prompt = f"""你是一个专业的内容修改助手。请根据指令修改以下内容块，保持原有风格和结构。
 
-## 当前内容块：{field_name}
+## 当前内容块：{target_label}
 {current_content}
 {f"## 参考内容{ref_ctx}" if ref_ctx else ""}
 
@@ -388,7 +409,7 @@ async def _rewrite_field_impl(
         chat_model = get_chat_model(model=effective_model)
         response = await ainvoke_with_retry(chat_model, [
             SystemMessage(content=system_prompt),
-            HumanMessage(content=f"请按要求修改「{field_name}」的内容。"),
+            HumanMessage(content=f"请按要求修改「{target_label}」的内容。"),
         ], config=config)
 
         new_content = normalize_content(response.content)
@@ -410,9 +431,9 @@ async def _rewrite_field_impl(
             "card_type": "full_rewrite",
             "group_id": None,
             "group_summary": None,
-            "target_field": field_name,
+            "target_field": target_label,
             "target_entity_id": entity.id,
-            "summary": f"全文重写「{field_name}」",
+            "summary": f"全文重写「{target_label}」",
             "reason": instruction,
             "edits": [],
             "changes": [],
@@ -424,14 +445,14 @@ async def _rewrite_field_impl(
         }
 
         PENDING_SUGGESTIONS[suggestion_id] = card
-        logger.info(f"[rewrite_field] 生成重写建议卡片 {suggestion_id[:8]}..., 目标={field_name}, {len(new_content)} 字")
+        logger.info(f"[rewrite_field] 生成重写建议卡片 {suggestion_id[:8]}..., 目标={target_label}, {len(new_content)} 字")
 
         return json.dumps({
             "status": "suggestion",
             "id": suggestion_id,
-            "target_field": field_name,
+            "target_field": target_label,
             "target_entity_id": entity.id,
-            "summary": f"全文重写「{field_name}」",
+            "summary": f"全文重写「{target_label}」",
             "reason": instruction,
             "diff_preview": diff_preview,
             "edits_count": 1,
@@ -496,7 +517,7 @@ async def _generate_field_impl(
         # 防护：结构化 special_handler 块不能用纯文本生成，应使用专用工具
         if _is_structured_handler(entity):
             return _json_err(
-                f"内容块「{field_name}」是结构化数据块（{entity.special_handler}），"
+                f"内容块「{target_label}」是结构化数据块（{entity.special_handler}），"
                 f"不能使用 generate_field_content 生成。请使用对应的专用工具（如 run_research / manage_persona）。"
             )
 
@@ -504,7 +525,7 @@ async def _generate_field_impl(
         # 局部修改 → propose_edit（确认流程），全文重写 → rewrite_field（确认流程）
         if entity.content and entity.content.strip():
             return _json_err(
-                f"内容块「{field_name}」已有内容（{len(entity.content)} 字）。"
+                f"内容块「{target_label}」已有内容（{len(entity.content)} 字）。"
                 f"generate_field_content 仅用于空块的首次生成。"
                 f"如需局部修改请使用 propose_edit，如需全文重写请使用 rewrite_field。"
             )
@@ -529,7 +550,7 @@ async def _generate_field_impl(
                 if dep_block and dep_block.content:
                     deps_ctx += f"\n### {dep_block.name}\n{dep_block.content[:2000]}"
 
-        sections = [f"你是一个专业的内容创作助手。请为「{field_name}」生成高质量的内容。"]
+        sections = [f"你是一个专业的内容创作助手。请为「{target_label}」生成高质量的内容。"]
         if creator_ctx:
             sections.append(f"## 创作者信息\n{creator_ctx}")
         if ai_prompt:
@@ -547,7 +568,7 @@ async def _generate_field_impl(
         chat_model = get_chat_model(model=effective_model)
         response = await ainvoke_with_retry(chat_model, [
             SystemMessage(content=system_prompt),
-            HumanMessage(content=f"请生成「{field_name}」的内容。"),
+            HumanMessage(content=f"请生成「{target_label}」的内容。"),
         ], config=config)
 
         new_content = normalize_content(response.content)
@@ -563,8 +584,8 @@ async def _generate_field_impl(
         _set_content_status(entity)
         db.commit()
 
-        logger.info(f"[generate_field_content] 已生成「{field_name}」, {len(new_content)} 字")
-        return _json_ok(field_name, "generated", f"✅ 已生成「{field_name}」的内容")
+        logger.info(f"[generate_field_content] 已生成「{target_label}」, {len(new_content)} 字")
+        return _json_ok(target_label, "generated", f"✅ 已生成「{target_label}」的内容")
 
     except Exception as e:
         logger.error(f"generate_field_content error: {e}", exc_info=True)
@@ -614,10 +635,11 @@ async def _query_field_impl(field_name: str, question: str, config: RunnableConf
         entity = _find_block(db, project_id, field_name)
         if not entity:
             return f"找不到内容块「{field_name}」"
+        target_label = _entity_label(entity, field_name)
 
         content = entity.content or ""
         if not content.strip():
-            return f"内容块「{field_name}」为空，还没有生成内容。"
+            return f"内容块「{target_label}」为空，还没有生成内容。"
 
         # query 使用轻量模型（仅做内容分析，不需要主模型）
         effective_model = resolve_model(use_mini=True)
@@ -625,7 +647,7 @@ async def _query_field_impl(field_name: str, question: str, config: RunnableConf
         # ⚠️ 传 config 给 LLM 调用
         from core.llm import ainvoke_with_retry
         response = await ainvoke_with_retry(chat_model, [
-            SystemMessage(content=f"你是内容分析助手。以下是内容块「{field_name}」的内容：\n\n{content[:4000]}"),
+            SystemMessage(content=f"你是内容分析助手。以下是内容块「{target_label}」的内容：\n\n{content[:4000]}"),
             HumanMessage(content=question),
         ], config=config)
         return normalize_content(response.content)
@@ -660,8 +682,9 @@ def read_field(field_name: str, config: Annotated[RunnableConfig, InjectedToolAr
         entity = _find_block(db, project_id, field_name)
         if not entity:
             return f"找不到内容块「{field_name}」"
+        target_label = _entity_label(entity, field_name)
         content = entity.content or ""
-        return content if content.strip() else f"内容块「{field_name}」为空。"
+        return content if content.strip() else f"内容块「{target_label}」为空。"
     finally:
         db.close()
 
@@ -694,11 +717,12 @@ def update_field(field_name: str, content: str, config: Annotated[RunnableConfig
         entity = _find_block(db, project_id, field_name)
         if not entity:
             return _json_err(f"找不到内容块「{field_name}」")
+        target_label = _entity_label(entity, field_name)
 
         # 防护：结构化 special_handler 块不能被纯文本覆写
         if _is_structured_handler(entity):
             return _json_err(
-                f"内容块「{field_name}」是结构化数据块（{entity.special_handler}），"
+                f"内容块「{target_label}」是结构化数据块（{entity.special_handler}），"
                 f"不能使用 update_field 覆写。请使用对应的专用工具。"
             )
 
@@ -708,7 +732,7 @@ def update_field(field_name: str, content: str, config: Annotated[RunnableConfig
         _set_content_status(entity)
         db.commit()
 
-        return _json_ok(field_name, "updated", f"已更新「{field_name}」")
+        return _json_ok(target_label, "updated", f"已更新「{target_label}」")
     except Exception as e:
         db.rollback()
         return _json_err(str(e))
@@ -739,15 +763,19 @@ def manage_architecture(
     典型场景:
     - "帮我加一个新内容块叫XX" → manage_architecture("add_field", "XX", '{"phase":"design_inner"}')
     - "删掉场景库" → manage_architecture("remove_field", "场景库")
+    - "在某个父节点下新增子分组" → manage_architecture("add_node", "新分组", '{"block_type":"group","parent_id":"..."}')
+    - "按块 ID 移动内容块" → manage_architecture("move_node", "id:xxx", '{"new_parent_id":"yyy"}')
+    - "把模板挂到某个节点下" → manage_architecture("instantiate_template", "模板ID", '{"parent_id":"..."}')
     - "新增一个组叫测试" → manage_architecture("add_phase", "test", '{"display_name":"测试"}')
 
     Args:
-        operation: 操作类型 — add_field / remove_field / move_field / add_phase / remove_phase
-        target: 操作目标（内容块名或组名）
-        details: 操作详情（JSON 字符串，如 {"phase":"design_inner","ai_prompt":"..."} 或 {"display_name":"..."} 或 {"target_phase":"..."}）
+        operation: 操作类型 — add/remove/move/update phase/field，或 add_node/remove_node/move_node/update_node_meta/instantiate_template
+        target: 操作目标（内容块名、组名，或 `id:块ID`）
+        details: 操作详情（JSON 字符串，如 {"phase":"design_inner","parent_id":"...","ai_prompt":"..."} 或 {"display_name":"..."} 或 {"target_phase":"...","target_parent_id":"..."}）
     """
     from core.tools.architecture_writer import (
         add_phase, remove_phase, add_field, remove_field, move_field,
+        add_node, remove_node, move_node, update_node_meta, instantiate_template,
     )
 
     project_id = _get_project_id(config)
@@ -771,21 +799,85 @@ def manage_architecture(
             phase = params.get("phase", "")
             ai_prompt = params.get("ai_prompt", "")
             depends_on = params.get("depends_on")
-            if not phase:
-                return _json_err("添加内容块需要指定所属组 (phase)，请在 details 中提供 {\"phase\": \"组名\"}")
-            result = add_field(project_id, phase, target, ai_prompt, depends_on)
+            parent_id = params.get("parent_id")
+            if not phase and not parent_id:
+                return _json_err("添加内容块需要指定所属组 (phase) 或父节点 ID (parent_id)")
+            result = add_field(project_id, phase, target, ai_prompt, depends_on, parent_id=parent_id)
 
         elif operation == "remove_field":
-            result = remove_field(project_id, target)
+            field_id = target[3:] if target.startswith("id:") else params.get("field_id")
+            field_name = None if target.startswith("id:") else target
+            result = remove_field(project_id, field_name, field_id=field_id)
 
         elif operation == "move_field":
             target_phase = params.get("target_phase", "")
-            if not target_phase:
-                return _json_err("移动内容块需要指定目标组 (target_phase)")
-            result = move_field(project_id, target, target_phase)
+            target_parent_id = params.get("target_parent_id")
+            if not target_phase and not target_parent_id:
+                return _json_err("移动内容块需要指定目标组 (target_phase) 或目标父节点 ID (target_parent_id)")
+            field_id = target[3:] if target.startswith("id:") else params.get("field_id")
+            field_name = None if target.startswith("id:") else target
+            result = move_field(project_id, field_name, target_phase, field_id=field_id, target_parent_id=target_parent_id)
+
+        elif operation == "add_node":
+            result = add_node(
+                project_id=project_id,
+                name=target,
+                block_type=params.get("block_type", "field"),
+                parent_id=params.get("parent_id"),
+                phase=params.get("phase", ""),
+                ai_prompt=params.get("ai_prompt", ""),
+                depends_on=params.get("depends_on"),
+                content=params.get("content", ""),
+                special_handler=params.get("special_handler"),
+                need_review=params.get("need_review", True),
+                auto_generate=params.get("auto_generate", False),
+                model_override=params.get("model_override"),
+                guidance_input=params.get("guidance_input", ""),
+                guidance_output=params.get("guidance_output", ""),
+                constraints=params.get("constraints"),
+                order_index=params.get("order_index"),
+            )
+
+        elif operation == "remove_node":
+            node_id = target[3:] if target.startswith("id:") else params.get("node_id")
+            node_name = None if target.startswith("id:") else target
+            result = remove_node(project_id, node_name=node_name, node_id=node_id)
+
+        elif operation == "move_node":
+            node_id = target[3:] if target.startswith("id:") else params.get("node_id")
+            node_name = None if target.startswith("id:") else target
+            result = move_node(
+                project_id,
+                node_name=node_name,
+                node_id=node_id,
+                new_parent_id=params.get("new_parent_id"),
+                new_order_index=params.get("new_order_index"),
+            )
+
+        elif operation == "update_node_meta":
+            node_id = target[3:] if target.startswith("id:") else params.get("node_id")
+            node_name = None if target.startswith("id:") else target
+            result = update_node_meta(
+                project_id,
+                updates=params.get("updates", {}),
+                node_name=node_name,
+                node_id=node_id,
+            )
+
+        elif operation == "instantiate_template":
+            template_id = params.get("template_id") or target
+            result = instantiate_template(
+                project_id=project_id,
+                template_id=template_id,
+                parent_id=params.get("parent_id"),
+            )
 
         else:
-            return _json_err(f"未知操作: {operation}。支持: add_field / remove_field / move_field / add_phase / remove_phase")
+            return _json_err(
+                "未知操作: "
+                f"{operation}。支持: add_field / remove_field / move_field / add_phase / remove_phase / "
+                "add_node / remove_node / move_node / update_node_meta / instantiate_template"
+            )
 
         return result.message if result.success else _json_err(result.error or result.message)
 

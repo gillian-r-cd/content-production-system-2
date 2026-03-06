@@ -32,6 +32,7 @@ from core.models import (
     BLOCK_STATUS,
 )
 from core.prompt_engine import PromptEngine, GoldenContext
+from core.template_schema import instantiate_template_nodes, normalize_field_template_payload
 
 
 def _save_content_version(block: ContentBlock, source: str, db: Session, source_detail: str = None):
@@ -71,6 +72,8 @@ class BlockCreate(BaseModel):
     model_override: Optional[str] = None  # 模型覆盖（来自模板或用户手动设置）
     order_index: Optional[int] = None
     pre_questions: List[str] = Field(default_factory=list)  # 生成前提问
+    guidance_input: str = ""
+    guidance_output: str = ""
 
 
 class BlockUpdate(BaseModel):
@@ -87,6 +90,8 @@ class BlockUpdate(BaseModel):
     auto_generate: Optional[bool] = None  # 是否自动生成
     is_collapsed: Optional[bool] = None
     model_override: Optional[str] = None
+    guidance_input: Optional[str] = None
+    guidance_output: Optional[str] = None
 
 
 class BlockMove(BaseModel):
@@ -110,6 +115,8 @@ class BlockResponse(BaseModel):
     constraints: Dict
     pre_questions: List[str] = Field(default_factory=list)
     pre_answers: Dict = Field(default_factory=dict)
+    guidance_input: str = ""
+    guidance_output: str = ""
     depends_on: List[str]
     special_handler: Optional[str]
     need_review: bool
@@ -163,6 +170,8 @@ def _block_to_response(
         constraints=block.constraints or {},
         pre_questions=block.pre_questions or [],  # 生成前提问
         pre_answers=block.pre_answers or {},      # 用户回答
+        guidance_input=getattr(block, "guidance_input", "") or "",
+        guidance_output=getattr(block, "guidance_output", "") or "",
         depends_on=block.depends_on or [],
         special_handler=block.special_handler,
         need_review=block.need_review,
@@ -435,6 +444,8 @@ def create_block(
         auto_generate=data.auto_generate,
         model_override=data.model_override,
         pre_questions=data.pre_questions,  # 保存生成前提问
+        guidance_input=data.guidance_input or "",
+        guidance_output=data.guidance_output or "",
     )
     
     db.add(block)
@@ -511,6 +522,10 @@ def update_block(
     if data.model_override is not None:
         # 空字符串表示清除覆盖（恢复使用全局默认）
         block.model_override = data.model_override if data.model_override else None
+    if data.guidance_input is not None:
+        block.guidance_input = data.guidance_input
+    if data.guidance_output is not None:
+        block.guidance_output = data.guidance_output
     
     db.commit()
     db.refresh(block)
@@ -737,6 +752,8 @@ def duplicate_block(
             auto_generate=getattr(node, 'auto_generate', False),
             is_collapsed=node.is_collapsed,
             model_override=getattr(node, 'model_override', None),
+            guidance_input=getattr(node, 'guidance_input', "") or "",
+            guidance_output=getattr(node, 'guidance_output', "") or "",
         )
         new_blocks.append(new_block)
         db.add(new_block)
@@ -1278,130 +1295,70 @@ async def generate_block_content_stream(
 def apply_template_to_project(
     project_id: str,
     template_id: str,
+    parent_id: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
     """
-    将模板应用到项目。
-    
-    优先查找 PhaseTemplate（有完整的组→内容块层级结构）。
-    若未找到，降级查找 FieldTemplate（扁平字段列表），
-    自动创建一个默认组并将字段放入其中。
+    将模板树实例化到项目内容树中。
+
+    - `PhaseTemplate` 先转换为统一模板树，再实例化为 `ContentBlock`
+    - `FieldTemplate` 优先使用 `root_nodes`，旧 `fields[]` 自动兼容升级
+    - 支持实例化到现有项目任意父节点下（`parent_id` 可选）
     """
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
-    
-    # 检查项目是否已有内容块
-    existing = db.query(ContentBlock).filter(
-        ContentBlock.project_id == project_id
-    ).count()
-    
-    if existing > 0:
-        raise HTTPException(
-            status_code=400,
-            detail="项目已有内容块，请先清空或创建新项目"
-        )
-    
-    # 优先查找 PhaseTemplate
+
+    parent_block = None
+    base_depth = 0
+    if parent_id:
+        parent_block = db.query(ContentBlock).filter(
+            ContentBlock.id == parent_id,
+            ContentBlock.project_id == project_id,
+            ContentBlock.deleted_at == None,
+        ).first()
+        if not parent_block:
+            raise HTTPException(status_code=404, detail="目标父内容块不存在")
+        base_depth = parent_block.depth + 1
+
+    start_order_index = _get_next_order_index(project_id, parent_id, db)
+
     template = db.query(PhaseTemplate).filter(PhaseTemplate.id == template_id).first()
     template_name = ""
-    
     if template:
-        blocks_to_create = template.apply_to_project(project_id)
+        root_nodes = template.to_template_nodes()
         template_name = template.name
     else:
-        # 降级查找 FieldTemplate（扁平字段列表 → 生成一个默认组 + 字段块）
         field_template = db.query(FieldTemplate).filter(FieldTemplate.id == template_id).first()
         if not field_template:
             raise HTTPException(status_code=404, detail="模板不存在")
-        
+        normalized, errors = normalize_field_template_payload(
+            template_name=field_template.name,
+            fields=field_template.fields or [],
+            root_nodes=getattr(field_template, "root_nodes", None) or [],
+        )
+        if errors:
+            raise HTTPException(status_code=400, detail="; ".join(errors))
+        root_nodes = normalized["root_nodes"]
         template_name = field_template.name
-        blocks_to_create = _field_template_to_blocks(field_template, project_id)
-    
-    # 第一遍：创建所有块，记录 name→id 映射
-    name_to_id = {}
-    created_blocks = []
+
+    blocks_to_create = instantiate_template_nodes(
+        project_id=project_id,
+        root_nodes=root_nodes,
+        parent_id=parent_id,
+        base_depth=base_depth,
+        start_order_index=start_order_index,
+    )
+
     for block_data in blocks_to_create:
-        # 暂存 depends_on（可能是名称列表），创建时先设为空
-        raw_depends = block_data.pop("depends_on", [])
-        block = ContentBlock(**block_data)
-        block._raw_depends = raw_depends  # 临时属性
-        db.add(block)
-        created_blocks.append(block)
-        name_to_id[block.name] = block.id
-    
-    db.flush()  # 确保所有块都有 ID
-    
-    # 第二遍：将 depends_on 的名称解析为 ID
-    for block in created_blocks:
-        raw = getattr(block, "_raw_depends", [])
-        if raw:
-            resolved = []
-            for dep_name in raw:
-                dep_id = name_to_id.get(dep_name)
-                if dep_id:
-                    resolved.append(dep_id)
-                # 如果名称找不到，忽略（不阻塞创建）
-            block.depends_on = resolved
-    
+        db.add(ContentBlock(**block_data))
+
     db.commit()
     
     return {
         "message": f"已应用模板「{template_name}」",
         "blocks_created": len(blocks_to_create),
     }
-
-
-def _field_template_to_blocks(field_template: "FieldTemplate", project_id: str) -> list:
-    """
-    将扁平的 FieldTemplate 转换为 ContentBlock 创建参数列表。
-    自动创建一个以模板名命名的组，字段作为子块。
-    """
-    blocks = []
-    phase_id = generate_uuid()
-    
-    # 创建一个默认组
-    blocks.append({
-        "id": phase_id,
-        "project_id": project_id,
-        "parent_id": None,
-        "name": field_template.name,
-        "block_type": "phase",
-        "depth": 0,
-        "order_index": 0,
-        "status": "pending",
-    })
-    
-    # 创建字段块
-    for idx, field in enumerate(field_template.fields or []):
-        template_content = field.get("content", "")
-        block_data = {
-            "id": generate_uuid(),
-            "project_id": project_id,
-            "parent_id": phase_id,
-            "name": field.get("name", f"内容块 {idx + 1}"),
-            "block_type": "field",
-            "depth": 1,
-            "order_index": idx,
-            "ai_prompt": field.get("ai_prompt", ""),
-            "content": template_content,
-            "pre_questions": field.get("pre_questions", []),
-            "depends_on": field.get("depends_on", []),
-            "constraints": field.get("constraints", {}),
-            "need_review": field.get("need_review", True),
-            "auto_generate": field.get("auto_generate", False),
-            "model_override": field.get("model_override"),
-            "status": (
-                ("in_progress" if field.get("need_review", True) else "completed")
-                if template_content else "pending"
-            ),
-        }
-        # 传递 special_handler（评估模板等依赖此字段）
-        if field.get("special_handler"):
-            block_data["special_handler"] = field["special_handler"]
-        blocks.append(block_data)
-    
-    return blocks
 
 
 @router.post("/project/{project_id}/migrate")

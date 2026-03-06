@@ -26,13 +26,14 @@ import {
   Package,
   X,
 } from "lucide-react";
-import { ContentBlock, blockAPI, settingsAPI } from "@/lib/api";
+import { ContentBlock, blockAPI, settingsAPI, TemplateNode } from "@/lib/api";
 
 // 内容块模板类型
 interface FieldTemplate {
   id: string;
   name: string;
   description?: string;
+  root_nodes?: TemplateNode[];
   fields: {
     name: string;
     type: string;
@@ -46,6 +47,10 @@ interface FieldTemplate {
     model_override?: string | null;  // 模型覆盖
     constraints?: Record<string, unknown>;  // 约束配置
   }[];
+}
+
+function flattenTemplateNodes(nodes: TemplateNode[] = []): TemplateNode[] {
+  return nodes.flatMap((node) => [node, ...flattenTemplateNodes(node.children || [])]);
 }
 
 interface UndoHistoryItem {
@@ -171,45 +176,7 @@ function BlockNode({
   const handleAddFromTemplate = async (template: FieldTemplate) => {
     setIsLoading(true);
     try {
-      // 为模板内部依赖建立 ID 映射
-      const idMapping: Record<string, string> = {};
-      const createdBlocks: string[] = [];
-      
-      // 按顺序创建内容块（保持依赖顺序）
-      for (let i = 0; i < template.fields.length; i++) {
-        const field = template.fields[i];
-        
-        // 映射内部依赖：将模板中的内容块索引转换为实际创建的块 ID
-        const mappedDependsOn = (field.depends_on || []).map((depName) => {
-          // 查找已创建的块中是否有匹配的名称
-          const depIndex = template.fields.findIndex((f, idx) => idx < i && f.name === depName);
-          if (depIndex >= 0) {
-            return createdBlocks[depIndex];
-          }
-          return depName; // 保留外部依赖
-        }).filter(Boolean);
-        
-        const templateContent = field.content || "";
-        const createdBlock = await blockAPI.create({
-          project_id: block.project_id,
-          parent_id: block.id,
-          name: field.name,
-          block_type: "field",
-          content: templateContent,              // 传递预置内容！
-          ai_prompt: field.ai_prompt || "",
-          depends_on: mappedDependsOn,
-          need_review: field.need_review !== undefined ? field.need_review : true,
-          auto_generate: field.auto_generate === true,  // 传递自动生成设置
-          special_handler: field.special_handler || null,
-          pre_questions: field.pre_questions || [],  // 传递生成前提问
-          model_override: field.model_override || undefined,  // 传递模型覆盖
-          constraints: field.constraints || undefined,  // 传递约束配置
-        });
-        
-        createdBlocks.push(createdBlock.id);
-        idMapping[field.name] = createdBlock.id;
-      }
-      
+      await blockAPI.applyTemplate(block.project_id, template.id, block.id);
       setIsCollapsed(false);
       onBlocksChange?.();
       setShowTemplateModal(false);
@@ -630,14 +597,35 @@ function BlockNode({
                             </p>
                           )}
                           <div className="flex items-center gap-2 mt-2 text-xs text-zinc-500">
-                            <span>{template.fields?.length || 0} 个内容块</span>
-                            {template.fields?.slice(0, 3).map((f, i) => (
+                            <span>
+                              {template.root_nodes?.length
+                                ? flattenTemplateNodes(template.root_nodes).filter((node) => node.block_type === "field" || node.block_type === "proposal").length
+                                : (template.fields?.length || 0)} 个内容块
+                            </span>
+                            {(template.root_nodes?.length
+                              ? flattenTemplateNodes(template.root_nodes)
+                                  .filter((node) => node.block_type === "field" || node.block_type === "proposal")
+                                  .slice(0, 3)
+                                  .map((node) => ({ name: node.name }))
+                              : (template.fields || []).slice(0, 3)
+                            ).map((f, i) => (
                               <span key={i} className="px-1.5 py-0.5 bg-surface-3 rounded">
                                 {f.name}
                               </span>
                             ))}
-                            {(template.fields?.length || 0) > 3 && (
-                              <span className="text-zinc-600">+{template.fields.length - 3}</span>
+                            {(
+                              template.root_nodes?.length
+                                ? flattenTemplateNodes(template.root_nodes).filter((node) => node.block_type === "field" || node.block_type === "proposal").length
+                                : (template.fields?.length || 0)
+                            ) > 3 && (
+                              <span className="text-zinc-600">
+                                +
+                                {(
+                                  template.root_nodes?.length
+                                    ? flattenTemplateNodes(template.root_nodes).filter((node) => node.block_type === "field" || node.block_type === "proposal").length
+                                    : (template.fields?.length || 0)
+                                ) - 3}
+                              </span>
                             )}
                           </div>
                         </div>

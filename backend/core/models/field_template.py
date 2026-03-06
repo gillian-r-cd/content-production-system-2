@@ -12,10 +12,11 @@
 
 from typing import Optional, List
 
-from sqlalchemy import String, Text, JSON
+from sqlalchemy import String, Text, JSON, Integer
 from sqlalchemy.orm import Mapped, mapped_column
 
 from core.models.base import BaseModel
+from core.template_schema import normalize_field_template_payload
 
 
 # ============================================================
@@ -100,34 +101,59 @@ class FieldTemplate(BaseModel):
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="")
     category: Mapped[str] = mapped_column(String(50), default="通用")
+    schema_version: Mapped[int] = mapped_column(Integer, default=1)
     fields: Mapped[list] = mapped_column(JSON, default=list)
+    root_nodes: Mapped[list] = mapped_column(JSON, default=list)
+
+    def get_root_nodes(self) -> List[dict]:
+        """获取归一化后的模板树根节点。"""
+        normalized, _ = normalize_field_template_payload(
+            template_name=self.name,
+            fields=self.fields or [],
+            root_nodes=self.root_nodes or [],
+        )
+        return normalized["root_nodes"]
 
     def get_field_names(self) -> List[str]:
         """获取所有字段名"""
-        return [f["name"] for f in self.fields]
+        normalized, _ = normalize_field_template_payload(
+            template_name=self.name,
+            fields=self.fields or [],
+            root_nodes=self.root_nodes or [],
+        )
+        return [f["name"] for f in normalized["fields"]]
 
     def get_field_by_name(self, name: str) -> Optional[dict]:
         """根据名称获取字段定义"""
-        for field in self.fields:
+        normalized, _ = normalize_field_template_payload(
+            template_name=self.name,
+            fields=self.fields or [],
+            root_nodes=self.root_nodes or [],
+        )
+        for field in normalized["fields"]:
             if field["name"] == name:
                 return field
         return None
 
     def validate_dependencies(self) -> List[str]:
         """验证依赖关系，返回错误列表"""
-        errors = []
+        normalized, errors = normalize_field_template_payload(
+            template_name=self.name,
+            fields=self.fields or [],
+            root_nodes=self.root_nodes or [],
+        )
         field_names = set(self.get_field_names())
-        
-        for field in self.fields:
+
+        for field in normalized["fields"]:
             for dep in field.get("depends_on", []):
                 if dep not in field_names:
                     errors.append(
                         f"字段'{field['name']}'依赖的'{dep}'不存在"
                     )
-        
+
         # 检测循环依赖
         # TODO: 实现拓扑排序检测
-        
+
         return errors
 
 

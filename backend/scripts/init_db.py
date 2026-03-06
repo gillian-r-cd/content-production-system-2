@@ -54,6 +54,10 @@ def _migrate_add_columns():
         ("content_blocks", "model_override", "VARCHAR(100)"),
         # auto_generate: 是否自动生成（依赖就绪时自动触发 AI 生成，默认 False）
         ("content_blocks", "auto_generate", "BOOLEAN DEFAULT 0"),
+        ("content_blocks", "guidance_input", "TEXT DEFAULT ''"),
+        ("content_blocks", "guidance_output", "TEXT DEFAULT ''"),
+        ("field_templates", "schema_version", "INTEGER DEFAULT 1"),
+        ("field_templates", "root_nodes", "JSON"),
     ]
 
     with engine.connect() as conn:
