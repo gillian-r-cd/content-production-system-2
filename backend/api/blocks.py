@@ -154,6 +154,13 @@ class BlockTreeResponse(BaseModel):
     total_count: int
 
 
+class SaveBlockAsFieldTemplateRequest(BaseModel):
+    """保存单个内容块/分组为内容块模板请求"""
+    name: str
+    description: str = ""
+    category: str = "通用"
+
+
 # ========== 辅助函数 ==========
 
 def _block_to_response(
@@ -390,6 +397,86 @@ def get_block(
         raise HTTPException(status_code=404, detail="内容块不存在")
     
     return _block_to_response(block, include_children=include_children)
+
+
+@router.get("/{block_id}/export-markdown")
+def export_block_markdown(
+    block_id: str,
+    db: Session = Depends(get_db),
+):
+    """导出指定内容块子树为 Markdown。"""
+    from core.content_tree_export_service import export_block_markdown as export_block_markdown_payload
+
+    try:
+        return export_block_markdown_payload(db, block_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/{block_id}/export-json")
+def export_block_json(
+    block_id: str,
+    db: Session = Depends(get_db),
+):
+    """导出指定内容块子树为范围 JSON。"""
+    from core.content_tree_export_service import export_block_bundle
+
+    try:
+        return export_block_bundle(db, block_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/{block_id}/save-as-field-template")
+def save_block_as_field_template(
+    block_id: str,
+    request: SaveBlockAsFieldTemplateRequest,
+    db: Session = Depends(get_db),
+):
+    """将指定内容块子树保存为内容块模板。"""
+    from core.content_tree_export_service import build_field_template_from_block
+    from core.template_schema import normalize_field_template_payload
+
+    try:
+        result = build_field_template_from_block(db, block_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    normalized, errors = normalize_field_template_payload(
+        template_name=request.name,
+        fields=[],
+        root_nodes=result.root_nodes,
+    )
+    if errors:
+        raise HTTPException(status_code=400, detail="; ".join(errors))
+
+    template = FieldTemplate(
+        id=generate_uuid(),
+        name=request.name.strip() or "未命名模板",
+        description=request.description,
+        category=request.category or "通用",
+        schema_version=normalized["schema_version"],
+        fields=normalized["fields"],
+        root_nodes=normalized["root_nodes"],
+    )
+    db.add(template)
+    db.commit()
+    db.refresh(template)
+
+    return {
+        "message": f"已保存为内容块模板「{template.name}」",
+        "template": {
+            "id": template.id,
+            "name": template.name,
+            "description": template.description or "",
+            "category": template.category or "通用",
+            "schema_version": template.schema_version,
+            "fields": template.fields or [],
+            "root_nodes": template.root_nodes or [],
+        },
+        "warnings": result.warnings,
+        "summary": result.summary,
+    }
 
 
 @router.post("/", response_model=BlockResponse)

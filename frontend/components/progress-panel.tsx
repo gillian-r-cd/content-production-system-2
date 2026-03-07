@@ -7,9 +7,12 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
+import { MoreHorizontal } from "lucide-react";
 import type { Project, ContentBlock } from "@/lib/api";
 import { blockAPI, runAutoTriggerChain } from "@/lib/api";
 import BlockTree from "./block-tree";
+import { ContentTreeActionItems } from "./content-tree-action-items";
+import { ContentTreeTemplateSaveModal } from "./content-tree-template-save-modal";
 // lucide-react icons removed: view toggle已移除
 
 // 辅助函数：将树形结构扁平化为数组（用于依赖选择）
@@ -54,13 +57,28 @@ export function ProgressPanel({
   const [isLoadingBlocks, setIsLoadingBlocks] = useState(false);
   const initialBlocksLoadDone = useRef(false);  // 标记初次加载是否完成
   const prevBlocksSignature = useRef("");  // 用于比较 blocks 是否实际变化
+  const [showProjectMenu, setShowProjectMenu] = useState(false);
+  const [showTemplateSaveModal, setShowTemplateSaveModal] = useState(false);
+  const projectMenuRef = useRef<HTMLDivElement | null>(null);
   
   
   useEffect(() => {
     // 切换项目时重置初次加载标记，确保新项目首次显示 spinner
     initialBlocksLoadDone.current = false;
     prevBlocksSignature.current = "";
+    setShowProjectMenu(false);
   }, [project?.id]);
+
+  useEffect(() => {
+    if (!showProjectMenu) return;
+    const handleMouseDown = (event: MouseEvent) => {
+      if (projectMenuRef.current && !projectMenuRef.current.contains(event.target as Node)) {
+        setShowProjectMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handleMouseDown);
+    return () => document.removeEventListener("mousedown", handleMouseDown);
+  }, [showProjectMenu]);
   
   // ===== 加载内容块 =====
   // P0-1: 统一使用 ContentBlock API，classic 和 tree 视图都需要
@@ -134,13 +152,41 @@ export function ProgressPanel({
     onBlockSelect?.(block);
   };
 
+  const handleRequestProjectTemplateSave = () => {
+    setShowProjectMenu(false);
+    setShowTemplateSaveModal(true);
+  };
+
   return (
     <div className="p-4">
       {/* 项目信息 */}
       <div className="mb-4">
-        <h2 className="text-lg font-semibold text-zinc-100">
-          {project?.name || "未选择项目"}
-        </h2>
+        <div className="flex items-start justify-between gap-2">
+          <h2 className="text-lg font-semibold text-zinc-100">
+            {project?.name || "未选择项目"}
+          </h2>
+          {project && (
+            <div className="relative" ref={projectMenuRef}>
+              <button
+                type="button"
+                onClick={() => setShowProjectMenu((previous) => !previous)}
+                className="rounded-lg p-1 text-zinc-500 hover:bg-surface-2 hover:text-zinc-300"
+                aria-label="项目操作菜单"
+              >
+                <MoreHorizontal className="h-4 w-4" />
+              </button>
+              {showProjectMenu && (
+                <div className="absolute right-0 top-full z-50 mt-1 w-56 rounded-lg border border-surface-3 bg-surface-1 shadow-lg">
+                  <ContentTreeActionItems
+                    scope={{ type: "project", projectId: project.id, label: project.name }}
+                    closeMenu={() => setShowProjectMenu(false)}
+                    onRequestSaveTemplate={handleRequestProjectTemplateSave}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+        </div>
         {project && (
           <div className="mt-2 space-y-3">
             <p className="text-sm text-zinc-500">
@@ -202,6 +248,13 @@ export function ProgressPanel({
           />
         </div>
       )}
+
+      <ContentTreeTemplateSaveModal
+        open={showTemplateSaveModal}
+        scope={project ? { type: "project", projectId: project.id, label: project.name } : null}
+        onClose={() => setShowTemplateSaveModal(false)}
+        onSaved={loadContentBlocks}
+      />
 
     </div>
   );

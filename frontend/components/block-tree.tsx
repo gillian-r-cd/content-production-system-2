@@ -24,9 +24,13 @@ import {
   ArrowRight,
   Undo2,
   Package,
+  Upload,
   X,
 } from "lucide-react";
 import { ContentBlock, blockAPI, settingsAPI, TemplateNode, FieldTemplate } from "@/lib/api";
+import { ContentTreeActionItems } from "./content-tree-action-items";
+import { ProjectContentTreeImportModal } from "./project-content-tree-import-modal";
+import { ContentTreeTemplateSaveModal } from "./content-tree-template-save-modal";
 
 function flattenTemplateNodes(nodes: TemplateNode[] = []): TemplateNode[] {
   return nodes.flatMap((node) => [node, ...flattenTemplateNodes(node.children || [])]);
@@ -107,6 +111,7 @@ function BlockNode({
   const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [templates, setTemplates] = useState<FieldTemplate[]>([]);
   const [templatesLoading, setTemplatesLoading] = useState(false);
+  const [showTemplateSaveModal, setShowTemplateSaveModal] = useState(false);
   
   // 点击外部关闭下拉菜单
   const menuContainerRef = useRef<HTMLDivElement>(null);
@@ -399,6 +404,7 @@ function BlockNode({
                 setShowMenu(!showMenu);
               }}
               className="p-1 rounded hover:bg-surface-3 opacity-0 group-hover:opacity-100"
+              aria-label={`${block.name} 操作菜单`}
             >
               <MoreHorizontal className="w-4 h-4 text-zinc-500" />
             </button>
@@ -406,7 +412,7 @@ function BlockNode({
             {/* 下拉菜单 */}
             {showMenu && (
               <div
-                className="absolute right-0 top-full mt-1 w-40 bg-surface-1 border border-surface-3 rounded-lg shadow-lg z-50"
+                className="absolute right-0 top-full mt-1 w-56 bg-surface-1 border border-surface-3 rounded-lg shadow-lg z-50"
                 onClick={(e) => e.stopPropagation()}
               >
                 <button
@@ -463,6 +469,12 @@ function BlockNode({
                   <Copy className="w-4 h-4" />
                   {block.block_type === "field" ? "复制" : "复制（含子项）"}
                 </button>
+
+                <ContentTreeActionItems
+                  scope={{ type: "block", blockId: block.id, label: block.name }}
+                  closeMenu={() => setShowMenu(false)}
+                  onRequestSaveTemplate={() => setShowTemplateSaveModal(true)}
+                />
 
                 <hr className="my-1 border-surface-3" />
 
@@ -616,6 +628,13 @@ function BlockNode({
           </div>
         </div>
       )}
+
+      <ContentTreeTemplateSaveModal
+        open={showTemplateSaveModal}
+        scope={{ type: "block", blockId: block.id, label: block.name }}
+        onClose={() => setShowTemplateSaveModal(false)}
+        onSaved={onBlocksChange}
+      />
     </div>
   );
 }
@@ -641,6 +660,7 @@ export default function BlockTree({
   const [templates, setTemplates] = useState<FieldTemplate[]>([]);
   const [templatesLoading, setTemplatesLoading] = useState(false);
   const [isApplyingTemplate, setIsApplyingTemplate] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
 
   // 处理删除成功，保存到撤回栈
   const handleDeleteSuccess = useCallback((item: UndoHistoryItem) => {
@@ -791,35 +811,51 @@ export default function BlockTree({
 
   if (blocks.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-12 text-zinc-500">
-        <Folder className="w-12 h-12 mb-4 opacity-50" />
-        <p className="text-sm mb-4">暂无内容块</p>
-        {editable && (
-          <>
-            <button
-              onClick={handleAddGroup}
-              className="flex items-center gap-2 px-4 py-2 bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors"
-            >
-              <Plus className="w-4 h-4" />
-              添加组
-            </button>
-            <button
-              onClick={handleAddTopLevelField}
-              className="mt-2 flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
-            >
-              <FileText className="w-4 h-4" />
-              添加内容块
-            </button>
-            <button
-              onClick={openTemplateModal}
-              className="mt-2 flex items-center gap-2 px-4 py-2 bg-surface-3 text-zinc-200 rounded-lg hover:bg-surface-4 transition-colors"
-            >
-              <Package className="w-4 h-4" />
-              从模板添加
-            </button>
-          </>
-        )}
-      </div>
+      <>
+        <div className="flex flex-col items-center justify-center py-12 text-zinc-500">
+          <Folder className="w-12 h-12 mb-4 opacity-50" />
+          <p className="text-sm mb-4">暂无内容块</p>
+          {editable && (
+            <>
+              <button
+                onClick={handleAddGroup}
+                className="flex items-center gap-2 px-4 py-2 bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors"
+              >
+                <Plus className="w-4 h-4" />
+                添加组
+              </button>
+              <button
+                onClick={handleAddTopLevelField}
+                className="mt-2 flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
+              >
+                <FileText className="w-4 h-4" />
+                添加内容块
+              </button>
+              <button
+                onClick={openTemplateModal}
+                className="mt-2 flex items-center gap-2 px-4 py-2 bg-surface-3 text-zinc-200 rounded-lg hover:bg-surface-4 transition-colors"
+              >
+                <Package className="w-4 h-4" />
+                从模板添加
+              </button>
+              <button
+                onClick={() => setShowImportModal(true)}
+                className="mt-2 flex items-center gap-2 px-4 py-2 bg-surface-3 text-zinc-200 rounded-lg hover:bg-surface-4 transition-colors"
+              >
+                <Upload className="w-4 h-4" />
+                从 JSON 导入
+              </button>
+            </>
+          )}
+        </div>
+
+        <ProjectContentTreeImportModal
+          open={showImportModal}
+          projectId={projectId}
+          onClose={() => setShowImportModal(false)}
+          onImported={onBlocksChange}
+        />
+      </>
     );
   }
 
@@ -889,6 +925,15 @@ export default function BlockTree({
           从模板添加
         </button>
       )}
+      {editable && (
+        <button
+          onClick={() => setShowImportModal(true)}
+          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-500 hover:text-zinc-300 hover:bg-surface-2 rounded-lg transition-colors"
+        >
+          <Upload className="w-4 h-4" />
+          从 JSON 导入
+        </button>
+      )}
 
       {showTemplateModal && (
         <div
@@ -952,6 +997,13 @@ export default function BlockTree({
           </div>
         </div>
       )}
+
+      <ProjectContentTreeImportModal
+        open={showImportModal}
+        projectId={projectId}
+        onClose={() => setShowImportModal(false)}
+        onImported={onBlocksChange}
+      />
     </div>
   );
 }

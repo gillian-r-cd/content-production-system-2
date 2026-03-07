@@ -195,6 +195,44 @@ export const projectAPI = {
   exportProject: (id: string, includeVersions: boolean = false) =>
     fetchAPI<any>(`/api/projects/${id}/export${includeVersions ? "?include_versions=true" : ""}`),
 
+  exportProjectMarkdown: (id: string) =>
+    fetchAPI<{ markdown: string; filename: string }>(`/api/projects/${id}/export-markdown`),
+
+  saveAsFieldTemplate: (
+    id: string,
+    data: { name: string; description?: string; category?: string },
+  ) =>
+    fetchAPI<{
+      message: string;
+      template: {
+        id: string;
+        name: string;
+        description: string;
+        category: string;
+        schema_version: number;
+        fields: unknown[];
+        root_nodes: TemplateNode[];
+      };
+      warnings: string[];
+      summary: Record<string, number>;
+    }>(`/api/projects/${id}/save-as-field-template`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  importContentTreeJson: (id: string, data: unknown) =>
+    fetchAPI<{
+      message: string;
+      source_type: string;
+      blocks_created: number;
+      root_count: number;
+      warning_count: number;
+      warnings: string[];
+    }>(`/api/projects/${id}/import-content-tree-json`, {
+      method: "POST",
+      body: JSON.stringify({ data }),
+    }),
+
   importProject: (data: any, asNew: boolean = true) =>
     fetchAPI<any>("/api/projects/import", {
       method: "POST",
@@ -758,6 +796,34 @@ export const blockAPI = {
   // 获取单个内容块
   get: (blockId: string, includeChildren = false) =>
     fetchAPI<ContentBlock>(`/api/blocks/${blockId}?include_children=${includeChildren}`),
+
+  exportMarkdown: (blockId: string) =>
+    fetchAPI<{ markdown: string; filename: string }>(`/api/blocks/${blockId}/export-markdown`),
+
+  exportJson: (blockId: string) =>
+    fetchAPI<any>(`/api/blocks/${blockId}/export-json`),
+
+  saveAsFieldTemplate: (
+    blockId: string,
+    data: { name: string; description?: string; category?: string },
+  ) =>
+    fetchAPI<{
+      message: string;
+      template: {
+        id: string;
+        name: string;
+        description: string;
+        category: string;
+        schema_version: number;
+        fields: unknown[];
+        root_nodes: TemplateNode[];
+      };
+      warnings: string[];
+      summary: Record<string, number>;
+    }>(`/api/blocks/${blockId}/save-as-field-template`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
 
   // 创建内容块
   create: (data: {

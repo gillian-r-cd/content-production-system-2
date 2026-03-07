@@ -74,6 +74,18 @@ class NewVersionRequest(BaseModel):
     version_note: str
 
 
+class SaveAsFieldTemplateRequest(BaseModel):
+    """保存为内容块模板请求"""
+    name: str
+    description: str = ""
+    category: str = "通用"
+
+
+class ImportContentTreeJsonRequest(BaseModel):
+    """项目级内容树追加导入请求"""
+    data: Dict[str, Any]
+
+
 # ============== Routes ==============
 
 @router.get("/", response_model=List[ProjectResponse])
@@ -968,6 +980,93 @@ def export_project(
         "project_structure_drafts": drafts_data,
         "generation_logs": logs_data,
     }
+
+
+@router.get("/{project_id}/export-markdown")
+def export_project_markdown(
+    project_id: str,
+    db: Session = Depends(get_db),
+):
+    """导出项目内容树为 Markdown。"""
+    from core.content_tree_export_service import export_project_markdown as export_project_markdown_payload
+
+    try:
+        return export_project_markdown_payload(db, project_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/{project_id}/save-as-field-template")
+def save_project_as_field_template(
+    project_id: str,
+    request: SaveAsFieldTemplateRequest,
+    db: Session = Depends(get_db),
+):
+    """将当前项目内容树保存为内容块模板。"""
+    from core.content_tree_export_service import build_field_template_from_project
+    from core.models import FieldTemplate
+    from core.template_schema import normalize_field_template_payload
+
+    try:
+        result = build_field_template_from_project(db, project_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    normalized, errors = normalize_field_template_payload(
+        template_name=request.name,
+        fields=[],
+        root_nodes=result.root_nodes,
+    )
+    if errors:
+        raise HTTPException(status_code=400, detail="; ".join(errors))
+
+    template = FieldTemplate(
+        id=generate_uuid(),
+        name=request.name.strip() or "未命名模板",
+        description=request.description,
+        category=request.category or "通用",
+        schema_version=normalized["schema_version"],
+        fields=normalized["fields"],
+        root_nodes=normalized["root_nodes"],
+    )
+    db.add(template)
+    db.commit()
+    db.refresh(template)
+
+    return {
+        "message": f"已保存为内容块模板「{template.name}」",
+        "template": {
+            "id": template.id,
+            "name": template.name,
+            "description": template.description or "",
+            "category": template.category or "通用",
+            "schema_version": template.schema_version,
+            "fields": template.fields or [],
+            "root_nodes": template.root_nodes or [],
+        },
+        "warnings": result.warnings,
+        "summary": result.summary,
+    }
+
+
+@router.post("/{project_id}/import-content-tree-json")
+def import_content_tree_json(
+    project_id: str,
+    request: ImportContentTreeJsonRequest,
+    db: Session = Depends(get_db),
+):
+    """从 JSON 文件向当前项目追加导入内容树。"""
+    from core.content_tree_import_service import import_content_tree_json as import_content_tree_json_payload
+
+    try:
+        return import_content_tree_json_payload(
+            db=db,
+            project_id=project_id,
+            data=request.data,
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 class ProjectImportRequest(BaseModel):
