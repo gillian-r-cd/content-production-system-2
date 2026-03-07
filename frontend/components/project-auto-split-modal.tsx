@@ -211,8 +211,8 @@ export function ProjectAutoSplitModal({
     return [
       `chunk 数: ${previewSummary.chunk_count ?? 0}`,
       `方案数: ${previewSummary.plan_count ?? 0}`,
-      `共享节点数: ${previewSummary.shared_node_count ?? 0}`,
-      `聚合节点数: ${previewSummary.aggregate_node_count ?? 0}`,
+      `开头内容节点数: ${previewSummary.shared_node_count ?? 0}`,
+      `结尾内容节点数: ${previewSummary.aggregate_node_count ?? 0}`,
       `编译节点数: ${previewSummary.compiled_node_count ?? 0}`,
     ];
   }, [previewSummary]);

@@ -9,7 +9,40 @@ import type { FieldTemplate, ProjectStructureDraftPayload } from "@/lib/api";
 import { ProjectStructureDraftEditor } from "./project-structure-draft-editor";
 
 vi.mock("./settings/template-tree-editor", () => ({
-  TemplateTreeEditor: () => <div>mock-template-tree-editor</div>,
+  TemplateTreeEditor: ({ topLevelLabel }: { topLevelLabel: string }) => <div>{topLevelLabel}</div>,
+}));
+
+vi.mock("./project-template-import-bar", () => ({
+  ProjectTemplateImportBar: ({
+    title,
+    templates,
+    onImport,
+  }: {
+    title: string;
+    templates: Array<{ id: string; name: string }>;
+    onImport: (template: { id: string; name: string }) => void;
+  }) => (
+    <div>
+      <div>{title}</div>
+      <select aria-label={`${title}-selector`} defaultValue="">
+        <option value="">请选择</option>
+        {templates.map((template) => (
+          <option key={template.id} value={template.id}>
+            {template.name}
+          </option>
+        ))}
+      </select>
+      <button
+        type="button"
+        onClick={() => {
+          const target = templates[0];
+          if (target) onImport(target);
+        }}
+      >
+        导入模板结构
+      </button>
+    </div>
+  ),
 }));
 
 function makePayload(): ProjectStructureDraftPayload {
@@ -74,7 +107,26 @@ describe("ProjectStructureDraftEditor", () => {
     cleanup();
   });
 
-  it("imports shared and aggregate templates into payload with fresh ids", () => {
+  it("renders sections in opening-content, plan, ending-content order with renamed labels", () => {
+    render(
+      <ProjectStructureDraftEditor
+        payload={makePayload()}
+        availableModels={[]}
+        fieldTemplates={makeTemplates()}
+        projectBlocks={[]}
+        onChange={() => {}}
+      />,
+    );
+
+    const text = document.body.textContent || "";
+    expect(text.indexOf("开头内容模板")).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf("编排方案")).toBeGreaterThan(text.indexOf("开头内容模板"));
+    expect(text.indexOf("结尾内容模板")).toBeGreaterThan(text.indexOf("编排方案"));
+    expect(screen.getByText("开头内容")).toBeInTheDocument();
+    expect(screen.getByText("结尾内容")).toBeInTheDocument();
+  });
+
+  it("imports opening and ending templates into payload with fresh ids", () => {
     const onChange = vi.fn();
 
     render(
@@ -87,18 +139,15 @@ describe("ProjectStructureDraftEditor", () => {
       />,
     );
 
-    const comboboxes = screen.getAllByRole("combobox");
     const buttons = screen.getAllByRole("button", { name: "导入模板结构" });
 
-    fireEvent.change(comboboxes[1], { target: { value: "template-1" } });
-    fireEvent.click(buttons[1]);
+    fireEvent.click(buttons[0]);
 
     const sharedPayload = onChange.mock.calls[0][0] as ProjectStructureDraftPayload;
     expect(sharedPayload.shared_root_nodes).toHaveLength(2);
     expect(sharedPayload.shared_root_nodes[0].template_node_id).toBe("shared-field-a");
     expect(sharedPayload.shared_root_nodes[0].depends_on_template_node_ids).toEqual(["shared-field-b"]);
 
-    fireEvent.change(comboboxes[2], { target: { value: "template-1" } });
     fireEvent.click(buttons[2]);
 
     const aggregatePayload = onChange.mock.calls[1][0] as ProjectStructureDraftPayload;

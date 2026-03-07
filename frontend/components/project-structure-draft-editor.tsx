@@ -1,5 +1,5 @@
 // frontend/components/project-structure-draft-editor.tsx
-// 功能: 编辑项目级自动拆分草稿中的编排方案、共享结构和聚合结构
+// 功能: 编辑项目级自动拆分草稿中的编排方案、开头内容和结尾内容
 // 主要组件: ProjectStructureDraftEditor
 // 数据结构: ProjectStructureDraftPayload / ProjectStructurePlan / TemplateNode / DraftDependencyOption
 
@@ -72,7 +72,7 @@ export function ProjectStructureDraftEditor({
 
   const sharedNodeOptions: DraftDependencyOption[] = flattenContentNodes(payload.shared_root_nodes).map((node) => ({
     id: `shared:${node.template_node_id}`,
-    label: `共享 / ${node.name || node.template_node_id.slice(0, 8)}`,
+    label: `开头内容 / ${node.name || node.template_node_id.slice(0, 8)}`,
     ref: { ref_type: "shared_node", node_id: node.template_node_id },
   }));
 
@@ -114,6 +114,25 @@ export function ProjectStructureDraftEditor({
 
   return (
     <div className="space-y-6">
+      <section className="rounded-xl border border-surface-3 bg-surface-1 p-4">
+        <ProjectTemplateImportBar
+          title="开头内容模板"
+          templates={fieldTemplates}
+          onImport={(template) => patchPayload({
+            shared_root_nodes: importTemplateNodes(payload.shared_root_nodes || [], template),
+          })}
+        />
+        <TemplateTreeEditor
+          nodes={payload.shared_root_nodes || []}
+          onChange={(nodes) => patchPayload({ shared_root_nodes: nodes })}
+          availableModels={availableModels}
+          topLevelLabel="开头内容"
+          emptyText="还没有开头内容。这里可以直接添加开头内容块，也可以按分组组织。"
+          topLevelCreateTypes={["field", "group"]}
+          externalDependencyOptions={projectBlockOptions}
+        />
+      </section>
+
       <ProjectPlanSelector
         plans={payload.plans}
         chunks={payload.chunks}
@@ -134,26 +153,7 @@ export function ProjectStructureDraftEditor({
 
       <section className="rounded-xl border border-surface-3 bg-surface-1 p-4">
         <ProjectTemplateImportBar
-          title="共享结构模板"
-          templates={fieldTemplates}
-          onImport={(template) => patchPayload({
-            shared_root_nodes: importTemplateNodes(payload.shared_root_nodes || [], template),
-          })}
-        />
-        <TemplateTreeEditor
-          nodes={payload.shared_root_nodes || []}
-          onChange={(nodes) => patchPayload({ shared_root_nodes: nodes })}
-          availableModels={availableModels}
-          topLevelLabel="共享结构"
-          emptyText="还没有共享结构。这里可以直接添加共享内容块，也可以按分组组织。"
-          topLevelCreateTypes={["field", "group"]}
-          externalDependencyOptions={projectBlockOptions}
-        />
-      </section>
-
-      <section className="rounded-xl border border-surface-3 bg-surface-1 p-4">
-        <ProjectTemplateImportBar
-          title="聚合结构模板"
+          title="结尾内容模板"
           templates={fieldTemplates}
           onImport={(template) => patchPayload({
             aggregate_root_nodes: importTemplateNodes(payload.aggregate_root_nodes || [], template),
@@ -163,8 +163,8 @@ export function ProjectStructureDraftEditor({
           nodes={payload.aggregate_root_nodes || []}
           onChange={(nodes) => patchPayload({ aggregate_root_nodes: nodes })}
           availableModels={availableModels}
-          topLevelLabel="聚合结构"
-          emptyText="还没有聚合结构。这里可以直接添加最终汇总内容块，也可以按分组组织。"
+          topLevelLabel="结尾内容"
+          emptyText="还没有结尾内容。这里可以直接添加最终汇总内容块，也可以按分组组织。"
           topLevelCreateTypes={["field", "group"]}
           externalDependencyOptions={[
             ...chunkSourceOptions,
