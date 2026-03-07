@@ -123,7 +123,7 @@ export function WorkspaceLayout({
   const rw = rightCollapsed ? COLLAPSED_WIDTH : rightWidth;
 
   return (
-    <div className="flex h-screen bg-surface-0 overflow-hidden">
+    <div className="flex h-full bg-surface-0 overflow-hidden">
       {/* ── 左栏 ── */}
       <aside
         className="flex-shrink-0 border-r border-surface-3 bg-surface-1 overflow-hidden transition-[width] duration-200 ease-in-out"
