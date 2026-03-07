@@ -98,6 +98,58 @@ def test_list_ready_blocks_respects_mode(db_session):
     assert set(all_ids) == {"auto-1", "manual-1", "root-ready"}
 
 
+def test_list_ready_blocks_only_blocks_unanswered_required_questions(db_session):
+    project = create_project(db_session)
+    optional_only = ContentBlock(
+        id="optional-only",
+        project_id=project.id,
+        parent_id=None,
+        name="选答块",
+        block_type="field",
+        depth=0,
+        order_index=0,
+        status="pending",
+        pre_questions=[
+            {"id": "q-1", "question": "补充背景", "required": False},
+        ],
+        pre_answers={},
+    )
+    required_missing = ContentBlock(
+        id="required-missing",
+        project_id=project.id,
+        parent_id=None,
+        name="必答未填块",
+        block_type="field",
+        depth=0,
+        order_index=1,
+        status="pending",
+        pre_questions=[
+            {"id": "q-2", "question": "核心目标", "required": True},
+        ],
+        pre_answers={},
+    )
+    required_answered = ContentBlock(
+        id="required-answered",
+        project_id=project.id,
+        parent_id=None,
+        name="必答已填块",
+        block_type="field",
+        depth=0,
+        order_index=2,
+        status="pending",
+        pre_questions=[
+            {"id": "q-3", "question": "受众是谁", "required": True},
+        ],
+        pre_answers={"q-3": "创业者"},
+    )
+    db_session.add_all([optional_only, required_missing, required_answered])
+    db_session.commit()
+
+    ready_ids = list_ready_blocks(project_id=project.id, mode="start_all_ready", db=db_session)
+
+    assert set(ready_ids) == {"optional-only", "required-answered"}
+
+
 def test_run_project_blocks_scans_multiple_rounds(db_session, monkeypatch):
     from core import project_run_service as run_service
 

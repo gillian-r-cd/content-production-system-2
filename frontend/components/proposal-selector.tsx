@@ -10,6 +10,7 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { blockAPI, settingsAPI } from "@/lib/api";
 import type { ContentBlock } from "@/lib/api";
+import type { PreQuestion } from "@/lib/preQuestions";
 import {
   Check, Send, ChevronDown, ChevronUp, FileText, ArrowRight,
   Plus, Trash2, X, Save, PackagePlus,
@@ -26,7 +27,7 @@ interface ProposalField {
   depends_on: string[];
   order: number;
   need_review: boolean;
-  pre_questions?: string[];
+  pre_questions?: PreQuestion[];
 }
 
 interface Proposal {
@@ -53,7 +54,7 @@ interface FieldTemplateItem {
     type?: string;
     field_type?: string;
   ai_prompt?: string;
-    pre_questions?: string[];
+    pre_questions?: PreQuestion[];
     depends_on?: string[];
     dependency_type?: string;
   }>;
@@ -656,7 +657,7 @@ export function ProposalSelector({
       const flatten = (blocks: ContentBlock[]): ContentBlock[] =>
         blocks.flatMap(b => [b, ...flatten(b.children || [])]);
       const phase = flatten(tree.blocks || []).find(
-        b => b.block_type === "phase" && b.special_handler === handler
+        b => b.block_type === "group" && b.special_handler === handler
       );
       return phase?.id || null;
     } catch { return null; }
@@ -689,6 +690,7 @@ export function ProposalSelector({
           block_type: "field",
           ai_prompt: pField.ai_prompt || "",
           need_review: pField.need_review !== false,
+          pre_questions: pField.pre_questions || [],
         });
         if (pField.id) proposalToRealId[pField.id] = created.id;
         proposalToRealId[pField.name] = created.id;
@@ -742,7 +744,7 @@ export function ProposalSelector({
       const flatten = (blocks: ContentBlock[]): ContentBlock[] =>
         blocks.flatMap(b => [b, ...flatten(b.children || [])]);
       const all = flatten(tree.blocks || []);
-      const produceInner = all.find(b => b.block_type === "phase" && b.special_handler === "produce_inner");
+      const produceInner = all.find(b => b.block_type === "group" && b.special_handler === "produce_inner");
       if (produceInner) {
         // 删除 produce_inner 阶段下的所有 field 子块
         const children = all.filter(b => b.parent_id === produceInner.id && b.block_type === "field");

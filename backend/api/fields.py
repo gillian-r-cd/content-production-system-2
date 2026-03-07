@@ -22,6 +22,7 @@ import json
 from core.database import get_db
 from core.models import ProjectField, Project, FieldTemplate, generate_uuid, GenerationLog, ContentVersion
 from core.tools import generate_field, generate_field_stream, resolve_field_order
+from core.pre_question_utils import normalize_pre_answers, normalize_pre_questions
 from core.prompt_engine import prompt_engine, PromptContext, GoldenContext
 from core.llm_compat import get_model_name
 from datetime import datetime
@@ -70,7 +71,7 @@ class FieldCreate(BaseModel):
     content: str = ""
     status: str = "pending"
     ai_prompt: str = ""
-    pre_questions: List[str] = []
+    pre_questions: List[dict] | List[str] = []
     dependencies: dict = {"depends_on": [], "dependency_type": "all"}
     constraints: Optional[dict] = None  # 字段生产约束
     need_review: bool = True  # 是否需要人工确认（默认需要确认，避免自动执行浪费 token）
@@ -173,7 +174,7 @@ def create_field(
         field_type=field.field_type,
         content=effective_content,
         ai_prompt=field.ai_prompt,
-        pre_questions=field.pre_questions,
+        pre_questions=normalize_pre_questions(field.pre_questions),
         dependencies=field.dependencies,
         status=effective_status,
         # 添加约束和确认配置
@@ -224,6 +225,11 @@ def update_field(
         _save_field_version(field, "manual", db, source_detail="用户手动编辑")
     
     update_data = update.model_dump(exclude_unset=True)
+    if "pre_answers" in update_data:
+        update_data["pre_answers"] = normalize_pre_answers(
+            update_data["pre_answers"],
+            field.pre_questions or [],
+        )
     for key, value in update_data.items():
         setattr(field, key, value)
     
@@ -306,7 +312,7 @@ async def generate_field_content(
     _save_field_version(field, "ai_regenerate", db, source_detail="重新生成前的版本")
     
     # 更新预回答
-    field.pre_answers = request.pre_answers
+    field.pre_answers = normalize_pre_answers(request.pre_answers, field.pre_questions or [])
     field.status = "generating"
     db.commit()
     
@@ -372,7 +378,7 @@ async def generate_field_stream_api(
     _save_field_version(field, "ai_regenerate", db, source_detail="重新生成前的版本")
     
     # 更新预回答和状态
-    field.pre_answers = request.pre_answers
+    field.pre_answers = normalize_pre_answers(request.pre_answers, field.pre_questions or [])
     field.status = "generating"
     db.commit()
     
@@ -653,8 +659,8 @@ def _field_to_response(
         content=field.content or "",
         status=field.status,
         ai_prompt=field.ai_prompt or "",
-        pre_questions=field.pre_questions or [],
-        pre_answers=field.pre_answers or {},
+        pre_questions=normalize_pre_questions(field.pre_questions or []),
+        pre_answers=normalize_pre_answers(field.pre_answers or {}, field.pre_questions or []),
         dependencies=field.dependencies or {"depends_on": [], "dependency_type": "all"},
         constraints=field.constraints if hasattr(field, 'constraints') else None,
         need_review=field.need_review if hasattr(field, 'need_review') else True,

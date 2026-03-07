@@ -8,8 +8,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FieldTemplate, ProjectStructureChunk, ProjectStructurePlan } from "@/lib/api";
 import { ProjectPlanSelector } from "./project-plan-selector";
 
+const templateTreeEditorSpy = vi.fn();
 vi.mock("./settings/template-tree-editor", () => ({
-  TemplateTreeEditor: () => <div>mock-template-tree-editor</div>,
+  TemplateTreeEditor: (props: unknown) => {
+    templateTreeEditorSpy(props);
+    return <div>mock-template-tree-editor</div>;
+  },
 }));
 
 function makePlan(): ProjectStructurePlan {
@@ -53,6 +57,7 @@ function makeTemplates(): FieldTemplate[] {
 describe("ProjectPlanSelector", () => {
   afterEach(() => {
     cleanup();
+    templateTreeEditorSpy.mockClear();
   });
 
   it("patches selected chunk ids when chunk checkbox changes", () => {
@@ -105,5 +110,26 @@ describe("ProjectPlanSelector", () => {
     fireEvent.click(screen.getByRole("button", { name: "导入模板结构" }));
 
     expect(onImportTemplate).toHaveBeenCalledWith("plan-1", makeTemplates()[0]);
+  });
+
+  it("passes group-field only create types to tree editor", () => {
+    render(
+      <ProjectPlanSelector
+        plans={[makePlan()]}
+        chunks={makeChunks()}
+        availableModels={[]}
+        fieldTemplates={makeTemplates()}
+        sharedNodeOptions={[]}
+        projectBlockOptions={[]}
+        onAddPlan={() => {}}
+        onPatchPlan={() => {}}
+        onRemovePlan={() => {}}
+        onImportTemplate={() => {}}
+      />,
+    );
+
+    expect(templateTreeEditorSpy).toHaveBeenCalled();
+    const firstCall = templateTreeEditorSpy.mock.calls[0][0] as { topLevelCreateTypes?: string[] };
+    expect(firstCall.topLevelCreateTypes).toEqual(["field", "group"]);
   });
 });

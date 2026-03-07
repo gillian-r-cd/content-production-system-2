@@ -215,7 +215,6 @@ class TestIntentRouting:
         tool_names = {t.name for t in AGENT_TOOLS}
         # 旧路由目标映射到新工具名称
         expected_tools = {
-            "advance_to_phase",    # 旧 advance_phase
             "generate_field_content",  # 旧 generate
             "rewrite_field",       # 旧 modify（重命名）
             "run_research",        # 旧 research
@@ -251,7 +250,7 @@ class TestStateTransition:
         required_fields = [
             "messages",
             "project_id",
-            "current_phase",
+            "current_handler",
             "creator_profile",
         ]
         
@@ -279,7 +278,7 @@ class TestBuildSystemPrompt:
         
         state = AgentState(
             messages=[], project_id="test",
-            current_phase="intent", creator_profile="专业顾问",
+            current_handler="intent", creator_profile="专业顾问",
         )
         prompt = build_system_prompt(state)
         
@@ -292,7 +291,7 @@ class TestBuildSystemPrompt:
         
         state = AgentState(
             messages=[], project_id="test",
-            current_phase="intent", creator_profile="资深内容专家",
+            current_handler="intent", creator_profile="资深内容专家",
         )
         prompt = build_system_prompt(state)
         
@@ -304,7 +303,7 @@ class TestBuildSystemPrompt:
         
         state = AgentState(
             messages=[], project_id="test",
-            current_phase="research", creator_profile="",
+            current_handler="research", creator_profile="",
         )
         prompt = build_system_prompt(state)
         

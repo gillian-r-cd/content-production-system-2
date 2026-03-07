@@ -27,6 +27,7 @@ from core.models import (
     ContentBlock,
     Channel,
 )
+from core.pre_question_utils import iter_answered_pre_question_items
 
 
 @dataclass
@@ -596,13 +597,15 @@ class PromptEngine:
 
         # 添加用户回答的预问题
         if field.pre_answers:
-            ordered_questions = getattr(field, "pre_questions", None) or list(field.pre_answers.keys())
             answers_text = "\n".join(
-                f"- {q}: {field.pre_answers.get(q, '')}"
-                for q in ordered_questions
-                if str(field.pre_answers.get(q, "")).strip()
+                f"- {item['question']}: {answer}"
+                for item, answer in iter_answered_pre_question_items(
+                    getattr(field, "pre_questions", None) or [],
+                    field.pre_answers or {},
+                )
             )
-            parts.append(f"# 用户补充信息\n{answers_text}")
+            if answers_text:
+                parts.append(f"# 用户补充信息\n{answers_text}")
         
         return "\n\n---\n\n".join(parts)
 

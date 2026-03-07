@@ -187,7 +187,6 @@ export function ResearchPanel({
         body: JSON.stringify({
           project_id: projectId,
           message: "重新生成消费者调研",
-          current_phase: "research",
         }),
         signal: abortController.signal,
       });
@@ -660,7 +659,7 @@ export function ResearchPanel({
             disabled={isSaving || isRegenerating}
             className="px-6 py-2.5 bg-brand-600 hover:bg-brand-700 disabled:bg-zinc-700 text-white rounded-lg text-sm font-medium transition-all shadow-lg hover:shadow-brand-600/25"
           >
-            确认，进入内涵设计
+            确认并继续
           </button>
         </div>
       </div>

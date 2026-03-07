@@ -38,6 +38,7 @@ from core.llm_compat import normalize_content
 
 router = APIRouter()
 logger = logging.getLogger("agent")
+RUNTIME_SCOPE = "group_runtime"
 
 
 # ============== Helpers ==============
@@ -554,7 +555,7 @@ async def chat(
         seed_message=f"调用工具: {request.tool_name}",
     )
 
-    current_phase = request.current_phase or project.current_phase
+    current_phase = request.current_phase or RUNTIME_SCOPE
 
     # 查 AgentMode
     mode_name = request.mode or "assistant"
@@ -599,7 +600,7 @@ async def chat(
         state = {
             "messages": [HumanMessage(content=request.message)],
             "project_id": request.project_id,
-            "current_phase": current_phase,
+            "current_handler": current_phase,
             "creator_profile": creator_profile_str,
             "mode": mode_name,
             "mode_prompt": mode_prompt,
@@ -656,7 +657,7 @@ async def chat(
         message_id=agent_msg.id,
         message=agent_output,
         phase=current_phase,
-        phase_status=project.phase_status or {},
+        phase_status={},
         waiting_for_human=False,
     )
 
@@ -717,9 +718,9 @@ async def retry_message(
         creator_profile_str = project.creator_profile.to_prompt_context()
 
     current_phase = (
-        user_msg.message_metadata.get("phase", project.current_phase)
+        user_msg.message_metadata.get("phase", RUNTIME_SCOPE)
         if user_msg.message_metadata
-        else project.current_phase
+        else RUNTIME_SCOPE
     )
 
     # 从原消息 metadata 中提取 mode，回退到 assistant
@@ -755,7 +756,7 @@ async def retry_message(
     state = {
         "messages": [HumanMessage(content=user_msg.content)],
         "project_id": user_msg.project_id,
-        "current_phase": current_phase,
+        "current_handler": current_phase,
         "creator_profile": creator_profile_str,
         "mode": mode_name,
         "mode_prompt": mode_prompt,
@@ -796,7 +797,7 @@ async def retry_message(
         message_id=new_msg.id,
         message=agent_output,
         phase=current_phase,
-        phase_status=project.phase_status or {},
+        phase_status={},
         waiting_for_human=False,
     )
 
@@ -835,7 +836,7 @@ async def call_tool(
         role="user",
         content=f"调用工具: {request.tool_name}",
         message_metadata={
-            "phase": project.current_phase,
+            "phase": RUNTIME_SCOPE,
             "mode": "assistant",  # /tool 端点默认归入 assistant 模式
             "tool_called": request.tool_name,
             "parameters": request.parameters,
@@ -862,7 +863,7 @@ async def call_tool(
         role="assistant",
         content=str(output),
         message_metadata={
-            "phase": project.current_phase,
+            "phase": RUNTIME_SCOPE,
             "mode": "assistant",  # /tool 端点默认归入 assistant 模式
             "tools_used": [request.tool_name],
         },
@@ -874,8 +875,8 @@ async def call_tool(
     return ChatResponseSchema(
         message_id=agent_msg.id,
         message=str(output),
-        phase=project.current_phase,
-        phase_status=project.phase_status or {},
+        phase=RUNTIME_SCOPE,
+        phase_status={},
         waiting_for_human=False,
     )
 
@@ -914,7 +915,7 @@ async def stream_chat(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    current_phase = request.current_phase or project.current_phase
+    current_phase = request.current_phase or RUNTIME_SCOPE
 
     # ---- 查 AgentMode（提前到保存用户消息之前，确保 mode_name 统一） ----
     mode_name = request.mode or "assistant"
@@ -1005,7 +1006,7 @@ async def stream_chat(
     input_state = {
         "messages": input_messages,
         "project_id": request.project_id,
-        "current_phase": current_phase,
+        "current_handler": current_phase,
         "creator_profile": creator_profile_str,
         "mode": mode_name,
         "mode_prompt": mode_prompt,
@@ -1014,7 +1015,7 @@ async def stream_chat(
 
     # ---- 产出类工具集（执行后前端需刷新左侧面板） ----
     produce_tools = PRODUCE_TOOLS | {
-        "manage_architecture", "advance_to_phase", "execute_prompt_update",
+        "manage_architecture", "execute_prompt_update",
         "run_research",
     }
 
@@ -1102,7 +1103,6 @@ async def stream_chat(
                             "generate_field_content": "generate_field",
                             "query_field": "query",
                             "run_evaluation": "evaluate",
-                            "advance_to_phase": "advance_phase",
                             "manage_architecture": "generate_field",
                             "generate_outline": "generate_field",
                         }
@@ -1453,56 +1453,14 @@ async def advance_phase(
     request: ChatRequest,
     db: Session = Depends(get_db),
 ):
-    """推进到下一阶段（用户点击确认按钮后调用）"""
-    from core.phase_service import advance_phase as do_advance
-
-    project = db.query(Project).filter(Project.id == request.project_id).first()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    result = do_advance(project)
-    if not result.success:
-        return ChatResponseExtended(
-            message_id="", message=result.error,
-            phase=project.current_phase, phase_status=project.phase_status or {},
-            waiting_for_human=False,
-        )
-
-    db.commit()
-
-    msg_content = f"✅ 已进入【{result.display_name}】阶段。"
-    mode_name = request.mode or "assistant"
-    conversation = _get_or_create_conversation(
-        db=db,
-        project_id=request.project_id,
-        mode=mode_name,
-        conversation_id=request.conversation_id,
-        seed_message=msg_content,
-    )
-
-    enter_msg = ChatMessage(
-        id=generate_uuid(),
-        project_id=request.project_id,
-        conversation_id=conversation.id,
-        role="assistant",
-        content=msg_content,
-        message_metadata={
-            "phase": result.next_phase,
-            "mode": mode_name,
-        },
-    )
-    db.add(enter_msg)
-    _touch_conversation(conversation, is_new_message=True)
-    db.commit()
-    db.refresh(project)
-
+    """已废弃：运行时不再使用 phase 推进。"""
     return ChatResponseExtended(
-        message_id=enter_msg.id,
-        message=msg_content,
-        phase=result.next_phase,
-        phase_status=project.phase_status or {},
+        message_id="",
+        message="该接口已废弃：系统已切换为节点/handler驱动，不再支持阶段推进。",
+        phase=RUNTIME_SCOPE,
+        phase_status={},
         waiting_for_human=False,
-        project_updated=True,
+        project_updated=False,
         is_producing=False,
     )
 

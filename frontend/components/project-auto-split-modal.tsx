@@ -227,8 +227,6 @@ export function ProjectAutoSplitModal({
             ? "内容块"
             : node.block_type === "group"
             ? "分组"
-            : node.block_type === "phase"
-            ? "阶段"
             : "节点";
         lines.push({
           key: `${node.template_node_id}-${depth}`,

@@ -513,6 +513,7 @@ async def _generate_field_impl(
         entity = _find_block(db, project_id, field_name)
         if not entity:
             return _json_err(f"找不到内容块「{field_name}」")
+        target_label = _entity_label(entity, field_name)
 
         # 防护：结构化 special_handler 块不能用纯文本生成，应使用专用工具
         if _is_structured_handler(entity):
@@ -758,23 +759,21 @@ def manage_architecture(
     何时不使用:
     - 改内容块里的文字 → propose_edit 或 rewrite_field
     - 生成内容 → generate_field_content
-    - 推进项目阶段 → advance_to_phase
 
     典型场景:
-    - "帮我加一个新内容块叫XX" → manage_architecture("add_field", "XX", '{"phase":"design_inner"}')
+    - "帮我加一个新内容块叫XX" → manage_architecture("add_field", "XX", '{"parent_id":"..."}')
     - "删掉场景库" → manage_architecture("remove_field", "场景库")
     - "在某个父节点下新增子分组" → manage_architecture("add_node", "新分组", '{"block_type":"group","parent_id":"..."}')
     - "按块 ID 移动内容块" → manage_architecture("move_node", "id:xxx", '{"new_parent_id":"yyy"}')
     - "把模板挂到某个节点下" → manage_architecture("instantiate_template", "模板ID", '{"parent_id":"..."}')
-    - "新增一个组叫测试" → manage_architecture("add_phase", "test", '{"display_name":"测试"}')
 
     Args:
-        operation: 操作类型 — add/remove/move/update phase/field，或 add_node/remove_node/move_node/update_node_meta/instantiate_template
+        operation: 操作类型 — add/remove/move/update field，或 add_node/remove_node/move_node/update_node_meta/instantiate_template
         target: 操作目标（内容块名、组名，或 `id:块ID`）
         details: 操作详情（JSON 字符串，如 {"phase":"design_inner","parent_id":"...","ai_prompt":"..."} 或 {"display_name":"..."} 或 {"target_phase":"...","target_parent_id":"..."}）
     """
     from core.tools.architecture_writer import (
-        add_phase, remove_phase, add_field, remove_field, move_field,
+        add_field, remove_field, move_field,
         add_node, remove_node, move_node, update_node_meta, instantiate_template,
     )
 
@@ -787,15 +786,7 @@ def manage_architecture(
         params = {"raw": details}
 
     try:
-        if operation == "add_phase":
-            display_name = params.get("display_name", target)
-            position = params.get("position")
-            result = add_phase(project_id, target, display_name, position)
-
-        elif operation == "remove_phase":
-            result = remove_phase(project_id, target)
-
-        elif operation == "add_field":
+        if operation == "add_field":
             phase = params.get("phase", "")
             ai_prompt = params.get("ai_prompt", "")
             depends_on = params.get("depends_on")
@@ -875,7 +866,7 @@ def manage_architecture(
         else:
             return _json_err(
                 "未知操作: "
-                f"{operation}。支持: add_field / remove_field / move_field / add_phase / remove_phase / "
+                f"{operation}。支持: add_field / remove_field / move_field / "
                 "add_node / remove_node / move_node / update_node_meta / instantiate_template"
             )
 
@@ -886,53 +877,7 @@ def manage_architecture(
         return _json_err(str(e))
 
 
-# ============== 7. advance_to_phase ==============
-
-@tool
-def advance_to_phase(target_phase: str = "", *, config: Annotated[RunnableConfig, InjectedToolArg]) -> str:
-    """推进项目到下一组或跳转到指定组。
-
-    何时使用:
-    - 用户说"继续""下一步""进入XX阶段"
-    - 当前组的内容已完成，用户准备进入下一阶段
-
-    何时不使用:
-    - 用户想修改当前组的内容 → propose_edit 或 rewrite_field
-    - 用户想添加新组 → manage_architecture("add_phase", ...)
-    - 用户只是在讨论流程，还没决定推进 → 文本对话
-
-    典型场景:
-    - "进入外延设计" → advance_to_phase("design_outer")
-    - "继续" → advance_to_phase("")
-
-    Args:
-        target_phase: 目标组名称（如 "research"、"design_inner"）。为空表示自动下一组。
-    """
-    from core.models import Project
-    from core.phase_service import advance_phase
-
-    project_id = _get_project_id(config)
-    db = _get_db()
-    try:
-        project = db.query(Project).filter(Project.id == project_id).first()
-        if not project:
-            return "项目不存在"
-
-        result = advance_phase(project, target_phase)
-        if not result.success:
-            return result.error
-
-        db.commit()
-        return f"✅ 已进入组【{result.next_phase}】"
-
-    except Exception as e:
-        db.rollback()
-        return f"推进组失败: {e}"
-    finally:
-        db.close()
-
-
-# ============== 8. run_research ==============
+# ============== 7. run_research ==============
 
 @tool
 async def run_research(
@@ -1031,7 +976,7 @@ async def _run_research_impl(query: str, research_type: str, config: RunnableCon
         db.close()
 
 
-# ============== 9. manage_persona ==============
+# ============== 8. manage_persona ==============
 
 @tool
 async def manage_persona(
@@ -1091,7 +1036,7 @@ async def _manage_persona_impl(operation: str, persona_data: str, config: Runnab
     return result.message if result.success else f"操作失败: {result.message}"
 
 
-# ============== 10. run_evaluation ==============
+# ============== 9. run_evaluation ==============
 
 @tool
 async def run_evaluation(
@@ -1201,7 +1146,7 @@ async def _run_evaluation_impl(
         db.close()
 
 
-# ============== 11. generate_outline ==============
+# ============== 10. generate_outline ==============
 
 @tool
 async def generate_outline(topic: str = "", *, config: Annotated[RunnableConfig, InjectedToolArg]) -> str:
@@ -1254,7 +1199,7 @@ async def _generate_outline_impl(topic: str, config: RunnableConfig) -> str:
         db.close()
 
 
-# ============== 12. manage_skill ==============
+# ============== 11. manage_skill ==============
 
 @tool
 async def manage_skill(
@@ -1397,7 +1342,6 @@ AGENT_TOOLS = [
     read_field,
     update_field,
     manage_architecture,
-    advance_to_phase,
     run_research,
     manage_persona,
     run_evaluation,

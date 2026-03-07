@@ -33,8 +33,6 @@ function flattenBlocks(blocks: ContentBlock[]): ContentBlock[] {
 interface ProgressPanelProps {
   project: Project | null;
   blocksRefreshKey?: number;  // 外部触发 ContentBlocks 重新加载
-  onPhaseClick?: (phase: string) => void;
-  onPhaseReorder?: (newPhaseOrder: string[]) => Promise<void>;
   onBlockSelect?: (block: ContentBlock) => void;
   onBlocksChange?: (blocks: ContentBlock[]) => void;  // 当内容块加载/变化时通知父组件
   onProjectChange?: () => void;  // 项目数据变化时通知父组件刷新
@@ -45,7 +43,6 @@ interface ProgressPanelProps {
 export function ProgressPanel({
   project,
   blocksRefreshKey = 0,
-  onPhaseClick,
   onBlockSelect,
   onBlocksChange,
   onOpenAutoSplit,
@@ -135,19 +132,6 @@ export function ProgressPanel({
   const handleBlockSelect = (block: ContentBlock) => {
     setSelectedBlockId(block.id);
     onBlockSelect?.(block);
-    
-    // 如果是阶段类型，也触发 onPhaseClick
-    if (block.block_type === "phase" && block.special_handler) {
-      const phaseMap: Record<string, string> = {
-        intent: "intent",
-        research: "research",
-        evaluate: "evaluate",
-      };
-      const phase = phaseMap[block.special_handler];
-      if (phase) {
-        onPhaseClick?.(phase);
-      }
-    }
   };
 
   return (
@@ -175,9 +159,12 @@ export function ProgressPanel({
                 onClick={onStartAllReady}
                 className="rounded-lg bg-surface-3 px-3 py-1.5 text-xs text-zinc-200 hover:bg-surface-4"
               >
-                全部开始
+                开始所有已就绪内容块
               </button>
             </div>
+            <p className="text-xs text-zinc-500">
+              已就绪 = 依赖完成，且所有必答生成前提问已回答。
+            </p>
           </div>
         )}
       </div>

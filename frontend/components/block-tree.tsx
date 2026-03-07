@@ -26,28 +26,7 @@ import {
   Package,
   X,
 } from "lucide-react";
-import { ContentBlock, blockAPI, settingsAPI, TemplateNode } from "@/lib/api";
-
-// 内容块模板类型
-interface FieldTemplate {
-  id: string;
-  name: string;
-  description?: string;
-  root_nodes?: TemplateNode[];
-  fields: {
-    name: string;
-    type: string;
-    ai_prompt: string;
-    content?: string;          // 预置内容（模板自带的初始内容）
-    depends_on?: string[];
-    need_review?: boolean;
-    auto_generate?: boolean;   // 是否自动生成（依赖就绪时自动触发）
-    special_handler?: string;
-    pre_questions?: string[];  // 生成前提问
-    model_override?: string | null;  // 模型覆盖
-    constraints?: Record<string, unknown>;  // 约束配置
-  }[];
-}
+import { ContentBlock, blockAPI, settingsAPI, TemplateNode, FieldTemplate } from "@/lib/api";
 
 function flattenTemplateNodes(nodes: TemplateNode[] = []): TemplateNode[] {
   return nodes.flatMap((node) => [node, ...flattenTemplateNodes(node.children || [])]);
@@ -100,9 +79,7 @@ const specialHandlerIcons: Record<string, React.ReactNode> = {
 
 // 块类型图标
 const blockTypeIcons: Record<string, React.ReactNode> = {
-  phase: <Folder className="w-4 h-4" />,
   field: <FileText className="w-4 h-4" />,
-  proposal: <Copy className="w-4 h-4" />,
   group: <Folder className="w-4 h-4" />,
 };
 
@@ -599,12 +576,12 @@ function BlockNode({
                           <div className="flex items-center gap-2 mt-2 text-xs text-zinc-500">
                             <span>
                               {template.root_nodes?.length
-                                ? flattenTemplateNodes(template.root_nodes).filter((node) => node.block_type === "field" || node.block_type === "proposal").length
+                                ? flattenTemplateNodes(template.root_nodes).filter((node) => node.block_type === "field").length
                                 : (template.fields?.length || 0)} 个内容块
                             </span>
                             {(template.root_nodes?.length
                               ? flattenTemplateNodes(template.root_nodes)
-                                  .filter((node) => node.block_type === "field" || node.block_type === "proposal")
+                                  .filter((node) => node.block_type === "field")
                                   .slice(0, 3)
                                   .map((node) => ({ name: node.name }))
                               : (template.fields || []).slice(0, 3)
@@ -615,14 +592,14 @@ function BlockNode({
                             ))}
                             {(
                               template.root_nodes?.length
-                                ? flattenTemplateNodes(template.root_nodes).filter((node) => node.block_type === "field" || node.block_type === "proposal").length
+                                ? flattenTemplateNodes(template.root_nodes).filter((node) => node.block_type === "field").length
                                 : (template.fields?.length || 0)
                             ) > 3 && (
                               <span className="text-zinc-600">
                                 +
                                 {(
                                   template.root_nodes?.length
-                                    ? flattenTemplateNodes(template.root_nodes).filter((node) => node.block_type === "field" || node.block_type === "proposal").length
+                                    ? flattenTemplateNodes(template.root_nodes).filter((node) => node.block_type === "field").length
                                     : (template.fields?.length || 0)
                                 ) - 3}
                               </span>
@@ -660,6 +637,10 @@ export default function BlockTree({
   // 撤回历史栈
   const [undoStack, setUndoStack] = useState<UndoHistoryItem[]>([]);
   const [isUndoing, setIsUndoing] = useState(false);
+  const [showTemplateModal, setShowTemplateModal] = useState(false);
+  const [templates, setTemplates] = useState<FieldTemplate[]>([]);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
+  const [isApplyingTemplate, setIsApplyingTemplate] = useState(false);
 
   // 处理删除成功，保存到撤回栈
   const handleDeleteSuccess = useCallback((item: UndoHistoryItem) => {
@@ -745,21 +726,65 @@ export default function BlockTree({
     }
   }, [dragSource, dragTarget, blocks, onBlocksChange]);
 
-  // 添加顶级阶段（自动编号）
-  const handleAddPhase = async () => {
+  const loadTemplates = async () => {
+    setTemplatesLoading(true);
     try {
-      // 计算现有阶段数量，自动生成编号
-      const phaseCount = blocks.filter(b => b.block_type === "phase").length;
-      const phaseName = `新组 ${phaseCount + 1}`;
+      const data = await settingsAPI.listFieldTemplates();
+      setTemplates(data || []);
+    } catch (err) {
+      console.error("加载模板失败:", err);
+    } finally {
+      setTemplatesLoading(false);
+    }
+  };
+
+  const openTemplateModal = () => {
+    setShowTemplateModal(true);
+    loadTemplates();
+  };
+
+  const handleAddFromTemplateTopLevel = async (template: FieldTemplate) => {
+    setIsApplyingTemplate(true);
+    try {
+      await blockAPI.applyTemplate(projectId, template.id);
+      setShowTemplateModal(false);
+      onBlocksChange?.();
+    } catch (err) {
+      console.error("从模板添加失败:", err);
+      alert("添加失败: " + (err instanceof Error ? err.message : "未知错误"));
+    } finally {
+      setIsApplyingTemplate(false);
+    }
+  };
+
+  // 添加顶级组（自动编号）
+  const handleAddGroup = async () => {
+    try {
+      const groupCount = blocks.filter(b => b.block_type === "group").length;
+      const groupName = `新组 ${groupCount + 1}`;
       
       await blockAPI.create({
         project_id: projectId,
-        name: phaseName,
-        block_type: "phase",
+        name: groupName,
+        block_type: "group",
       });
       onBlocksChange?.();
     } catch (err) {
       console.error("添加组失败:", err);
+      alert("添加失败: " + (err instanceof Error ? err.message : "未知错误"));
+    }
+  };
+
+  const handleAddTopLevelField = async () => {
+    try {
+      await blockAPI.create({
+        project_id: projectId,
+        name: "新内容块",
+        block_type: "field",
+      });
+      onBlocksChange?.();
+    } catch (err) {
+      console.error("添加内容块失败:", err);
       alert("添加失败: " + (err instanceof Error ? err.message : "未知错误"));
     }
   };
@@ -770,13 +795,29 @@ export default function BlockTree({
         <Folder className="w-12 h-12 mb-4 opacity-50" />
         <p className="text-sm mb-4">暂无内容块</p>
         {editable && (
-          <button
-            onClick={handleAddPhase}
-            className="flex items-center gap-2 px-4 py-2 bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors"
-          >
-            <Plus className="w-4 h-4" />
-            添加组
-          </button>
+          <>
+            <button
+              onClick={handleAddGroup}
+              className="flex items-center gap-2 px-4 py-2 bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors"
+            >
+              <Plus className="w-4 h-4" />
+              添加组
+            </button>
+            <button
+              onClick={handleAddTopLevelField}
+              className="mt-2 flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
+            >
+              <FileText className="w-4 h-4" />
+              添加内容块
+            </button>
+            <button
+              onClick={openTemplateModal}
+              className="mt-2 flex items-center gap-2 px-4 py-2 bg-surface-3 text-zinc-200 rounded-lg hover:bg-surface-4 transition-colors"
+            >
+              <Package className="w-4 h-4" />
+              从模板添加
+            </button>
+          </>
         )}
       </div>
     );
@@ -823,12 +864,93 @@ export default function BlockTree({
 
       {editable && (
         <button
-          onClick={handleAddPhase}
+          onClick={handleAddGroup}
           className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-500 hover:text-zinc-300 hover:bg-surface-2 rounded-lg transition-colors"
         >
           <Plus className="w-4 h-4" />
           添加组
         </button>
+      )}
+      {editable && (
+        <button
+          onClick={handleAddTopLevelField}
+          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-500 hover:text-zinc-300 hover:bg-surface-2 rounded-lg transition-colors"
+        >
+          <FileText className="w-4 h-4" />
+          添加内容块
+        </button>
+      )}
+      {editable && (
+        <button
+          onClick={openTemplateModal}
+          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-500 hover:text-zinc-300 hover:bg-surface-2 rounded-lg transition-colors"
+        >
+          <Package className="w-4 h-4" />
+          从模板添加
+        </button>
+      )}
+
+      {showTemplateModal && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+          onClick={() => setShowTemplateModal(false)}
+        >
+          <div
+            className="bg-surface-1 border border-surface-3 rounded-xl w-full max-w-xl max-h-[80vh] overflow-hidden shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-4 border-b border-surface-3 flex items-center justify-between">
+              <div>
+                <h3 className="font-semibold text-zinc-100">从模板添加内容块</h3>
+                <p className="text-xs text-zinc-500 mt-1">选择一个模板，将内容块添加到当前项目</p>
+              </div>
+              <button
+                onClick={() => setShowTemplateModal(false)}
+                className="p-1 hover:bg-surface-3 rounded"
+              >
+                <X className="w-5 h-5 text-zinc-400" />
+              </button>
+            </div>
+            <div className="p-4 max-h-[60vh] overflow-y-auto">
+              {templatesLoading ? (
+                <div className="flex items-center justify-center py-8 text-zinc-500">
+                  <span className="animate-pulse">加载中...</span>
+                </div>
+              ) : templates.length === 0 ? (
+                <div className="text-center py-8 text-zinc-500">
+                  <Package className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                  <p>暂无内容块模板</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {templates.map((template) => (
+                    <div
+                      key={template.id}
+                      className={`p-4 bg-surface-2 border border-surface-3 rounded-lg hover:border-brand-500/50 transition-colors cursor-pointer group ${
+                        isApplyingTemplate ? "opacity-60 pointer-events-none" : ""
+                      }`}
+                      onClick={() => handleAddFromTemplateTopLevel(template)}
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <h4 className="font-medium text-zinc-200 group-hover:text-brand-400 transition-colors">
+                            {template.name}
+                          </h4>
+                          {template.description && (
+                            <p className="text-sm text-zinc-500 mt-1 line-clamp-2">
+                              {template.description}
+                            </p>
+                          )}
+                        </div>
+                        <Plus className="w-5 h-5 text-zinc-500 group-hover:text-brand-400 transition-colors flex-shrink-0" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

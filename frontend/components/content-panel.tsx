@@ -6,8 +6,6 @@
 
 "use client";
 
-import { PROJECT_PHASES } from "@/lib/utils";
-import { agentAPI } from "@/lib/api";
 import type { ContentBlock } from "@/lib/api";
 import { ContentBlockEditor } from "./content-block-editor";
 import { ContentBlockCard } from "./content-block-card";
@@ -18,14 +16,11 @@ import { ProposalSelector } from "./proposal-selector";
 
 interface ContentPanelProps {
   projectId: string | null;
-  currentPhase: string;
-  phaseStatus?: Record<string, string>;
   selectedBlock?: ContentBlock | null;
   allBlocks?: ContentBlock[];
   onFieldsChange?: () => void;
   /** 版本创建后通知父组件刷新项目列表 */
   onVersionCreated?: () => void;
-  onPhaseAdvance?: () => void;
   onBlockSelect?: (block: ContentBlock) => void;
   /** M3: 将消息发送到 Agent 对话面板（Eval 诊断→Agent 修改桥接） */
   onSendToAgent?: (message: string) => void;
@@ -33,32 +28,13 @@ interface ContentPanelProps {
 
 export function ContentPanel({
   projectId,
-  currentPhase,
   selectedBlock,
   allBlocks = [],
   onFieldsChange,
   onVersionCreated,
-  onPhaseAdvance,
   onBlockSelect,
   onSendToAgent,
 }: ContentPanelProps) {
-  const currentPhaseIndex = PROJECT_PHASES.indexOf(currentPhase);
-  const isLastPhase = currentPhaseIndex === PROJECT_PHASES.length - 1;
-  const nextPhase = isLastPhase ? null : PROJECT_PHASES[currentPhaseIndex + 1];
-
-  // 确认进入下一组
-  const handleAdvancePhase = async () => {
-    if (!projectId || !nextPhase) return;
-    
-    try {
-      await agentAPI.advance(projectId);
-      onPhaseAdvance?.();
-    } catch (err) {
-      console.error("进入下一组失败:", err);
-      alert("进入下一组失败: " + (err instanceof Error ? err.message : "未知错误"));
-    }
-  };
-
   // ===== 早期返回（在所有Hooks之后）=====
   
   if (!projectId) {
@@ -74,8 +50,8 @@ export function ContentPanel({
 
   // ===== 树形视图选中内容块时，显示该块详情 =====
   
-  // 处理阶段块/分组块点击（phase 或 group）
-  if (selectedBlock && (selectedBlock.block_type === "phase" || selectedBlock.block_type === "group")) {
+  // 处理分组块点击
+  if (selectedBlock && selectedBlock.block_type === "group") {
     const selectedPhase = selectedBlock.special_handler;
     
     // ===== 意图分析阶段特殊处理 =====
@@ -136,7 +112,7 @@ export function ContentPanel({
               fieldId={selectedBlock.id}
               content={normalizedContent}
               onUpdate={onFieldsChange}
-              onAdvance={handleAdvancePhase}
+              onAdvance={onFieldsChange}
             />
           );
         }
@@ -177,15 +153,13 @@ export function ContentPanel({
       );
     }
     
-    // 有子节点的阶段/分组：显示子块卡片列表
+    // 有子节点的分组：显示子块卡片列表
     if (selectedBlock.children && selectedBlock.children.length > 0) {
-      const phaseCount = selectedBlock.children.filter(c => c.block_type === "phase").length;
       const groupCount = selectedBlock.children.filter(c => c.block_type === "group").length;
       const fieldCount = selectedBlock.children.filter(c => c.block_type === "field").length;
-      const otherCount = selectedBlock.children.length - phaseCount - groupCount - fieldCount;
+      const otherCount = selectedBlock.children.length - groupCount - fieldCount;
       
       const parts = [];
-      if (phaseCount > 0) parts.push(`${phaseCount} 个子组`);
       if (groupCount > 0) parts.push(`${groupCount} 个子组`);
       if (fieldCount > 0) parts.push(`${fieldCount} 个内容块`);
       if (otherCount > 0) parts.push(`${otherCount} 个其他`);
@@ -195,13 +169,7 @@ export function ContentPanel({
         <div className="h-full flex flex-col">
           <div className="p-4 border-b border-surface-3">
             <div className="flex items-center gap-2">
-              <span className={`px-2 py-0.5 text-xs rounded ${
-                selectedBlock.block_type === "phase" 
-                  ? "bg-purple-600/20 text-purple-400"
-                  : "bg-amber-600/20 text-amber-400"
-              }`}>
-                {selectedBlock.block_type === "phase" ? "组" : "子组"}
-              </span>
+              <span className="px-2 py-0.5 text-xs rounded bg-amber-600/20 text-amber-400">组</span>
               <h1 className="text-xl font-bold text-zinc-100">{selectedBlock.name}</h1>
             </div>
             <p className="text-zinc-500 text-sm mt-1">
@@ -288,7 +256,7 @@ export function ContentPanel({
             fieldId={selectedBlock.id}
             content={normalizedContent}
             onUpdate={onFieldsChange}
-            onAdvance={handleAdvancePhase}
+            onAdvance={onFieldsChange}
           />
         );
       }
@@ -319,7 +287,6 @@ export function ContentPanel({
                 content={selectedBlock.content}
                 onConfirm={() => {
                   onFieldsChange?.();
-                  onPhaseAdvance?.();
                 }}
                 onFieldsCreated={onFieldsChange}
                 onSave={onFieldsChange}
@@ -355,7 +322,6 @@ export function ContentPanel({
                 content={selectedBlock.content}
                 onConfirm={() => {
                   onFieldsChange?.();
-                  onPhaseAdvance?.();
                 }}
                 onFieldsCreated={onFieldsChange}
                 onSave={onFieldsChange}

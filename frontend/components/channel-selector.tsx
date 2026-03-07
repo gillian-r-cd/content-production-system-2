@@ -149,7 +149,7 @@ export function ChannelSelector({
       const flatten = (blocks: ContentBlock[]): ContentBlock[] =>
         blocks.flatMap(b => [b, ...flatten(b.children || [])]);
       const all = flatten(tree.blocks || []);
-      const phase = all.find(b => b.block_type === "phase" && b.special_handler === "produce_outer");
+      const phase = all.find(b => b.block_type === "group" && b.special_handler === "produce_outer");
       return phase?.id || null;
     } catch { return null; }
   };

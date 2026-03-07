@@ -184,6 +184,40 @@ class TestPreAnswersInjection:
         assert "Software developers" in full_prompt
         assert "Main objective?" in full_prompt
         assert "Learn AI basics" in full_prompt
+
+    def test_structured_pre_answers_in_prompt(self, db_session):
+        project = Project(id=generate_uuid(), name="Structured Test Project")
+        db_session.add(project)
+        db_session.commit()
+
+        field = ProjectField(
+            id=generate_uuid(),
+            project_id=project.id,
+            phase="produce_inner",
+            name="Structured Goal",
+            pre_questions=[
+                {"id": "q-target", "question": "Target audience?", "required": True},
+                {"id": "q-objective", "question": "Main objective?", "required": False},
+            ],
+            pre_answers={
+                "q-target": "Software developers",
+                "q-objective": "Learn AI basics",
+            },
+        )
+        db_session.add(field)
+        db_session.commit()
+
+        context = PromptContext(
+            golden_context=GoldenContext(),
+            phase_context="Generate content",
+        )
+
+        full_prompt = prompt_engine.get_field_generation_prompt(field, context)
+
+        assert "Target audience?" in full_prompt
+        assert "Software developers" in full_prompt
+        assert "Main objective?" in full_prompt
+        assert "Learn AI basics" in full_prompt
     
     def test_empty_pre_answers_not_injected(self, db_session):
         """测试空预回答不注入"""

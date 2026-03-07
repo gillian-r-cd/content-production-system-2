@@ -16,7 +16,7 @@ export function flattenNodes(nodes: TemplateNode[] = []): TemplateNode[] {
 }
 
 export function flattenContentNodes(nodes: TemplateNode[] = []): TemplateNode[] {
-  return flattenNodes(nodes).filter((node) => node.block_type === "field" || node.block_type === "proposal");
+  return flattenNodes(nodes).filter((node) => node.block_type === "field");
 }
 
 export function cloneTemplateNodesWithNewIds(
@@ -25,6 +25,22 @@ export function cloneTemplateNodesWithNewIds(
 ): TemplateNode[] {
   const cloned = JSON.parse(JSON.stringify(nodes)) as TemplateNode[];
   const idMap = new Map<string, string>();
+
+  const normalizeTypes = (items: TemplateNode[]) => {
+    for (const node of items) {
+      if (node.block_type === "group" || node.block_type === "field") {
+        // keep
+      } else if ((node.block_type as string) === "phase") {
+        node.block_type = "group";
+      } else {
+        node.block_type = "field";
+      }
+      const nodeRecord = node as unknown as Record<string, unknown>;
+      delete nodeRecord.guidance_input;
+      delete nodeRecord.guidance_output;
+      normalizeTypes(node.children || []);
+    }
+  };
 
   const assignIds = (items: TemplateNode[]) => {
     for (const node of items) {
@@ -42,6 +58,7 @@ export function cloneTemplateNodesWithNewIds(
     }
   };
 
+  normalizeTypes(cloned);
   assignIds(cloned);
   rewriteIds(cloned);
   return cloned;

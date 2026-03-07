@@ -38,11 +38,11 @@ function flattenTemplateNodes(nodes: PhaseTemplate["root_nodes"] = []): NonNulla
 }
 
 function countTemplateFields(nodes: PhaseTemplate["root_nodes"] = []): number {
-  return flattenTemplateNodes(nodes).filter((node) => node.block_type === "field" || node.block_type === "proposal").length;
+  return flattenTemplateNodes(nodes).filter((node) => node.block_type === "field").length;
 }
 
 function countTemplateContainers(nodes: PhaseTemplate["root_nodes"] = []): number {
-  return flattenTemplateNodes(nodes).filter((node) => node.block_type === "phase" || node.block_type === "group").length;
+  return flattenTemplateNodes(nodes).filter((node) => node.block_type === "group").length;
 }
 
 export default function TemplateSelector({

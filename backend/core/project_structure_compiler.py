@@ -393,13 +393,13 @@ def compile_project_structure_draft(
 
         for dep_id in local_dep_ids:
             dep_node = compiled_node_lookup.get(dep_id)
-            if dep_node and dep_node.get("block_type") in {"group", "phase"}:
+            if dep_node and dep_node.get("block_type") == "group":
                 errors.append(
                     f"节点「{node.get('name', '未命名节点')}」不能依赖容器节点「{dep_node.get('name', '未命名节点')}」"
                 )
         for dep_id in external_dep_ids:
             dep_block = project_blocks_by_id.get(dep_id)
-            if dep_block and dep_block.block_type in {"group", "phase"}:
+            if dep_block and dep_block.block_type == "group":
                 errors.append(
                     f"节点「{node.get('name', '未命名节点')}」不能依赖项目容器节点「{dep_block.name}」"
                 )

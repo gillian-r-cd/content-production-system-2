@@ -4,12 +4,23 @@ from copy import deepcopy
 from typing import Any, Iterable
 import uuid
 
+from core.pre_question_utils import normalize_pre_answers, normalize_pre_questions
+
 
 def generate_uuid() -> str:
     return str(uuid.uuid4())
 
 TEMPLATE_SCHEMA_VERSION = 2
-TEMPLATE_NODE_BLOCK_TYPES = {"phase", "group", "field", "proposal"}
+TEMPLATE_NODE_BLOCK_TYPES = {"group", "field"}
+
+
+def _normalize_block_type(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"phase", "group"}:
+        return "group"
+    if raw in {"field", "proposal"}:
+        return "field"
+    return "field"
 
 
 def _as_str_list(value: Any) -> list[str]:
@@ -57,9 +68,7 @@ def normalize_template_nodes(
     errors: list[str] = []
 
     def _normalize(raw: dict[str, Any], default_type: str, inherited_handler: str | None) -> dict[str, Any]:
-        block_type = str(raw.get("block_type") or default_type or "field").strip() or "field"
-        if block_type not in TEMPLATE_NODE_BLOCK_TYPES:
-            block_type = "field"
+        block_type = _normalize_block_type(raw.get("block_type") or default_type or "field")
 
         node = {
             "template_node_id": str(raw.get("template_node_id") or raw.get("id") or generate_uuid()),
@@ -71,13 +80,11 @@ def normalize_template_nodes(
             "field_type": str(raw.get("field_type") or raw.get("type") or ""),
             "dependency_type": str(raw.get("dependency_type") or "all"),
             "constraints": _as_dict(raw.get("constraints")),
-            "pre_questions": _as_str_list(raw.get("pre_questions")),
+            "pre_questions": normalize_pre_questions(raw.get("pre_questions")),
             "need_review": bool(raw.get("need_review", True)),
             "auto_generate": bool(raw.get("auto_generate", False)),
             "is_collapsed": bool(raw.get("is_collapsed", False)),
             "model_override": raw.get("model_override"),
-            "guidance_input": str(raw.get("guidance_input") or ""),
-            "guidance_output": str(raw.get("guidance_output") or ""),
             "external_depends_on_block_ids": _as_str_list(raw.get("external_depends_on_block_ids")),
             "draft_dependency_refs": [
                 deepcopy(item)
@@ -89,9 +96,9 @@ def normalize_template_nodes(
             "_depends_on_template_node_ids": _as_str_list(raw.get("depends_on_template_node_ids")),
         }
 
-        child_default_type = "field" if block_type in {"phase", "group"} else "field"
+        child_default_type = "field" if block_type == "group" else "field"
         raw_children = _as_children(raw.get("children"))
-        if block_type == "phase" and not raw_children and isinstance(raw.get("default_fields"), list):
+        if not raw_children and isinstance(raw.get("default_fields"), list):
             raw_children = _as_children(raw.get("default_fields"))
 
         node["children"] = [
@@ -154,7 +161,7 @@ def build_legacy_field_template_root_nodes(
     fields: list[dict[str, Any]] | None,
 ) -> list[dict[str, Any]]:
     """
-    Wrap legacy flat `fields[]` into a single top-level phase node.
+    Wrap legacy flat `fields[]` into a single top-level group node.
     This preserves the old project application behavior while upgrading storage to tree nodes.
     """
     root_id = generate_uuid()
@@ -164,17 +171,15 @@ def build_legacy_field_template_root_nodes(
             continue
         child = deepcopy(field)
         child.setdefault("template_node_id", field.get("template_node_id") or generate_uuid())
-        child.setdefault("block_type", field.get("block_type") or "field")
+        child.setdefault("block_type", _normalize_block_type(field.get("block_type") or "field"))
         child.setdefault("is_collapsed", False)
-        child.setdefault("guidance_input", "")
-        child.setdefault("guidance_output", "")
         child.setdefault("order_index", idx)
         children.append(child)
 
     return [{
         "template_node_id": root_id,
         "name": template_name or "模板",
-        "block_type": "phase",
+        "block_type": "group",
         "special_handler": None,
         "is_collapsed": False,
         "children": children,
@@ -195,7 +200,7 @@ def flatten_template_fields(root_nodes: list[dict[str, Any]] | None) -> list[dic
     result: list[dict[str, Any]] = []
 
     for node in iter_template_nodes(root_nodes):
-        if node.get("block_type") not in {"field", "proposal"}:
+        if node.get("block_type") != "field":
             continue
         result.append({
             "template_node_id": node["template_node_id"],
@@ -205,7 +210,7 @@ def flatten_template_fields(root_nodes: list[dict[str, Any]] | None) -> list[dic
             "field_type": node.get("field_type") or node.get("block_type", "field"),
             "ai_prompt": node.get("ai_prompt", ""),
             "content": node.get("content", ""),
-            "pre_questions": _as_str_list(node.get("pre_questions")),
+            "pre_questions": normalize_pre_questions(node.get("pre_questions")),
             "depends_on": [
                 id_to_name.get(dep_id, dep_id)
                 for dep_id in _as_str_list(node.get("depends_on_template_node_ids"))
@@ -217,8 +222,6 @@ def flatten_template_fields(root_nodes: list[dict[str, Any]] | None) -> list[dic
             "auto_generate": bool(node.get("auto_generate", False)),
             "model_override": node.get("model_override"),
             "special_handler": node.get("special_handler"),
-            "guidance_input": node.get("guidance_input", ""),
-            "guidance_output": node.get("guidance_output", ""),
         })
 
     return result
@@ -259,7 +262,7 @@ def phase_template_to_root_nodes(phases: list[dict[str, Any]] | None) -> tuple[l
         raw_nodes.append({
             "template_node_id": phase.get("template_node_id") or phase.get("id") or generate_uuid(),
             "name": phase.get("name", "未命名阶段"),
-            "block_type": phase.get("block_type", "phase") or "phase",
+            "block_type": _normalize_block_type(phase.get("block_type", "group") or "group"),
             "special_handler": phase.get("special_handler"),
             "ai_prompt": phase.get("ai_prompt", ""),
             "content": phase.get("content", ""),
@@ -271,8 +274,6 @@ def phase_template_to_root_nodes(phases: list[dict[str, Any]] | None) -> tuple[l
             "auto_generate": phase.get("auto_generate", False),
             "is_collapsed": phase.get("is_collapsed", False),
             "model_override": phase.get("model_override"),
-            "guidance_input": phase.get("guidance_input", ""),
-            "guidance_output": phase.get("guidance_output", ""),
             "children": phase.get("children") or phase.get("default_fields") or [],
         })
     return normalize_template_nodes(raw_nodes)
@@ -286,22 +287,20 @@ def root_nodes_to_phase_template_phases(root_nodes: list[dict[str, Any]] | None)
         payload = {
             "template_node_id": node.get("template_node_id"),
             "name": node.get("name", "未命名节点"),
-            "block_type": node.get("block_type", "field"),
+            "block_type": _normalize_block_type(node.get("block_type", "field")),
             "special_handler": node.get("special_handler"),
             "order_index": order_index,
             "ai_prompt": node.get("ai_prompt", ""),
             "content": node.get("content", ""),
-            "pre_questions": _as_str_list(node.get("pre_questions")),
+            "pre_questions": normalize_pre_questions(node.get("pre_questions")),
             "depends_on_template_node_ids": _as_str_list(node.get("depends_on_template_node_ids")),
             "constraints": _as_dict(node.get("constraints")),
             "need_review": bool(node.get("need_review", True)),
             "auto_generate": bool(node.get("auto_generate", False)),
             "is_collapsed": bool(node.get("is_collapsed", False)),
             "model_override": node.get("model_override"),
-            "guidance_input": node.get("guidance_input", ""),
-            "guidance_output": node.get("guidance_output", ""),
         }
-        if node.get("block_type") == "phase":
+        if _normalize_block_type(node.get("block_type")) == "group":
             payload["default_fields"] = [
                 _serialize(child, idx)
                 for idx, child in enumerate(children)
@@ -342,21 +341,20 @@ def instantiate_template_nodes(
                 "project_id": project_id,
                 "parent_id": current_parent_id,
                 "name": node.get("name", "未命名节点"),
-                "block_type": node.get("block_type", "field"),
+                "block_type": _normalize_block_type(node.get("block_type", "field")),
                 "depth": depth,
                 "order_index": order_offset + index,
                 "content": content,
                 "status": ("in_progress" if need_review else "completed") if content else "pending",
                 "ai_prompt": node.get("ai_prompt", ""),
                 "constraints": _as_dict(node.get("constraints")),
-                "pre_questions": _as_str_list(node.get("pre_questions")),
+                "pre_questions": normalize_pre_questions(node.get("pre_questions")),
+                "pre_answers": normalize_pre_answers(node.get("pre_answers") or {}, node.get("pre_questions")),
                 "special_handler": node.get("special_handler"),
                 "need_review": need_review,
                 "auto_generate": bool(node.get("auto_generate", False)),
                 "is_collapsed": bool(node.get("is_collapsed", False)),
                 "model_override": node.get("model_override"),
-                "guidance_input": node.get("guidance_input", ""),
-                "guidance_output": node.get("guidance_output", ""),
                 "external_depends_on_block_ids": _as_str_list(node.get("external_depends_on_block_ids")),
                 "_template_node_id": node["template_node_id"],
                 "_depends_on_template_node_ids": _as_str_list(node.get("depends_on_template_node_ids")),

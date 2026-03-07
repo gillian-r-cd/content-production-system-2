@@ -122,6 +122,7 @@ export default function WorkspacePage() {
   // 全局搜索
   const [showSearch, setShowSearch] = useState(false);
   const [showAutoSplitModal, setShowAutoSplitModal] = useState(false);
+  const [isStartAllReadyRunning, setIsStartAllReadyRunning] = useState(false);
   
   // M3: Eval 诊断→Agent 修改桥接（中栏组件设置消息，右栏 AgentPanel 消费）
   const [pendingAgentMessage, setPendingAgentMessage] = useState<string | null>(null);
@@ -170,6 +171,20 @@ export default function WorkspacePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentProject?.id]);
 
+  // “开始所有已就绪内容块”是长请求；在请求进行中轮询刷新左侧树，确保状态点尽快切到 in_progress。
+  useEffect(() => {
+    if (!isStartAllReadyRunning || !currentProject?.id) {
+      return;
+    }
+
+    setBlocksRefreshKey(prev => prev + 1);
+    const intervalId = window.setInterval(() => {
+      setBlocksRefreshKey(prev => prev + 1);
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [isStartAllReadyRunning, currentProject?.id]);
+
   const loadProjects = async () => {
     try {
       const data = await projectAPI.list();
@@ -185,34 +200,6 @@ export default function WorkspacePage() {
       setError(err instanceof Error ? err.message : "加载项目失败");
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handlePhaseClick = (phase: string) => {
-    if (currentProject) {
-      setCurrentProject({
-        ...currentProject,
-        current_phase: phase,
-      });
-      // 清除 selectedBlock，让 ContentPanel 显示阶段的完整内容视图
-      setSelectedBlock(null);
-    }
-  };
-
-  const handlePhaseReorder = async (newPhaseOrder: string[]) => {
-    if (!currentProject) return;
-    
-    try {
-      // 更新本地状态
-      setCurrentProject({
-        ...currentProject,
-        phase_order: newPhaseOrder,
-      });
-      
-      // 保存到服务器
-      await projectAPI.update(currentProject.id, { phase_order: newPhaseOrder });
-    } catch (err) {
-      console.error("更新组顺序失败:", err);
     }
   };
 
@@ -757,8 +744,6 @@ export default function WorkspacePage() {
             <ProgressPanel
               project={currentProject}
               blocksRefreshKey={blocksRefreshKey}
-              onPhaseClick={handlePhaseClick}
-              onPhaseReorder={handlePhaseReorder}
               onBlockSelect={handleBlockSelect}
               onBlocksChange={setAllBlocks}
               onProjectChange={async () => {
@@ -771,17 +756,19 @@ export default function WorkspacePage() {
               onOpenAutoSplit={() => setShowAutoSplitModal(true)}
               onStartAllReady={() => {
                 if (!currentProject) return;
+                setIsStartAllReadyRunning(true);
                 startAllReadyBlocks(currentProject.id, () => {
                   setBlocksRefreshKey(prev => prev + 1);
-                }).catch(console.error);
+                }).catch(console.error).finally(() => {
+                  setIsStartAllReadyRunning(false);
+                  setBlocksRefreshKey(prev => prev + 1);
+                });
               }}
             />
           }
           centerPanel={
             <ContentPanel
               projectId={currentProject?.id || null}
-              currentPhase={currentProject?.current_phase || "intent"}
-              phaseStatus={currentProject?.phase_status || {}}
               selectedBlock={selectedBlock}
               allBlocks={allBlocks}
               onFieldsChange={() => {
@@ -796,43 +783,6 @@ export default function WorkspacePage() {
                 setProjects(updatedProjects);
               }}
               onBlockSelect={handleBlockSelect}
-              onPhaseAdvance={async () => {
-                // 阶段推进后，刷新项目和对话历史
-                if (currentProject) {
-                  const updatedProject = await projectAPI.get(currentProject.id);
-                  setCurrentProject(updatedProject);
-                  // ===== 关键修复：切换 selectedBlock 到新组的虚拟块 =====
-                  // 防止停留在旧阶段的选中状态导致视觉上"跳过"新组
-                  const newPhase = updatedProject.current_phase;
-                  setSelectedBlock({
-                    id: `virtual_phase_${newPhase}`,
-                    project_id: currentProject.id,
-                    parent_id: null,
-                    name: newPhase,
-                    block_type: "phase",
-                    depth: 0,
-                    content: "",
-                    status: "in_progress",
-                    ai_prompt: "",
-                    depends_on: [],
-                    special_handler: newPhase,
-                    pre_questions: [],
-                    pre_answers: {},
-                    need_review: false,
-                    auto_generate: false,
-                    is_collapsed: false,
-                    constraints: {},
-                    order_index: 0,
-                    children: [],
-                    created_at: null,
-                    updated_at: null,
-                  } as ContentBlock);
-                  // 触发右侧面板刷新（通过重新渲染 AgentPanel）
-                  setRefreshKey(prev => prev + 1);
-                  // 同时刷新 ContentBlocks 树
-                  setBlocksRefreshKey(prev => prev + 1);
-                }
-              }}
               onSendToAgent={setPendingAgentMessage}
             />
           }
@@ -840,7 +790,6 @@ export default function WorkspacePage() {
             <AgentPanel
               key={`${currentProject?.id || "none"}-${refreshKey}`}  // 项目切换时销毁重建，refreshKey 保留阶段推进刷新
               projectId={currentProject?.id || null}
-              currentPhase={currentProject?.current_phase}
               allBlocks={allBlocks}
               onContentUpdate={async () => {
                 // Agent生成内容后，刷新内容块和项目状态

@@ -6,16 +6,26 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { settingsAPI, projectAPI, blockAPI, phaseTemplateAPI } from "@/lib/api";
-import type { CreatorProfile, Project, PhaseTemplate, TemplateNode } from "@/lib/api";
+import { settingsAPI, projectAPI, blockAPI } from "@/lib/api";
+import type { CreatorProfile, Project, TemplateNode } from "@/lib/api";
 
-// 统一模板项（同时展示 PhaseTemplate 和 FieldTemplate）
+// 统一模板项（仅展示结构模板树）
 interface TemplateItem {
   id: string;
   name: string;
   description: string;
-  source: "phase" | "field"; // 区分来源
-  phases: PhaseTemplate["phases"];
+  phases: Array<{
+    name: string;
+    block_type: string;
+    special_handler: string | null;
+    order_index: number;
+    default_fields: Array<{
+      name: string;
+      block_type: string;
+      ai_prompt?: string;
+      content?: string;
+    }>;
+  }>;
   root_nodes?: TemplateNode[];
   is_default: boolean;
   fieldCount: number;
@@ -59,19 +69,19 @@ function flattenTemplateNodes(nodes: TemplateNode[] = []): TemplateNode[] {
 }
 
 function countFieldNodes(nodes: TemplateNode[] = []): number {
-  return flattenTemplateNodes(nodes).filter((node) => node.block_type === "field" || node.block_type === "proposal").length;
+  return flattenTemplateNodes(nodes).filter((node) => node.block_type === "field").length;
 }
 
 function countContentNodes(nodes: TemplateNode[] = []): number {
   return flattenTemplateNodes(nodes).filter((node) => !!node.content).length;
 }
 
-function rootNodesToPreviewPhases(nodes: TemplateNode[] = [], fallbackName: string): PhaseTemplate["phases"] {
+function rootNodesToPreviewPhases(nodes: TemplateNode[] = [], fallbackName: string): TemplateItem["phases"] {
   if (!nodes.length) return [];
 
-  const phaseLikeNodes = nodes.filter((node) => node.block_type === "phase");
-  if (phaseLikeNodes.length === nodes.length) {
-    return phaseLikeNodes.map((node, index) => ({
+  const groupLikeNodes = nodes.filter((node) => node.block_type === "group");
+  if (groupLikeNodes.length === nodes.length) {
+    return groupLikeNodes.map((node, index) => ({
       name: node.name,
       block_type: node.block_type,
       special_handler: node.special_handler || null,
@@ -87,11 +97,11 @@ function rootNodesToPreviewPhases(nodes: TemplateNode[] = [], fallbackName: stri
 
   return [{
     name: fallbackName,
-    block_type: "phase",
+    block_type: "group",
     special_handler: null,
     order_index: 0,
     default_fields: flattenTemplateNodes(nodes)
-      .filter((node) => node.block_type === "field" || node.block_type === "proposal")
+      .filter((node) => node.block_type === "field")
       .map((node) => ({
         name: node.name,
         block_type: node.block_type,
@@ -123,7 +133,7 @@ export function CreateProjectModal({
   const [useDeepResearch, setUseDeepResearch] = useState(true);
   const [creatorProfiles, setCreatorProfiles] = useState<CreatorProfile[]>([]);
   
-  // 模板选择（统一展示 PhaseTemplate + FieldTemplate）
+  // 模板选择（统一展示结构模板）
   const [templates, setTemplates] = useState<TemplateItem[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
   const [expandedTemplateId, setExpandedTemplateId] = useState<string | null>(null);
@@ -160,43 +170,12 @@ export function CreateProjectModal({
   
   const loadTemplates = async () => {
     try {
-      // 同时加载 PhaseTemplate 和 FieldTemplate，统一展示
-      const [phaseData, fieldData] = await Promise.all([
-        phaseTemplateAPI.list().catch(() => [] as PhaseTemplate[]),
-        settingsAPI.listFieldTemplates().catch(() => [] as FieldTemplateLike[]),
-      ]);
+      const fieldData = await settingsAPI.listFieldTemplates().catch(() => [] as FieldTemplateLike[]);
 
       const items: TemplateItem[] = [];
 
-      // PhaseTemplate → TemplateItem
-      for (const pt of phaseData) {
-        const previewPhases = pt.root_nodes?.length ? rootNodesToPreviewPhases(pt.root_nodes, pt.name) : pt.phases;
-        const fieldCount = pt.root_nodes?.length
-          ? countFieldNodes(pt.root_nodes)
-          : pt.phases.reduce((sum, p) => sum + (p.default_fields || []).length, 0);
-        const contentCount = pt.root_nodes?.length
-          ? countContentNodes(pt.root_nodes)
-          : pt.phases.reduce(
-              (sum, p) => sum + (p.default_fields || []).filter((f) => f.content).length,
-              0
-            );
-        items.push({
-          id: pt.id,
-          name: pt.name,
-          description: pt.description,
-          source: "phase",
-          phases: previewPhases,
-          root_nodes: pt.root_nodes,
-          is_default: pt.is_default,
-          fieldCount,
-          contentCount,
-        });
-      }
-
-      // FieldTemplate → TemplateItem（只有 PhaseTemplate 中不存在同名模板时才显示）
-      const phaseNames = new Set(phaseData.map((p) => p.name));
+      // FieldTemplate → TemplateItem
       for (const ft of fieldData) {
-        if (phaseNames.has(ft.name)) continue; // 避免重复
         const fields = ft.fields || [];
         const rootNodes = ft.root_nodes || [];
         const previewPhases = rootNodes.length
@@ -204,7 +183,7 @@ export function CreateProjectModal({
           : [
               {
                 name: ft.name,
-                block_type: "phase",
+                block_type: "group",
                 special_handler: null,
                 order_index: 0,
                 default_fields: fields.map((f: FieldTemplateLikeField) => ({
@@ -219,7 +198,6 @@ export function CreateProjectModal({
           id: ft.id,
           name: ft.name,
           description: ft.description || ft.category || "",
-          source: "field",
           phases: previewPhases,
           root_nodes: rootNodes,
           is_default: false,
@@ -277,7 +255,6 @@ export function CreateProjectModal({
         creator_profile_id: creatorProfileId,
         use_deep_research: useDeepResearch,
         use_flexible_architecture: true,
-        phase_order: selectedTemplateId === null ? [] : undefined,
       });
       
       // 2. 如果选择了模板，应用模板
@@ -520,9 +497,6 @@ export function CreateProjectModal({
                                   <span className="text-emerald-400/80 ml-1">
                                     ({template.contentCount} 个有预置内容)
                                   </span>
-                                )}
-                                {template.source === "field" && (
-                                  <span className="text-amber-400/80 ml-1">(内容块模板)</span>
                                 )}
                               </p>
                             </div>

@@ -25,6 +25,7 @@ from core.models import Project, ProjectStructureDraft
 from core.project_split_service import split_source_text
 from core.project_structure_apply_service import apply_project_structure_draft
 from core.project_structure_compiler import compile_project_structure_draft
+from core.pre_question_utils import normalize_pre_questions
 
 router = APIRouter(
     prefix="/api/project-structure-drafts",
@@ -49,6 +50,51 @@ class DraftApplyRequest(BaseModel):
     batch_name: Optional[str] = None
 
 
+def _normalize_node_types(nodes: list[Any]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for raw in nodes or []:
+        if not isinstance(raw, dict):
+            continue
+        node = dict(raw)
+        block_type = str(node.get("block_type") or "").strip().lower()
+        if block_type in {"phase", "group"}:
+            node["block_type"] = "group"
+        elif block_type in {"field", "proposal"}:
+            node["block_type"] = "field"
+        else:
+            node["block_type"] = "field"
+        node.pop("guidance_input", None)
+        node.pop("guidance_output", None)
+        node["pre_questions"] = normalize_pre_questions(node.get("pre_questions"))
+        node["children"] = _normalize_node_types(node.get("children") if isinstance(node.get("children"), list) else [])
+        normalized.append(node)
+    return normalized
+
+
+def _normalize_draft_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    data = dict(payload or {})
+    return {
+        "chunks": data.get("chunks") if isinstance(data.get("chunks"), list) else [],
+        "plans": [
+            {
+                **(plan if isinstance(plan, dict) else {}),
+                "root_nodes": _normalize_node_types(
+                    (plan or {}).get("root_nodes") if isinstance((plan or {}).get("root_nodes"), list) else []
+                ),
+            }
+            for plan in (data.get("plans") if isinstance(data.get("plans"), list) else [])
+            if isinstance(plan, dict)
+        ],
+        "shared_root_nodes": _normalize_node_types(
+            data.get("shared_root_nodes") if isinstance(data.get("shared_root_nodes"), list) else []
+        ),
+        "aggregate_root_nodes": _normalize_node_types(
+            data.get("aggregate_root_nodes") if isinstance(data.get("aggregate_root_nodes"), list) else []
+        ),
+        "ui_state": data.get("ui_state") if isinstance(data.get("ui_state"), dict) else {},
+    }
+
+
 def _serialize_draft(draft: ProjectStructureDraft) -> dict[str, Any]:
     return {
         "id": draft.id,
@@ -58,7 +104,7 @@ def _serialize_draft(draft: ProjectStructureDraft) -> dict[str, Any]:
         "status": draft.status,
         "source_text": draft.source_text or "",
         "split_config": draft.split_config or {},
-        "draft_payload": draft.draft_payload or {},
+        "draft_payload": _normalize_draft_payload(draft.draft_payload or {}),
         "validation_errors": draft.validation_errors or [],
         "last_validated_at": draft.last_validated_at.isoformat() if draft.last_validated_at else None,
         "apply_count": draft.apply_count or 0,
@@ -116,7 +162,7 @@ def update_auto_split_draft(
         draft.split_config = request.split_config
         flag_modified(draft, "split_config")
     if request.draft_payload is not None:
-        draft.draft_payload = request.draft_payload
+        draft.draft_payload = _normalize_draft_payload(request.draft_payload)
         flag_modified(draft, "draft_payload")
 
     draft.status = "draft"
@@ -147,7 +193,7 @@ async def split_auto_split_draft(
 
     draft.source_text = source_text or ""
     draft.split_config = split_config or {}
-    payload = dict(draft.draft_payload or {})
+    payload = _normalize_draft_payload(draft.draft_payload or {})
     payload["chunks"] = chunks
     payload.setdefault("plans", [])
     payload.setdefault("shared_root_nodes", [])

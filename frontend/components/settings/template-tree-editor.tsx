@@ -7,7 +7,8 @@
 
 import type { DraftDependencyOption, ModelInfo, TemplateNode } from "@/lib/api";
 import { ProjectDraftDependencySelector } from "../project-draft-dependency-selector";
-import { FormField, TagInput } from "./shared";
+import { createPreQuestion, normalizePreQuestions } from "@/lib/preQuestions";
+import { FormField } from "./shared";
 
 function refKey(ref: DraftDependencyOption["ref"]): string {
   return JSON.stringify(ref || {});
@@ -41,8 +42,6 @@ function createTemplateNode(blockType: TemplateNode["block_type"] = "field"): Te
     auto_generate: false,
     is_collapsed: false,
     model_override: null,
-    guidance_input: "",
-    guidance_output: "",
     draft_dependency_refs: [],
     children: [],
   };
@@ -128,19 +127,16 @@ interface NodeEditorProps {
 
 /** 类型 → 名称 placeholder 映射 */
 const TYPE_PLACEHOLDER: Record<string, string> = {
-  phase: "阶段名称",
   group: "分组名称",
   field: "内容块名称",
 };
 
 const CREATE_BUTTON_LABELS: Record<string, string> = {
-  phase: "+ 顶层阶段",
   group: "+ 顶层分组",
   field: "+ 顶层内容块",
 };
 
 const CREATE_BUTTON_STYLES: Record<string, string> = {
-  phase: "rounded-lg bg-brand-600 px-3 py-1.5 text-xs text-white",
   group: "rounded-lg bg-surface-3 px-3 py-1.5 text-xs text-zinc-300",
   field: "rounded-lg bg-emerald-600 px-3 py-1.5 text-xs text-white",
 };
@@ -157,6 +153,7 @@ function NodeEditor({
   const isContentBlock = blockType === "field";
   const hasChildren = (node.children || []).length > 0;
   const isCollapsed = node.is_collapsed === true;
+  const nodePreQuestions = normalizePreQuestions(node.pre_questions || []);
 
   const patchNode = (patch: Partial<TemplateNode>) => {
     onChange(updateNodeById(nodes, node.template_node_id, (current) => ({ ...current, ...patch })));
@@ -175,7 +172,7 @@ function NodeEditor({
     refKey(ref) === refKey(currentChunkDependencyOption.ref)
   ));
   const otherExternalDependencyOptions = externalDependencyOptions.filter((option) => (
-    refKey(option.ref) !== refKey(currentChunkDependencyOption?.ref || {})
+    !currentChunkDependencyOption || refKey(option.ref) !== refKey(currentChunkDependencyOption.ref)
   ));
 
   return (
@@ -200,7 +197,6 @@ function NodeEditor({
           onChange={(e) => patchNode({ block_type: e.target.value as TemplateNode["block_type"] })}
           className="rounded-lg border border-surface-3 bg-surface-2 px-2 py-2 text-xs text-zinc-300"
         >
-          <option value="phase">阶段</option>
           <option value="group">分组</option>
           <option value="field">内容块</option>
         </select>
@@ -268,11 +264,78 @@ function NodeEditor({
               </div>
 
               <FormField label="生成前提问" hint="生成前需要用户回答的问题，答案会注入 AI 提示词">
-                <TagInput
-                  value={node.pre_questions || []}
-                  onChange={(value) => patchNode({ pre_questions: value })}
-                  placeholder="输入问题后回车"
-                />
+                <div className="space-y-2">
+                  {nodePreQuestions.length > 0 ? (
+                    nodePreQuestions.map((item, index) => (
+                      <div key={item.id || `${node.template_node_id}-${index}`} className="rounded-lg border border-surface-3 bg-surface-2 p-3 space-y-2">
+                        <div className="flex items-center gap-2">
+                          <input
+                            value={item.question || ""}
+                            onChange={(e) => patchNode({
+                              pre_questions: nodePreQuestions.map((question) => (
+                                question.id === item.id
+                                  ? { ...question, question: e.target.value }
+                                  : question
+                              )),
+                            })}
+                            placeholder={`问题 ${index + 1}`}
+                            className="flex-1 rounded-lg border border-surface-3 bg-surface-1 px-3 py-2 text-sm text-zinc-200"
+                          />
+                          <label className="flex items-center gap-1.5 text-xs text-zinc-400">
+                            <input
+                              type="checkbox"
+                              checked={item.required === true}
+                              onChange={(e) => patchNode({
+                                pre_questions: nodePreQuestions.map((question) => (
+                                  question.id === item.id
+                                    ? { ...question, required: e.target.checked }
+                                    : question
+                                )),
+                              })}
+                            />
+                            必答
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => patchNode({
+                              pre_questions: nodePreQuestions.filter((question) => question.id !== item.id),
+                            })}
+                            className="rounded bg-red-600/20 px-2 py-1 text-xs text-red-400"
+                          >
+                            删除
+                          </button>
+                        </div>
+                        <p className="text-xs text-zinc-500">
+                          {item.required ? "必答题：未回答会阻止“全部开始”和自动/手动生成。" : "选答题：未回答也可生成，若填写会进入上下文。"}
+                        </p>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="rounded-lg border border-dashed border-surface-3 px-3 py-3 text-xs text-zinc-500">
+                      暂无生成前提问。可添加必答题或选答题。
+                    </div>
+                  )}
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => patchNode({
+                        pre_questions: [...nodePreQuestions, createPreQuestion("", false)],
+                      })}
+                      className="rounded-lg bg-surface-3 px-3 py-1.5 text-xs text-zinc-300"
+                    >
+                      + 添加选答题
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => patchNode({
+                        pre_questions: [...nodePreQuestions, createPreQuestion("", true)],
+                      })}
+                      className="rounded-lg bg-amber-600/80 px-3 py-1.5 text-xs text-white"
+                    >
+                      + 添加必答题
+                    </button>
+                  </div>
+                </div>
               </FormField>
 
               {dependencyOptions.length > 0 && (
@@ -345,23 +408,6 @@ function NodeEditor({
                 />
               </FormField>
 
-              <FormField label="输入指引" hint="生成时给模型看的输入背景说明">
-                <textarea
-                  value={node.guidance_input || ""}
-                  onChange={(e) => patchNode({ guidance_input: e.target.value })}
-                  rows={3}
-                  className="w-full rounded-lg border border-surface-3 bg-surface-2 px-3 py-2 text-sm text-zinc-200"
-                />
-              </FormField>
-
-              <FormField label="输出指引" hint="生成时对输出形式的额外说明">
-                <textarea
-                  value={node.guidance_output || ""}
-                  onChange={(e) => patchNode({ guidance_output: e.target.value })}
-                  rows={3}
-                  className="w-full rounded-lg border border-surface-3 bg-surface-2 px-3 py-2 text-sm text-zinc-200"
-                />
-              </FormField>
             </>
           )}
 
@@ -408,12 +454,12 @@ export function TemplateTreeEditor({
   onChange,
   availableModels,
   topLevelLabel = "模板结构",
-  emptyText = "还没有添加内容，先添加顶层阶段或分组。",
+  emptyText = "还没有添加内容，先添加顶层分组或内容块。",
   externalDependencyOptions = [],
-  topLevelCreateTypes = ["phase", "group"],
+  topLevelCreateTypes = ["group", "field"],
 }: TemplateTreeEditorProps) {
   const createTypes = topLevelCreateTypes.filter((type, index, list) => (
-    ["phase", "group", "field"].includes(type) && list.indexOf(type) === index
+    ["group", "field"].includes(type) && list.indexOf(type) === index
   ));
 
   return (

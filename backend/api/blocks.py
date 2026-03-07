@@ -35,12 +35,23 @@ from core.prompt_engine import PromptEngine, GoldenContext
 from core.template_schema import instantiate_template_nodes, normalize_field_template_payload
 from core.block_generation_service import (
     build_generation_system_prompt,
+    ensure_required_pre_questions_answered,
     generate_block_content_sync,
     list_ready_block_ids,
     resolve_dependencies,
     update_parent_status,
 )
+from core.pre_question_utils import normalize_pre_answers, normalize_pre_questions
 from core.project_run_service import run_project_blocks
+
+
+def _normalize_block_type(value: str | None) -> str:
+    raw = (value or "").strip().lower()
+    if raw in {"phase", "group"}:
+        return "group"
+    if raw in {"field", "proposal"}:
+        return "field"
+    return "field"
 
 
 def _save_content_version(block: ContentBlock, source: str, db: Session, source_detail: str = None):
@@ -79,9 +90,7 @@ class BlockCreate(BaseModel):
     auto_generate: bool = False  # 是否自动生成（依赖就绪时自动触发）
     model_override: Optional[str] = None  # 模型覆盖（来自模板或用户手动设置）
     order_index: Optional[int] = None
-    pre_questions: List[str] = Field(default_factory=list)  # 生成前提问
-    guidance_input: str = ""
-    guidance_output: str = ""
+    pre_questions: List[Any] = Field(default_factory=list)  # 生成前提问
 
 
 class BlockUpdate(BaseModel):
@@ -91,15 +100,13 @@ class BlockUpdate(BaseModel):
     status: Optional[str] = None
     ai_prompt: Optional[str] = None
     constraints: Optional[Dict] = None
-    pre_questions: Optional[List[str]] = None
+    pre_questions: Optional[List[Any]] = None
     pre_answers: Optional[Dict] = None
     depends_on: Optional[List[str]] = None
     need_review: Optional[bool] = None
     auto_generate: Optional[bool] = None  # 是否自动生成
     is_collapsed: Optional[bool] = None
     model_override: Optional[str] = None
-    guidance_input: Optional[str] = None
-    guidance_output: Optional[str] = None
 
 
 class BlockMove(BaseModel):
@@ -121,10 +128,8 @@ class BlockResponse(BaseModel):
     status: str
     ai_prompt: str
     constraints: Dict
-    pre_questions: List[str] = Field(default_factory=list)
-    pre_answers: Dict = Field(default_factory=dict)
-    guidance_input: str = ""
-    guidance_output: str = ""
+    pre_questions: List[Dict[str, Any]] = Field(default_factory=list)
+    pre_answers: Dict[str, str] = Field(default_factory=dict)
     depends_on: List[str]
     special_handler: Optional[str]
     need_review: bool
@@ -164,22 +169,23 @@ def _block_to_response(
         active_children = [c for c in block.children if c.deleted_at is None]
         children = [_block_to_response(c, include_children=True) for c in active_children]
     
+    normalized_questions = normalize_pre_questions(block.pre_questions or [])
+    normalized_answers = normalize_pre_answers(block.pre_answers or {}, normalized_questions)
+
     return BlockResponse(
         id=block.id,
         project_id=block.project_id,
         parent_id=block.parent_id,
         name=block.name,
-        block_type=block.block_type,
+        block_type=_normalize_block_type(block.block_type),
         depth=block.depth,
         order_index=block.order_index,
         content=block.content or "",
         status=block.status or "pending",
         ai_prompt=block.ai_prompt or "",
         constraints=block.constraints or {},
-        pre_questions=block.pre_questions or [],  # 生成前提问
-        pre_answers=block.pre_answers or {},      # 用户回答
-        guidance_input=getattr(block, "guidance_input", "") or "",
-        guidance_output=getattr(block, "guidance_output", "") or "",
+        pre_questions=normalized_questions,  # 生成前提问
+        pre_answers=normalized_answers,      # 用户回答（按 question.id 存储）
         depends_on=block.depends_on or [],
         special_handler=block.special_handler,
         need_review=block.need_review,
@@ -406,7 +412,8 @@ def create_block(
         depth = parent.depth + 1
     
     # 验证块类型
-    if data.block_type not in BLOCK_TYPES:
+    normalized_block_type = _normalize_block_type(data.block_type)
+    if normalized_block_type not in BLOCK_TYPES:
         raise HTTPException(status_code=400, detail=f"无效的块类型: {data.block_type}")
     
     # 计算排序索引
@@ -425,7 +432,7 @@ def create_block(
         project_id=data.project_id,
         parent_id=data.parent_id,
         name=data.name,
-        block_type=data.block_type,
+        block_type=normalized_block_type,
         depth=depth,
         order_index=order_index,
         content=data.content,
@@ -437,9 +444,7 @@ def create_block(
         need_review=data.need_review,
         auto_generate=data.auto_generate,
         model_override=data.model_override,
-        pre_questions=data.pre_questions,  # 保存生成前提问
-        guidance_input=data.guidance_input or "",
-        guidance_output=data.guidance_output or "",
+        pre_questions=normalize_pre_questions(data.pre_questions),  # 保存生成前提问
     )
     
     db.add(block)
@@ -499,10 +504,13 @@ def update_block(
         block.constraints = data.constraints
         flag_modified(block, "constraints")
     if data.pre_questions is not None:
-        block.pre_questions = data.pre_questions
+        block.pre_questions = normalize_pre_questions(data.pre_questions)
         flag_modified(block, "pre_questions")
+        current_answers = normalize_pre_answers(block.pre_answers or {}, block.pre_questions)
+        block.pre_answers = normalize_pre_answers(current_answers, block.pre_questions)
+        flag_modified(block, "pre_answers")
     if data.pre_answers is not None:
-        block.pre_answers = data.pre_answers
+        block.pre_answers = normalize_pre_answers(data.pre_answers or {}, block.pre_questions or [])
         flag_modified(block, "pre_answers")
     if data.depends_on is not None:
         block.depends_on = data.depends_on
@@ -516,11 +524,6 @@ def update_block(
     if data.model_override is not None:
         # 空字符串表示清除覆盖（恢复使用全局默认）
         block.model_override = data.model_override if data.model_override else None
-    if data.guidance_input is not None:
-        block.guidance_input = data.guidance_input
-    if data.guidance_output is not None:
-        block.guidance_output = data.guidance_output
-    
     db.commit()
     db.refresh(block)
     
@@ -731,23 +734,21 @@ def duplicate_block(
             project_id=node.project_id,
             parent_id=new_parent_id,
             name=f"{node.name} (副本)" if node.id == block.id else node.name,
-            block_type=node.block_type,
+            block_type=_normalize_block_type(node.block_type),
             depth=node.depth,
             order_index=node.order_index if node.id != block.id else (block.order_index + 1),
             content=node.content or "",
             status="pending",  # 副本从 pending 开始
             ai_prompt=node.ai_prompt or "",
             constraints=node.constraints.copy() if node.constraints else {},
-            pre_questions=node.pre_questions.copy() if node.pre_questions else [],
-            pre_answers=node.pre_answers.copy() if node.pre_answers else {},
+            pre_questions=normalize_pre_questions(node.pre_questions or []),
+            pre_answers=normalize_pre_answers(node.pre_answers or {}, node.pre_questions or []),
             depends_on=new_depends_on,
             special_handler=node.special_handler,
             need_review=node.need_review,
             auto_generate=getattr(node, 'auto_generate', False),
             is_collapsed=node.is_collapsed,
             model_override=getattr(node, 'model_override', None),
-            guidance_input=getattr(node, 'guidance_input', "") or "",
-            guidance_output=getattr(node, 'guidance_output', "") or "",
         )
         new_blocks.append(new_block)
         db.add(new_block)
@@ -960,6 +961,8 @@ async def generate_block_content_stream(
     project = db.query(Project).filter(Project.id == block.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
+
+    ensure_required_pre_questions_answered(block)
     
     # 智能解析依赖（自动修复过期 ID、按名称查找替代）
     resolved_deps, dependency_content, dep_error = resolve_dependencies(block, db)
@@ -1207,7 +1210,7 @@ def migrate_project_to_blocks(
     将传统项目的 project_fields 迁移到 content_blocks 架构
     
     这会：
-    1. 为每个阶段创建一个 phase 类型的 ContentBlock
+    1. 为每个阶段创建一个 group 类型的 ContentBlock
     2. 将每个 ProjectField 转换为 field 类型的 ContentBlock
     3. 保持原有的依赖关系
     """
@@ -1271,7 +1274,7 @@ def migrate_project_to_blocks(
             project_id=project.id,
             parent_id=None,
             name=display_names.get(phase_name, phase_name),
-            block_type="phase",
+            block_type="group",
             depth=0,
             order_index=idx,
             status=project.phase_status.get(phase_name, "pending"),
@@ -1314,6 +1317,11 @@ def migrate_project_to_blocks(
             status=field.status or "pending",
             ai_prompt=field.ai_prompt or "",
             constraints=field.constraints or {},
+            pre_questions=normalize_pre_questions(getattr(field, "pre_questions", []) or []),
+            pre_answers=normalize_pre_answers(
+                getattr(field, "pre_answers", {}) or {},
+                getattr(field, "pre_questions", []) or [],
+            ),
             depends_on=[],  # 稍后更新
             need_review=getattr(field, 'need_review', True),
         )

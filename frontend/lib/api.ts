@@ -3,6 +3,8 @@
 // 主要函数: fetchAPI, streamAPI
 // 数据结构: Project, Field, ChatMessage
 
+import type { PreQuestion } from "@/lib/preQuestions";
+
 export const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8002";
 
 // ============== Types ==============
@@ -40,7 +42,7 @@ export interface Field {
   content: string;
   status: string;
   ai_prompt: string;
-  pre_questions: string[];
+  pre_questions: PreQuestion[];
   pre_answers: Record<string, string>;
   dependencies: {
     depends_on: string[];
@@ -166,7 +168,6 @@ export const projectAPI = {
     creator_profile_id?: string; 
     use_deep_research?: boolean;
     use_flexible_architecture?: boolean;
-    phase_order?: string[];  // [] 表示从零开始
   }) =>
     fetchAPI<Project>("/api/projects/", {
       method: "POST",
@@ -256,13 +257,12 @@ export const fieldAPI = {
 // ============== Agent API ==============
 
 export const agentAPI = {
-  chat: (projectId: string, message: string, options?: { currentPhase?: string; references?: string[] }) =>
+  chat: (projectId: string, message: string, options?: { references?: string[] }) =>
     fetchAPI<ChatResponse>("/api/agent/chat", {
       method: "POST",
       body: JSON.stringify({
         project_id: projectId,
         message,
-        current_phase: options?.currentPhase,
         references: options?.references || [],
       }),
     }),
@@ -278,8 +278,7 @@ export const agentAPI = {
   
   stream: async function* (
     projectId: string,
-    message: string,
-    currentPhase?: string
+    message: string
   ): AsyncGenerator<{ node?: string; content?: string; done?: boolean; error?: string }> {
     const response = await fetch(`${API_BASE}/api/agent/stream`, {
       method: "POST",
@@ -287,7 +286,6 @@ export const agentAPI = {
       body: JSON.stringify({
         project_id: projectId,
         message,
-        current_phase: currentPhase,
       }),
     });
 
@@ -599,14 +597,14 @@ export interface ContentBlock {
   project_id: string;
   parent_id: string | null;
   name: string;
-  block_type: "phase" | "field" | "proposal" | "group";
+  block_type: "field" | "group";
   depth: number;
   order_index: number;
   content: string;
   status: "pending" | "in_progress" | "completed" | "failed";
   ai_prompt: string;
   constraints: FieldConstraints;
-  pre_questions?: string[];
+  pre_questions?: PreQuestion[];
   pre_answers?: Record<string, string>;
   depends_on: string[];
   special_handler: string | null;
@@ -643,7 +641,7 @@ export interface PhaseTemplate {
       need_review?: boolean;
       auto_generate?: boolean;
       model_override?: string | null;
-      pre_questions?: string[];
+      pre_questions?: PreQuestion[];
       depends_on?: string[];
       constraints?: Record<string, unknown>;
       [key: string]: unknown;  // 允许模板中的其他自定义字段
@@ -668,15 +666,16 @@ export interface FieldTemplate {
   }>;
   root_nodes: TemplateNode[];
   created_at: string | null;
+  updated_at?: string | null;
 }
 
 export interface TemplateNode {
   template_node_id: string;
   name: string;
-  block_type: "phase" | "group" | "field" | "proposal";
+  block_type: "group" | "field";
   ai_prompt?: string;
   content?: string;
-  pre_questions?: string[];
+  pre_questions?: PreQuestion[];
   depends_on?: string[];
   depends_on_template_node_ids?: string[];
   constraints?: Record<string, unknown>;
@@ -685,8 +684,6 @@ export interface TemplateNode {
   auto_generate?: boolean;
   is_collapsed?: boolean;
   model_override?: string | null;
-  guidance_input?: string;
-  guidance_output?: string;
   external_depends_on_block_ids?: string[];
   draft_dependency_refs?: DraftDependencyRef[];
   children?: TemplateNode[];
@@ -775,7 +772,7 @@ export const blockAPI = {
     special_handler?: string | null;
     need_review?: boolean;
     auto_generate?: boolean;
-    pre_questions?: string[];
+    pre_questions?: PreQuestion[];
     pre_answers?: Record<string, string>;
     model_override?: string | null;
     order_index?: number;
@@ -793,7 +790,7 @@ export const blockAPI = {
     ai_prompt: string;
     constraints: FieldConstraints;
     depends_on: string[];
-    pre_questions: string[];
+    pre_questions: PreQuestion[];
     pre_answers: Record<string, string>;
     need_review: boolean;
     auto_generate: boolean;

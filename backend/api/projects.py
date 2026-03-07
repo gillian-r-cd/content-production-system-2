@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from core.database import get_db
 from core.models import Project, CreatorProfile, PROJECT_PHASES, generate_uuid
 from core.llm_compat import get_model_name
+from core.pre_question_utils import normalize_pre_answers, normalize_pre_questions
 
 
 router = APIRouter()
@@ -320,8 +321,8 @@ def duplicate_project(
             content=old_field.content,
             status=old_field.status,
             ai_prompt=old_field.ai_prompt,
-            pre_questions=old_field.pre_questions.copy() if old_field.pre_questions else [],
-            pre_answers=old_field.pre_answers.copy() if old_field.pre_answers else {},
+            pre_questions=normalize_pre_questions(old_field.pre_questions or []),
+            pre_answers=normalize_pre_answers(old_field.pre_answers or {}, old_field.pre_questions or []),
             dependencies=old_field.dependencies.copy() if old_field.dependencies else {"depends_on": [], "dependency_type": "all"},
             constraints=old_field.constraints.copy() if hasattr(old_field, 'constraints') and old_field.constraints else None,
             need_review=old_field.need_review if hasattr(old_field, 'need_review') else True,
@@ -373,8 +374,8 @@ def duplicate_project(
             status=old_block.status,
             ai_prompt=old_block.ai_prompt or "",
             constraints=old_block.constraints.copy() if old_block.constraints else {},
-            pre_questions=old_block.pre_questions.copy() if old_block.pre_questions else [],
-            pre_answers=old_block.pre_answers.copy() if old_block.pre_answers else {},
+            pre_questions=normalize_pre_questions(old_block.pre_questions or []),
+            pre_answers=normalize_pre_answers(old_block.pre_answers or {}, old_block.pre_questions or []),
             guidance_input=getattr(old_block, "guidance_input", "") or "",
             guidance_output=getattr(old_block, "guidance_output", "") or "",
             depends_on=new_depends_on,
@@ -668,8 +669,8 @@ def create_new_version(
             content=old_field.content,
             status=old_field.status,
             ai_prompt=old_field.ai_prompt,
-            pre_questions=old_field.pre_questions.copy() if old_field.pre_questions else [],
-            pre_answers=old_field.pre_answers.copy() if old_field.pre_answers else {},
+            pre_questions=normalize_pre_questions(old_field.pre_questions or []),
+            pre_answers=normalize_pre_answers(old_field.pre_answers or {}, old_field.pre_questions or []),
             dependencies=old_field.dependencies.copy() if old_field.dependencies else {"depends_on": [], "dependency_type": "all"},
             constraints=old_field.constraints.copy() if hasattr(old_field, 'constraints') and old_field.constraints else None,
             need_review=old_field.need_review if hasattr(old_field, 'need_review') else True,
@@ -718,8 +719,8 @@ def create_new_version(
             status=old_block.status,
             ai_prompt=old_block.ai_prompt or "",
             constraints=old_block.constraints.copy() if old_block.constraints else {},
-            pre_questions=old_block.pre_questions.copy() if old_block.pre_questions else [],
-            pre_answers=old_block.pre_answers.copy() if old_block.pre_answers else {},
+            pre_questions=normalize_pre_questions(old_block.pre_questions or []),
+            pre_answers=normalize_pre_answers(old_block.pre_answers or {}, old_block.pre_questions or []),
             guidance_input=getattr(old_block, "guidance_input", "") or "",
             guidance_output=getattr(old_block, "guidance_output", "") or "",
             depends_on=new_depends_on,
@@ -1116,8 +1117,8 @@ def import_project(
                 status=b.get("status", "pending"),
                 ai_prompt=b.get("ai_prompt", ""),
                 constraints=b.get("constraints", {}),
-                pre_questions=b.get("pre_questions", []),
-                pre_answers=b.get("pre_answers", {}),
+                pre_questions=normalize_pre_questions(b.get("pre_questions", [])),
+                pre_answers=normalize_pre_answers(b.get("pre_answers", {}), b.get("pre_questions", [])),
                 guidance_input=b.get("guidance_input", ""),
                 guidance_output=b.get("guidance_output", ""),
                 depends_on=_map_list(b.get("depends_on", [])),
@@ -1153,8 +1154,8 @@ def import_project(
                 content=f.get("content", ""),
                 status=f.get("status", "pending"),
                 ai_prompt=f.get("ai_prompt", ""),
-                pre_questions=f.get("pre_questions", []),
-                pre_answers=f.get("pre_answers", {}),
+                pre_questions=normalize_pre_questions(f.get("pre_questions", [])),
+                pre_answers=normalize_pre_answers(f.get("pre_answers", {}), f.get("pre_questions", [])),
                 dependencies=new_deps,
                 constraints=f.get("constraints", {}),
                 need_review=f.get("need_review", True),

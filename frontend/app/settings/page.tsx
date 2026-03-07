@@ -7,6 +7,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { settingsAPI, graderAPI, phaseTemplateAPI } from "@/lib/api";
 import type { AgentSettingsData, CreatorProfile, GraderData, PhaseTemplate, TemplateNode } from "@/lib/api";
+import type { PreQuestion } from "@/lib/preQuestions";
 
 import { SystemPromptsSection } from "@/components/settings/system-prompts-section";
 import { ProfilesSection } from "@/components/settings/profiles-section";
@@ -39,7 +40,7 @@ type FieldTemplateItem = {
     type?: string;
     ai_prompt?: string;
     content?: string;
-    pre_questions?: string[];
+    pre_questions?: PreQuestion[];
     depends_on?: string[];
   }>;
   root_nodes?: TemplateNode[];

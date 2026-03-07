@@ -145,8 +145,8 @@ export function ProjectStructureDraftEditor({
           onChange={(nodes) => patchPayload({ shared_root_nodes: nodes })}
           availableModels={availableModels}
           topLevelLabel="共享结构"
-          emptyText="还没有共享结构。这里可以直接添加共享内容块，也可以按阶段或分组组织。"
-          topLevelCreateTypes={["field", "group", "phase"]}
+          emptyText="还没有共享结构。这里可以直接添加共享内容块，也可以按分组组织。"
+          topLevelCreateTypes={["field", "group"]}
           externalDependencyOptions={projectBlockOptions}
         />
       </section>
@@ -164,8 +164,8 @@ export function ProjectStructureDraftEditor({
           onChange={(nodes) => patchPayload({ aggregate_root_nodes: nodes })}
           availableModels={availableModels}
           topLevelLabel="聚合结构"
-          emptyText="还没有聚合结构。这里可以直接添加最终汇总内容块，也可以按阶段或分组组织。"
-          topLevelCreateTypes={["field", "group", "phase"]}
+          emptyText="还没有聚合结构。这里可以直接添加最终汇总内容块，也可以按分组组织。"
+          topLevelCreateTypes={["field", "group"]}
           externalDependencyOptions={[
             ...chunkSourceOptions,
             ...buildPlanNodeOptionsForAggregate(),

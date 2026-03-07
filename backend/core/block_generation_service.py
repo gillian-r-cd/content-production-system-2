@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from core.llm import ainvoke_with_retry, get_chat_model, parse_llm_error
 from core.llm_compat import normalize_content, resolve_model
 from core.models import ContentBlock, GenerationLog, Project, generate_uuid
+from core.pre_question_utils import iter_answered_pre_question_items, list_missing_required_pre_questions
 from core.prompt_engine import GoldenContext
 
 
@@ -131,10 +132,15 @@ def build_generation_system_prompt(
     gc = GoldenContext(creator_profile=creator_profile_text)
 
     pre_answers_text = ""
-    if block.pre_answers:
-        answers = [f"- {q}: {a}" for q, a in block.pre_answers.items() if a]
-        if answers:
-            pre_answers_text = "\n---\n# 用户补充信息（生成前提问的回答）\n" + "\n".join(answers)
+    answers = [
+        f"- {item['question']}: {answer}"
+        for item, answer in iter_answered_pre_question_items(
+            block.pre_questions or [],
+            block.pre_answers or {},
+        )
+    ]
+    if answers:
+        pre_answers_text = "\n---\n# 用户补充信息（生成前提问的回答）\n" + "\n".join(answers)
 
     ai_prompt = block.ai_prompt or "请生成内容。"
     has_placeholders = "{creator_profile}" in ai_prompt or "{dependencies}" in ai_prompt
@@ -206,14 +212,22 @@ def list_ready_block_ids(
             if not all_deps_ready:
                 continue
 
-        if block.pre_questions and len(block.pre_questions) > 0:
-            answers = block.pre_answers or {}
-            if any(not str(answers.get(question, "")).strip() for question in block.pre_questions):
-                continue
+        if list_missing_required_pre_questions(block.pre_questions or [], block.pre_answers or {}):
+            continue
 
         eligible_ids.append(block.id)
 
     return eligible_ids
+
+
+def ensure_required_pre_questions_answered(block: ContentBlock) -> None:
+    missing_items = list_missing_required_pre_questions(
+        block.pre_questions or [],
+        block.pre_answers or {},
+    )
+    if missing_items:
+        missing_labels = "、".join(item["question"] for item in missing_items)
+        raise HTTPException(status_code=400, detail=f"以下必答生成前提问尚未回答: {missing_labels}")
 
 
 async def generate_block_content_sync(
@@ -239,6 +253,8 @@ async def generate_block_content_sync(
     project = db.query(Project).filter(Project.id == block.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
+
+    ensure_required_pre_questions_answered(block)
 
     _, dependency_content, dep_error = resolve_dependencies(block, db)
     if dep_error:

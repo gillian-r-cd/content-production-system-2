@@ -197,8 +197,11 @@ class TestPromptEngine:
             name="测试字段",
             block_type="field",
             ai_prompt="请生成一段测试内容",
-            pre_questions=["问题1", "问题2"],
-            pre_answers={"问题1": "答案1", "问题2": "答案2"},
+            pre_questions=[
+                {"id": "q1", "question": "问题1", "required": True},
+                {"id": "q2", "question": "问题2", "required": False},
+            ],
+            pre_answers={"q1": "答案1", "q2": "答案2"},
         )
         
         # 依赖内容通过 field_context 传递
@@ -214,6 +217,28 @@ class TestPromptEngine:
         assert "请生成一段测试内容" in prompt  # AI提示词应出现
         assert "用户补充信息" in prompt
         assert "答案1" in prompt
+
+    def test_get_field_generation_prompt_keeps_legacy_text_key_answers(self, engine):
+        field = ContentBlock(
+            id="f2",
+            project_id="p1",
+            name="兼容字段",
+            block_type="field",
+            ai_prompt="请生成兼容测试内容",
+            pre_questions=[
+                {"id": "legacy-q1", "question": "问题1", "required": False},
+            ],
+            pre_answers={"问题1": "旧格式答案"},
+        )
+        context = PromptContext(
+            golden_context=GoldenContext(creator_profile="专业型"),
+            phase_context="兼容任务",
+        )
+
+        prompt = engine.get_field_generation_prompt(field, context)
+
+        assert "问题1" in prompt
+        assert "旧格式答案" in prompt
 
 
 if __name__ == "__main__":

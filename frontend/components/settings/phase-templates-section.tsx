@@ -10,6 +10,7 @@ import { phaseTemplateAPI, modelsAPI } from "@/lib/api";
 import type { PhaseTemplate, ModelInfo, TemplateNode } from "@/lib/api";
 import { FormField } from "./shared";
 import { TemplateTreeEditor } from "./template-tree-editor";
+import { Sparkles } from "lucide-react";
 
 function flattenTemplateNodes(nodes: TemplateNode[] = []): TemplateNode[] {
   return nodes.flatMap((node) => [node, ...flattenTemplateNodes(node.children || [])]);
@@ -105,7 +106,7 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
           onChange={(root_nodes) => setEditForm({ ...editForm, root_nodes })}
           availableModels={availableModels}
           topLevelLabel="流程模板结构"
-          emptyText="还没有添加内容，先添加顶层阶段。"
+          emptyText="还没有添加内容，先添加顶层分组或内容块。"
         />
 
         <div className="flex gap-2 pt-2">
@@ -150,12 +151,12 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
                 <p className="text-sm text-zinc-500 mt-1">{template.description}</p>
                 {(() => {
                   const flatNodes = flattenTemplateNodes(template.root_nodes || []);
-                  const containerCount = flatNodes.filter((node) => node.block_type === "phase" || node.block_type === "group").length;
-                  const fieldCount = flatNodes.filter((node) => node.block_type === "field" || node.block_type === "proposal").length;
+                  const containerCount = flatNodes.filter((node) => node.block_type === "group").length;
+                  const fieldCount = flatNodes.filter((node) => node.block_type === "field").length;
                   const contentCount = flatNodes.filter((node) => !!node.content).length;
                   return (
                     <div className="flex gap-3 mt-2 text-xs text-zinc-400">
-                      <span>{containerCount || template.phases.length} 个阶段/分组</span>
+                      <span>{containerCount || template.phases.length} 个分组</span>
                       <span>{fieldCount || template.phases.reduce((sum: number, p) => sum + (p.default_fields || []).length, 0)} 个内容块</span>
                       <span>{contentCount || template.phases.reduce((sum: number, p) =>
                         sum + (p.default_fields || []).filter((f) => f.content).length, 0

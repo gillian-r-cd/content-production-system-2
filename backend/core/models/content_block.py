@@ -17,6 +17,7 @@ from sqlalchemy import String, Text, JSON, ForeignKey, Integer, Boolean, DateTim
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.models.base import BaseModel
+from core.pre_question_utils import normalize_pre_answers, normalize_pre_questions
 
 if TYPE_CHECKING:
     from core.models.project import Project
@@ -24,10 +25,8 @@ if TYPE_CHECKING:
 
 # 内容块类型
 BLOCK_TYPES = {
-    "phase": "阶段",        # 顶级流程阶段
-    "field": "字段",        # 具体内容字段
-    "proposal": "方案",     # 设计方案（如内涵设计的多个方案）
-    "group": "分组",        # 纯分组，无内容
+    "field": "内容块",      # 具体内容字段
+    "group": "分组",        # 结构容器，无内容
 }
 
 # 特殊处理器类型
@@ -64,7 +63,7 @@ class ContentBlock(BaseModel):
         project_id: 所属项目
         parent_id: 父级内容块ID（null=顶级阶段）
         name: 内容块名称
-        block_type: 类型（phase/field/proposal/group）
+        block_type: 类型（group/field）
         depth: 层级深度（0=顶级）
         order_index: 同级排序索引
         content: 实际内容
@@ -163,8 +162,8 @@ class ContentBlock(BaseModel):
     )
 
     def is_phase(self) -> bool:
-        """是否是顶级阶段"""
-        return self.block_type == "phase" and self.parent_id is None
+        """兼容旧调用：phase 已合并为 group，始终按 group 语义处理。"""
+        return self.block_type == "group" and self.parent_id is None
     
     def is_special(self) -> bool:
         """是否有特殊处理器"""
@@ -224,6 +223,7 @@ class ContentBlock(BaseModel):
     
     def to_tree_dict(self) -> dict:
         """转换为树形字典（用于 API 响应）"""
+        normalized_questions = normalize_pre_questions(self.pre_questions or [])
         return {
             "id": self.id,
             "project_id": self.project_id,
@@ -236,10 +236,8 @@ class ContentBlock(BaseModel):
             "status": self.status,
             "ai_prompt": self.ai_prompt,
             "constraints": self.constraints,
-            "pre_questions": self.pre_questions or [],
-            "pre_answers": self.pre_answers or {},
-            "guidance_input": self.guidance_input or "",
-            "guidance_output": self.guidance_output or "",
+            "pre_questions": normalized_questions,
+            "pre_answers": normalize_pre_answers(self.pre_answers or {}, normalized_questions),
             "depends_on": self.depends_on,
             "special_handler": self.special_handler,
             "need_review": self.need_review,

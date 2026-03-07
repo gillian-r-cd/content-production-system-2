@@ -10,8 +10,17 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { blockAPI, projectAPI, runAutoTriggerChain, agentAPI, modelsAPI } from "@/lib/api";
 import { useBlockGeneration } from "@/lib/hooks/useBlockGeneration";
+import {
+  countAnsweredPreQuestions,
+  countAnsweredRequiredPreQuestions,
+  countMissingRequiredPreQuestions,
+  createPreQuestion,
+  normalizePreAnswers,
+  normalizePreQuestions,
+} from "@/lib/preQuestions";
 import { sendNotification } from "@/lib/utils";
 import type { ContentBlock, ModelInfo } from "@/lib/api";
+import type { PreQuestion } from "@/lib/preQuestions";
 import { getEvalFieldEditor } from "./eval-field-editors";
 import { VersionHistoryButton } from "./version-history";
 import { 
@@ -196,9 +205,18 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
   };
   
   // 生成前提问状态
-  const [preAnswers, setPreAnswers] = useState<Record<string, string>>(block.pre_answers || {});
-  const hasPreQuestions = (block.pre_questions?.length || 0) > 0;
+  const [preQuestions, setPreQuestions] = useState<PreQuestion[]>(normalizePreQuestions(block.pre_questions || []));
+  const [preAnswers, setPreAnswers] = useState<Record<string, string>>(
+    normalizePreAnswers(block.pre_answers || {}, normalizePreQuestions(block.pre_questions || [])),
+  );
+  const hasPreQuestions = preQuestions.length > 0;
+  const showPreQuestionsSection = block.block_type === "field";
   const [preQuestionsExpanded, setPreQuestionsExpanded] = useState(false);
+  const [newPreQuestion, setNewPreQuestion] = useState("");
+  const answeredPreQuestionCount = countAnsweredPreQuestions(preQuestions, preAnswers);
+  const answeredRequiredPreQuestionCount = countAnsweredRequiredPreQuestions(preQuestions, preAnswers);
+  const requiredPreQuestionCount = preQuestions.filter((item) => item.required).length;
+  const missingRequiredPreQuestionCount = countMissingRequiredPreQuestions(preQuestions, preAnswers);
 
   // ---- 生成逻辑（通过 Hook 统一管理） ----
   const {
@@ -206,6 +224,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
     handleGenerate: _handleGenerate, handleStop: handleStopGeneration,
   } = useBlockGeneration({
     block, projectId, allBlocks,
+    preQuestions,
     preAnswers, hasPreQuestions,
     onUpdate,
     onContentReady: (content) => setEditedContent(content),
@@ -218,28 +237,17 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
   };
   
   // 可选的依赖（排除自己和自己的子节点）
-  // 允许选择：1. 所有 field 类型  2. 有特殊处理器的 phase 类型（如消费者调研、意图分析）
+  // 允许选择：所有 field 类型内容块
   const availableDependencies = allBlocks.filter(b => {
     // 排除自己
     if (b.id === block.id) return false;
     // 排除自己的子节点
     if (b.parent_id === block.id) return false;
     
-    // 允许 field 类型
-    if (b.block_type === "field") return true;
-    // 允许有 special_handler 的 phase（意图分析、消费者调研、模拟、评估）
-    if (b.block_type === "phase" && b.special_handler) return true;
-    
-    return false;
+    return b.block_type === "field";
   });
   
-  // 分组：特殊阶段 + 普通字段
-  const specialDependencies = availableDependencies.filter(
-    b => b.block_type === "phase" && b.special_handler
-  );
-  const fieldDependencies = availableDependencies.filter(
-    b => b.block_type === "field"
-  );
+  const fieldDependencies = availableDependencies;
   
   useEffect(() => {
     // 生成中不要重置内容（会覆盖流式输出）
@@ -251,7 +259,9 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
     setEditedPrompt(block.ai_prompt || "");
     setSavedPrompt(block.ai_prompt || "");
     setSelectedDependencies(block.depends_on || []);
-    setPreAnswers(block.pre_answers || {});
+    const normalizedQuestions = normalizePreQuestions(block.pre_questions || []);
+    setPreQuestions(normalizedQuestions);
+    setPreAnswers(normalizePreAnswers(block.pre_answers || {}, normalizedQuestions));
     // M4: 切换 block 或内容变化时清空 inline edit 状态
     setSelectedText("");
     setToolbarPosition(null);
@@ -260,7 +270,32 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
     // M5: 同步 model_override
     setModelOverride(block.model_override || "");
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [block.id, block.content, block.name, block.ai_prompt, block.depends_on, block.pre_answers]);
+  }, [block.id, block.content, block.name, block.ai_prompt, block.depends_on, block.pre_answers, block.pre_questions]);
+
+  useEffect(() => {
+    if (showPreQuestionsSection && preQuestions.length === 0) {
+      setPreQuestionsExpanded(true);
+    }
+  }, [showPreQuestionsSection, preQuestions.length]);
+
+  const handleAddPreQuestion = (required = false) => {
+    const question = newPreQuestion.trim();
+    if (!question) return;
+    if (preQuestions.some((item) => item.question === question)) return;
+    setPreQuestions((prev) => [...prev, createPreQuestion(question, required)]);
+    setNewPreQuestion("");
+    setPreAnswersSaved(false);
+  };
+
+  const handleRemovePreQuestion = (questionId: string) => {
+    setPreQuestions((prev) => prev.filter((item) => item.id !== questionId));
+    setPreAnswers((prev) => {
+      const next = { ...prev };
+      delete next[questionId];
+      return next;
+    });
+    setPreAnswersSaved(false);
+  };
 
   // M5: 加载可用模型列表（仅在组件挂载时加载一次）
   useEffect(() => {
@@ -344,7 +379,18 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
   const handleSavePreAnswers = async () => {
     setIsSavingPreAnswers(true);
     try {
-      await blockAPI.update(block.id, { pre_answers: preAnswers });
+      const normalizedQuestions = normalizePreQuestions(preQuestions);
+      const normalizedAnswers: Record<string, string> = {};
+      for (const question of normalizedQuestions) {
+        const value = (preAnswers[question.id] || "").trim();
+        if (value) {
+          normalizedAnswers[question.id] = value;
+        }
+      }
+      await blockAPI.update(block.id, {
+        pre_questions: normalizedQuestions,
+        pre_answers: normalizedAnswers,
+      });
       setPreAnswersSaved(true);
       setTimeout(() => setPreAnswersSaved(false), 2000);
       onUpdate?.();
@@ -926,7 +972,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
         </div>
 
         {/* 生成前提问区域（可折叠） */}
-        {hasPreQuestions && (
+        {showPreQuestionsSection && (
           <div className="border-b border-amber-600/20">
             <button
               onClick={() => setPreQuestionsExpanded(!preQuestionsExpanded)}
@@ -940,7 +986,9 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                 )}
                 <span className="text-amber-400 text-sm font-medium">生成前提问</span>
                 <span className="text-xs text-zinc-500">
-                  ({Object.values(preAnswers).filter(v => v && v.trim()).length}/{block.pre_questions?.length || 0} 已回答)
+                  {hasPreQuestions
+                    ? `（必答 ${answeredRequiredPreQuestionCount}/${requiredPreQuestionCount}，全部已答 ${answeredPreQuestionCount}/${preQuestions.length}）`
+                    : "（暂无问题，点击添加）"}
                 </span>
               </div>
               <div className="flex items-center gap-2">
@@ -952,26 +1000,98 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
             {preQuestionsExpanded && (
               <div className="px-5 py-4 bg-amber-900/10">
                 <div className="space-y-3">
-                  {block.pre_questions?.map((question, idx) => (
-                    <div key={idx} className="space-y-1">
-                      <label className="text-sm text-zinc-300">{idx + 1}. {question}</label>
-                      <input
-                        type="text"
-                        value={preAnswers[question] || ""}
-                        onChange={(e) => {
-                          const newAnswers = { ...preAnswers, [question]: e.target.value };
-                          setPreAnswers(newAnswers);
-                          setPreAnswersSaved(false);
-                        }}
-                        placeholder="请输入回答..."
-                        className="w-full px-3 py-2 bg-surface-2 border border-amber-500/30 rounded-lg text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-                      />
+                  {hasPreQuestions ? (
+                    preQuestions.map((question, idx) => (
+                      <div key={question.id} className="space-y-2 rounded-lg border border-amber-500/15 bg-surface-2/30 p-3">
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={question.question}
+                            onChange={(e) => {
+                              const nextQuestion = e.target.value;
+                              setPreQuestions((prev) => prev.map((item) => (
+                                item.id === question.id
+                                  ? { ...item, question: nextQuestion }
+                                  : item
+                              )));
+                              setPreAnswersSaved(false);
+                            }}
+                            placeholder={`${idx + 1}. 输入问题`}
+                            className="flex-1 rounded border border-surface-3 bg-surface-1 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                          />
+                          <label className="flex items-center gap-1.5 text-xs text-zinc-400">
+                            <input
+                              type="checkbox"
+                              checked={question.required}
+                              onChange={(e) => {
+                                setPreQuestions((prev) => prev.map((item) => (
+                                  item.id === question.id
+                                    ? { ...item, required: e.target.checked }
+                                    : item
+                                )));
+                                setPreAnswersSaved(false);
+                              }}
+                            />
+                            必答
+                          </label>
+                          <button
+                            onClick={() => handleRemovePreQuestion(question.id)}
+                            className="px-2 py-0.5 text-xs bg-red-600/20 text-red-300 rounded hover:bg-red-600/30"
+                          >
+                            删除
+                          </button>
+                        </div>
+                        <input
+                          type="text"
+                          value={preAnswers[question.id] || ""}
+                          onChange={(e) => {
+                            const newAnswers = { ...preAnswers, [question.id]: e.target.value };
+                            setPreAnswers(newAnswers);
+                            setPreAnswersSaved(false);
+                          }}
+                          placeholder={question.required ? "请输入必答问题的回答..." : "选答：可留空"}
+                          className="w-full px-3 py-2 bg-surface-2 border border-amber-500/30 rounded-lg text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                        />
+                      </div>
+                    ))
+                  ) : (
+                    <div className="rounded-lg border border-dashed border-amber-500/30 bg-surface-2/40 px-4 py-3 text-sm text-zinc-500">
+                      还没有生成前提问。你可以先添加问题，再保存回答，生成时这些问答会进入上下文。
                     </div>
-                  ))}
+                  )}
+                </div>
+                <div className="mt-3 flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={newPreQuestion}
+                    onChange={(e) => setNewPreQuestion(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        handleAddPreQuestion();
+                      }
+                    }}
+                    placeholder="新增生成前提问..."
+                    className="flex-1 px-3 py-2 bg-surface-2 border border-amber-500/30 rounded-lg text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                  />
+                  <button
+                    onClick={() => handleAddPreQuestion(false)}
+                    className="px-3 py-2 text-xs bg-surface-3 text-zinc-200 rounded hover:bg-surface-4"
+                  >
+                    添加选答题
+                  </button>
+                  <button
+                    onClick={() => handleAddPreQuestion(true)}
+                    className="px-3 py-2 text-xs bg-amber-600/80 text-white rounded hover:bg-amber-600"
+                  >
+                    添加必答题
+                  </button>
                 </div>
                 <div className="flex items-center justify-between mt-3">
                   <p className="text-xs text-amber-500/60">
-                    💡 答案会作为生成内容的上下文传递给 AI
+                    {missingRequiredPreQuestionCount > 0
+                      ? `还有 ${missingRequiredPreQuestionCount} 个必答问题未回答；必答题会阻止“全部开始”和手动生成。`
+                      : "答案会作为生成内容的上下文传递给 AI；选答题可留空。"}
                   </p>
                   <button
                     onClick={handleSavePreAnswers}
@@ -1174,53 +1294,6 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
               
               {availableDependencies.length > 0 ? (
                 <div className="space-y-4 max-h-80 overflow-y-auto">
-                  {/* 特殊阶段区域 */}
-                  {specialDependencies.length > 0 && (
-                    <div>
-                      <h4 className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2 flex items-center gap-1">
-                        📌 特殊阶段（可作为上下文引用）
-                      </h4>
-                      <div className="space-y-2">
-                        {specialDependencies.map(dep => (
-                          <label
-                            key={dep.id}
-                            className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-colors ${
-                              selectedDependencies.includes(dep.id)
-                                ? "bg-brand-600/20 border border-brand-500/50"
-                                : "bg-surface-2 border border-surface-3 hover:bg-surface-3"
-                            }`}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={selectedDependencies.includes(dep.id)}
-                              onChange={() => toggleDependency(dep.id)}
-                              className="w-4 h-4 rounded border-surface-4 bg-surface-2 text-brand-600 focus:ring-brand-500"
-                            />
-                            <div className="flex-1">
-                              <div className="flex items-center gap-2">
-                                <span className="text-sm text-zinc-200">{dep.name}</span>
-                                <span className="px-1.5 py-0.5 text-xs rounded bg-purple-600/20 text-purple-400">
-                                  {dep.special_handler === "intent" ? "意图分析" :
-                                   dep.special_handler === "research" ? "消费者调研" :
-                                   dep.special_handler === "evaluate" ? "评估结果" : dep.special_handler}
-                                </span>
-                                <span className={`px-1.5 py-0.5 text-xs rounded ${
-                                  dep.status === "completed"
-                                    ? "bg-emerald-600/20 text-emerald-400"
-                                    : (dep.content && dep.content.trim() !== "")
-                                    ? "bg-amber-600/20 text-amber-400"
-                                    : "bg-zinc-700 text-zinc-400"
-                                }`}>
-                                  {dep.status === "completed" ? "已完成" : (dep.content && dep.content.trim() !== "") ? "待确认" : "未完成"}
-                                </span>
-                              </div>
-                            </div>
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  
                   {/* 普通字段区域 */}
                   {fieldDependencies.length > 0 && (
                     <div>

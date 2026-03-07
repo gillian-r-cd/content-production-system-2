@@ -67,6 +67,9 @@ describe("project-structure-draft-utils", () => {
       id: "template-1",
       name: "文章模板",
       description: "",
+      category: "通用",
+      schema_version: 2,
+      fields: [],
       root_nodes: makeTemplateNodes(),
       created_at: null,
       updated_at: null,
@@ -83,12 +86,12 @@ describe("project-structure-draft-utils", () => {
     expect(importTemplateNodes(currentNodes, undefined)).toBe(currentNodes);
   });
 
-  it("flattens only field and proposal nodes for dependency options", () => {
+  it("normalizes legacy types and flattens field nodes for dependency options", () => {
     const nodes: TemplateNode[] = [
       {
         template_node_id: "phase-1",
         name: "阶段",
-        block_type: "phase",
+        block_type: "group",
         children: [
           {
             template_node_id: "group-1",
@@ -104,7 +107,7 @@ describe("project-structure-draft-utils", () => {
               {
                 template_node_id: "proposal-1",
                 name: "提议",
-                block_type: "proposal",
+                block_type: "field",
                 children: [],
               },
             ],

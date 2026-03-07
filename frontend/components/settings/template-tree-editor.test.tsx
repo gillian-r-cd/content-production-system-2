@@ -24,8 +24,6 @@ function makeNodes(): TemplateNode[] {
       auto_generate: false,
       is_collapsed: false,
       model_override: null,
-      guidance_input: "",
-      guidance_output: "",
       draft_dependency_refs: [],
       children: [],
     },

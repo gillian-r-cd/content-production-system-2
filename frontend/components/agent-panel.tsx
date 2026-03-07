@@ -28,7 +28,6 @@ interface MentionItem {
 
 interface AgentPanelProps {
   projectId: string | null;
-  currentPhase?: string;  // 当前阶段
   allBlocks?: ContentBlock[];  // 所有内容块
   onContentUpdate?: () => void;  // 当Agent生成内容后刷新
   /** M3: 外部组件注入的消息（如 Eval 诊断→Agent 修改桥接），消费后清空 */
@@ -45,7 +44,6 @@ const TOOL_NAMES: Record<string, string> = {
   read_field: "读取内容块",
   update_field: "覆写内容块",
   manage_architecture: "架构操作",
-  advance_to_phase: "推进组",
   run_research: "深度调研",
   manage_persona: "人物管理",
   run_evaluation: "内容评估",
@@ -65,7 +63,6 @@ const TOOL_DESCS: Record<string, string> = {
   read_field: "读取内容块完整原始内容",
   update_field: "直接用给定内容完整覆写内容块",
   manage_architecture: "添加/删除/移动组和内容块",
-  advance_to_phase: "推进项目到下一组",
   run_research: "使用DeepResearch进行网络调研",
   manage_persona: "创建、编辑、选择消费者画像",
   run_evaluation: "对项目内容执行全面质量评估",
@@ -75,7 +72,6 @@ const TOOL_DESCS: Record<string, string> = {
 
 export function AgentPanel({
   projectId,
-  currentPhase,
   allBlocks = [],
   onContentUpdate,
   externalMessage,
@@ -319,7 +315,6 @@ export function AgentPanel({
           { id: "read_field", name: "读取内容块", desc: "读取内容块完整原始内容" },
           { id: "update_field", name: "覆写内容块", desc: "直接用给定内容完整覆写内容块" },
           { id: "manage_architecture", name: "架构操作", desc: "添加/删除/移动组和内容块" },
-          { id: "advance_to_phase", name: "推进组", desc: "推进项目到下一组" },
           { id: "run_research", name: "深度调研", desc: "使用DeepResearch进行网络调研" },
           { id: "manage_persona", name: "人物管理", desc: "创建、编辑、选择消费者画像" },
           { id: "run_evaluation", name: "内容评估", desc: "对项目内容执行全面质量评估" },
@@ -494,7 +489,6 @@ export function AgentPanel({
         project_id: projectId,
         message: userMessage,
         references,
-        current_phase: currentPhase || undefined,
         mode: chatMode,
         conversation_id: activeConversationId,
       };
@@ -525,7 +519,7 @@ export function AgentPanel({
         pendingEventsRef.current = []; // 发送后清空
       }
 
-      // 使用流式 API（传递 current_phase 确保后端使用正确的阶段）
+      // 使用流式 API
       const response = await fetch(`${API_BASE}/api/agent/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -583,7 +577,6 @@ export function AgentPanel({
                   "rewrite": "✏️ 正在重写内容...",
                   "suggest": "✏️ 正在生成修改建议...",
                   "generic_research": "🔍 正在进行深度调研...",
-                  "advance_phase": "⏭️ 正在推进组...",
                   "query": "🔎 正在查询内容块...",
                   "chat": "💬 正在思考...",
                 };
@@ -868,12 +861,11 @@ export function AgentPanel({
       };
       setMessages(prev => [...prev, tempAiMsg]);
       
-      // 4. 使用流式 API 重新发送（包含 current_phase + Layer 3 事件）
+      // 4. 使用流式 API 重新发送（包含 Layer 3 事件）
       const editRequestBody: Record<string, unknown> = {
         project_id: projectId,
         message: editedContent,
         references,
-        current_phase: currentPhase || undefined,
         mode: chatMode,
         conversation_id: activeConversationId,
       };
@@ -947,7 +939,6 @@ export function AgentPanel({
                   "rewrite": "✏️ 正在重写内容...",
                   "suggest": "✏️ 正在生成修改建议...",
                   "evaluate": "📋 正在执行评估...",
-                  "advance_phase": "⏭️ 正在推进组...",
                   "chat": "💬 正在思考...",
                 };
                 const statusText = routeStatusNames[currentRoute] || `⏳ 正在处理...`;
@@ -1181,7 +1172,6 @@ export function AgentPanel({
       read_field: "请读取当前内容块的内容。",
       update_field: "请帮我覆写内容块。",
       manage_architecture: "请帮我管理项目结构。",
-      advance_to_phase: "请推进到下一个组。",
       run_research: "请帮我进行深度调研。",
       manage_persona: "请列出当前项目的消费者画像。",
       run_evaluation: "请对当前项目内容进行全面质量评估。",

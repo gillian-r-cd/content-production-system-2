@@ -123,8 +123,8 @@ export function ProjectPlanSelector({
                 onChange={(nodes) => onPatchPlan(plan.plan_id, { root_nodes: nodes })}
                 availableModels={availableModels}
                 topLevelLabel="方案结构"
-                emptyText="还没有结构，先添加顶层内容块、阶段或分组。"
-                topLevelCreateTypes={["field", "group", "phase"]}
+                emptyText="还没有结构，先添加顶层内容块或分组。"
+                topLevelCreateTypes={["field", "group"]}
                 externalDependencyOptions={[
                   {
                     id: `current-source:${plan.plan_id}`,

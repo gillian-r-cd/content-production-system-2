@@ -21,7 +21,7 @@ def test_normalize_legacy_field_template_payload_wraps_into_tree():
     assert len(normalized["root_nodes"]) == 1
     root = normalized["root_nodes"][0]
     assert root["name"] == "文章模板"
-    assert root["block_type"] == "phase"
+    assert root["block_type"] == "group"
     assert len(root["children"]) == 2
 
     topic_node = root["children"][0]
@@ -52,7 +52,7 @@ def test_instantiate_template_nodes_remaps_dependencies_to_block_ids():
     assert by_name["大纲"]["depends_on"] == [by_name["目标"]["id"]]
 
 
-def test_phase_template_to_root_nodes_keeps_phase_handlers_and_nested_fields():
+def test_phase_template_to_root_nodes_maps_phase_to_group_and_keeps_handlers():
     root_nodes, errors = phase_template_to_root_nodes([
         {
             "name": "调研",
@@ -67,5 +67,6 @@ def test_phase_template_to_root_nodes_keeps_phase_handlers_and_nested_fields():
 
     assert errors == []
     assert len(root_nodes) == 1
+    assert root_nodes[0]["block_type"] == "group"
     assert root_nodes[0]["special_handler"] == "research"
     assert root_nodes[0]["children"][0]["name"] == "用户画像"

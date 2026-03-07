@@ -27,60 +27,6 @@ export function formatDate(dateString: string): string {
   });
 }
 
-// ============== 阶段配置（前端镜像） ==============
-// 单一真相来源 (SSOT): backend/core/phase_config.py
-// 修改阶段定义时，需同步更新后端 PHASE_DEFINITIONS 和此处
-
-/**
- * 阶段完整定义（与后端 PHASE_DEFINITIONS 保持一致）
- */
-export interface PhaseDefinition {
-  code: string;
-  displayName: string;
-  specialHandler: string | null;
-  position: "top" | "middle" | "bottom";
-}
-
-export const PHASE_DEFINITIONS: PhaseDefinition[] = [
-  { code: "intent",        displayName: "意图分析",   specialHandler: "intent",   position: "top" },
-  { code: "research",      displayName: "消费者调研", specialHandler: "research",  position: "top" },
-  { code: "design_inner",  displayName: "内涵设计",   specialHandler: null,             position: "middle" },
-  { code: "produce_inner", displayName: "内涵生产",   specialHandler: "produce_inner",  position: "middle" },
-  { code: "design_outer",  displayName: "外延设计",   specialHandler: null,             position: "middle" },
-  { code: "produce_outer", displayName: "外延生产",   specialHandler: "produce_outer",  position: "middle" },
-  { code: "evaluate",      displayName: "评估",       specialHandler: "evaluate",  position: "bottom" },
-];
-
-// ---- 派生常量（自动从 PHASE_DEFINITIONS 生成） ----
-
-/** 默认阶段顺序 */
-export const PROJECT_PHASES = PHASE_DEFINITIONS.map(p => p.code);
-
-/** 代码 → 中文显示名 */
-export const PHASE_NAMES: Record<string, string> = Object.fromEntries(
-  PHASE_DEFINITIONS.map(p => [p.code, p.displayName])
-);
-
-/** 有特殊处理器的阶段 */
-export const PHASE_SPECIAL_HANDLERS: Record<string, string> = Object.fromEntries(
-  PHASE_DEFINITIONS.filter(p => p.specialHandler).map(p => [p.code, p.specialHandler!])
-);
-
-/** 各位置分组 */
-export const FIXED_TOP_PHASES = PHASE_DEFINITIONS.filter(p => p.position === "top").map(p => p.code);
-export const DRAGGABLE_PHASES = PHASE_DEFINITIONS.filter(p => p.position === "middle").map(p => p.code);
-export const FIXED_BOTTOM_PHASES = PHASE_DEFINITIONS.filter(p => p.position === "bottom").map(p => p.code);
-
-/**
- * 阶段状态映射
- */
-export const PHASE_STATUS: Record<string, { label: string; color: string }> = {
-  pending: { label: "未开始", color: "text-zinc-500" },
-  in_progress: { label: "进行中", color: "text-yellow-500" },
-  completed: { label: "已完成", color: "text-green-500" },
-};
-
-
 // ============== 浏览器通知 ==============
 
 /**

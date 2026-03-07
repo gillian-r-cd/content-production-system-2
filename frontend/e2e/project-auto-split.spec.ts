@@ -47,7 +47,7 @@ test("auto split modal supports split validate apply and start-all-ready", async
   await page.getByText(projectName, { exact: true }).click();
 
   await expect(page.getByRole("button", { name: "自动拆分内容" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "全部开始" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "开始所有已就绪内容块" })).toBeVisible();
 
   await page.getByRole("button", { name: "自动拆分内容" }).click();
   await expect(page.getByText("项目级自动拆分内容")).toBeVisible();
@@ -81,7 +81,7 @@ test("auto split modal supports split validate apply and start-all-ready", async
     response.url().includes(`/api/blocks/project/${project.id}/run`) &&
     response.request().method() === "POST",
   );
-  await page.getByRole("button", { name: "全部开始" }).click();
+  await page.getByRole("button", { name: "开始所有已就绪内容块" }).click();
   const runResponse = await runResponsePromise;
   expect(runResponse.ok()).toBeTruthy();
   const runJson = await runResponse.json();

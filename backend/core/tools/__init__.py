@@ -47,9 +47,6 @@ from core.tools.architecture_reader import (
 
 from core.tools.architecture_writer import (
     modify_architecture,
-    add_phase,
-    remove_phase,
-    reorder_phases,
     add_field,
     remove_field,
     update_field,
@@ -138,9 +135,6 @@ __all__ = [
     
     # Architecture Writer
     "modify_architecture",
-    "add_phase",
-    "remove_phase",
-    "reorder_phases",
     "add_field",
     "remove_field",
     "update_field",

@@ -11,11 +11,14 @@ import { blockAPI, runAutoTriggerChain } from "@/lib/api";
 import { readSSEStream } from "@/lib/sse";
 import { sendNotification } from "@/lib/utils";
 import type { ContentBlock } from "@/lib/api";
+import type { PreQuestion } from "@/lib/preQuestions";
+import { countMissingRequiredPreQuestions } from "@/lib/preQuestions";
 
 interface UseBlockGenerationOptions {
   block: ContentBlock;
   projectId: string;
   allBlocks: ContentBlock[];
+  preQuestions?: PreQuestion[];
   /** 预提问答案（生成前先保存） */
   preAnswers?: Record<string, string>;
   /** 是否有预提问 */
@@ -33,6 +36,7 @@ interface UseBlockGenerationReturn {
   generatingContent: string;
   canGenerate: boolean;
   unmetDependencies: ContentBlock[];
+  missingRequiredPreQuestionCount: number;
   /** 触发生成（调用者自行处理 e.stopPropagation 等 UI 层逻辑） */
   handleGenerate: () => Promise<void>;
   /** 停止生成 */
@@ -43,6 +47,7 @@ export function useBlockGeneration({
   block,
   projectId,
   allBlocks,
+  preQuestions,
   preAnswers,
   hasPreQuestions,
   onSavePreAnswers,
@@ -67,12 +72,24 @@ export function useBlockGeneration({
     [dependencyBlocks],
   );
 
-  const canGenerate = unmetDependencies.length === 0;
+  const missingRequiredPreQuestionCount = useMemo(
+    () => countMissingRequiredPreQuestions(preQuestions || [], preAnswers || {}),
+    [preQuestions, preAnswers],
+  );
+
+  const canGenerate = unmetDependencies.length === 0 && missingRequiredPreQuestionCount === 0;
 
   // ---- 生成 ----
   const handleGenerate = useCallback(async () => {
     if (!canGenerate) {
-      alert(`以下依赖内容为空:\n${unmetDependencies.map((d) => `• ${d.name}`).join("\n")}`);
+      const messages: string[] = [];
+      if (unmetDependencies.length > 0) {
+        messages.push(`以下依赖内容为空:\n${unmetDependencies.map((d) => `• ${d.name}`).join("\n")}`);
+      }
+      if (missingRequiredPreQuestionCount > 0) {
+        messages.push(`还有 ${missingRequiredPreQuestionCount} 个必答生成前提问未回答。`);
+      }
+      alert(messages.join("\n\n"));
       return;
     }
 
@@ -144,7 +161,7 @@ export function useBlockGeneration({
     }
   }, [
     block.id, block.name, projectId, canGenerate, unmetDependencies,
-    preAnswers, hasPreQuestions,
+    missingRequiredPreQuestionCount, preAnswers, hasPreQuestions,
     onSavePreAnswers, onUpdate, onContentReady,
   ]);
 
@@ -165,6 +182,7 @@ export function useBlockGeneration({
     generatingContent: isGeneratingThisBlock ? generatingContent : "",
     canGenerate,
     unmetDependencies,
+    missingRequiredPreQuestionCount,
     handleGenerate,
     handleStop,
   };
