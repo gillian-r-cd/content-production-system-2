@@ -316,3 +316,44 @@ def test_split_source_text_supports_count_and_chars_modes():
     assert len(chars_chunks) >= 2
     assert all(chunk["title"] for chunk in count_chunks)
     assert all(chunk["content"] for chunk in chars_chunks)
+
+
+def test_split_source_text_count_mode_without_overlap_keeps_adjacent_chunks_disjoint():
+    source_text = "第一段内容。\n\n第二段内容。\n\n第三段内容。"
+
+    count_chunks = asyncio.run(split_source_text(source_text, {
+        "mode": "count",
+        "target_count": 3,
+        "overlap_chars": 0,
+    }))
+
+    assert [chunk["content"] for chunk in count_chunks] == [
+        "第一段内容。",
+        "第二段内容。",
+        "第三段内容。",
+    ]
+
+
+def test_split_source_text_count_mode_with_overlap_still_allows_explicit_repetition():
+    source_text = "Alpha part one. Beta part two. Gamma part three."
+
+    count_chunks = asyncio.run(split_source_text(source_text, {
+        "mode": "count",
+        "target_count": 2,
+        "overlap_chars": 8,
+    }))
+
+    assert len(count_chunks) == 2
+    assert sum(len(chunk["content"]) for chunk in count_chunks) > len(source_text)
+
+
+def test_split_source_text_count_mode_without_overlap_keeps_plain_text_contiguous():
+    source_text = "ABCDEFGHIJKL"
+
+    count_chunks = asyncio.run(split_source_text(source_text, {
+        "mode": "count",
+        "target_count": 3,
+        "overlap_chars": 0,
+    }))
+
+    assert "".join(chunk["content"] for chunk in count_chunks) == source_text

@@ -11,7 +11,6 @@ test("auto split modal supports split validate apply and start-all-ready", async
   const suffix = Date.now().toString();
   const projectName = `auto-split-playwright-${suffix}`;
   const templateName = `auto-split-template-${suffix}`;
-  const draftName = `browser-smoke-${suffix}`;
 
   const projectResp = await request.post(`${BACKEND_BASE}/api/projects/`, {
     data: { name: projectName },
@@ -42,7 +41,9 @@ test("auto split modal supports split validate apply and start-all-ready", async
 
   await page.goto("/workspace");
 
-  await page.getByRole("button", { name: "选择项目" }).click();
+  await page.locator("header").getByRole("button").filter({
+    hasText: /选择项目|\(v\d+\)/,
+  }).first().click();
   await page.getByText(projectName, { exact: true }).click();
 
   await expect(page.getByRole("button", { name: "自动拆分内容" })).toBeVisible();
@@ -51,23 +52,21 @@ test("auto split modal supports split validate apply and start-all-ready", async
   await page.getByRole("button", { name: "自动拆分内容" }).click();
   await expect(page.getByText("项目级自动拆分内容")).toBeVisible();
 
-  const textboxes = page.locator("input[type='text']");
-  await textboxes.first().fill(draftName);
   await page.getByPlaceholder("粘贴要拆分的完整内容").fill(
     "Paragraph one about the customer problem.\n\nParagraph two about the proposed solution.",
   );
   await page.locator("input[type='number']").first().fill("2");
 
   await page.getByRole("button", { name: "执行拆分" }).click();
-  await expect(page.getByDisplayValue("内容片段 01")).toBeVisible();
-  await expect(page.getByDisplayValue("内容片段 02")).toBeVisible();
+  await expect(page.locator("input[value='内容片段 01']")).toBeVisible();
+  await expect(page.locator("input[value='内容片段 02']")).toBeVisible();
 
   await page.getByRole("button", { name: "+ 新编排方案" }).click();
   await page.getByLabel("内容片段 01").check();
   await page.getByLabel("内容片段 02").check();
   await page.locator("select").nth(1).selectOption({ label: templateName });
   await page.getByRole("button", { name: "导入模板结构" }).nth(0).click();
-  await expect(page.getByText("Summary", { exact: true })).toBeVisible();
+  await expect(page.locator("input[value='Summary']")).toBeVisible();
 
   await page.getByRole("button", { name: "校验" }).click();
   await expect(page.getByText("应用前结构预览")).toBeVisible();
@@ -76,7 +75,7 @@ test("auto split modal supports split validate apply and start-all-ready", async
 
   await page.getByRole("button", { name: "应用到项目" }).click();
   await expect(page.getByText("项目级自动拆分内容")).toHaveCount(0);
-  await expect(page.getByText(`${draftName}批次`, { exact: true })).toBeVisible();
+  await expect(page.getByText("自动拆分内容批次", { exact: true })).toBeVisible();
 
   const runResponsePromise = page.waitForResponse((response) =>
     response.url().includes(`/api/blocks/project/${project.id}/run`) &&

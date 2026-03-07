@@ -65,6 +65,25 @@ def _make_title(prefix: str, index: int) -> str:
     return f"{prefix} {index + 1:02d}"
 
 
+def _split_paragraphs_evenly(paragraphs: list[str], target_count: int) -> list[str]:
+    if target_count <= 1 or len(paragraphs) <= 1:
+        return ["\n\n".join(paragraphs)] if paragraphs else []
+
+    chunks: list[str] = []
+    cursor = 0
+    total = len(paragraphs)
+    for index in range(target_count):
+        if cursor >= total:
+            break
+        remaining_parts = target_count - index
+        remaining_segments = total - cursor
+        take_count = max(1, math.ceil(remaining_segments / remaining_parts))
+        next_cursor = min(total, cursor + take_count)
+        chunks.append("\n\n".join(paragraphs[cursor:next_cursor]))
+        cursor = next_cursor
+    return chunks
+
+
 def _snap_boundary(text: str, index: int, *, forward: bool) -> int:
     if index <= 0:
         return 0
@@ -90,18 +109,47 @@ def _split_by_count(text: str, target_count: int, overlap_chars: int) -> list[st
     if target_count <= 1 or len(text) <= 1:
         return [text]
 
+    paragraphs = [
+        part.strip()
+        for part in re.split(r"\n{2,}", text)
+        if part and part.strip()
+    ]
+    if len(paragraphs) > 1 and overlap_chars == 0:
+        paragraph_chunks = _split_paragraphs_evenly(paragraphs, target_count)
+        if paragraph_chunks:
+            return paragraph_chunks
+
     chunks: list[str] = []
     total_length = len(text)
+    cursor = 0
     for index in range(target_count):
-        raw_start = math.floor(total_length * index / target_count)
-        raw_end = math.floor(total_length * (index + 1) / target_count)
-        start = max(0, raw_start - overlap_chars if index > 0 else raw_start)
-        end = min(total_length, raw_end + overlap_chars if index < target_count - 1 else raw_end)
-        start = _snap_boundary(text, start, forward=False)
-        end = _snap_boundary(text, end, forward=True)
-        chunk = text[start:end].strip()
+        if cursor >= total_length:
+            break
+
+        if index == target_count - 1:
+            end = total_length
+        else:
+            remaining_parts = target_count - index
+            remaining_length = total_length - cursor
+            tentative_end = min(total_length, cursor + math.ceil(remaining_length / remaining_parts))
+            max_end = total_length - (remaining_parts - 1)
+            end = _snap_boundary(text, tentative_end, forward=True)
+            if end <= cursor or end > max_end:
+                end = _snap_boundary(text, tentative_end, forward=False)
+            if end <= cursor:
+                end = min(total_length, cursor + 1)
+            if end > max_end:
+                end = max(cursor + 1, max_end)
+
+        chunk = text[cursor:end].strip()
         if chunk:
             chunks.append(chunk)
+        if end >= total_length:
+            break
+        if overlap_chars > 0:
+            cursor = max(0, end - overlap_chars)
+        else:
+            cursor = end
     return chunks or [text]
 
 
