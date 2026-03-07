@@ -65,6 +65,15 @@ interface BlockNodeProps {
   onDeleteSuccess?: (historyItem: UndoHistoryItem) => void;
 }
 
+interface ProjectQuickActionsProps {
+  editable?: boolean;
+  variant: "empty" | "list";
+  onAddGroup: () => void;
+  onAddField: () => void;
+  onAddFromTemplate: () => void;
+  onImportJson: () => void;
+}
+
 // 状态颜色（in_progress 带闪烁动画，方便用户识别正在执行的块）
 const statusColors: Record<string, string> = {
   pending: "bg-zinc-600",
@@ -86,6 +95,70 @@ const blockTypeIcons: Record<string, React.ReactNode> = {
   field: <FileText className="w-4 h-4" />,
   group: <Folder className="w-4 h-4" />,
 };
+
+function ProjectQuickActions({
+  editable = true,
+  variant,
+  onAddGroup,
+  onAddField,
+  onAddFromTemplate,
+  onImportJson,
+}: ProjectQuickActionsProps) {
+  if (!editable) {
+    return null;
+  }
+
+  const isEmptyVariant = variant === "empty";
+  const actions = [
+    {
+      key: "add-group",
+      label: "添加组",
+      icon: <Plus className="w-4 h-4" />,
+      onClick: onAddGroup,
+      className: isEmptyVariant
+        ? "flex items-center gap-2 px-4 py-2 bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors"
+        : "w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-500 hover:text-zinc-300 hover:bg-surface-2 rounded-lg transition-colors",
+    },
+    {
+      key: "add-field",
+      label: "添加内容块",
+      icon: <FileText className="w-4 h-4" />,
+      onClick: onAddField,
+      className: isEmptyVariant
+        ? "mt-2 flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
+        : "w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-500 hover:text-zinc-300 hover:bg-surface-2 rounded-lg transition-colors",
+    },
+    {
+      key: "add-template",
+      label: "从模板添加",
+      icon: <Package className="w-4 h-4" />,
+      onClick: onAddFromTemplate,
+      className: isEmptyVariant
+        ? "mt-2 flex items-center gap-2 px-4 py-2 bg-surface-3 text-zinc-200 rounded-lg hover:bg-surface-4 transition-colors"
+        : "w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-500 hover:text-zinc-300 hover:bg-surface-2 rounded-lg transition-colors",
+    },
+    {
+      key: "import-json",
+      label: "从 JSON 导入",
+      icon: <Upload className="w-4 h-4" />,
+      onClick: onImportJson,
+      className: isEmptyVariant
+        ? "mt-2 flex items-center gap-2 px-4 py-2 bg-surface-3 text-zinc-200 rounded-lg hover:bg-surface-4 transition-colors"
+        : "w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-500 hover:text-zinc-300 hover:bg-surface-2 rounded-lg transition-colors",
+    },
+  ];
+
+  return (
+    <>
+      {actions.map((action) => (
+        <button key={action.key} onClick={action.onClick} className={action.className}>
+          {action.icon}
+          {action.label}
+        </button>
+      ))}
+    </>
+  );
+}
 
 function BlockNode({
   block,
@@ -809,202 +882,141 @@ export default function BlockTree({
     }
   };
 
-  if (blocks.length === 0) {
-    return (
-      <>
-        <div className="flex flex-col items-center justify-center py-12 text-zinc-500">
-          <Folder className="w-12 h-12 mb-4 opacity-50" />
-          <p className="text-sm mb-4">暂无内容块</p>
-          {editable && (
-            <>
-              <button
-                onClick={handleAddGroup}
-                className="flex items-center gap-2 px-4 py-2 bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors"
-              >
-                <Plus className="w-4 h-4" />
-                添加组
-              </button>
-              <button
-                onClick={handleAddTopLevelField}
-                className="mt-2 flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
-              >
-                <FileText className="w-4 h-4" />
-                添加内容块
-              </button>
-              <button
-                onClick={openTemplateModal}
-                className="mt-2 flex items-center gap-2 px-4 py-2 bg-surface-3 text-zinc-200 rounded-lg hover:bg-surface-4 transition-colors"
-              >
-                <Package className="w-4 h-4" />
-                从模板添加
-              </button>
-              <button
-                onClick={() => setShowImportModal(true)}
-                className="mt-2 flex items-center gap-2 px-4 py-2 bg-surface-3 text-zinc-200 rounded-lg hover:bg-surface-4 transition-colors"
-              >
-                <Upload className="w-4 h-4" />
-                从 JSON 导入
-              </button>
-            </>
-          )}
-        </div>
+  const projectQuickActions = (
+    <ProjectQuickActions
+      editable={editable}
+      variant={blocks.length === 0 ? "empty" : "list"}
+      onAddGroup={handleAddGroup}
+      onAddField={handleAddTopLevelField}
+      onAddFromTemplate={openTemplateModal}
+      onImportJson={() => setShowImportModal(true)}
+    />
+  );
 
-        <ProjectContentTreeImportModal
-          open={showImportModal}
-          projectId={projectId}
-          onClose={() => setShowImportModal(false)}
-          onImported={onBlocksChange}
-        />
-      </>
-    );
-  }
-
-  return (
-    <div className="space-y-0.5">
-      {/* 撤回按钮 */}
-      {undoStack.length > 0 && (
-        <div className="flex items-center gap-2 px-2 py-2 mb-2 bg-amber-500/10 border border-amber-500/30 rounded-lg">
-          <Undo2 className="w-4 h-4 text-amber-400" />
-          <span className="flex-1 text-sm text-amber-300">
-            已删除「{undoStack[undoStack.length - 1].block_name}」
-            {undoStack[undoStack.length - 1].children_count > 0 && 
-              `（含 ${undoStack[undoStack.length - 1].children_count} 个子项）`
-            }
-          </span>
+  const projectTemplateModal = showTemplateModal ? (
+    <div
+      className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+      onClick={() => setShowTemplateModal(false)}
+    >
+      <div
+        className="bg-surface-1 border border-surface-3 rounded-xl w-full max-w-xl max-h-[80vh] overflow-hidden shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-5 py-4 border-b border-surface-3 flex items-center justify-between">
+          <div>
+            <h3 className="font-semibold text-zinc-100">从模板添加内容块</h3>
+            <p className="text-xs text-zinc-500 mt-1">选择一个模板，将内容块添加到当前项目</p>
+          </div>
           <button
-            onClick={handleUndo}
-            disabled={isUndoing}
-            className="px-3 py-1 text-sm bg-amber-600 hover:bg-amber-700 text-white rounded transition-colors disabled:opacity-50"
+            onClick={() => setShowTemplateModal(false)}
+            aria-label="关闭从模板添加弹窗"
+            className="p-1 hover:bg-surface-3 rounded"
           >
-            {isUndoing ? "撤回中..." : "撤回"}
+            <X className="w-5 h-5 text-zinc-400" />
           </button>
         </div>
-      )}
-      
-      {blocks.map((block) => (
-        <BlockNode
-          key={block.id}
-          block={block}
-          level={0}
-          selectedBlockId={selectedBlockId}
-          onSelectBlock={onSelectBlock}
-          onBlocksChange={onBlocksChange}
-          editable={editable}
-          onDragStart={handleDragStart}
-          onDragOver={handleDragOver}
-          onDragEnd={handleDragEnd}
-          dragTarget={dragTarget}
-          onDeleteSuccess={handleDeleteSuccess}
-        />
-      ))}
-
-      {editable && (
-        <button
-          onClick={handleAddGroup}
-          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-500 hover:text-zinc-300 hover:bg-surface-2 rounded-lg transition-colors"
-        >
-          <Plus className="w-4 h-4" />
-          添加组
-        </button>
-      )}
-      {editable && (
-        <button
-          onClick={handleAddTopLevelField}
-          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-500 hover:text-zinc-300 hover:bg-surface-2 rounded-lg transition-colors"
-        >
-          <FileText className="w-4 h-4" />
-          添加内容块
-        </button>
-      )}
-      {editable && (
-        <button
-          onClick={openTemplateModal}
-          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-500 hover:text-zinc-300 hover:bg-surface-2 rounded-lg transition-colors"
-        >
-          <Package className="w-4 h-4" />
-          从模板添加
-        </button>
-      )}
-      {editable && (
-        <button
-          onClick={() => setShowImportModal(true)}
-          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-500 hover:text-zinc-300 hover:bg-surface-2 rounded-lg transition-colors"
-        >
-          <Upload className="w-4 h-4" />
-          从 JSON 导入
-        </button>
-      )}
-
-      {showTemplateModal && (
-        <div
-          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-          onClick={() => setShowTemplateModal(false)}
-        >
-          <div
-            className="bg-surface-1 border border-surface-3 rounded-xl w-full max-w-xl max-h-[80vh] overflow-hidden shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="px-5 py-4 border-b border-surface-3 flex items-center justify-between">
-              <div>
-                <h3 className="font-semibold text-zinc-100">从模板添加内容块</h3>
-                <p className="text-xs text-zinc-500 mt-1">选择一个模板，将内容块添加到当前项目</p>
-              </div>
-              <button
-                onClick={() => setShowTemplateModal(false)}
-                className="p-1 hover:bg-surface-3 rounded"
-              >
-                <X className="w-5 h-5 text-zinc-400" />
-              </button>
+        <div className="p-4 max-h-[60vh] overflow-y-auto">
+          {templatesLoading ? (
+            <div className="flex items-center justify-center py-8 text-zinc-500">
+              <span className="animate-pulse">加载中...</span>
             </div>
-            <div className="p-4 max-h-[60vh] overflow-y-auto">
-              {templatesLoading ? (
-                <div className="flex items-center justify-center py-8 text-zinc-500">
-                  <span className="animate-pulse">加载中...</span>
-                </div>
-              ) : templates.length === 0 ? (
-                <div className="text-center py-8 text-zinc-500">
-                  <Package className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                  <p>暂无内容块模板</p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {templates.map((template) => (
-                    <div
-                      key={template.id}
-                      className={`p-4 bg-surface-2 border border-surface-3 rounded-lg hover:border-brand-500/50 transition-colors cursor-pointer group ${
-                        isApplyingTemplate ? "opacity-60 pointer-events-none" : ""
-                      }`}
-                      onClick={() => handleAddFromTemplateTopLevel(template)}
-                    >
-                      <div className="flex items-start justify-between">
-                        <div className="flex-1">
-                          <h4 className="font-medium text-zinc-200 group-hover:text-brand-400 transition-colors">
-                            {template.name}
-                          </h4>
-                          {template.description && (
-                            <p className="text-sm text-zinc-500 mt-1 line-clamp-2">
-                              {template.description}
-                            </p>
-                          )}
-                        </div>
-                        <Plus className="w-5 h-5 text-zinc-500 group-hover:text-brand-400 transition-colors flex-shrink-0" />
-                      </div>
+          ) : templates.length === 0 ? (
+            <div className="text-center py-8 text-zinc-500">
+              <Package className="w-12 h-12 mx-auto mb-3 opacity-50" />
+              <p>暂无内容块模板</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {templates.map((template) => (
+                <div
+                  key={template.id}
+                  className={`p-4 bg-surface-2 border border-surface-3 rounded-lg hover:border-brand-500/50 transition-colors cursor-pointer group ${
+                    isApplyingTemplate ? "opacity-60 pointer-events-none" : ""
+                  }`}
+                  onClick={() => handleAddFromTemplateTopLevel(template)}
+                >
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1">
+                      <h4 className="font-medium text-zinc-200 group-hover:text-brand-400 transition-colors">
+                        {template.name}
+                      </h4>
+                      {template.description && (
+                        <p className="text-sm text-zinc-500 mt-1 line-clamp-2">
+                          {template.description}
+                        </p>
+                      )}
                     </div>
-                  ))}
+                    <Plus className="w-5 h-5 text-zinc-500 group-hover:text-brand-400 transition-colors flex-shrink-0" />
+                  </div>
                 </div>
-              )}
+              ))}
             </div>
-          </div>
+          )}
         </div>
-      )}
+      </div>
+    </div>
+  ) : null;
 
+  const treeContent =
+    blocks.length === 0 ? (
+      <div className="flex flex-col items-center justify-center py-12 text-zinc-500">
+        <Folder className="w-12 h-12 mb-4 opacity-50" />
+        <p className="text-sm mb-4">暂无内容块</p>
+        {projectQuickActions}
+      </div>
+    ) : (
+      <div className="space-y-0.5">
+        {/* 撤回按钮 */}
+        {undoStack.length > 0 && (
+          <div className="flex items-center gap-2 px-2 py-2 mb-2 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+            <Undo2 className="w-4 h-4 text-amber-400" />
+            <span className="flex-1 text-sm text-amber-300">
+              已删除「{undoStack[undoStack.length - 1].block_name}」
+              {undoStack[undoStack.length - 1].children_count > 0 &&
+                `（含 ${undoStack[undoStack.length - 1].children_count} 个子项）`}
+            </span>
+            <button
+              onClick={handleUndo}
+              disabled={isUndoing}
+              className="px-3 py-1 text-sm bg-amber-600 hover:bg-amber-700 text-white rounded transition-colors disabled:opacity-50"
+            >
+              {isUndoing ? "撤回中..." : "撤回"}
+            </button>
+          </div>
+        )}
+
+        {blocks.map((block) => (
+          <BlockNode
+            key={block.id}
+            block={block}
+            level={0}
+            selectedBlockId={selectedBlockId}
+            onSelectBlock={onSelectBlock}
+            onBlocksChange={onBlocksChange}
+            editable={editable}
+            onDragStart={handleDragStart}
+            onDragOver={handleDragOver}
+            onDragEnd={handleDragEnd}
+            dragTarget={dragTarget}
+            onDeleteSuccess={handleDeleteSuccess}
+          />
+        ))}
+
+        {projectQuickActions}
+      </div>
+    );
+
+  return (
+    <>
+      {treeContent}
+      {projectTemplateModal}
       <ProjectContentTreeImportModal
         open={showImportModal}
         projectId={projectId}
         onClose={() => setShowImportModal(false)}
         onImported={onBlocksChange}
       />
-    </div>
+    </>
   );
 }
 
