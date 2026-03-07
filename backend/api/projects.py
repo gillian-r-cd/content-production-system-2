@@ -86,6 +86,90 @@ class ImportContentTreeJsonRequest(BaseModel):
     data: Dict[str, Any]
 
 
+def _rewrite_draft_dependency_refs(value: Any, block_id_mapping: Dict[str, str]) -> Any:
+    if isinstance(value, list):
+        return [_rewrite_draft_dependency_refs(item, block_id_mapping) for item in value]
+    if isinstance(value, dict):
+        rewritten = {}
+        for key, item in value.items():
+            if key == "ref_type" and value.get("ref_type") == "project_block":
+                rewritten[key] = item
+                continue
+            if (
+                value.get("ref_type") == "project_block"
+                and key == "block_id"
+                and isinstance(item, str)
+            ):
+                rewritten[key] = block_id_mapping.get(item, item)
+                continue
+            rewritten[key] = _rewrite_draft_dependency_refs(item, block_id_mapping)
+        return rewritten
+    return value
+
+
+def _clone_draft_payload_for_project(
+    payload: Dict[str, Any] | None,
+    *,
+    block_id_mapping: Dict[str, str],
+) -> Dict[str, Any]:
+    cloned = json.loads(json.dumps(payload or {}))
+    return _rewrite_draft_dependency_refs(cloned, block_id_mapping)
+
+
+def _clone_structure_draft_for_project(
+    old_draft,
+    *,
+    new_project_id: str,
+    block_id_mapping: Dict[str, str],
+):
+    from core.models import ProjectStructureDraft
+
+    return ProjectStructureDraft(
+        id=generate_uuid(),
+        project_id=new_project_id,
+        draft_type=old_draft.draft_type,
+        name=old_draft.name,
+        status="draft",
+        source_text=old_draft.source_text or "",
+        split_config=json.loads(json.dumps(old_draft.split_config or {})),
+        draft_payload=_clone_draft_payload_for_project(
+            old_draft.draft_payload,
+            block_id_mapping=block_id_mapping,
+        ),
+        validation_errors=[],
+        last_validated_at=None,
+        apply_count=0,
+        last_applied_at=None,
+    )
+
+
+def _import_structure_draft_for_project(
+    draft_data: Dict[str, Any],
+    *,
+    new_project_id: str,
+    id_map: Dict[str, str],
+):
+    from core.models import ProjectStructureDraft
+
+    return ProjectStructureDraft(
+        id=id_map.get(draft_data.get("id", ""), generate_uuid()),
+        project_id=new_project_id,
+        draft_type=draft_data.get("draft_type", "auto_split"),
+        name=draft_data.get("name", "自动拆分内容"),
+        status="draft",
+        source_text=draft_data.get("source_text", ""),
+        split_config=json.loads(json.dumps(draft_data.get("split_config", {}))),
+        draft_payload=_clone_draft_payload_for_project(
+            draft_data.get("draft_payload", {}),
+            block_id_mapping=id_map,
+        ),
+        validation_errors=[],
+        last_validated_at=None,
+        apply_count=0,
+        last_applied_at=None,
+    )
+
+
 # ============== Routes ==============
 
 @router.get("/", response_model=List[ProjectResponse])
@@ -596,19 +680,10 @@ def duplicate_project(
         ProjectStructureDraft.project_id == old_project.id,
     ).all()
     for old_draft in old_drafts:
-        new_draft = ProjectStructureDraft(
-            id=generate_uuid(),
-            project_id=new_project.id,
-            draft_type=old_draft.draft_type,
-            name=old_draft.name,
-            status=old_draft.status,
-            source_text=old_draft.source_text or "",
-            split_config=json.loads(json.dumps(old_draft.split_config or {})),
-            draft_payload=json.loads(json.dumps(old_draft.draft_payload or {})),
-            validation_errors=json.loads(json.dumps(old_draft.validation_errors or [])),
-            last_validated_at=old_draft.last_validated_at,
-            apply_count=old_draft.apply_count or 0,
-            last_applied_at=old_draft.last_applied_at,
+        new_draft = _clone_structure_draft_for_project(
+            old_draft,
+            new_project_id=new_project.id,
+            block_id_mapping=block_id_mapping,
         )
         db.add(new_draft)
     
@@ -750,19 +825,10 @@ def create_new_version(
         ProjectStructureDraft.project_id == old_project.id,
     ).all()
     for old_draft in old_drafts:
-        new_draft = ProjectStructureDraft(
-            id=generate_uuid(),
-            project_id=new_project.id,
-            draft_type=old_draft.draft_type,
-            name=old_draft.name,
-            status=old_draft.status,
-            source_text=old_draft.source_text or "",
-            split_config=json.loads(json.dumps(old_draft.split_config or {})),
-            draft_payload=json.loads(json.dumps(old_draft.draft_payload or {})),
-            validation_errors=json.loads(json.dumps(old_draft.validation_errors or [])),
-            last_validated_at=old_draft.last_validated_at,
-            apply_count=old_draft.apply_count or 0,
-            last_applied_at=old_draft.last_applied_at,
+        new_draft = _clone_structure_draft_for_project(
+            old_draft,
+            new_project_id=new_project.id,
+            block_id_mapping=block_id_mapping,
         )
         db.add(new_draft)
     
@@ -1423,19 +1489,12 @@ def import_project(
         # ============ 10a. ProjectStructureDrafts ============
         for draft_data in data.get("project_structure_drafts", []):
             old_id = draft_data.get("id", "")
-            new_draft = ProjectStructureDraft(
-                id=_new_id(old_id),
-                project_id=new_proj_id,
-                draft_type=draft_data.get("draft_type", "auto_split"),
-                name=draft_data.get("name", "自动拆分内容"),
-                status=draft_data.get("status", "draft"),
-                source_text=draft_data.get("source_text", ""),
-                split_config=draft_data.get("split_config", {}),
-                draft_payload=draft_data.get("draft_payload", {}),
-                validation_errors=draft_data.get("validation_errors", []),
-                last_validated_at=_parse_dt(draft_data.get("last_validated_at")),
-                apply_count=draft_data.get("apply_count", 0),
-                last_applied_at=_parse_dt(draft_data.get("last_applied_at")),
+            if old_id:
+                _new_id(old_id)
+            new_draft = _import_structure_draft_for_project(
+                draft_data,
+                new_project_id=new_proj_id,
+                id_map=id_map,
             )
             _set_timestamps(new_draft, draft_data)
             db.add(new_draft)

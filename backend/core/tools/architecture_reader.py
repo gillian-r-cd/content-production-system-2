@@ -18,9 +18,20 @@ from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field, asdict
 from sqlalchemy.orm import Session
 
+from core.content_block_reference import (
+    build_block_path,
+    build_block_reference_label,
+    build_blocks_by_id,
+    find_block_by_identifier,
+    list_active_project_blocks,
+)
 from core.database import get_db
 from core.models import Project
 from core.models.content_block import ContentBlock
+from core.project_structure_draft_service import (
+    get_or_create_auto_split_draft,
+    summarize_draft,
+)
 
 
 @dataclass
@@ -57,6 +68,8 @@ class ContentBlockInfo:
     content_preview: str
     depth: int
     children_count: int
+    path: str = ""
+    reference_key: str = ""
     
 
 @dataclass
@@ -70,6 +83,7 @@ class ProjectArchitecture:
     completed_fields: int
     # 内容块结构
     content_blocks: Optional[List[ContentBlockInfo]] = None
+    auto_split_draft: Optional[Dict[str, Any]] = None
 
 
 # 阶段显示名称映射（从统一配置导入）
@@ -95,10 +109,8 @@ def get_project_architecture(project_id: str, db: Optional[Session] = None) -> O
         return None
     
     # 获取所有未删除的 ContentBlock
-    all_blocks = db.query(ContentBlock).filter(
-        ContentBlock.project_id == project_id,
-        ContentBlock.deleted_at == None,  # noqa: E711
-    ).order_by(ContentBlock.order_index).all()
+    all_blocks = list_active_project_blocks(db, project_id)
+    blocks_by_id = build_blocks_by_id(all_blocks)
     
     # 分离阶段块和字段块
     phase_blocks = [b for b in all_blocks if b.block_type == "phase" and b.parent_id is None]
@@ -162,9 +174,17 @@ def get_project_architecture(project_id: str, db: Optional[Session] = None) -> O
             content_preview=(b.content[:200] + "..." if b.content and len(b.content) > 200 else b.content or ""),
             depth=b.depth,
             children_count=len(children_map.get(b.id, [])),
+            path=build_block_path(b, blocks_by_id),
+            reference_key=build_block_reference_label(b, blocks_by_id=blocks_by_id),
         )
         for b in top_blocks
     ]
+
+    auto_split_draft = None
+    try:
+        auto_split_draft = summarize_draft(get_or_create_auto_split_draft(project_id, db))
+    except ValueError:
+        auto_split_draft = None
     
     return ProjectArchitecture(
         project_id=project.id,
@@ -174,6 +194,7 @@ def get_project_architecture(project_id: str, db: Optional[Session] = None) -> O
         total_fields=total_fields,
         completed_fields=completed_fields,
         content_blocks=content_blocks,
+        auto_split_draft=auto_split_draft,
     )
 
 
@@ -251,22 +272,10 @@ def get_field_content(
     if db is None:
         db = next(get_db())
     
-    block = None
-    if field_id:
-        block = db.query(ContentBlock).filter(
-            ContentBlock.project_id == project_id,
-            ContentBlock.id == field_id,
-            ContentBlock.deleted_at == None,  # noqa: E711
-        ).first()
-
-    if not block and field_name:
-        block = db.query(ContentBlock).filter(
-            ContentBlock.project_id == project_id,
-            ContentBlock.name == field_name,
-            ContentBlock.deleted_at == None,  # noqa: E711
-        ).first()
+    block = find_block_by_identifier(db, project_id, f"id:{field_id}" if field_id else field_name)
     
     if block:
+        blocks_by_id = build_blocks_by_id(list_active_project_blocks(db, project_id))
         # 推断 phase：通过父级阶段块
         phase = ""
         if block.parent_id:
@@ -288,6 +297,8 @@ def get_field_content(
             "need_review": block.need_review,
             "auto_generate": getattr(block, 'auto_generate', False),
             "source": "content_block",
+            "path": build_block_path(block, blocks_by_id),
+            "reference_key": build_block_reference_label(block, blocks_by_id=blocks_by_id),
         }
     
     return None
@@ -307,12 +318,9 @@ def get_content_block_tree(project_id: str, db: Optional[Session] = None) -> Lis
     if db is None:
         db = next(get_db())
     
-    # 获取所有顶层块（排除已删除的）
-    root_blocks = db.query(ContentBlock).filter(
-        ContentBlock.project_id == project_id,
-        ContentBlock.parent_id == None,  # noqa: E711
-        ContentBlock.deleted_at == None,  # noqa: E711
-    ).order_by(ContentBlock.order_index).all()
+    all_blocks = list_active_project_blocks(db, project_id)
+    blocks_by_id = build_blocks_by_id(all_blocks)
+    root_blocks = [block for block in all_blocks if block.parent_id is None]
     
     def block_to_dict(block: ContentBlock) -> Dict[str, Any]:
         return {
@@ -322,6 +330,10 @@ def get_content_block_tree(project_id: str, db: Optional[Session] = None) -> Lis
             "status": block.status,
             "content_preview": (block.content[:100] + "..." if block.content and len(block.content) > 100 else block.content or ""),
             "depth": block.depth,
+            "path": build_block_path(block, blocks_by_id),
+            "reference_key": build_block_reference_label(block, blocks_by_id=blocks_by_id),
+            "auto_generate": getattr(block, "auto_generate", False),
+            "special_handler": getattr(block, "special_handler", None),
             "children": [block_to_dict(child) for child in block.children] if block.children else [],
         }
     
@@ -349,22 +361,7 @@ def get_dependency_contents(
     
     result = {}
     for name in dependency_names:
-        normalized_ref = (name or "").strip()
-        block = None
-        block_id = normalized_ref[3:] if normalized_ref.startswith("id:") else normalized_ref
-
-        block = db.query(ContentBlock).filter(
-            ContentBlock.project_id == project_id,
-            ContentBlock.id == block_id,
-            ContentBlock.deleted_at == None,  # noqa: E711
-        ).first()
-
-        if not block:
-            block = db.query(ContentBlock).filter(
-                ContentBlock.project_id == project_id,
-                ContentBlock.name == normalized_ref,
-                ContentBlock.deleted_at == None,  # noqa: E711
-            ).first()
+        block = find_block_by_identifier(db, project_id, name)
 
         if block and block.content:
             result[name] = block.content
@@ -474,12 +471,24 @@ def format_architecture_for_llm(arch: ProjectArchitecture) -> str:
         f"进度: {arch.completed_fields}/{arch.total_fields} 字段已完成",
         "",
     ]
+
+    if arch.auto_split_draft:
+        draft = arch.auto_split_draft
+        lines.extend([
+            "### 自动拆分草稿概览:",
+            f"- 状态: {draft.get('status', 'draft')}",
+            f"- chunks: {draft.get('chunk_count', 0)}",
+            f"- plans: {draft.get('plan_count', 0)}",
+            f"- shared_root_nodes: {draft.get('shared_root_node_count', 0)}",
+            f"- aggregate_root_nodes: {draft.get('aggregate_root_node_count', 0)}",
+            "",
+        ])
     
     # 展示完整的块树形结构，包含所有字段名
     lines.append("### 内容块结构:")
     if arch.content_blocks:
         for block in arch.content_blocks:
-            lines.append(f"  - {block.name} [{block.block_type}]: {block.status}")
+            lines.append(f"  - {block.path or block.name} [{block.block_type}]: {block.status} ({block.reference_key})")
     
     # 从数据库获取完整的嵌套结构（包含所有字段名）
     try:
@@ -493,9 +502,9 @@ def format_architecture_for_llm(arch: ProjectArchitecture) -> str:
                     has_content_icon = "📝" if b.get("content_preview") else "📄"
                     status = b.get("status", "pending")
                     if b.get("block_type") == "field":
-                        lines.append(f"{prefix}{has_content_icon} 「{b['name']}」 ({status})")
+                        lines.append(f"{prefix}{has_content_icon} 「{b['name']}」 ({status}) [{b.get('reference_key', b['id'])}]")
                     else:
-                        lines.append(f"{prefix}📁 {b['name']} [{b.get('block_type', 'unknown')}]")
+                        lines.append(f"{prefix}📁 {b['name']} [{b.get('block_type', 'unknown')}] [{b.get('reference_key', b['id'])}]")
                     if b.get("children"):
                         list_fields(b["children"], indent + 1)
             list_fields(block_tree)
@@ -503,3 +512,10 @@ def format_architecture_for_llm(arch: ProjectArchitecture) -> str:
         lines.append(f"  (获取详细结构失败: {str(e)})")
     
     return "\n".join(lines)
+
+
+def get_auto_split_draft_overview(project_id: str, db: Optional[Session] = None) -> Dict[str, Any]:
+    if db is None:
+        db = next(get_db())
+    draft = get_or_create_auto_split_draft(project_id, db)
+    return summarize_draft(draft)

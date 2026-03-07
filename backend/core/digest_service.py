@@ -12,6 +12,7 @@ import asyncio
 import logging
 import time
 
+from core.content_block_reference import build_block_path, build_blocks_by_id, list_active_project_blocks
 from core.llm import llm_mini
 from core.llm_compat import normalize_content
 from langchain_core.messages import HumanMessage
@@ -111,11 +112,13 @@ def build_field_index(project_id: str) -> str:
     try:
         entries = []
         # P0-1: 统一只查 ContentBlock（ProjectField 查询已移除）
-        blocks = db.query(ContentBlock).filter(
-            ContentBlock.project_id == project_id,
-            ContentBlock.block_type == "field",
-            ContentBlock.deleted_at == None,  # noqa: E711
-        ).all()
+        try:
+            all_blocks = list_active_project_blocks(db, project_id)
+        except Exception as e:
+            logger.warning("[build_field_index] query failed for %s: %s", project_id, e)
+            return ""
+        blocks_by_id = build_blocks_by_id(all_blocks)
+        blocks = [block for block in all_blocks if block.block_type == "field"]
         for b in blocks:
             status_label = {
                 "pending": "待处理", "in_progress": "进行中",
@@ -124,7 +127,8 @@ def build_field_index(project_id: str) -> str:
             digest = getattr(b, 'digest', None) or (
                 "（有内容，摘要生成中）" if b.content else "（空）"
             )
-            entries.append(f"- {b.name} [{status_label}]: {digest}")
+            path = build_block_path(b, blocks_by_id) or b.name
+            entries.append(f"- {path} | id:{b.id} [{status_label}]: {digest}")
 
         result = "\n".join(entries) if entries else ""
         _field_index_cache[project_id] = (time.time(), result)

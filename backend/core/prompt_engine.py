@@ -21,6 +21,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional, Dict, List, Tuple
 
+from core.content_block_reference import build_block_reference_lookup
 from core.models import (
     Project, 
     CreatorProfile, 
@@ -430,6 +431,16 @@ class PromptEngine:
         ctx.custom_context = custom_prompt
         
         return ctx
+
+    def build_reference_lookup(self, fields: List[ContentBlock]) -> Dict[str, ContentBlock]:
+        """
+        构建稳定引用映射。
+
+        规则：
+        - `id:块ID` 与裸 `块ID` 始终可用
+        - 名称仅在项目内唯一时才可用，避免重名字段静默覆盖
+        """
+        return build_block_reference_lookup(fields)
     
     def parse_references(
         self,
@@ -453,22 +464,14 @@ class PromptEngine:
         referenced_fields = []
         seen_field_ids = set()
 
-        # 兼容稳定 ID：无论调用方只传名称映射还是混合映射，都统一补齐 name/id/id: 三类引用键。
-        fields_by_ref: Dict[str, ContentBlock] = {}
+        all_fields = [field for field in fields_by_name.values() if field]
+        fields_by_ref = self.build_reference_lookup(all_fields)
+
+        # 兼容调用方显式传入的额外引用键（例如阶段别名），但不覆盖稳定 ID / 唯一名称策略。
         for key, field in fields_by_name.items():
-            if not field:
-                continue
-            reference_keys = {
-                str(key).strip(),
-                getattr(field, "name", "") or "",
-                getattr(field, "id", "") or "",
-            }
-            field_id = getattr(field, "id", "") or ""
-            if field_id:
-                reference_keys.add(f"id:{field_id}")
-            for ref_key in reference_keys:
-                if ref_key:
-                    fields_by_ref[ref_key] = field
+            ref_key = str(key).strip()
+            if ref_key and ref_key not in fields_by_ref and field:
+                fields_by_ref[ref_key] = field
 
         # 按字段名长度降序排列，确保最长名称优先匹配
         # 这样 "Eval test" 会优先于 "Eval" 被匹配

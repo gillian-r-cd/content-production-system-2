@@ -84,7 +84,8 @@ class TestAgentTools:
         expected = {
             "propose_edit", "rewrite_field", "generate_field_content", "query_field",
             "read_field", "update_field", "manage_architecture",
-            "advance_to_phase", "run_research", "manage_persona",
+            "manage_project_structure_draft",
+            "run_research", "manage_persona",
             "run_evaluation", "generate_outline", "manage_skill", "read_mode_history",
         }
         assert names == expected, f"Missing: {expected - names}, Extra: {names - expected}"
@@ -138,7 +139,7 @@ class TestOrchestrator:
         assert len(fields) == 7, f"Expected 7 fields, got {len(fields)}: {fields}"
         assert "messages" in fields
         assert "project_id" in fields
-        assert "current_phase" in fields
+        assert "current_handler" in fields
         assert "creator_profile" in fields
         assert "mode" in fields
         assert "mode_prompt" in fields
@@ -150,7 +151,7 @@ class TestOrchestrator:
         state = AgentState(
             messages=[],
             project_id="test-id",
-            current_phase="intent",
+            current_handler="intent",
             creator_profile="",
             mode="assistant",
             mode_prompt="",
@@ -169,7 +170,7 @@ class TestOrchestrator:
         state = AgentState(
             messages=[],
             project_id="test-id",
-            current_phase="intent",
+            current_handler="intent",
             creator_profile="",
             mode="critic",
             mode_prompt=custom_identity,

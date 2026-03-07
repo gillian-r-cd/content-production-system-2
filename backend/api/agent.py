@@ -26,6 +26,12 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from core.content_block_reference import (
+    build_block_reference_label,
+    build_blocks_by_id,
+    find_block_by_identifier,
+    list_active_project_blocks,
+)
 from core.database import get_db
 from core.models import (
     Project, ChatMessage, Conversation,
@@ -87,26 +93,18 @@ def _resolve_references(
     result = {}
 
     # 1. ContentBlock — ID-first，名称兜底
+    blocks = list_active_project_blocks(db, project_id)
+    blocks_by_id = build_blocks_by_id(blocks)
     for ref in references:
         if ref in result:
             continue
-        normalized = ref.strip()
-        block_id = normalized[3:] if normalized.startswith("id:") else normalized
-        # 先按 ID 查找
-        block = db.query(ContentBlock).filter(
-            ContentBlock.project_id == project_id,
-            ContentBlock.id == block_id,
-            ContentBlock.deleted_at == None,  # noqa: E711
-        ).first()
-        # 按名称兜底
-        if not block:
-            block = db.query(ContentBlock).filter(
-                ContentBlock.project_id == project_id,
-                ContentBlock.name == normalized,
-                ContentBlock.deleted_at == None,  # noqa: E711
-            ).first()
+        try:
+            block = find_block_by_identifier(db, project_id, ref)
+        except ValueError as exc:
+            result[ref] = str(exc)
+            continue
         if block:
-            result[ref] = _build_ref_context(block)
+            result[ref] = _build_ref_context(block, blocks_by_id=blocks_by_id)
 
     # 2. 方案引用（从 design_inner 阶段块中解析 JSON proposals）
     import re
@@ -142,7 +140,7 @@ def _resolve_references(
     return result
 
 
-def _build_ref_context(entity) -> str:
+def _build_ref_context(entity, *, blocks_by_id: dict[str, ContentBlock] | None = None) -> str:
     """将内容块/字段构建为 Agent 可理解的完整上下文。
 
     包含内容正文、AI 提示词和状态信息，确保即使内容为空时
@@ -152,6 +150,9 @@ def _build_ref_context(entity) -> str:
     content = getattr(entity, "content", "") or ""
     ai_prompt = getattr(entity, "ai_prompt", "") or ""
     status = getattr(entity, "status", "") or ""
+    reference_label = build_block_reference_label(entity, blocks_by_id=blocks_by_id)
+
+    parts.append(f"[引用目标] {reference_label}")
 
     if content.strip():
         parts.append(content)
@@ -1104,6 +1105,7 @@ async def stream_chat(
                             "query_field": "query",
                             "run_evaluation": "evaluate",
                             "manage_architecture": "generate_field",
+                            "manage_project_structure_draft": "manage_project_draft",
                             "generate_outline": "generate_field",
                         }
                         route_name = route_map.get(tool_name, tool_name)
@@ -1149,10 +1151,18 @@ async def stream_chat(
                                 ended_tool = "propose_edit"
                             elif _status in ("need_confirm", "applied", "rewritten"):
                                 ended_tool = "rewrite_field"
+                            elif str(_status).startswith("draft_"):
+                                ended_tool = "manage_project_structure_draft"
                         except (json.JSONDecodeError, TypeError):
                             pass
 
                     field_updated = ended_tool in produce_tools
+                    if ended_tool == "manage_project_structure_draft":
+                        try:
+                            draft_result = json.loads(output_str)
+                            field_updated = draft_result.get("status") == "draft_applied"
+                        except (json.JSONDecodeError, TypeError):
+                            field_updated = False
                     if field_updated:
                         is_producing = True
 
@@ -1302,6 +1312,22 @@ async def stream_chat(
                                 "field_updated": True,
                                 "sources": sources[:10],
                                 "search_queries": queries,
+                            })
+                        except (json.JSONDecodeError, TypeError):
+                            yield sse_event({
+                                "type": "tool_end",
+                                "tool": ended_tool,
+                                "output": output_str[:500],
+                                "field_updated": field_updated,
+                            })
+                    elif ended_tool == "manage_project_structure_draft":
+                        try:
+                            result = json.loads(output_str)
+                            yield sse_event({
+                                "type": "tool_end",
+                                "tool": ended_tool,
+                                "output": result.get("summary", output_str[:500]),
+                                "field_updated": field_updated,
                             })
                         except (json.JSONDecodeError, TypeError):
                             yield sse_event({

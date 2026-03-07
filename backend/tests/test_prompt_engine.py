@@ -154,6 +154,55 @@ class TestPromptEngine:
         assert refs[0].id == "block-123"
         assert "Stable id content" in replaced
         assert "id:block-123" in replaced
+
+    def test_build_reference_lookup_skips_ambiguous_names(self, engine):
+        block_a = ContentBlock(
+            id="block-a",
+            project_id="p1",
+            name="duplicate",
+            block_type="field",
+            content="A",
+        )
+        block_b = ContentBlock(
+            id="block-b",
+            project_id="p1",
+            name="duplicate",
+            block_type="field",
+            content="B",
+        )
+
+        lookup = engine.build_reference_lookup([block_a, block_b])
+
+        assert "duplicate" not in lookup
+        assert lookup["id:block-a"].id == "block-a"
+        assert lookup["id:block-b"].id == "block-b"
+
+    def test_parse_references_keeps_ambiguous_name_unresolved(self, engine):
+        text = "Please refer to @duplicate and @id:block-b"
+        block_a = ContentBlock(
+            id="block-a",
+            project_id="p1",
+            name="duplicate",
+            block_type="field",
+            content="A",
+        )
+        block_b = ContentBlock(
+            id="block-b",
+            project_id="p1",
+            name="duplicate",
+            block_type="field",
+            content="B",
+        )
+
+        replaced, refs = engine.parse_references(
+            text,
+            engine.build_reference_lookup([block_a, block_b]),
+        )
+
+        assert "@duplicate" in replaced
+        assert "B" in replaced
+        assert len(refs) == 1
+        assert refs[0].id == "block-b"
     
     def test_phase_prompts_exist(self, engine):
         """验证所有阶段都有提示词"""

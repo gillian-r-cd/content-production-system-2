@@ -68,26 +68,9 @@ def _find_block(db, project_id: str, identifier: str):
     优先根据 ID 查找 ContentBlock，失败后按名称查找。
     返回 ContentBlock 或 None。
     """
-    from core.models.content_block import ContentBlock
+    from core.content_block_reference import find_block_by_identifier
 
-    raw_identifier = (identifier or "").strip()
-    if not raw_identifier:
-        return None
-
-    block_id = raw_identifier[3:] if raw_identifier.startswith("id:") else raw_identifier
-    block = db.query(ContentBlock).filter(
-        ContentBlock.project_id == project_id,
-        ContentBlock.id == block_id,
-        ContentBlock.deleted_at == None,  # noqa: E711
-    ).first()
-    if block:
-        return block
-
-    return db.query(ContentBlock).filter(
-        ContentBlock.project_id == project_id,
-        ContentBlock.name == raw_identifier,
-        ContentBlock.deleted_at == None,  # noqa: E711
-    ).first()
+    return find_block_by_identifier(db, project_id, identifier)
 
 
 def _save_version(db, entity_id: str, old_content: str, source: str):
@@ -880,6 +863,148 @@ def manage_architecture(
 # ============== 7. run_research ==============
 
 @tool
+async def manage_project_structure_draft(
+    operation: str,
+    name: Optional[str] = None,
+    source_text: Optional[str] = None,
+    split_config_json: Optional[str] = None,
+    draft_payload_json: Optional[str] = None,
+    parent_id: Optional[str] = None,
+    batch_name: Optional[str] = None,
+    *, config: Annotated[RunnableConfig, InjectedToolArg],
+) -> str:
+    """管理项目级自动拆分草稿。用于读取、更新、拆分、校验和应用正式的项目级草稿，而不是继续用 manage_architecture 拼装大量底层节点。
+
+    何时使用:
+    - 用户明确要查看自动拆分草稿、chunk 批次、编排方案、共享结构或聚合结构
+    - 用户要让 Agent 触发自动拆分、校验自动拆分草稿、或把已校验草稿应用到项目
+    - 用户明确说的是“自动拆分内容”“项目级草稿”“chunk 方案”，而不是普通内容块增删改
+
+    何时不使用:
+    - 普通内容块增删移动 -> manage_architecture
+    - 只想读取某个已经落库的内容块正文 -> read_field / query_field
+    - 只是修改某个字段里的文字 -> propose_edit / rewrite_field / update_field
+
+    支持的 operation:
+    - read: 读取当前 auto_split 草稿与摘要
+    - update: 更新草稿名称、源文本、split_config 或 draft_payload
+    - split: 按当前或给定配置重新拆分 source_text
+    - validate: 编译并校验草稿，返回 preview_root_nodes
+    - apply: 将已校验草稿应用到项目
+
+    参数规则:
+    - split_config_json / draft_payload_json 必须是合法 JSON 字符串
+    - apply 时可选 parent_id / batch_name
+    - update / split / apply 都直接复用正式后端草稿能力，UI 与 Agent 看到的是同一份草稿
+    """
+    from core.project_structure_draft_service import (
+        apply_auto_split_draft,
+        get_or_create_auto_split_draft,
+        serialize_draft,
+        split_auto_split_draft,
+        summarize_draft,
+        update_auto_split_draft,
+        validate_auto_split_draft,
+    )
+
+    project_id = _get_project_id(config)
+    db = _get_db()
+    try:
+        draft = get_or_create_auto_split_draft(project_id, db)
+        split_config = None
+        draft_payload = None
+
+        if split_config_json is not None:
+            try:
+                split_config = json.loads(split_config_json)
+            except json.JSONDecodeError as exc:
+                return _json_err(f"split_config_json 不是合法 JSON: {exc}")
+
+        if draft_payload_json is not None:
+            try:
+                draft_payload = json.loads(draft_payload_json)
+            except json.JSONDecodeError as exc:
+                return _json_err(f"draft_payload_json 不是合法 JSON: {exc}")
+
+        if operation == "read":
+            return _json_ok(
+                "project_structure_draft",
+                "draft_read",
+                f"已读取草稿「{draft.name}」",
+                draft=serialize_draft(draft),
+                draft_summary=summarize_draft(draft),
+            )
+
+        if operation == "update":
+            updated = update_auto_split_draft(
+                draft,
+                db=db,
+                name=name,
+                source_text=source_text,
+                split_config=split_config,
+                draft_payload=draft_payload,
+            )
+            return _json_ok(
+                "project_structure_draft",
+                "draft_updated",
+                f"已更新草稿「{updated.name}」",
+                draft=serialize_draft(updated),
+                draft_summary=summarize_draft(updated),
+            )
+
+        if operation == "split":
+            result = await split_auto_split_draft(
+                draft,
+                db=db,
+                source_text=source_text,
+                split_config=split_config,
+            )
+            return _json_ok(
+                "project_structure_draft",
+                "draft_split",
+                f"已重新拆分草稿「{draft.name}」",
+                **result,
+            )
+
+        if operation == "validate":
+            result = validate_auto_split_draft(draft, db=db)
+            status = "draft_validated" if not result["validation_errors"] else "draft_invalid"
+            summary = "草稿校验通过" if not result["validation_errors"] else "草稿校验未通过"
+            validation_summary = result.pop("summary", "")
+            return _json_ok(
+                "project_structure_draft",
+                status,
+                summary,
+                validation_summary=validation_summary,
+                **result,
+            )
+
+        if operation == "apply":
+            result = apply_auto_split_draft(
+                draft,
+                db=db,
+                parent_id=parent_id,
+                batch_name=batch_name,
+            )
+            return _json_ok(
+                "project_structure_draft",
+                "draft_applied",
+                f"已应用草稿「{draft.name}」",
+                **result,
+            )
+
+        return _json_err("未知操作。支持: read / update / split / validate / apply")
+    except Exception as e:
+        logger.error(f"manage_project_structure_draft error: {e}", exc_info=True)
+        db.rollback()
+        return _json_err(str(e))
+    finally:
+        db.close()
+
+
+# ============== 7. run_research ==============
+
+@tool
 async def run_research(
     query: str,
     research_type: str = "consumer",
@@ -1342,6 +1467,7 @@ AGENT_TOOLS = [
     read_field,
     update_field,
     manage_architecture,
+    manage_project_structure_draft,
     run_research,
     manage_persona,
     run_evaluation,

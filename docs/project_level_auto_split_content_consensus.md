@@ -1656,33 +1656,44 @@
 
 ### 22.10 项目外围收口
 
-- 修改 `backend/api/projects.py` 的删除逻辑，确保删除项目时清理草稿。
-- 修改项目复制逻辑，复制草稿。
-- 修改项目导出逻辑，导出草稿。
-- 修改项目导入逻辑，导入草稿。
-- 评估是否需要在项目复制后的草稿中重置部分运行态字段。
+- 已完成 `backend/api/projects.py` 的项目删除 / 复制 / 导入导出链路收口：
+  - 删除项目时清理 `ProjectStructureDraft`
+  - 项目复制时复制草稿
+  - 项目新版本复制时复制草稿
+  - 项目导出时导出草稿
+  - 项目导入时导入草稿
+- 已完成运行态字段收口：
+  - 复制 / 新版本 / 导入后的草稿会重置 `status` / `validation_errors` / `last_validated_at`
+  - 重置 `apply_count` / `last_applied_at`
+- 已补 `backend/tests/test_projects_draft_lifecycle.py`，覆盖删除 / 复制 / 导入导出 / 新版本四条语义链路。
+- 已补草稿 `draft_payload` 中 `project_block` 依赖的块 ID 重映射，避免复制 / 导入后仍指向旧项目块。
 
 ### 22.11 Agent 与架构工具收口
 
-- 为未来 Agent 集成预留新的项目级 tool，而不是继续堆在 `manage_architecture` 上。
-- 梳理 `agent_tools.py` 中按名称兜底找块的路径。
-- 梳理 `architecture_writer.py`、`architecture_reader.py` 中按名称兜底的节点查找。
-- 梳理 `prompt_engine.py` 中 `@引用` 对重名块的脆弱性。
-- 规划未来 Agent 如何读取、修改、应用项目级草稿。
+- 已新增项目级草稿 tool：`manage_project_structure_draft`
+  - 支持 `read / update / split / validate / apply`
+  - 直接复用正式后端草稿 service，而不是继续堆在 `manage_architecture` 上
+- 已抽出公共 `project_structure_draft_service`，让 `api/project_structure_drafts.py` 与 Agent tool 共用同一套草稿能力。
+- 已抽出公共 `content_block_reference` 辅助：
+  - 统一 `id:` 优先解析
+  - 名称仅在唯一时兜底
+  - 重名块显式报错，不再静默命中错误内容块
+- 已增强 `architecture_reader.py` / `digest_service.py` / `api/agent.py` / `prompt_engine.py`
+  - 自动拆分应用后的块树会暴露稳定路径与 `id:`
+  - Agent system prompt 中的字段索引会带路径与稳定 ID
+  - `@引用` 链路向稳定 ID 过渡，重名名称不再被静默覆盖
+  - `architecture_reader` 会暴露 auto-split 草稿概览，帮助 Agent 理解 chunk / plan / shared / aggregate 产物
+- 已完成 Agent 侧“读取 / 修改 / 校验 / 应用同一份正式草稿”的最小闭环，不再增加一套只在 Agent 内有效的临时逻辑。
 
 ### 22.12 测试
 
-- 为草稿 schema 增加单元测试。
-- 为拆分服务增加单元测试。
-- 为编译器增加单元测试。
-- 为草稿应用增加事务性测试。
-- 为依赖重映射增加测试。
-- 为 chunk 合并 / 再拆增加测试。
-- 为共享结构 / 聚合结构增加测试。
-- 为重复应用“只追加不覆盖”增加测试。
-- 为项目复制/导入导出/删除时的草稿处理增加测试。
-- 为项目级 `全部开始` 调度增加测试。
-- 为 auto-trigger 与 `全部开始` 共用底层逻辑增加测试。
+- 已完成草稿 schema / 拆分服务 / 编译器 / 应用器 / 调度器 / 前端弹窗 / E2E 主链的回归测试补齐。
+- 本轮新增并已通过的关键补充测试包括：
+  - 项目复制 / 新版本 / 导入导出 / 删除时的草稿处理：`backend/tests/test_projects_draft_lifecycle.py`
+  - Agent 草稿 tool、自动拆分结构阅读与重名消歧：`backend/tests/test_agent_project_structure_draft.py`
+  - PromptEngine 稳定 ID / 重名引用回归：`backend/tests/test_prompt_engine.py`
+  - 草稿 API 主链回归：`backend/tests/test_project_structure_draft_api.py`
+  - LangGraph / Agent 工具注册与 system prompt 兼容回归：`backend/tests/test_langgraph_migration.py`
 
 ## 二十三、实施顺序建议
 
@@ -1701,5 +1712,23 @@
 - 编译与应用先稳
 - UI 不会反向绑架底层结构
 - “全部开始”不会继续叠在前端递归之上
+
+## 二十四、当前事实（2026-03-07）
+
+### 已完成项
+
+- 项目级自动拆分内容的正式草稿模型、拆分服务、编译器、校验链、事务化应用器已完成。
+- 前端自动拆分弹窗、chunk 人工修订、编排方案 / 共享结构 / 聚合结构编辑、模板导入、应用前预览与“全部开始”主链已完成。
+- 项目级运行器已完成，并已替换前端递归式 auto-trigger 主链。
+- 项目外围收口已完成：删除 / 复制 / 新版本 / 导入导出都会正确处理草稿，并重置不该继承的运行态。
+- Agent 收口已完成：新增项目级草稿 tool，统一稳定引用语义，Reader / PromptEngine / Agent API 已能理解自动拆分产物。
+- 相关回归测试、组件测试、API 测试和浏览器级主链验证已补齐并通过。
+
+### 剩余项
+
+- 当前这份共识文档对应的核心开发项已完成，没有阻塞交付的剩余功能项。
+- 若未来继续增强，只属于后续增量优化，不属于本轮未完成项：
+  - 继续细化 Agent 对草稿 payload 的高阶编辑策略
+  - 基于现有项目级草稿 tool 继续扩展更丰富的 Agent 交互体验
 
 
