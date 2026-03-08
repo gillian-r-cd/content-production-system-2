@@ -2,6 +2,8 @@
 // 功能: ContentBlock 完整编辑器，用于树形视图中选中的内容块
 // 提供与 FieldCard 相同的功能：编辑内容、AI 提示词、约束、依赖、生成等
 // 优化: 轮询改为先检查数据变化再触发全局刷新，避免每3秒级联重渲染
+// Inline AI: 选中文字浮动工具栏（改写/扩展/精简/对话改/问问Agent）+ diff 卡片
+// 编辑入口: 仅 hover 编辑按钮 + 空内容区域点击，已移除内容区域单击进入编辑
 
 "use client";
 
@@ -19,7 +21,7 @@ import {
   normalizePreQuestions,
 } from "@/lib/preQuestions";
 import { sendNotification } from "@/lib/utils";
-import type { ContentBlock, ModelInfo } from "@/lib/api";
+import type { ContentBlock, ModelInfo, AgentSelectionRef } from "@/lib/api";
 import type { PreQuestion } from "@/lib/preQuestions";
 import { getEvalFieldEditor } from "./eval-field-editors";
 import { VersionHistoryButton } from "./version-history";
@@ -158,9 +160,11 @@ interface ContentBlockEditorProps {
   onVersionCreated?: () => void;
   /** M3: 将消息发送到 Agent 对话面板（Eval 诊断→Agent 修改桥接） */
   onSendToAgent?: (message: string) => void;
+  /** B: 将选中文字+内容块引用发送到 Agent Panel 输入框上方 */
+  onSendSelectionToAgent?: (ref: AgentSelectionRef) => void;
 }
 
-export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate, onVersionCreated, onSendToAgent }: ContentBlockEditorProps) {
+export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate, onVersionCreated, onSendToAgent, onSendSelectionToAgent }: ContentBlockEditorProps) {
   // P0-1: 统一使用 blockAPI（已移除 fieldAPI/isVirtual 分支）
   const [isEditing, setIsEditing] = useState(false);
   const [isEditingName, setIsEditingName] = useState(false);
@@ -192,6 +196,25 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
   } | null>(null);
   const contentDisplayRef = useRef<HTMLDivElement>(null);
   const [toolbarPosition, setToolbarPosition] = useState<{ top: number; left: number } | null>(null);
+  // 保存选中的 Range，用于 CSS Custom Highlight API 持久高亮
+  const selectedRangeRef = useRef<Range | null>(null);
+
+  // 运行时注入 ::highlight() CSS 规则（绕过 Turbopack CSS 解析器）
+  useEffect(() => {
+    if (typeof CSS === "undefined" || !("highlights" in CSS)) return;
+    const id = "inline-ai-highlight-style";
+    if (document.getElementById(id)) return; // 已有则跳过
+    const style = document.createElement("style");
+    style.id = id;
+    style.textContent = "::highlight(inline-ai-selection) { background-color: rgba(124, 58, 237, 0.3); }";
+    document.head.appendChild(style);
+    // 不清理：全局只需一份，组件销毁后仍可复用
+  }, []);
+
+  // M4+: 对话改内容 — 自由文本输入
+  const [showCustomInput, setShowCustomInput] = useState(false);
+  const [customInstruction, setCustomInstruction] = useState("");
+  const customInputRef = useRef<HTMLInputElement>(null);
 
   // 复制状态
   const [copied, setCopied] = useState(false);
@@ -569,6 +592,26 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
 
   // ===== M4: Inline AI 编辑处理 =====
 
+  /** 应用 CSS Custom Highlight API 持久高亮（焦点移走后仍可见） */
+  const applySelectionHighlight = useCallback((range: Range) => {
+    try {
+      if (typeof CSS !== "undefined" && "highlights" in CSS) {
+        const hl = new (globalThis as /* eslint-disable-line @typescript-eslint/no-explicit-any */ any).Highlight(range);
+        (CSS as any).highlights.set("inline-ai-selection", hl); // eslint-disable-line @typescript-eslint/no-explicit-any
+      }
+    } catch { /* 不支持的浏览器静默降级 */ }
+  }, []);
+
+  /** 清除 CSS Custom Highlight */
+  const clearSelectionHighlight = useCallback(() => {
+    try {
+      if (typeof CSS !== "undefined" && "highlights" in CSS) {
+        (CSS as any).highlights.delete("inline-ai-selection"); // eslint-disable-line @typescript-eslint/no-explicit-any
+      }
+    } catch { /* noop */ }
+    selectedRangeRef.current = null;
+  }, []);
+
   /** 用户在内容展示区域松开鼠标后，检测是否有文本选中 */
   const handleContentMouseUp = useCallback(() => {
     // 短暂延迟，确保浏览器完成 selection 计算
@@ -588,6 +631,10 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
       const range = selection.getRangeAt(0);
       const rect = range.getBoundingClientRect();
 
+      // 保存 Range 并应用持久高亮
+      selectedRangeRef.current = range.cloneRange();
+      applySelectionHighlight(range.cloneRange());
+
       setSelectedText(text);
       setToolbarPosition({
         top: rect.top - 8,                    // 选区上方
@@ -596,18 +643,21 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
       // 清除之前的结果（新选中 = 新一轮）
       setInlineEditResult(null);
     }, 10);
-  }, []);
+  }, [applySelectionHighlight]);
 
   /** 点击工具栏按钮，发起 inline AI 调用 */
-  const handleInlineEdit = useCallback(async (operation: "rewrite" | "expand" | "condense") => {
+  const handleInlineEdit = useCallback(async (operation: "rewrite" | "expand" | "condense" | "custom", instruction?: string) => {
     if (!selectedText || inlineEditLoading) return;
     setInlineEditLoading(true);
+    // 收起自定义输入框
+    setShowCustomInput(false);
     try {
       const result = await agentAPI.inlineEdit({
         text: selectedText,
         operation,
         context: (block.content || "").slice(0, 500),
         project_id: projectId,
+        ...(operation === "custom" && instruction ? { custom_instruction: instruction } : {}),
       });
       setInlineEditResult({
         original: result.original,
@@ -647,6 +697,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
         setInlineEditResult(null);
         setSelectedText("");
         setToolbarPosition(null);
+        clearSelectionHighlight();
         return;
       }
     }
@@ -656,21 +707,25 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
       setInlineEditResult(null);
       setSelectedText("");
       setToolbarPosition(null);
+      clearSelectionHighlight();
       onUpdate?.();
       sendNotification("已应用 AI 修改", "success");
     } catch (err) {
       console.error("[M4] Apply inline edit failed:", err);
       sendNotification("保存失败: " + (err instanceof Error ? err.message : "未知错误"), "error");
     }
-  }, [inlineEditResult, block.content, block.id, onUpdate]);
+  }, [inlineEditResult, block.content, block.id, onUpdate, clearSelectionHighlight]);
 
   /** 拒绝 inline 修改 */
   const handleRejectInlineEdit = useCallback(() => {
     setInlineEditResult(null);
     setSelectedText("");
     setToolbarPosition(null);
+    setShowCustomInput(false);
+    setCustomInstruction("");
+    clearSelectionHighlight();
     window.getSelection()?.removeAllRanges();
-  }, []);
+  }, [clearSelectionHighlight]);
 
   /** 清除选中：点击内容区域外时 */
   useEffect(() => {
@@ -685,10 +740,13 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
       setSelectedText("");
       setToolbarPosition(null);
       setInlineEditResult(null);
+      setShowCustomInput(false);
+      setCustomInstruction("");
+      clearSelectionHighlight();
     };
     document.addEventListener("mousedown", handleMouseDown);
     return () => document.removeEventListener("mousedown", handleMouseDown);
-  }, [selectedText, inlineEditResult]);
+  }, [selectedText, inlineEditResult, clearSelectionHighlight]);
 
   return (
     <div className="h-full flex flex-col p-6">
@@ -1143,14 +1201,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
             </div>
           ) : (
             <div 
-              className="min-h-[200px] cursor-pointer group"
-              onClick={() => {
-                // M4: 有文本选中时不要进入编辑模式
-                const sel = window.getSelection();
-                if (sel && !sel.isCollapsed) return;
-                if (inlineEditResult) return; // 正在预览 diff 时也不进入编辑
-                setIsEditing(true);
-              }}
+              className="min-h-[200px] group"
               onMouseUp={handleContentMouseUp}
             >
               {isGenerating ? (
@@ -1164,8 +1215,8 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                   <span className="text-sm text-brand-400 animate-pulse">后台生成中，请稍候...</span>
                 </div>
               ) : block.content ? (
-                <div className="relative" ref={contentDisplayRef}>
-                  <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                <div ref={contentDisplayRef}>
+                  <div className="sticky top-0 z-10 flex justify-end gap-1 pt-2 pr-2 opacity-0 group-hover:opacity-100 transition-opacity">
                     <button 
                       onClick={(e) => { e.stopPropagation(); handleCopyContent(); }}
                       className="flex items-center gap-1 px-2 py-1 text-xs bg-surface-2 border border-surface-3 text-zinc-400 hover:text-zinc-200 rounded"
@@ -1187,7 +1238,10 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                   </div>
                 </div>
               ) : (
-                <div className="flex flex-col items-center justify-center h-[200px] text-zinc-500 border-2 border-dashed border-surface-3 rounded-lg">
+                <div
+                  className="flex flex-col items-center justify-center h-[200px] text-zinc-500 border-2 border-dashed border-surface-3 rounded-lg cursor-pointer"
+                  onClick={() => setIsEditing(true)}
+                >
                   <Pencil className="w-8 h-8 mb-2 opacity-50" />
                   <p>点击此处编辑内容</p>
                   <p className="text-xs mt-1">或使用「生成」按钮让 AI 生成</p>
@@ -1450,28 +1504,94 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
 
           {/* 状态 3: 选中文本工具栏（默认状态） */}
           {!inlineEditLoading && !inlineEditResult && selectedText && (
-            <div className="flex items-center gap-1 px-2 py-1.5 bg-surface-1 border border-surface-3 rounded-lg shadow-xl">
-              <Sparkles className="w-3.5 h-3.5 text-brand-400 mr-1" />
-              <button
-                onClick={() => handleInlineEdit("rewrite")}
-                className="px-2.5 py-1 text-xs text-zinc-300 hover:text-white hover:bg-brand-600/30 rounded transition-colors"
-              >
-                改写
-              </button>
-              <div className="w-px h-4 bg-surface-3" />
-              <button
-                onClick={() => handleInlineEdit("expand")}
-                className="px-2.5 py-1 text-xs text-zinc-300 hover:text-white hover:bg-brand-600/30 rounded transition-colors"
-              >
-                扩展
-              </button>
-              <div className="w-px h-4 bg-surface-3" />
-              <button
-                onClick={() => handleInlineEdit("condense")}
-                className="px-2.5 py-1 text-xs text-zinc-300 hover:text-white hover:bg-brand-600/30 rounded transition-colors"
-              >
-                精简
-              </button>
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center gap-1 px-2 py-1.5 bg-surface-1 border border-surface-3 rounded-lg shadow-xl">
+                <Sparkles className="w-3.5 h-3.5 text-brand-400 mr-1" />
+                <button
+                  onClick={() => handleInlineEdit("rewrite")}
+                  className="px-2.5 py-1 text-xs text-zinc-300 hover:text-white hover:bg-brand-600/30 rounded transition-colors"
+                >
+                  改写
+                </button>
+                <div className="w-px h-4 bg-surface-3" />
+                <button
+                  onClick={() => handleInlineEdit("expand")}
+                  className="px-2.5 py-1 text-xs text-zinc-300 hover:text-white hover:bg-brand-600/30 rounded transition-colors"
+                >
+                  扩展
+                </button>
+                <div className="w-px h-4 bg-surface-3" />
+                <button
+                  onClick={() => handleInlineEdit("condense")}
+                  className="px-2.5 py-1 text-xs text-zinc-300 hover:text-white hover:bg-brand-600/30 rounded transition-colors"
+                >
+                  精简
+                </button>
+                <div className="w-px h-4 bg-surface-3" />
+                <button
+                  onClick={() => {
+                    setShowCustomInput(true);
+                    setTimeout(() => customInputRef.current?.focus(), 50);
+                  }}
+                  className="px-2.5 py-1 text-xs text-brand-300 hover:text-white hover:bg-brand-600/30 rounded transition-colors"
+                >
+                  对话改
+                </button>
+                {onSendSelectionToAgent && (
+                  <>
+                    <div className="w-px h-4 bg-surface-3" />
+                    <button
+                      onClick={() => {
+                        onSendSelectionToAgent({ blockId: block.id, blockName: block.name, selectedText });
+                        setSelectedText("");
+                        setToolbarPosition(null);
+                        setShowCustomInput(false);
+                        setCustomInstruction("");
+                        clearSelectionHighlight();
+                      }}
+                      className="px-2.5 py-1 text-xs text-zinc-300 hover:text-white hover:bg-brand-600/30 rounded transition-colors flex items-center gap-1"
+                    >
+                      <MessageSquarePlus className="w-3 h-3" />
+                      问问 Agent
+                    </button>
+                  </>
+                )}
+              </div>
+              {/* 对话改：自由输入框 */}
+              {showCustomInput && (
+                <div className="flex gap-1.5 bg-surface-1 border border-surface-3 rounded-lg shadow-xl px-2 py-1.5">
+                  <input
+                    ref={customInputRef}
+                    type="text"
+                    value={customInstruction}
+                    onChange={(e) => setCustomInstruction(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && customInstruction.trim()) {
+                        handleInlineEdit("custom", customInstruction.trim());
+                        setCustomInstruction("");
+                      }
+                      if (e.key === "Escape") {
+                        setShowCustomInput(false);
+                        setCustomInstruction("");
+                      }
+                    }}
+                    placeholder="描述修改方向..."
+                    className="flex-1 min-w-[200px] px-2 py-1 text-xs bg-surface-2 border border-surface-3 rounded text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-brand-500/50"
+                  />
+                  <button
+                    onClick={() => {
+                      if (customInstruction.trim()) {
+                        handleInlineEdit("custom", customInstruction.trim());
+                        setCustomInstruction("");
+                      }
+                    }}
+                    disabled={!customInstruction.trim()}
+                    className="px-2.5 py-1 text-xs bg-brand-600 hover:bg-brand-700 disabled:bg-surface-3 disabled:text-zinc-600 text-white rounded transition-colors"
+                  >
+                    提交
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>

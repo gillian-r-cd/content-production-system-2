@@ -347,6 +347,13 @@ def _get_or_create_conversation(
 
 # ============== Schemas ==============
 
+class SelectionContext(BaseModel):
+    """B: 用户从内容块选中文字后传入的引用上下文"""
+    block_id: str
+    block_name: str
+    selected_text: str
+
+
 class ChatRequest(BaseModel):
     """对话请求"""
     project_id: str
@@ -357,6 +364,7 @@ class ChatRequest(BaseModel):
     mode: Optional[str] = None  # 向后兼容：旧前端传模式名/显示名
     followup_context: Optional[str] = None  # 追问上下文（Suggestion Card 追问时注入）
     conversation_id: Optional[str] = None
+    selection_context: Optional[SelectionContext] = None  # B: 选中文字引用上下文
 
 
 class FieldUpdatedInfo(BaseModel):
@@ -1004,19 +1012,27 @@ async def stream_chat(
     )
 
     # ---- 保存用户消息 ----
+    user_meta = {
+        "phase": current_phase,
+        "references": request.references,
+        "mode": mode_id,
+        "mode_id": mode_id,
+        "mode_label": mode_label,
+    }
+    # B: 持久化选中文字引用上下文（加载历史时气泡上方仍可展示）
+    if request.selection_context:
+        user_meta["selection_context"] = {
+            "block_id": request.selection_context.block_id,
+            "block_name": request.selection_context.block_name,
+            "selected_text": request.selection_context.selected_text,
+        }
     user_msg = ChatMessage(
         id=generate_uuid(),
         project_id=request.project_id,
         conversation_id=conversation.id,
         role="user",
         content=request.message,
-        message_metadata={
-            "phase": current_phase,
-            "references": request.references,
-            "mode": mode_id,
-            "mode_id": mode_id,
-            "mode_label": mode_label,
-        },
+        message_metadata=user_meta,
     )
     db.add(user_msg)
     _touch_conversation(conversation, is_new_message=True)
@@ -1036,6 +1052,23 @@ async def stream_chat(
             augmented_message = (
                 f"{request.message}\n\n---\n以下是用户引用的内容块：\n{ref_text}"
             )
+
+    # B: 选中文字引用上下文 — 叠加到 augmented_message，不替换已有上下文
+    if request.selection_context:
+        sc = request.selection_context
+        # 读取完整内容块内容
+        block_full_content = ""
+        block = db.query(ContentBlock).filter(ContentBlock.id == sc.block_id).first()
+        if block and block.content:
+            block_full_content = block.content[:3000]  # 防止超长
+        selection_section = (
+            f"\n\n---\n[引用上下文]\n"
+            f"用户在内容块「{sc.block_name}」中选中了以下内容：\n"
+            f"---\n{sc.selected_text}\n---\n"
+        )
+        if block_full_content:
+            selection_section += f"该内容块完整内容：\n{block_full_content}\n"
+        augmented_message += selection_section
 
     # Checkpointer 配置 + LLM 日志回调
     from core.llm_logger import GenerationLogCallback
@@ -1911,9 +1944,10 @@ async def confirm_suggestion(
 class InlineEditRequest(BaseModel):
     """M4: 轻量级 inline AI 编辑请求"""
     text: str                   # 用户选中的文本
-    operation: str              # "rewrite" | "expand" | "condense"
+    operation: str              # "rewrite" | "expand" | "condense" | "custom"
     context: str = ""           # 选中文本的上下文（提高改写一致性）
     project_id: str = ""        # 可选: 用于加载 creator_profile
+    custom_instruction: str = ""  # operation="custom" 时用户自定义的修改指令
 
 
 class InlineEditResponse(BaseModel):
@@ -1947,12 +1981,17 @@ async def inline_edit(
         "condense": "精简以下文本，保留核心信息，去除冗余，使其更加简洁有力。",
     }
 
-    instruction = operation_prompts.get(request.operation)
-    if not instruction:
-        raise HTTPException(
-            status_code=400,
-            detail=f"不支持的操作: {request.operation}。可选: rewrite, expand, condense",
-        )
+    if request.operation == "custom":
+        if not request.custom_instruction.strip():
+            raise HTTPException(status_code=400, detail="自定义修改指令不能为空")
+        instruction = request.custom_instruction.strip()
+    else:
+        instruction = operation_prompts.get(request.operation)
+        if not instruction:
+            raise HTTPException(
+                status_code=400,
+                detail=f"不支持的操作: {request.operation}。可选: rewrite, expand, condense, custom",
+            )
 
     # 可选: 加载 creator_profile 增强风格一致性
     creator_context = ""

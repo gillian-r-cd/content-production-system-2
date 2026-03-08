@@ -5,7 +5,7 @@
 
 import type { PreQuestion } from "@/lib/preQuestions";
 
-export const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8002";
+export const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 
 // ============== Types ==============
 
@@ -413,7 +413,7 @@ export const agentAPI = {
     }),
 
   // Inline AI 编辑
-  inlineEdit: (data: { text: string; operation: string; context?: string; project_id?: string }) =>
+  inlineEdit: (data: { text: string; operation: string; context?: string; project_id?: string; custom_instruction?: string }) =>
     fetchAPI<{ original: string; replacement: string; diff_preview: string }>("/api/agent/inline-edit", {
       method: "POST",
       body: JSON.stringify(data),
@@ -663,6 +663,13 @@ export interface BlockTree {
   project_id: string;
   blocks: ContentBlock[];
   total_count: number;
+}
+
+/** 从内容块选中文字后传递到 Agent Panel 的引用上下文 */
+export interface AgentSelectionRef {
+  blockId: string;
+  blockName: string;
+  selectedText: string;
 }
 
 export interface PhaseTemplate {

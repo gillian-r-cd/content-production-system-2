@@ -2,6 +2,7 @@
 // 功能: 紧凑版 ContentBlock 卡片，用于阶段视图中显示字段的所有设置
 // 支持不同类型：phase（阶段）显示子节点数量和进入按钮，field（字段）显示完整编辑功能
 // 包含：名称、状态、AI提示词、依赖、约束、need_review、auto_generate、模型覆盖(M5)、生成/编辑/删除按钮
+// 编辑入口: 仅 hover 编辑按钮 + 空内容区域点击，已移除内容区域单击进入编辑
 
 "use client";
 
@@ -223,12 +224,6 @@ export function ContentBlockCard({
     setModelOverride(block.model_override || "");
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [block.id, block.content, block.name, block.ai_prompt, block.depends_on, block.pre_answers, block.pre_questions]);
-
-  useEffect(() => {
-    if (showPreQuestionsSection && preQuestions.length === 0) {
-      setIsExpanded(true);
-    }
-  }, [showPreQuestionsSection, preQuestions.length]);
 
   const handleAddPreQuestion = (required = false) => {
     const question = newPreQuestion.trim();
@@ -962,8 +957,7 @@ export function ContentBlockCard({
               </div>
             ) : (
               <div 
-                className="min-h-[80px] cursor-pointer group"
-                onClick={() => setIsEditing(true)}
+                className="min-h-[80px] group"
               >
                 {block.content ? (
                   <div className="relative">
@@ -989,7 +983,10 @@ export function ContentBlockCard({
                     </div>
                   </div>
                 ) : (
-                  <div className="flex flex-col items-center justify-center py-6 text-zinc-500 border-2 border-dashed border-surface-3 rounded-lg">
+                  <div
+                    className="flex flex-col items-center justify-center py-6 text-zinc-500 border-2 border-dashed border-surface-3 rounded-lg cursor-pointer"
+                    onClick={() => setIsEditing(true)}
+                  >
                     <Pencil className="w-6 h-6 mb-2 opacity-50" />
                     <p className="text-sm">点击此处编辑内容</p>
                     <p className="text-xs mt-1">或使用「生成」按钮让 AI 生成</p>

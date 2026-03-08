@@ -6,7 +6,7 @@
 
 "use client";
 
-import type { ContentBlock } from "@/lib/api";
+import type { ContentBlock, AgentSelectionRef } from "@/lib/api";
 import { ContentBlockEditor } from "./content-block-editor";
 import { ContentBlockCard } from "./content-block-card";
 import { ChannelSelector } from "./channel-selector";
@@ -24,6 +24,8 @@ interface ContentPanelProps {
   onBlockSelect?: (block: ContentBlock) => void;
   /** M3: 将消息发送到 Agent 对话面板（Eval 诊断→Agent 修改桥接） */
   onSendToAgent?: (message: string) => void;
+  /** B: 将选中文字+内容块引用发送到 Agent Panel 输入框上方 */
+  onSendSelectionToAgent?: (ref: AgentSelectionRef) => void;
 }
 
 export function ContentPanel({
@@ -34,6 +36,7 @@ export function ContentPanel({
   onVersionCreated,
   onBlockSelect,
   onSendToAgent,
+  onSendSelectionToAgent,
 }: ContentPanelProps) {
   // ===== 早期返回（在所有Hooks之后）=====
   
@@ -66,6 +69,7 @@ export function ContentPanel({
             onUpdate={onFieldsChange}
             onVersionCreated={onVersionCreated}
             onSendToAgent={onSendToAgent}
+            onSendSelectionToAgent={onSendSelectionToAgent}
           />
         );
       } else {
@@ -124,6 +128,7 @@ export function ContentPanel({
             onUpdate={onFieldsChange}
             onVersionCreated={onVersionCreated}
             onSendToAgent={onSendToAgent}
+            onSendSelectionToAgent={onSendSelectionToAgent}
           />
         );
       } else {
@@ -360,6 +365,7 @@ export function ContentPanel({
         onUpdate={onFieldsChange}
         onVersionCreated={onVersionCreated}
         onSendToAgent={onSendToAgent}
+        onSendSelectionToAgent={onSendSelectionToAgent}
       />
     );
   }
@@ -386,6 +392,7 @@ export function ContentPanel({
       onUpdate={onFieldsChange}
       onVersionCreated={onVersionCreated}
       onSendToAgent={onSendToAgent}
+      onSendSelectionToAgent={onSendSelectionToAgent}
     />
   );
 }

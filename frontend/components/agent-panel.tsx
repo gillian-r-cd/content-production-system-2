@@ -8,7 +8,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { cn, sendNotification, requestNotificationPermission } from "@/lib/utils";
 import { agentAPI, parseReferences, API_BASE, modesAPI } from "@/lib/api";
-import type { ChatMessageRecord, ContentBlock, AgentModeInfo, ConversationRecord } from "@/lib/api";
+import type { ChatMessageRecord, ContentBlock, AgentModeInfo, ConversationRecord, AgentSelectionRef } from "@/lib/api";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
@@ -34,6 +34,9 @@ interface AgentPanelProps {
   /** M3: 外部组件注入的消息（如 Eval 诊断→Agent 修改桥接），消费后清空 */
   externalMessage?: string | null;
   onExternalMessageConsumed?: () => void;
+  /** B: 从内容块选中文字传入的引用上下文 */
+  externalSelection?: AgentSelectionRef | null;
+  onExternalSelectionConsumed?: () => void;
 }
 
 // 工具名称映射（匹配后端 AGENT_TOOLS 的 tool.name）
@@ -77,6 +80,8 @@ export function AgentPanel({
   onContentUpdate,
   externalMessage,
   onExternalMessageConsumed,
+  externalSelection,
+  onExternalSelectionConsumed,
 }: AgentPanelProps) {
   const [messages, setMessages] = useState<ChatMessageRecord[]>([]);
   const [conversations, setConversations] = useState<ConversationRecord[]>([]);
@@ -125,6 +130,9 @@ export function AgentPanel({
     summary: string;
     groupId?: string;
   } | null>(null);
+
+  // B: 内容块选中文字引用上下文（输入框上方展示引用卡片）
+  const [selectionRef, setSelectionRef] = useState<AgentSelectionRef | null>(null);
 
   const handleModeSelection = useCallback((modeId: string) => {
     setActiveModeId(modeId);
@@ -380,6 +388,14 @@ export function AgentPanel({
     }
   }, [externalMessage]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // B: 外部组件注入选中文字引用（叠加到对话上下文，不替换已有历史）
+  useEffect(() => {
+    if (externalSelection) {
+      setSelectionRef(externalSelection);
+      onExternalSelectionConsumed?.();
+    }
+  }, [externalSelection]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const insertMention = useCallback((item: MentionItem) => {
     const beforeMention = input.slice(0, mentionStartPos.current);
     const afterMention = input.slice(cursorPosition);
@@ -491,13 +507,22 @@ export function AgentPanel({
     }
 
     // 立即显示用户消息（乐观更新）
+    // B: 如果有选中文字引用，写入 metadata 以便气泡上方展示
+    const userMsgMetadata: Record<string, unknown> = { references };
+    if (selectionRef) {
+      userMsgMetadata.selection_context = {
+        block_id: selectionRef.blockId,
+        block_name: selectionRef.blockName,
+        selected_text: selectionRef.selectedText,
+      };
+    }
     const tempUserMsg: ChatMessageRecord = {
       id: `temp-user-${Date.now()}`,
       role: "user",
       content: userMessage,
       original_content: userMessage,
       is_edited: false,
-      metadata: { references },
+      metadata: userMsgMetadata,
       created_at: new Date().toISOString(),
     };
     
@@ -527,6 +552,16 @@ export function AgentPanel({
         mode_id: activeModeId,
         conversation_id: activeConversationId,
       };
+
+      // B: 选中文字引用上下文注入（叠加到请求体 metadata）
+      if (selectionRef) {
+        requestBody.selection_context = {
+          block_id: selectionRef.blockId,
+          block_name: selectionRef.blockName,
+          selected_text: selectionRef.selectedText,
+        };
+        setSelectionRef(null);  // 发送后清空引用
+      }
 
       // M7 T7.4: 追问上下文注入 — 发送时生成，而非点击追问时
       if (followUpTarget) {
@@ -1664,6 +1699,26 @@ export function AgentPanel({
             </div>
           )}
 
+          {/* B: 选中文字引用卡片 — 与输入框视觉一体，叠加在追问标签条下方 */}
+          {selectionRef && (
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-brand-900/30 border border-brand-700/40 border-b-0 rounded-t-lg text-sm">
+              <span className="text-brand-400 shrink-0">引用</span>
+              <span className="text-zinc-300 font-medium shrink-0">「{selectionRef.blockName}」</span>
+              <span className="text-zinc-400 truncate">
+                {selectionRef.selectedText.length > 50
+                  ? selectionRef.selectedText.slice(0, 50) + "..."
+                  : selectionRef.selectedText}
+              </span>
+              <button
+                onClick={() => setSelectionRef(null)}
+                className="ml-auto text-zinc-500 hover:text-zinc-300 shrink-0 px-1"
+                title="移除引用"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
           <div className="flex gap-2 items-end">
             <textarea
               ref={inputRef}
@@ -1822,6 +1877,19 @@ function MessageBubble({
       className={cn("flex group/msg", isUser ? "justify-end" : "justify-start")}
     >
       <div className="relative max-w-[85%]">
+        {/* B: 用户消息气泡上方的选中文字引用卡片 */}
+        {isUser && message.metadata?.selection_context && (
+          <div className="mb-1 px-3 py-1.5 bg-brand-900/40 border border-brand-700/30 rounded-lg text-xs text-zinc-300">
+            <span className="text-brand-400">引用</span>
+            <span className="font-medium ml-1">「{(message.metadata.selection_context as { block_name: string }).block_name}」</span>
+            <span className="text-zinc-400 ml-1">
+              {(() => {
+                const t = (message.metadata.selection_context as { selected_text: string }).selected_text;
+                return t.length > 60 ? t.slice(0, 60) + "..." : t;
+              })()}
+            </span>
+          </div>
+        )}
         {/* 消息气泡 */}
         <div
           className={cn(

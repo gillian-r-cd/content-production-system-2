@@ -16,7 +16,7 @@ import { GlobalSearchModal } from "@/components/global-search-modal";
 import { ProjectAutoSplitModal } from "@/components/project-auto-split-modal";
 import { projectAPI, startAllReadyBlocks } from "@/lib/api";
 import { requestNotificationPermission } from "@/lib/utils";
-import type { Project, ContentBlock } from "@/lib/api";
+import type { Project, ContentBlock, AgentSelectionRef } from "@/lib/api";
 import { Copy, Trash2, ChevronDown, ChevronRight, CheckSquare, Square, X, Download, Upload, Search, Plus, History } from "lucide-react";
 
 // ===== 版本族谱分组 =====
@@ -126,6 +126,9 @@ export default function WorkspacePage() {
   
   // M3: Eval 诊断→Agent 修改桥接（中栏组件设置消息，右栏 AgentPanel 消费）
   const [pendingAgentMessage, setPendingAgentMessage] = useState<string | null>(null);
+
+  // B: 选中文字→Agent Panel 引用上下文
+  const [pendingAgentSelection, setPendingAgentSelection] = useState<AgentSelectionRef | null>(null);
 
   // 点击外部关闭下拉菜单
   useEffect(() => {
@@ -784,6 +787,7 @@ export default function WorkspacePage() {
               }}
               onBlockSelect={handleBlockSelect}
               onSendToAgent={setPendingAgentMessage}
+              onSendSelectionToAgent={setPendingAgentSelection}
             />
           }
           rightPanel={
@@ -801,6 +805,8 @@ export default function WorkspacePage() {
               }}
               externalMessage={pendingAgentMessage}
               onExternalMessageConsumed={() => setPendingAgentMessage(null)}
+              externalSelection={pendingAgentSelection}
+              onExternalSelectionConsumed={() => setPendingAgentSelection(null)}
             />
           }
         />

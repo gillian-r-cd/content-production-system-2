@@ -1,5 +1,6 @@
 /* frontend/app/globals.css */
 /* 功能: 全局样式 */
+/* 包含: CSS 变量、滚动条、选中文本、Markdown 表格/代码/引用/水平线、三栏布局拖拽手柄、Suggestion Card diff */
 
 @tailwind base;
 @tailwind components;
