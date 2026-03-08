@@ -31,6 +31,7 @@ class MemoryResponse(PydanticBaseModel):
     """记忆响应"""
     id: str
     project_id: Optional[str]
+    source_mode_id: Optional[str] = None
     content: str
     source_mode: str
     source_phase: str

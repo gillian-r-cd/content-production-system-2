@@ -263,7 +263,14 @@ async def propose_edit(
             "original_content": original_content,
             "modified_content": modified_content,
             "status": "pending",
-            "source_mode": config.get("configurable", {}).get("thread_id", "").split(":")[-1] or "assistant",
+            "source_mode": (
+                config.get("configurable", {}).get("mode_id")
+                or (
+                    config.get("configurable", {}).get("thread_id", "").split(":")[1]
+                    if ":" in config.get("configurable", {}).get("thread_id", "")
+                    else "assistant"
+                )
+            ),
         }
 
         # 缓存到内存字典
@@ -424,7 +431,14 @@ async def _rewrite_field_impl(
             "original_content": current_content,
             "modified_content": new_content,
             "status": "pending",
-            "source_mode": config.get("configurable", {}).get("thread_id", "").split(":")[-1] or "assistant",
+            "source_mode": (
+                config.get("configurable", {}).get("mode_id")
+                or (
+                    config.get("configurable", {}).get("thread_id", "").split(":")[1]
+                    if ":" in config.get("configurable", {}).get("thread_id", "")
+                    else "assistant"
+                )
+            ),
         }
 
         PENDING_SUGGESTIONS[suggestion_id] = card
@@ -1416,7 +1430,7 @@ async def read_mode_history(
     - 用户说"之前策略顾问怎么说的" → read_mode_history("strategist")
 
     Args:
-        mode_name: 模式名称，如 "assistant"、"strategist"、"critic"、"reader"、"creative"
+        mode_name: 角色名称或角色 ID（优先匹配当前项目的 display_name / id / 内部 name）
         limit: 返回最近几条消息，默认10，最大20
     """
     project_id = _get_project_id(config)
@@ -1428,6 +1442,20 @@ async def read_mode_history(
     db = _get_db()
     try:
         from core.models.chat_history import ChatMessage
+        from core.models.agent_mode import AgentMode
+
+        target_mode = db.query(AgentMode).filter(
+            AgentMode.project_id == project_id,
+            AgentMode.is_template.is_(False),
+        ).filter(
+            (AgentMode.id == mode_name)
+            | (AgentMode.display_name == mode_name)
+            | (AgentMode.name == mode_name)
+        ).first()
+
+        target_mode_id = target_mode.id if target_mode else None
+        target_mode_label = target_mode.display_name if target_mode else mode_name
+
         messages = db.query(ChatMessage).filter(
             ChatMessage.project_id == project_id,
         ).order_by(ChatMessage.created_at.desc()).limit(limit * 3).all()
@@ -1436,14 +1464,15 @@ async def read_mode_history(
         mode_msgs = []
         for msg in reversed(messages):  # 按时间正序
             meta = msg.message_metadata or {}
-            msg_mode = meta.get("mode", "assistant")
-            if msg_mode == mode_name:
+            msg_mode_id = meta.get("mode_id")
+            msg_mode_label = meta.get("mode_label") or meta.get("mode")
+            if (target_mode_id and msg_mode_id == target_mode_id) or msg_mode_label == target_mode_label:
                 mode_msgs.append(msg)
             if len(mode_msgs) >= limit:
                 break
 
         if not mode_msgs:
-            return f"「{mode_name}」模式中暂无对话记录。"
+            return f"「{target_mode_label}」模式中暂无对话记录。"
 
         lines = []
         for msg in mode_msgs:
@@ -1451,7 +1480,7 @@ async def read_mode_history(
             content = msg.content[:500] if msg.content else ""
             lines.append(f"[{role}] {content}")
 
-        return f"「{mode_name}」模式最近 {len(mode_msgs)} 条对话：\n\n" + "\n\n".join(lines)
+        return f"「{target_mode_label}」模式最近 {len(mode_msgs)} 条对话：\n\n" + "\n\n".join(lines)
     finally:
         db.close()
 

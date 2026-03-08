@@ -385,10 +385,14 @@ export const agentAPI = {
     }),
 
   // 会话管理
-  listConversations: (projectId: string, mode: string = "assistant") =>
-    fetchAPI<ConversationRecord[]>(`/api/agent/conversations?project_id=${projectId}&mode=${mode}`),
+  listConversations: (projectId: string, modeId?: string) => {
+    const query = modeId
+      ? `?project_id=${projectId}&mode_id=${modeId}`
+      : `?project_id=${projectId}`;
+    return fetchAPI<ConversationRecord[]>(`/api/agent/conversations${query}`);
+  },
 
-  createConversation: (data: { project_id: string; mode?: string; title?: string; bootstrap_policy?: string }) =>
+  createConversation: (data: { project_id: string; mode_id?: string; mode?: string; title?: string; bootstrap_policy?: string }) =>
     fetchAPI<ConversationRecord>("/api/agent/conversations", {
       method: "POST",
       body: JSON.stringify(data),
@@ -1299,6 +1303,7 @@ export const versionAPI = {
 export interface MemoryItemInfo {
   id: string;
   project_id: string | null;
+  source_mode_id?: string | null;
   content: string;
   source_mode: string;
   source_phase: string;
@@ -1334,22 +1339,40 @@ export const memoriesAPI = {
 export interface AgentModeInfo {
   id: string;
   name: string;
+  project_id: string | null;
   display_name: string;
   description: string;
   system_prompt: string;
   icon: string;
   is_system: boolean;
+  is_template: boolean;
   sort_order: number;
 }
 
 export const modesAPI = {
-  list: () =>
-    fetchAPI<AgentModeInfo[]>("/api/modes/"),
+  list: (projectId?: string) =>
+    fetchAPI<AgentModeInfo[]>(`/api/modes/${projectId ? `?project_id=${projectId}` : ""}`),
+
+  listTemplates: () =>
+    fetchAPI<AgentModeInfo[]>("/api/modes/templates"),
+
+  importTemplates: (projectId: string, templateIds: string[] = []) =>
+    fetchAPI<{ imported: AgentModeInfo[]; skipped_count: number }>("/api/modes/import-templates", {
+      method: "POST",
+      body: JSON.stringify({ project_id: projectId, template_ids: templateIds }),
+    }),
 
   get: (modeId: string) =>
     fetchAPI<AgentModeInfo>(`/api/modes/${modeId}`),
 
-  create: (data: Partial<AgentModeInfo>) =>
+  create: (data: {
+    project_id: string;
+    display_name: string;
+    system_prompt: string;
+    description?: string;
+    icon?: string;
+    sort_order?: number;
+  }) =>
     fetchAPI<AgentModeInfo>("/api/modes/", {
       method: "POST",
       body: JSON.stringify(data),
@@ -1399,6 +1422,7 @@ export interface AgentSettingsData {
 export interface ConversationRecord {
   id: string;
   project_id: string;
+  mode_id: string | null;
   mode: string;
   title: string;
   status: string;

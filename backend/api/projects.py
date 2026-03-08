@@ -268,7 +268,7 @@ def delete_project(
 
     按依赖顺序删除：先删子表/关联表，再删主表。
     """
-    from core.models import ProjectField, ContentBlock, BlockHistory, MemoryItem, ProjectStructureDraft
+    from core.models import ProjectField, ContentBlock, BlockHistory, MemoryItem, ProjectStructureDraft, AgentMode
     from core.models.chat_history import ChatMessage
     from core.models.generation_log import GenerationLog
     from core.models.simulation_record import SimulationRecord
@@ -318,6 +318,9 @@ def delete_project(
     # 删除项目记忆（仅项目级记忆，全局记忆不删）
     db.query(MemoryItem).filter(MemoryItem.project_id == project_id).delete()
 
+    # 删除项目角色
+    db.query(AgentMode).filter(AgentMode.project_id == project_id).delete()
+
     # 删除项目级结构草稿
     db.query(ProjectStructureDraft).filter(ProjectStructureDraft.project_id == project_id).delete()
     
@@ -360,7 +363,7 @@ def duplicate_project(
     - 所有项目记忆 (MemoryItem)
     - 所有项目专用评分器 (Grader)
     """
-    from core.models import ProjectField, MemoryItem, ProjectStructureDraft
+    from core.models import ProjectField, MemoryItem, ProjectStructureDraft, AgentMode
     from core.models.chat_history import ChatMessage
     from core.models.content_block import ContentBlock
     from core.models.content_version import ContentVersion
@@ -652,11 +655,32 @@ def duplicate_project(
             id=generate_uuid(),
             project_id=new_project.id,
             content=old_mem.content,
+            source_mode_id=old_mem.source_mode_id,
             source_mode=old_mem.source_mode,
             source_phase=old_mem.source_phase,
             related_blocks=old_mem.related_blocks.copy() if old_mem.related_blocks else [],
         )
         db.add(new_mem)
+
+    # ---- 复制项目角色 ----
+    old_modes = db.query(AgentMode).filter(
+        AgentMode.project_id == old_project.id,
+        AgentMode.is_template.is_(False),
+    ).order_by(AgentMode.sort_order, AgentMode.created_at).all()
+    for old_mode in old_modes:
+        new_mode = AgentMode(
+            id=generate_uuid(),
+            project_id=new_project.id,
+            name=f"mode_{generate_uuid().replace('-', '')[:12]}",
+            display_name=old_mode.display_name,
+            description=old_mode.description,
+            system_prompt=old_mode.system_prompt,
+            icon=old_mode.icon,
+            is_system=False,
+            is_template=False,
+            sort_order=old_mode.sort_order,
+        )
+        db.add(new_mode)
     
     # ---- 复制项目专用评分器 (Grader) ----
     old_graders = db.query(Grader).filter(
@@ -707,7 +731,7 @@ def create_new_version(
     - 所有字段 (ProjectField)
     - 所有内容块 (ContentBlock) — 灵活架构的核心数据
     """
-    from core.models import ProjectField, ProjectStructureDraft
+    from core.models import ProjectField, ProjectStructureDraft, AgentMode
     from core.models.content_block import ContentBlock
 
     old_project = db.query(Project).filter(Project.id == project_id).first()
@@ -831,6 +855,26 @@ def create_new_version(
             block_id_mapping=block_id_mapping,
         )
         db.add(new_draft)
+
+    # ---- 复制项目角色 ----
+    old_modes = db.query(AgentMode).filter(
+        AgentMode.project_id == old_project.id,
+        AgentMode.is_template.is_(False),
+    ).order_by(AgentMode.sort_order, AgentMode.created_at).all()
+    for old_mode in old_modes:
+        new_mode = AgentMode(
+            id=generate_uuid(),
+            project_id=new_project.id,
+            name=f"mode_{generate_uuid().replace('-', '')[:12]}",
+            display_name=old_mode.display_name,
+            description=old_mode.description,
+            system_prompt=old_mode.system_prompt,
+            icon=old_mode.icon,
+            is_system=False,
+            is_template=False,
+            sort_order=old_mode.sort_order,
+        )
+        db.add(new_mode)
     
     db.commit()
     db.refresh(new_project)
@@ -899,7 +943,7 @@ def export_project(
         ProjectField, ContentBlock, GenerationLog,
         SimulationRecord,
         EvalRun, EvalTask, EvalTrial,
-        MemoryItem, ProjectStructureDraft,
+        MemoryItem, ProjectStructureDraft, AgentMode,
     )
     from core.models.chat_history import ChatMessage
     from core.models.content_version import ContentVersion
@@ -1008,6 +1052,13 @@ def export_project(
     ).order_by(MemoryItem.created_at).all()
     memories_data = [_ser(m) for m in memories]
 
+    # AgentModes（项目级角色）
+    agent_modes = db.query(AgentMode).filter(
+        AgentMode.project_id == project_id,
+        AgentMode.is_template.is_(False),
+    ).order_by(AgentMode.sort_order, AgentMode.created_at).all()
+    agent_modes_data = [_ser(m) for m in agent_modes]
+
     # Graders（项目专用评分器）
     graders = db.query(Grader).filter(
         Grader.project_id == project_id,
@@ -1042,6 +1093,7 @@ def export_project(
         "eval_tasks": tasks_data,
         "eval_trials": trials_data,
         "memory_items": memories_data,
+        "agent_modes": agent_modes_data,
         "graders": graders_data,
         "project_structure_drafts": drafts_data,
         "generation_logs": logs_data,
@@ -1156,7 +1208,7 @@ def import_project(
         ProjectField, ContentBlock, GenerationLog,
         SimulationRecord,
         EvalRun, EvalTask, EvalTrial,
-        MemoryItem, ProjectStructureDraft,
+        MemoryItem, ProjectStructureDraft, AgentMode,
     )
     from core.models.chat_history import ChatMessage
     from core.models.content_version import ContentVersion
@@ -1479,6 +1531,7 @@ def import_project(
                 id=_new_id(old_id),
                 project_id=new_mem_proj_id,
                 content=mem.get("content", ""),
+                source_mode_id=mem.get("source_mode_id"),
                 source_mode=mem.get("source_mode", "assistant"),
                 source_phase=mem.get("source_phase", ""),
                 related_blocks=mem.get("related_blocks", []),
@@ -1486,7 +1539,27 @@ def import_project(
             _set_timestamps(new_mem, mem)
             db.add(new_mem)
 
-        # ============ 10a. ProjectStructureDrafts ============
+        # ============ 10a. AgentModes（项目级角色） ============
+        for mode_data in data.get("agent_modes", []):
+            old_id = mode_data.get("id", "")
+            if old_id:
+                _new_id(old_id)
+            new_mode = AgentMode(
+                id=_new_id(old_id),
+                project_id=new_proj_id,
+                name=f"mode_{generate_uuid().replace('-', '')[:12]}",
+                display_name=mode_data.get("display_name", "导入角色"),
+                description=mode_data.get("description", ""),
+                system_prompt=mode_data.get("system_prompt", ""),
+                icon=mode_data.get("icon", "🤖"),
+                is_system=False,
+                is_template=False,
+                sort_order=mode_data.get("sort_order", 0),
+            )
+            _set_timestamps(new_mode, mode_data)
+            db.add(new_mode)
+
+        # ============ 10b. ProjectStructureDrafts ============
         for draft_data in data.get("project_structure_drafts", []):
             old_id = draft_data.get("id", "")
             if old_id:
@@ -1499,7 +1572,7 @@ def import_project(
             _set_timestamps(new_draft, draft_data)
             db.add(new_draft)
 
-        # ============ 10b. Graders（项目专用） ============
+        # ============ 10c. Graders（项目专用） ============
         for g in data.get("graders", []):
             old_id = g.get("id", "")
             new_grader = Grader(
@@ -1551,6 +1624,7 @@ def import_project(
                 "simulation_records": len(data.get("simulation_records", [])),
                 "eval_runs": len(data.get("eval_runs", [])),
                 "memory_items": len(data.get("memory_items", [])),
+                "agent_modes": len(data.get("agent_modes", [])),
                 "project_structure_drafts": len(data.get("project_structure_drafts", [])),
                 "graders": len(data.get("graders", [])),
                 "generation_logs": len(data.get("generation_logs", [])),

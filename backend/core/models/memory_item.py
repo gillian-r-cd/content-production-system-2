@@ -1,5 +1,5 @@
 # backend/core/models/memory_item.py
-# 功能: 项目记忆条目模型 — 从对话中提炼的可复用知识（跨模式、跨阶段）
+# 功能: 项目记忆条目模型 — 从对话中提炼的可复用知识（跨角色、跨阶段）
 # 主要类: MemoryItem
 # 数据结构: memory_items 表，project_id 关联项目（NULL=全局通用记忆），全量注入到 system prompt
 # 关联: memory_service.py (提炼), api/agent.py (注入), orchestrator.py (build_system_prompt)
@@ -7,7 +7,7 @@
 """
 项目记忆条目
 
-从 Agent 对话中自动提炼的关键信息，跨模式、跨阶段可见。
+从 Agent 对话中自动提炼的关键信息，跨角色、跨阶段可见。
 设计原则：
 - 不设 embedding — 全量注入，不需要向量检索
 - 不设硬编码分类 — 让 LLM 自由提炼
@@ -36,9 +36,13 @@ class MemoryItem(BaseModel):
         Text, nullable=False,
         comment="记忆内容（一句话，如'用户偏好口语化表达'）",
     )
+    source_mode_id: Mapped[Optional[str]] = mapped_column(
+        String(36), nullable=True, index=True,
+        comment="提炼来源角色稳定 ID（为空表示旧数据或手动记忆）",
+    )
     source_mode: Mapped[str] = mapped_column(
         String(50), nullable=False, default="assistant",
-        comment="提炼来源模式（如 assistant, critic）",
+        comment="提炼来源角色名称快照（如 助手, 审稿人）",
     )
     source_phase: Mapped[str] = mapped_column(
         String(50), nullable=False, default="",

@@ -6,7 +6,7 @@
 #   consolidate_memories() — LLM 合并相似记忆（记忆 > CONSOLIDATE_THRESHOLD 时触发）
 #   load_memory_context() — 加载项目记忆文本（> FILTER_THRESHOLD 时 LLM 预筛选）
 # 数据结构:
-#   MemoryItem: project_id, content, source_mode, source_phase, related_blocks
+#   MemoryItem: project_id, content, source_mode_id, source_mode, source_phase, related_blocks
 # 设计:
 #   - 提炼用 llm_mini（低成本）
 #   - 入库前做文本去重（简单包含关系判断）
@@ -161,6 +161,7 @@ async def save_memories(
     mode: str,
     phase: str,
     extracted: list[dict],
+    mode_id: Optional[str] = None,
 ) -> int:
     """
     将提炼出的记忆去重后存入 DB。
@@ -194,6 +195,7 @@ async def save_memories(
             mem = MemoryItem(
                 project_id=project_id,
                 content=content,
+                source_mode_id=mode_id,
                 source_mode=mode,
                 source_phase=phase,
                 related_blocks=item.get("related_blocks", []),

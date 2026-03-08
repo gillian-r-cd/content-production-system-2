@@ -57,14 +57,30 @@ def project_id(client):
     return projects[0]["id"]
 
 
+@pytest.fixture(scope="module")
+def project_modes(client, project_id):
+    """确保测试项目具备可运行的项目级角色。"""
+    listed = client.get("/api/modes/", params={"project_id": project_id})
+    assert listed.status_code == 200, f"GET /api/modes/?project_id= failed: {listed.text}"
+    modes = listed.json()
+    if not modes:
+        imported = client.post("/api/modes/import-templates", json={"project_id": project_id})
+        assert imported.status_code == 200, f"POST /api/modes/import-templates failed: {imported.text}"
+        listed = client.get("/api/modes/", params={"project_id": project_id})
+        assert listed.status_code == 200
+        modes = listed.json()
+    assert len(modes) > 0, "Project modes are still empty after template import"
+    return modes
+
+
 # ============== M1-11: 模式 API 验证 ==============
 
 class TestModesAPI:
     """验证 Modes API 基础功能"""
 
     def test_list_modes(self, client):
-        """GET /api/modes/ 返回 5 个预置模式"""
-        resp = client.get("/api/modes/")
+        """GET /api/modes/templates 返回系统模板"""
+        resp = client.get("/api/modes/templates")
         assert resp.status_code == 200
         modes = resp.json()
         assert isinstance(modes, list)
@@ -81,11 +97,11 @@ class TestModesAPI:
                 assert m["is_system"] is True, f"Mode '{m['name']}' should be is_system=True"
                 assert m["icon"], f"Mode '{m['name']}' has no icon"
                 assert m["display_name"], f"Mode '{m['name']}' has no display_name"
-        print(f"✅ {len(modes)} modes found: {[m['name'] for m in modes]}")
+        print(f"✅ {len(modes)} templates found: {[m['name'] for m in modes]}")
 
-    def test_get_single_mode(self, client):
-        """GET /api/modes/ 后取单个"""
-        modes = client.get("/api/modes/").json()
+    def test_get_single_mode(self, client, project_modes):
+        """GET /api/modes/{id} 可获取项目角色详情"""
+        modes = project_modes
         first = modes[0]
         resp = client.get(f"/api/modes/{first['id']}")
         assert resp.status_code == 200
@@ -93,9 +109,9 @@ class TestModesAPI:
         assert detail["name"] == first["name"]
         print(f"✅ GET single mode OK: {detail['name']}")
 
-    def test_modes_sorted_by_sort_order(self, client):
-        """模式按 sort_order 排序"""
-        modes = client.get("/api/modes/").json()
+    def test_modes_sorted_by_sort_order(self, client, project_id, project_modes):
+        """项目角色按 sort_order 排序"""
+        modes = client.get("/api/modes/", params={"project_id": project_id}).json()
         orders = [m["sort_order"] for m in modes]
         assert orders == sorted(orders), f"Modes not sorted: {orders}"
         print(f"✅ Modes sorted correctly: {orders}")
@@ -106,54 +122,44 @@ class TestModesAPI:
 class TestModeStreaming:
     """验证各模式都能通过 Agent Graph 正常对话"""
 
-    @pytest.mark.parametrize("mode", ["assistant", "strategist", "critic", "reader", "creative"])
-    def test_stream_chat_each_mode(self, client, project_id, mode):
-        """每个模式发送消息，验证 SSE 流正常返回 token + done"""
-        payload = {
-            "project_id": project_id,
-            "message": f"你好，测试 {mode} 模式连通性",
-            "mode": mode,
-        }
+    def test_stream_chat_each_mode(self, client, project_id, project_modes):
+        """每个项目角色发送消息，验证 SSE 流正常返回 token + done"""
+        for mode in project_modes:
+            payload = {
+                "project_id": project_id,
+                "message": f"你好，测试 {mode['display_name']} 模式连通性",
+                "mode_id": mode["id"],
+            }
 
-        # 使用 stream 请求
-        events = []
-        with client.stream("POST", "/api/agent/stream", json=payload) as resp:
-            assert resp.status_code == 200, f"Stream failed for mode '{mode}': status={resp.status_code}"
-            for line in resp.iter_lines():
-                if line.startswith("data: "):
-                    data = json.loads(line[6:])
-                    events.append(data)
+            events = []
+            with client.stream("POST", "/api/agent/stream", json=payload) as resp:
+                assert resp.status_code == 200, f"Stream failed for mode '{mode['display_name']}': status={resp.status_code}"
+                for line in resp.iter_lines():
+                    if line.startswith("data: "):
+                        data = json.loads(line[6:])
+                        events.append(data)
 
-        # 验证事件流
-        event_types = [e["type"] for e in events]
-        assert "user_saved" in event_types, f"[{mode}] Missing user_saved event"
-        assert "done" in event_types, f"[{mode}] Missing done event"
+            event_types = [e["type"] for e in events]
+            assert "user_saved" in event_types, f"[{mode['display_name']}] Missing user_saved event"
+            assert "done" in event_types, f"[{mode['display_name']}] Missing done event"
 
-        # 验证有 token 输出（Agent 回复了内容）
-        tokens = [e for e in events if e["type"] == "token"]
-        assert len(tokens) > 0, f"[{mode}] No tokens received — Agent didn't respond"
+            tokens = [e for e in events if e["type"] == "token"]
+            assert len(tokens) > 0, f"[{mode['display_name']}] No tokens received — Agent didn't respond"
 
-        # 验证 done 事件有 message_id
-        done_event = next(e for e in events if e["type"] == "done")
-        assert done_event.get("message_id"), f"[{mode}] done event missing message_id"
+            done_event = next(e for e in events if e["type"] == "done")
+            assert done_event.get("message_id"), f"[{mode['display_name']}] done event missing message_id"
 
-        full_content = "".join(e.get("content", "") for e in tokens)
-        print(f"✅ Mode '{mode}' OK — {len(tokens)} tokens, response: {full_content[:80]}...")
+            full_content = "".join(e.get("content", "") for e in tokens)
+            print(f"✅ Mode '{mode['display_name']}' OK — {len(tokens)} tokens, response: {full_content[:80]}...")
 
-    def test_history_filtered_by_mode(self, client, project_id):
-        """对话历史按 mode 过滤"""
-        # assistant 模式的历史
-        resp = client.get(f"/api/agent/history/{project_id}", params={"mode": "assistant"})
-        assert resp.status_code == 200
-        msgs = resp.json()
-        # 应该有之前测试发送的消息
-        assert isinstance(msgs, list)
-        print(f"✅ History filter OK — assistant mode has {len(msgs)} messages")
-
-        # critic 模式的历史（可能有也可能没有）
-        resp2 = client.get(f"/api/agent/history/{project_id}", params={"mode": "critic"})
-        assert resp2.status_code == 200
-        print(f"✅ History filter OK — critic mode has {len(resp2.json())} messages")
+    def test_history_filtered_by_mode(self, client, project_id, project_modes):
+        """对话历史按 mode_id 过滤"""
+        for mode in project_modes[:2]:
+            resp = client.get(f"/api/agent/history/{project_id}", params={"mode_id": mode["id"]})
+            assert resp.status_code == 200
+            msgs = resp.json()
+            assert isinstance(msgs, list)
+            print(f"✅ History filter OK — {mode['display_name']} has {len(msgs)} messages")
 
 
 # ============== M2-10: Memory 系统验证 ==============
@@ -249,7 +255,7 @@ class TestMemorySystem:
         finally:
             db.close()
 
-    def test_memory_injected_into_stream(self, client, project_id):
+    def test_memory_injected_into_stream(self, client, project_id, project_modes):
         """验证 memory_context 被注入到 stream 对话中
 
         策略：手动插入一条记忆，然后发消息看 Agent 是否能看到
@@ -281,7 +287,7 @@ class TestMemorySystem:
             payload = {
                 "project_id": project_id,
                 "message": "帮我写一段自我介绍",
-                "mode": "assistant",
+                "mode_id": project_modes[0]["id"],
             }
             events = []
             with client.stream("POST", "/api/agent/stream", json=payload) as resp:

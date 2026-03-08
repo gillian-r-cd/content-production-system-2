@@ -58,6 +58,10 @@ def _migrate_add_columns():
         ("content_blocks", "guidance_output", "TEXT DEFAULT ''"),
         ("field_templates", "schema_version", "INTEGER DEFAULT 1"),
         ("field_templates", "root_nodes", "JSON"),
+        ("agent_modes", "project_id", "VARCHAR(36)"),
+        ("agent_modes", "is_template", "BOOLEAN DEFAULT 0"),
+        ("conversations", "mode_id", "VARCHAR(36)"),
+        ("memory_items", "source_mode_id", "VARCHAR(36)"),
     ]
 
     with engine.connect() as conn:
@@ -74,6 +78,16 @@ def _migrate_add_columns():
                     pass
                 else:
                     print(f"  - 迁移警告 {table}.{column}: {e}")
+        try:
+            conn.execute(text(
+                "UPDATE agent_modes "
+                "SET is_template = 1 "
+                "WHERE project_id IS NULL AND is_system = 1 AND (is_template IS NULL OR is_template = 0)"
+            ))
+            conn.commit()
+            print("  - 迁移: 旧系统角色已回填为模板")
+        except Exception as e:
+            print(f"  - 迁移警告 agent_modes legacy templates: {e}")
 
 
 def init_database():
@@ -437,11 +451,13 @@ def seed_default_data():
             modes = [
                 AgentMode(
                     id=generate_uuid(),
+                    project_id=None,
                     name="assistant",
                     display_name="助手",
                     description="高效执行指令、推进项目、回答问题",
                     icon="🛠️",
                     is_system=True,
+                    is_template=True,
                     sort_order=0,
                     system_prompt="""你是创作者的内容生产助手。你的首要职责是高效地帮助创作者推进项目。
 
@@ -459,11 +475,13 @@ def seed_default_data():
                 ),
                 AgentMode(
                     id=generate_uuid(),
+                    project_id=None,
                     name="strategist",
                     display_name="策略顾问",
                     description="帮助想清楚方向、定位、受众、目标",
                     icon="🧭",
                     is_system=True,
+                    is_template=True,
                     sort_order=1,
                     system_prompt="""你是创作者的策略顾问。你的职责是帮助创作者在动手之前想清楚——
 在方向、定位、受众、目标层面提供深度思考，确保每个内容决策都有清晰的战略理由。
@@ -482,11 +500,13 @@ def seed_default_data():
                 ),
                 AgentMode(
                     id=generate_uuid(),
+                    project_id=None,
                     name="critic",
                     display_name="审稿人",
                     description="严格把关内容质量，发现问题并给出改进建议",
                     icon="🔍",
                     is_system=True,
+                    is_template=True,
                     sort_order=2,
                     system_prompt="""你是一个严格的审稿人。你的职责是让内容变得更好——
 通过发现问题、指出弱点、要求改进来帮助创作者达到可发布的标准。
@@ -512,11 +532,13 @@ def seed_default_data():
                 ),
                 AgentMode(
                     id=generate_uuid(),
+                    project_id=None,
                     name="reader",
                     display_name="目标读者",
                     description="以真实受众视角检验内容效果",
                     icon="👤",
                     is_system=True,
+                    is_template=True,
                     sort_order=3,
                     system_prompt="""你是这个项目的目标受众中的一个真实的人。
 你不是AI，不是编辑，不是内容专家——你就是一个带着自己需求和背景来看这些内容的普通读者。
@@ -536,11 +558,13 @@ def seed_default_data():
                 ),
                 AgentMode(
                     id=generate_uuid(),
+                    project_id=None,
                     name="creative",
                     display_name="创意伙伴",
                     description="拓展可能性空间，突破创作瓶颈",
                     icon="💡",
                     is_system=True,
+                    is_template=True,
                     sort_order=4,
                     system_prompt="""你是创作者的创意伙伴。你的职责是拓展可能性空间——
 在创作者思维固化时打开新的方向，在想法稀缺时提供大量素材。

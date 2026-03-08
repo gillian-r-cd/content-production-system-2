@@ -1,6 +1,6 @@
 # backend/core/database.py
-# 功能: 数据库连接管理
-# 主要函数: get_engine(), get_session(), init_db()
+# 功能: 数据库连接管理与轻量兼容迁移
+# 主要函数: get_engine(), get_session_maker(), init_db()
 # 数据结构: Base (SQLAlchemy declarative base)
 
 """
@@ -50,6 +50,8 @@ def init_db():
     from core.models import base  # noqa
     Base.metadata.create_all(bind=engine)
     _ensure_conversation_schema(engine)
+    _ensure_agent_mode_schema(engine)
+    _ensure_memory_schema(engine)
     _ensure_content_block_columns(engine)
     _ensure_agent_settings_columns(engine)
     _ensure_field_template_columns(engine)
@@ -61,13 +63,19 @@ def _ensure_conversation_schema(engine) -> None:
 
     当前项目未引入 Alembic，启动时通过轻量 SQL 兼容迁移：
     1) 为 chat_messages 增加 conversation_id（若不存在）
-    2) 创建 conversations 索引（若不存在）
+    2) 为 conversations 增加 mode_id（若不存在）
+    3) 创建 conversations 索引（若不存在）
     """
     with engine.begin() as conn:
         columns = conn.execute(text("PRAGMA table_info(chat_messages)")).fetchall()
         column_names = {row[1] for row in columns}
         if "conversation_id" not in column_names:
             conn.execute(text("ALTER TABLE chat_messages ADD COLUMN conversation_id VARCHAR(36)"))
+
+        conv_columns = conn.execute(text("PRAGMA table_info(conversations)")).fetchall()
+        conv_column_names = {row[1] for row in conv_columns}
+        if "mode_id" not in conv_column_names:
+            conn.execute(text("ALTER TABLE conversations ADD COLUMN mode_id VARCHAR(36)"))
 
         conn.execute(
             text(
@@ -85,6 +93,62 @@ def _ensure_conversation_schema(engine) -> None:
             text(
                 "CREATE INDEX IF NOT EXISTS idx_conversations_project_mode_status "
                 "ON conversations(project_id, mode, status)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_conversations_project_modeid_lastmsg "
+                "ON conversations(project_id, mode_id, last_message_at)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_conversations_project_modeid_status "
+                "ON conversations(project_id, mode_id, status)"
+            )
+        )
+
+
+def _ensure_agent_mode_schema(engine) -> None:
+    """兼容旧库：为 agent_modes 补齐项目角色与模板字段。"""
+    new_columns = {
+        "project_id": "VARCHAR(36)",
+        "is_template": "BOOLEAN DEFAULT 0",
+    }
+    _add_missing_columns(engine, "agent_modes", new_columns)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_agent_modes_project_sort "
+                "ON agent_modes(project_id, sort_order, created_at)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_agent_modes_templates "
+                "ON agent_modes(is_template, sort_order, created_at)"
+            )
+        )
+        conn.execute(
+            text(
+                "UPDATE agent_modes "
+                "SET is_template = 1 "
+                "WHERE project_id IS NULL AND is_system = 1 AND (is_template IS NULL OR is_template = 0)"
+            )
+        )
+
+
+def _ensure_memory_schema(engine) -> None:
+    """兼容旧库：为 memory_items 补齐稳定角色来源字段。"""
+    new_columns = {
+        "source_mode_id": "VARCHAR(36)",
+    }
+    _add_missing_columns(engine, "memory_items", new_columns)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_memory_items_project_modeid_created "
+                "ON memory_items(project_id, source_mode_id, created_at)"
             )
         )
 

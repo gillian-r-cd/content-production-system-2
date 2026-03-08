@@ -13,8 +13,9 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import { settingsAPI } from "@/lib/api";
-import { Square, Clock, Trash2, X, Plus } from "lucide-react";
+import { Square, Clock, Trash2, X, Plus, Users } from "lucide-react";
 import { MemoryPanel } from "./memory-panel";
+import { AgentModeManager } from "./agent-mode-manager";
 import { SuggestionCard, UndoToast } from "./suggestion-card";
 import type { SuggestionCardData, SuggestionStatus, RollbackTarget } from "./suggestion-card";
 
@@ -84,8 +85,9 @@ export function AgentPanel({
   const [sending, setSending] = useState(false);
   const [showMentions, setShowMentions] = useState(false);
   const [showTools, setShowTools] = useState(false);
-  const [chatMode, setChatMode] = useState<string>("assistant");
+  const [activeModeId, setActiveModeId] = useState<string | null>(null);
   const [availableModes, setAvailableModes] = useState<AgentModeInfo[]>([]);
+  const [modesLoaded, setModesLoaded] = useState(false);
   const [mentionFilter, setMentionFilter] = useState("");
   const [mentionIndex, setMentionIndex] = useState(0);
   const [cursorPosition, setCursorPosition] = useState(0);
@@ -94,6 +96,7 @@ export function AgentPanel({
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
   const [availableTools, setAvailableTools] = useState<{ id: string; name: string; desc: string }[]>([]);
   const [showMemoryPanel, setShowMemoryPanel] = useState(false);
+  const [showModeManager, setShowModeManager] = useState(false);
   const [showConversationList, setShowConversationList] = useState(false);
   const [selectedConvIds, setSelectedConvIds] = useState<Set<string>>(new Set());
   const conversationListRef = useRef<HTMLDivElement>(null);
@@ -123,19 +126,51 @@ export function AgentPanel({
     groupId?: string;
   } | null>(null);
 
+  const handleModeSelection = useCallback((modeId: string) => {
+    setActiveModeId(modeId);
+    setShowModeManager(false);
+  }, []);
+
+  const handleModeManagerClose = useCallback(() => {
+    setShowModeManager(false);
+  }, []);
+
+  const handleModesChanged = useCallback((modes: AgentModeInfo[]) => {
+    setAvailableModes(modes);
+    setModesLoaded(true);
+    setActiveModeId((prev) => {
+      if (modes.length === 0) return null;
+      if (prev && modes.some((mode) => mode.id === prev)) {
+        return prev;
+      }
+      return modes[0].id;
+    });
+  }, []);
+
   // 加载可用 Agent 模式
   useEffect(() => {
-    modesAPI.list().then((modes: AgentModeInfo[]) => {
-      setAvailableModes(modes);
-      // 如果当前模式不在列表中，重置为第一个
-      if (modes.length > 0 && !modes.find((m: AgentModeInfo) => m.name === chatMode)) {
-        setChatMode(modes[0].name);
-      }
+    if (!projectId) {
+      setAvailableModes([]);
+      setActiveModeId(null);
+      setModesLoaded(false);
+      return;
+    }
+    let cancelled = false;
+    setModesLoaded(false);
+    modesAPI.list(projectId).then((modes: AgentModeInfo[]) => {
+      if (cancelled) return;
+      handleModesChanged(modes);
     }).catch(() => {
+      if (cancelled) return;
       console.error("Failed to load agent modes");
-      // Fallback: 保持默认 assistant 模式
+      setAvailableModes([]);
+      setActiveModeId(null);
+      setModesLoaded(true);
     });
-  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, handleModesChanged]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -208,14 +243,14 @@ export function AgentPanel({
   );
 
   const loadConversations = useCallback(async () => {
-    if (!projectId) return;
+    if (!projectId || !activeModeId) return;
     try {
-      const rows = await agentAPI.listConversations(projectId, chatMode);
+      const rows = await agentAPI.listConversations(projectId, activeModeId);
       setConversations(rows);
       if (rows.length === 0) {
         const created = await agentAPI.createConversation({
           project_id: projectId,
-          mode: chatMode,
+          mode_id: activeModeId,
         });
         setConversations([created]);
         setActiveConversationId(created.id);
@@ -227,7 +262,7 @@ export function AgentPanel({
     } catch (err) {
       console.error("加载会话列表失败:", err);
     }
-  }, [projectId, chatMode, activeConversationId]);
+  }, [projectId, activeModeId, activeConversationId]);
 
   const loadHistory = useCallback(async () => {
     if (!projectId || !activeConversationId) return;
@@ -252,7 +287,7 @@ export function AgentPanel({
               group_summary: c.group_summary,
               status: (c.status || "pending") as SuggestionStatus,
               messageId: msg.id,
-              mode: msg.metadata?.mode || "assistant",
+              mode: msg.metadata?.mode_id || msg.metadata?.mode || undefined,
             });
           }
         }
@@ -265,7 +300,7 @@ export function AgentPanel({
 
   // 按 mode 加载会话列表
   useEffect(() => {
-    if (projectId) {
+    if (projectId && activeModeId) {
       setMessages([]);
       setSuggestions([]);
       loadConversations();
@@ -274,7 +309,7 @@ export function AgentPanel({
       setActiveConversationId(null);
       setMessages([]);
     }
-  }, [projectId, chatMode, loadConversations]);
+  }, [projectId, activeModeId, loadConversations]);
 
   // 会话切换后加载消息
   useEffect(() => {
@@ -436,7 +471,7 @@ export function AgentPanel({
 
   const handleSend = async (overrideMessage?: string) => {
     const messageToSend = overrideMessage || input.trim();
-    if (!messageToSend || !projectId || !activeConversationId || sending) return;
+    if (!messageToSend || !projectId || !activeModeId || !activeConversationId || sending) return;
     // 首次发送时请求通知权限（需在用户交互中触发）
     requestNotificationPermission();
 
@@ -489,7 +524,7 @@ export function AgentPanel({
         project_id: projectId,
         message: userMessage,
         references,
-        mode: chatMode,
+        mode_id: activeModeId,
         conversation_id: activeConversationId,
       };
 
@@ -626,7 +661,7 @@ export function AgentPanel({
                 );
               } else if (data.type === "suggestion_card") {
                 // Suggestion Card（propose_edit 工具输出）— 关联到当前 AI 消息
-                console.log("[AgentPanel] Suggestion card:", data.id, data.target_field, "→ msg:", tempAiMsg.id, "mode:", chatMode);
+                console.log("[AgentPanel] Suggestion card:", data.id, data.target_field, "→ msg:", tempAiMsg.id, "mode:", activeModeId);
                 const newCard: SuggestionCardData = {
                   id: data.id,
                   target_field: data.target_field,
@@ -638,7 +673,7 @@ export function AgentPanel({
                   group_summary: data.group_summary,
                   status: "pending",
                   messageId: tempAiMsg.id,  // 关联到产生此卡片的 AI 消息
-                  mode: chatMode,           // 记录产生此卡片的 Agent 模式（M1.5 mode 隔离）
+                  mode: activeModeId || undefined,  // 记录产生此卡片的 Agent 模式（M1.5 mode 隔离）
                 };
 
                 // M6 T6.5: 追问→superseded 闭环
@@ -866,7 +901,7 @@ export function AgentPanel({
         project_id: projectId,
         message: editedContent,
         references,
-        mode: chatMode,
+        mode_id: activeModeId,
         conversation_id: activeConversationId,
       };
       // M7 T7.4: 追问上下文注入（与 handleSend 对齐）
@@ -968,7 +1003,7 @@ export function AgentPanel({
                   prev.map(m => m.id === tempAiMsg.id ? { ...m, content: `✅ ${tn} 完成。${sm ? "\n" + sm : ""}` } : m)
                 );
               } else if (data.type === "suggestion_card") {
-                console.log("[AgentPanel] Suggestion card (edit):", data.id, data.target_field, "→ msg:", tempAiMsg.id, "mode:", chatMode);
+                console.log("[AgentPanel] Suggestion card (edit):", data.id, data.target_field, "→ msg:", tempAiMsg.id, "mode:", activeModeId);
                 const newCard: SuggestionCardData = {
                   id: data.id,
                   target_field: data.target_field,
@@ -980,7 +1015,7 @@ export function AgentPanel({
                   group_summary: data.group_summary,
                   status: "pending",
                   messageId: tempAiMsg.id,  // 关联到产生此卡片的 AI 消息
-                  mode: chatMode,           // 记录产生此卡片的 Agent 模式（M1.5 mode 隔离）
+                  mode: activeModeId || undefined,  // 记录产生此卡片的 Agent 模式（M1.5 mode 隔离）
                 };
 
                 // M7: supersede 逻辑（与 handleSend 对齐）
@@ -1185,11 +1220,11 @@ export function AgentPanel({
   };
 
   const handleCreateConversation = async () => {
-    if (!projectId || sending) return;
+    if (!projectId || !activeModeId || sending) return;
     try {
       const conv = await agentAPI.createConversation({
         project_id: projectId,
-        mode: chatMode,
+        mode_id: activeModeId || undefined,
       });
       setConversations((prev) => [conv, ...prev]);
       setActiveConversationId(conv.id);
@@ -1294,6 +1329,17 @@ export function AgentPanel({
         />
       )}
 
+      {/* 角色管理面板（统一覆盖式管理界面） */}
+      {!showMemoryPanel && projectId && showModeManager && (
+        <AgentModeManager
+          projectId={projectId}
+          activeModeId={activeModeId}
+          onSelectMode={handleModeSelection}
+          onClose={handleModeManagerClose}
+          onChanged={handleModesChanged}
+        />
+      )}
+
       {/* 头部 + 模式切换（记忆面板隐藏时显示） */}
       {!showMemoryPanel && (
       <div className="border-b border-surface-3 relative">
@@ -1305,13 +1351,22 @@ export function AgentPanel({
             </p>
           </div>
           {projectId && (
-            <button
-              onClick={() => setShowMemoryPanel(true)}
-              title="查看项目记忆"
-              className="text-zinc-500 hover:text-zinc-300 text-lg px-2 py-1 rounded hover:bg-surface-2 transition"
-            >
-              🧠
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setShowModeManager(true)}
+                title="管理角色"
+                className="text-zinc-500 hover:text-zinc-300 p-2 rounded hover:bg-surface-2 transition"
+              >
+                <Users size={16} />
+              </button>
+              <button
+                onClick={() => setShowMemoryPanel(true)}
+                title="查看项目记忆"
+                className="text-zinc-500 hover:text-zinc-300 text-lg px-2 py-1 rounded hover:bg-surface-2 transition"
+              >
+                🧠
+              </button>
+            </div>
           )}
         </div>
         {/* 模式切换标签栏 + 会话历史时钟 icon */}
@@ -1320,12 +1375,12 @@ export function AgentPanel({
             {availableModes.length > 0 ? (
               availableModes.map((mode) => (
                 <button
-                  key={mode.name}
-                  onClick={() => setChatMode(mode.name)}
+                  key={mode.id}
+                  onClick={() => setActiveModeId(mode.id)}
                   title={mode.description}
                   className={cn(
                     "flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-t-lg transition-all whitespace-nowrap border-b-2",
-                    chatMode === mode.name
+                    activeModeId === mode.id
                       ? "border-brand-500 text-brand-300 bg-brand-500/10"
                       : "border-transparent text-zinc-500 hover:text-zinc-300 hover:bg-surface-2"
                   )}
@@ -1335,19 +1390,14 @@ export function AgentPanel({
                 </button>
               ))
             ) : (
-              <button
-                className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-t-lg border-b-2 border-brand-500 text-brand-300 bg-brand-500/10"
-              >
-                <span className="text-base leading-none">🛠️</span>
-                <span>助手</span>
-              </button>
+              <div className="px-3 py-1.5 text-sm text-zinc-500">暂无角色</div>
             )}
           </div>
           {/* 新建会话 + 会话历史 icon */}
           <div className="flex items-center gap-1 shrink-0 pb-1">
             <button
               onClick={handleCreateConversation}
-              disabled={!projectId || sending}
+              disabled={!projectId || !activeModeId || sending}
               title="新建会话"
               className="p-1.5 rounded text-zinc-500 hover:text-zinc-300 hover:bg-surface-2 disabled:opacity-50 transition"
             >
@@ -1443,7 +1493,24 @@ export function AgentPanel({
       <>
       {/* 消息列表 */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.length === 0 && (
+        {modesLoaded && availableModes.length === 0 ? (
+          <div className="h-full flex items-center justify-center">
+            <div className="w-full max-w-md rounded-xl border border-surface-3 bg-surface-2 p-5 text-center">
+              <h3 className="text-sm font-medium text-zinc-100">当前项目还没有 Agent 角色</h3>
+              <p className="mt-2 text-sm text-zinc-400">
+                先为当前项目创建角色，或导入默认模板。角色会直接决定右侧 Agent 的身份与行为。
+              </p>
+              <div className="mt-4 flex items-center justify-center gap-2">
+                <button
+                  onClick={() => setShowModeManager(true)}
+                  className="rounded-lg bg-brand-600 px-4 py-2 text-sm text-white hover:bg-brand-500 transition"
+                >
+                  配置角色
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : messages.length === 0 && (
           <div className="text-center text-zinc-500 py-8">
             <p>开始对话吧！</p>
             <p className="text-sm mt-2">
@@ -1468,7 +1535,7 @@ export function AgentPanel({
             {/* 此消息关联的 Suggestion Cards — inline 渲染在消息正下方 */}
             {/* 按 mode 隔离：只渲染当前模式产生的卡片（M1.5 修复跨模式泄漏） */}
             {suggestions
-              .filter((card) => card.messageId === msg.id && (!card.mode || card.mode === chatMode))
+              .filter((card) => card.messageId === msg.id && (!card.mode || card.mode === activeModeId))
               .map((card) => (
                 <div key={card.id} className="mt-2">
                   <SuggestionCard
@@ -1488,7 +1555,7 @@ export function AgentPanel({
         {suggestions
           .filter(
             (card) =>
-              (!card.mode || card.mode === chatMode) &&
+              (!card.mode || card.mode === activeModeId) &&
               (!card.messageId || !messages.some((m) => m.id === card.messageId))
           )
           .map((card) => (
@@ -1603,8 +1670,14 @@ export function AgentPanel({
               value={input}
               onChange={handleInputChange}
               onKeyDown={handleKeyDown}
-              placeholder={projectId ? `输入消息... 使用 @ 引用内容块${mentionItems.length > 0 ? ` (${mentionItems.length}个可用)` : ""}` : "请先选择项目"}
-              disabled={!projectId || !activeConversationId || sending}
+              placeholder={
+                !projectId
+                  ? "请先选择项目"
+                  : availableModes.length === 0
+                    ? "请先配置当前项目的 Agent 角色"
+                    : `输入消息... 使用 @ 引用内容块${mentionItems.length > 0 ? ` (${mentionItems.length}个可用)` : ""}`
+              }
+              disabled={!projectId || !activeConversationId || sending || availableModes.length === 0}
               rows={2}
               className={cn(
                 "flex-1 px-4 py-2 bg-surface-2 border border-surface-3 text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:opacity-50 resize-none overflow-y-auto",
@@ -1624,7 +1697,7 @@ export function AgentPanel({
             ) : (
               <button
                 onClick={() => handleSend()}
-                disabled={!projectId || !activeConversationId || !input.trim()}
+                disabled={!projectId || !activeConversationId || !input.trim() || availableModes.length === 0}
                 className="px-4 py-2 bg-brand-600 hover:bg-brand-700 disabled:bg-surface-3 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center gap-1.5"
                 title="发送消息 (⌘/Ctrl+Enter)"
               >
@@ -1637,12 +1710,12 @@ export function AgentPanel({
 
         {/* 快捷操作 */}
         <div className="flex gap-2 mt-2 flex-wrap items-center">
-          <QuickAction label="继续" onClick={() => setInput("继续")} disabled={!projectId || sending} />
-          <QuickAction label="开始调研" onClick={() => setInput("开始消费者调研")} disabled={!projectId || sending} />
-          <QuickAction label="评估" onClick={() => setInput("评估当前内容")} disabled={!projectId || sending} />
+          <QuickAction label="继续" onClick={() => setInput("继续")} disabled={!projectId || sending || availableModes.length === 0} />
+          <QuickAction label="开始调研" onClick={() => setInput("开始消费者调研")} disabled={!projectId || sending || availableModes.length === 0} />
+          <QuickAction label="评估" onClick={() => setInput("评估当前内容")} disabled={!projectId || sending || availableModes.length === 0} />
           <button
             onClick={() => setShowTools(!showTools)}
-            disabled={!projectId || sending}
+            disabled={!projectId || sending || availableModes.length === 0}
             className="px-2 py-1 text-xs text-brand-400 hover:text-brand-300 hover:bg-surface-3 disabled:opacity-50 rounded transition-colors flex items-center gap-1"
           >
             🔧 调用工具
