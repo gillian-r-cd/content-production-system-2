@@ -10,6 +10,8 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { MoreHorizontal } from "lucide-react";
 import type { Project, ContentBlock } from "@/lib/api";
 import { blockAPI, runAutoTriggerChain } from "@/lib/api";
+import { formatProjectText, projectUiText } from "@/lib/project-locale";
+import { useUiLocale } from "@/lib/ui-locale";
 import BlockTree from "./block-tree";
 import { ContentTreeActionItems } from "./content-tree-action-items";
 import { ContentTreeTemplateSaveModal } from "./content-tree-template-save-modal";
@@ -51,6 +53,8 @@ export function ProgressPanel({
   onOpenAutoSplit,
   onStartAllReady,
 }: ProgressPanelProps) {
+  const uiLocale = useUiLocale(project?.locale);
+  const t = projectUiText(uiLocale);
   // P0-1: 传统视图已移除，统一使用树形架构
   const [contentBlocks, setContentBlocks] = useState<ContentBlock[]>([]);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
@@ -163,7 +167,7 @@ export function ProgressPanel({
       <div className="mb-4">
         <div className="flex items-start justify-between gap-2">
           <h2 className="text-lg font-semibold text-zinc-100">
-            {project?.name || "未选择项目"}
+            {project?.name || t.noProjectSelected}
           </h2>
           {project && (
             <div className="relative" ref={projectMenuRef}>
@@ -171,7 +175,7 @@ export function ProgressPanel({
                 type="button"
                 onClick={() => setShowProjectMenu((previous) => !previous)}
                 className="rounded-lg p-1 text-zinc-500 hover:bg-surface-2 hover:text-zinc-300"
-                aria-label="项目操作菜单"
+                aria-label={t.projectActions}
               >
                 <MoreHorizontal className="h-4 w-4" />
               </button>
@@ -179,6 +183,7 @@ export function ProgressPanel({
                 <div className="absolute right-0 top-full z-50 mt-1 w-56 rounded-lg border border-surface-3 bg-surface-1 shadow-lg">
                   <ContentTreeActionItems
                     scope={{ type: "project", projectId: project.id, label: project.name }}
+                    projectLocale={uiLocale}
                     closeMenu={() => setShowProjectMenu(false)}
                     onRequestSaveTemplate={handleRequestProjectTemplateSave}
                   />
@@ -190,7 +195,7 @@ export function ProgressPanel({
         {project && (
           <div className="mt-2 space-y-3">
             <p className="text-sm text-zinc-500">
-              版本 {project.version}
+              {formatProjectText(t.version, { version: project.version })}
             </p>
             <div className="flex flex-wrap gap-2">
               <button
@@ -198,18 +203,18 @@ export function ProgressPanel({
                 onClick={onOpenAutoSplit}
                 className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs text-white hover:bg-brand-700"
               >
-                自动拆分内容
+                {t.autoSplit}
               </button>
               <button
                 type="button"
                 onClick={onStartAllReady}
                 className="rounded-lg bg-surface-3 px-3 py-1.5 text-xs text-zinc-200 hover:bg-surface-4"
               >
-                开始所有已就绪内容块
+                {t.startAllReady}
               </button>
             </div>
             <p className="text-xs text-zinc-500">
-              已就绪 = 依赖完成，且所有必答生成前提问已回答。
+              {t.readyHint}
             </p>
           </div>
         )}
@@ -221,7 +226,7 @@ export function ProgressPanel({
       {project && (
         <div className="space-y-1">
           <h3 className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-3">
-            内容结构
+            {t.contentStructure}
           </h3>
           
           {isLoadingBlocks ? (
@@ -230,9 +235,9 @@ export function ProgressPanel({
             </div>
           ) : contentBlocks.length === 0 ? (
             <div className="text-center py-8">
-              <p className="text-sm text-zinc-500 mb-3">尚未创建内容块</p>
+              <p className="text-sm text-zinc-500 mb-3">{t.noBlocks}</p>
               <p className="text-xs text-zinc-600">
-                与 Agent 对话或手动添加内容块开始项目
+                {t.noBlocksHint}
               </p>
             </div>
           ) : null}
@@ -241,6 +246,7 @@ export function ProgressPanel({
           <BlockTree
             blocks={contentBlocks}
             projectId={project.id}
+            projectLocale={uiLocale}
             selectedBlockId={selectedBlockId}
             onSelectBlock={handleBlockSelect}
             onBlocksChange={loadContentBlocks}
@@ -252,6 +258,7 @@ export function ProgressPanel({
       <ContentTreeTemplateSaveModal
         open={showTemplateSaveModal}
         scope={project ? { type: "project", projectId: project.id, label: project.name } : null}
+        projectLocale={uiLocale}
         onClose={() => setShowTemplateSaveModal(false)}
         onSaved={loadContentBlocks}
       />

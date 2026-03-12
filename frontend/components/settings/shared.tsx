@@ -1,10 +1,51 @@
 // frontend/components/settings/shared.tsx
-// 功能: Settings 页面的共享组件 — ImportExportButtons, SingleExportButton, downloadJSON, FormField, TagInput, KeyValueEditor
+// 功能: Settings 页面的共享组件与 locale hook — ImportExportButtons, SingleExportButton, downloadJSON, FormField, TagInput, KeyValueEditor
 
 "use client";
 
-import { useState, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Download, Upload } from "lucide-react";
+import { isJaProjectLocale, resolveClientLocale } from "@/lib/project-locale";
+
+export const LOCALE_OPTIONS = [
+  { value: "zh-CN", label: "简体中文" },
+  { value: "ja-JP", label: "日本語" },
+];
+
+export function formatLocaleLabel(locale?: string) {
+  return LOCALE_OPTIONS.find((item) => item.value === locale)?.label || locale || "zh-CN";
+}
+
+export function LocaleBadge({ locale }: { locale?: string }) {
+  return (
+    <span className="text-xs bg-emerald-500/10 px-2 py-1 rounded-full text-emerald-400">
+      {formatLocaleLabel(locale)}
+    </span>
+  );
+}
+
+export function useSettingsUiLocale() {
+  const [locale, setLocale] = useState<"zh-CN" | "ja-JP">(() => resolveClientLocale());
+
+  useEffect(() => {
+    const syncLocale = () => {
+      setLocale(resolveClientLocale());
+    };
+
+    syncLocale();
+    window.addEventListener("storage", syncLocale);
+
+    return () => {
+      window.removeEventListener("storage", syncLocale);
+    };
+  }, []);
+
+  return locale;
+}
+
+export function useSettingsUiIsJa() {
+  return isJaProjectLocale(useSettingsUiLocale());
+}
 
 // ============== 导入导出按钮组件 ==============
 interface ImportExportButtonsProps {
@@ -17,6 +58,7 @@ interface ImportExportButtonsProps {
 export function ImportExportButtons({ onExportAll, onImport, typeName }: ImportExportButtonsProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importing, setImporting] = useState(false);
+  const isJa = useSettingsUiIsJa();
 
   const handleImportClick = () => {
     fileInputRef.current?.click();
@@ -34,10 +76,10 @@ export function ImportExportButtons({ onExportAll, onImport, typeName }: ImportE
       // 支持两种格式：直接数组 或 { data: [...] }
       const data = Array.isArray(json) ? json : (json.data || []);
       await onImport(data);
-      alert(`导入${typeName}成功！`);
+      alert(isJa ? `${typeName} をインポートしました` : `导入${typeName}成功！`);
     } catch (err) {
       console.error("导入失败:", err);
-      alert(`导入失败: ${err instanceof Error ? err.message : "文件格式错误"}`);
+      alert(`${isJa ? "インポートに失敗しました" : "导入失败"}: ${err instanceof Error ? err.message : (isJa ? "ファイル形式エラー" : "文件格式错误")}`);
     } finally {
       setImporting(false);
       // 清空 input 以便重复选择同一文件
@@ -62,14 +104,14 @@ export function ImportExportButtons({ onExportAll, onImport, typeName }: ImportE
         className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-surface-3 hover:bg-surface-4 rounded-lg transition-colors disabled:opacity-50"
       >
         <Upload className="w-4 h-4" />
-        {importing ? "导入中..." : "导入"}
+        {importing ? (isJa ? "インポート中..." : "导入中...") : (isJa ? "インポート" : "导入")}
       </button>
       <button
         onClick={onExportAll}
         className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-surface-3 hover:bg-surface-4 rounded-lg transition-colors"
       >
         <Download className="w-4 h-4" />
-        导出全部
+        {isJa ? "すべてエクスポート" : "导出全部"}
       </button>
     </div>
   );
@@ -78,6 +120,7 @@ export function ImportExportButtons({ onExportAll, onImport, typeName }: ImportE
 // 单个项目导出按钮
 export function SingleExportButton({ onExport, title }: { onExport: () => Promise<void>; title?: string }) {
   const [exporting, setExporting] = useState(false);
+  const isJa = useSettingsUiIsJa();
   
   const handleClick = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -94,7 +137,7 @@ export function SingleExportButton({ onExport, title }: { onExport: () => Promis
       onClick={handleClick}
       disabled={exporting}
       className="px-2 py-1 text-xs bg-surface-3 hover:bg-surface-4 rounded text-zinc-400 hover:text-zinc-200 transition-colors disabled:opacity-50"
-      title={title || "导出"}
+      title={title || (isJa ? "エクスポート" : "导出")}
     >
       <Download className="w-3.5 h-3.5" />
     </button>
@@ -126,6 +169,7 @@ export function FormField({ label, hint, children }: { label: string; hint?: str
 
 export function TagInput({ value, onChange, placeholder }: { value: string[]; onChange: (v: string[]) => void; placeholder?: string }) {
   const [input, setInput] = useState("");
+  const isJa = useSettingsUiIsJa();
   
   const addTag = () => {
     if (input.trim() && !value.includes(input.trim())) {
@@ -161,7 +205,7 @@ export function TagInput({ value, onChange, placeholder }: { value: string[]; on
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={placeholder || "输入后按回车添加..."}
+          placeholder={placeholder || (isJa ? "入力して Enter で追加..." : "输入后按回车添加...")}
           className="flex-1 px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
         />
         <button
@@ -170,11 +214,11 @@ export function TagInput({ value, onChange, placeholder }: { value: string[]; on
           disabled={!input.trim()}
           className="px-3 py-2 bg-brand-600 hover:bg-brand-700 disabled:bg-zinc-700 disabled:cursor-not-allowed text-white rounded-lg text-sm transition-colors"
         >
-          添加
+          {isJa ? "追加" : "添加"}
         </button>
       </div>
       {value.length === 0 && (
-        <p className="text-xs text-zinc-500">输入问题后按 Enter 键或点击「添加」按钮</p>
+        <p className="text-xs text-zinc-500">{isJa ? "入力後に Enter キーを押すか「追加」をクリックしてください" : "输入问题后按 Enter 键或点击「添加」按钮"}</p>
       )}
     </div>
   );
@@ -190,6 +234,7 @@ export function KeyValueEditor({ value, onChange, keyPlaceholder, valuePlacehold
 }) {
   const [newKey, setNewKey] = useState("");
   const [newValue, setNewValue] = useState("");
+  const isJa = useSettingsUiIsJa();
   
   const entries = Object.entries(value || {});
   
@@ -234,17 +279,17 @@ export function KeyValueEditor({ value, onChange, keyPlaceholder, valuePlacehold
         <input
           value={newKey}
           onChange={(e) => setNewKey(e.target.value)}
-          placeholder={keyPlaceholder || "属性名"}
+          placeholder={keyPlaceholder || (isJa ? "キー" : "属性名")}
           className="w-1/3 px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
         />
         <input
           value={newValue}
           onChange={(e) => setNewValue(e.target.value)}
-          placeholder={valuePlaceholder || "属性值"}
+          placeholder={valuePlaceholder || (isJa ? "値" : "属性值")}
           className="flex-1 px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
         />
         <button onClick={addPair} className="px-3 py-2 bg-brand-600 hover:bg-brand-700 rounded-lg text-sm">
-          添加
+          {isJa ? "追加" : "添加"}
         </button>
       </div>
     </div>

@@ -7,6 +7,8 @@
 "use client";
 
 import type { ContentBlock, AgentSelectionRef } from "@/lib/api";
+import { formatProjectText, isJaProjectLocale, projectUiText } from "@/lib/project-locale";
+import { useUiLocale } from "@/lib/ui-locale";
 import { ContentBlockEditor } from "./content-block-editor";
 import { ContentBlockCard } from "./content-block-card";
 import { ChannelSelector } from "./channel-selector";
@@ -16,6 +18,7 @@ import { ProposalSelector } from "./proposal-selector";
 
 interface ContentPanelProps {
   projectId: string | null;
+  projectLocale?: string | null;
   selectedBlock?: ContentBlock | null;
   allBlocks?: ContentBlock[];
   onFieldsChange?: () => void;
@@ -30,6 +33,7 @@ interface ContentPanelProps {
 
 export function ContentPanel({
   projectId,
+  projectLocale,
   selectedBlock,
   allBlocks = [],
   onFieldsChange,
@@ -38,14 +42,17 @@ export function ContentPanel({
   onSendToAgent,
   onSendSelectionToAgent,
 }: ContentPanelProps) {
+  const uiLocale = useUiLocale(projectLocale);
+  const t = projectUiText(uiLocale);
+  const isJa = isJaProjectLocale(uiLocale);
   // ===== 早期返回（在所有Hooks之后）=====
   
   if (!projectId) {
     return (
       <div className="flex items-center justify-center h-full text-zinc-500">
         <div className="text-center">
-          <p className="text-lg mb-2">请选择或创建一个项目</p>
-          <p className="text-sm">在左侧选择项目开始工作</p>
+          <p className="text-lg mb-2">{t.chooseOrCreateProject}</p>
+          <p className="text-sm">{t.chooseProjectHint}</p>
         </div>
       </div>
     );
@@ -65,6 +72,7 @@ export function ContentPanel({
           <ContentBlockEditor
             block={selectedBlock}
             projectId={projectId}
+            projectLocale={projectLocale}
             allBlocks={allBlocks}
             onUpdate={onFieldsChange}
             onVersionCreated={onVersionCreated}
@@ -76,12 +84,12 @@ export function ContentPanel({
         return (
           <div className="h-full flex flex-col items-center justify-center p-6 text-center">
             <div className="text-6xl mb-4">💬</div>
-            <h2 className="text-xl font-bold text-zinc-200 mb-2">意图分析</h2>
+            <h2 className="text-xl font-bold text-zinc-200 mb-2">{t.intentAnalysis}</h2>
             <p className="text-zinc-400 max-w-md">
-              意图分析由 AI Agent 通过对话完成。请在右侧对话框中输入&quot;开始&quot;来启动意图分析流程。
+              {t.intentEmptyHint}
             </p>
             <p className="text-zinc-500 text-sm mt-4">
-              Agent 会问你 3 个问题来了解你的项目意图。
+              {t.intentEmptySubHint}
             </p>
           </div>
         );
@@ -113,6 +121,7 @@ export function ContentPanel({
           return (
             <ResearchPanel
               projectId={projectId}
+              projectLocale={projectLocale}
               fieldId={selectedBlock.id}
               content={normalizedContent}
               onUpdate={onFieldsChange}
@@ -124,6 +133,7 @@ export function ContentPanel({
           <ContentBlockEditor
             block={selectedBlock}
             projectId={projectId}
+            projectLocale={projectLocale}
             allBlocks={allBlocks}
             onUpdate={onFieldsChange}
             onVersionCreated={onVersionCreated}
@@ -135,12 +145,12 @@ export function ContentPanel({
         return (
           <div className="h-full flex flex-col items-center justify-center p-6 text-center">
             <div className="text-6xl mb-4">🔍</div>
-            <h2 className="text-xl font-bold text-zinc-200 mb-2">消费者调研</h2>
+            <h2 className="text-xl font-bold text-zinc-200 mb-2">{t.research}</h2>
             <p className="text-zinc-400 max-w-md">
-              消费者调研由 AI Agent 通过 DeepResearch 工具完成。请在右侧对话框中输入&quot;开始调研&quot;来启动。
+              {t.researchEmptyHint}
             </p>
             <p className="text-zinc-500 text-sm mt-4">
-              Agent 会基于你的意图分析结果，搜索相关信息并生成调研报告。
+              {t.researchEmptySubHint}
             </p>
           </div>
         );
@@ -152,6 +162,7 @@ export function ContentPanel({
       return (
         <EvalPhasePanel
           projectId={projectId}
+          projectLocale={projectLocale}
           onFieldsChange={onFieldsChange}
           onSendToAgent={onSendToAgent}
         />
@@ -165,20 +176,20 @@ export function ContentPanel({
       const otherCount = selectedBlock.children.length - groupCount - fieldCount;
       
       const parts = [];
-      if (groupCount > 0) parts.push(`${groupCount} 个子组`);
-      if (fieldCount > 0) parts.push(`${fieldCount} 个内容块`);
-      if (otherCount > 0) parts.push(`${otherCount} 个其他`);
-      const description = parts.join("、") || "暂无内容";
+      if (groupCount > 0) parts.push(formatProjectText(t.childGroups, { count: groupCount }));
+      if (fieldCount > 0) parts.push(formatProjectText(t.childBlocks, { count: fieldCount }));
+      if (otherCount > 0) parts.push(formatProjectText(t.childOthers, { count: otherCount }));
+      const description = parts.join(" / ") || t.noContent;
       
       return (
         <div className="h-full flex flex-col">
           <div className="p-4 border-b border-surface-3">
             <div className="flex items-center gap-2">
-              <span className="px-2 py-0.5 text-xs rounded bg-amber-600/20 text-amber-400">组</span>
+              <span className="px-2 py-0.5 text-xs rounded bg-amber-600/20 text-amber-400">{t.groupTag}</span>
               <h1 className="text-xl font-bold text-zinc-100">{selectedBlock.name}</h1>
             </div>
             <p className="text-zinc-500 text-sm mt-1">
-              包含 {description}
+              {formatProjectText(t.includes, { description })}
             </p>
           </div>
           <div className="flex-1 overflow-y-auto p-4">
@@ -188,6 +199,7 @@ export function ContentPanel({
                   key={child.id}
                   block={child}
                   projectId={projectId || ""}
+                  projectLocale={projectLocale}
                   allBlocks={allBlocks}
                   onUpdate={onFieldsChange}
                   onSelect={() => onBlockSelect?.(child)}
@@ -203,7 +215,7 @@ export function ContentPanel({
     return (
       <div className="h-full flex flex-col items-center justify-center text-zinc-500">
         <p className="text-lg mb-2">{selectedBlock.name}</p>
-        <p className="text-sm">该组暂无内容块，请在左侧添加</p>
+        <p className="text-sm">{t.emptyGroupHint}</p>
       </div>
     );
   }
@@ -228,6 +240,7 @@ export function ContentPanel({
       return (
         <EvalPhasePanel
           projectId={projectId}
+          projectLocale={projectLocale}
           onFieldsChange={onFieldsChange}
           onSendToAgent={onSendToAgent}
           initialTab={initialTab}
@@ -258,6 +271,7 @@ export function ContentPanel({
         return (
           <ResearchPanel
             projectId={projectId}
+              projectLocale={projectLocale}
             fieldId={selectedBlock.id}
             content={normalizedContent}
             onUpdate={onFieldsChange}
@@ -280,14 +294,15 @@ export function ContentPanel({
         return (
           <div className="h-full flex flex-col">
             <div className="p-4 border-b border-surface-3">
-              <h1 className="text-xl font-bold text-zinc-100">内涵设计</h1>
+              <h1 className="text-xl font-bold text-zinc-100">{isJa ? "内包設計" : "内涵设计"}</h1>
               <p className="text-zinc-500 text-sm mt-1">
-                选择一个方案，确认后将进入内涵生产阶段
+                {isJa ? "案を 1 つ選択し、確認後に内包制作段階へ進みます" : "选择一个方案，确认后将进入内涵生产阶段"}
               </p>
             </div>
             <div className="flex-1 overflow-y-auto p-4">
               <ProposalSelector
                 projectId={projectId}
+                projectLocale={projectLocale}
                 fieldId={selectedBlock.id}
                 content={selectedBlock.content}
                 onConfirm={() => {
@@ -315,14 +330,15 @@ export function ContentPanel({
         return (
           <div className="h-full flex flex-col">
             <div className="p-4 border-b border-surface-3">
-              <h1 className="text-xl font-bold text-zinc-100">外延设计</h1>
+              <h1 className="text-xl font-bold text-zinc-100">{isJa ? "外延設計" : "外延设计"}</h1>
               <p className="text-zinc-500 text-sm mt-1">
-                选择要使用的传播渠道，确认后进入外延生产
+                {isJa ? "利用する配信チャネルを選択し、確認後に外延制作へ進みます" : "选择要使用的传播渠道，确认后进入外延生产"}
               </p>
             </div>
             <div className="flex-1 overflow-y-auto p-4">
               <ChannelSelector
                 projectId={projectId}
+                projectLocale={projectLocale}
                 fieldId={selectedBlock.id}
                 content={selectedBlock.content}
                 onConfirm={() => {
@@ -344,12 +360,12 @@ export function ContentPanel({
         return (
           <div className="h-full flex flex-col items-center justify-center p-6 text-center">
             <div className="text-6xl mb-4">💬</div>
-            <h2 className="text-xl font-bold text-zinc-200 mb-2">意图分析</h2>
+            <h2 className="text-xl font-bold text-zinc-200 mb-2">{isJa ? "意図分析" : "意图分析"}</h2>
             <p className="text-zinc-400 max-w-md">
-              意图分析由 AI Agent 通过对话完成。请在右侧对话框中输入&quot;开始&quot;来启动意图分析流程。
+              {isJa ? "意図分析は AI Agent との対話で完了します。右側の対話欄で「開始」と入力してフローを始めてください。" : "意图分析由 AI Agent 通过对话完成。请在右侧对话框中输入\"开始\"来启动意图分析流程。"}
             </p>
             <p className="text-zinc-500 text-sm mt-4">
-              Agent 会问你 3 个问题来了解你的项目意图。
+              {isJa ? "Agent が 3 つの質問でプロジェクト意図を整理します。" : "Agent 会问你 3 个问题来了解你的项目意图。"}
             </p>
           </div>
         );
@@ -361,6 +377,7 @@ export function ContentPanel({
       <ContentBlockEditor
         block={selectedBlock}
         projectId={projectId}
+        projectLocale={projectLocale}
         allBlocks={allBlocks}
         onUpdate={onFieldsChange}
         onVersionCreated={onVersionCreated}
@@ -375,9 +392,9 @@ export function ContentPanel({
     return (
       <div className="h-full flex flex-col items-center justify-center p-6 text-center">
         <div className="text-6xl mb-4">🌲</div>
-        <h2 className="text-xl font-bold text-zinc-200 mb-2">树形架构模式</h2>
+        <h2 className="text-xl font-bold text-zinc-200 mb-2">{isJa ? "ツリー構造モード" : "树形架构模式"}</h2>
         <p className="text-zinc-400 max-w-md">
-          请在左侧树形结构中选择一个组或字段来查看和编辑内容。
+          {isJa ? "左側のツリー構造からグループまたはフィールドを選択して、内容を確認・編集してください。" : "请在左侧树形结构中选择一个组或字段来查看和编辑内容。"}
         </p>
       </div>
     );
@@ -388,6 +405,7 @@ export function ContentPanel({
     <ContentBlockEditor
       block={selectedBlock}
       projectId={projectId}
+      projectLocale={projectLocale}
       allBlocks={allBlocks}
       onUpdate={onFieldsChange}
       onVersionCreated={onVersionCreated}

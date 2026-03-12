@@ -132,4 +132,25 @@ describe("ProjectPlanSelector", () => {
     const firstCall = templateTreeEditorSpy.mock.calls[0][0] as { topLevelCreateTypes?: string[] };
     expect(firstCall.topLevelCreateTypes).toEqual(["field", "group"]);
   });
+
+  it("renders japanese copy when project locale is ja-JP", () => {
+    render(
+      <ProjectPlanSelector
+        plans={[makePlan()]}
+        chunks={makeChunks()}
+        projectLocale="ja-JP"
+        availableModels={[]}
+        fieldTemplates={makeTemplates()}
+        sharedNodeOptions={[]}
+        projectBlockOptions={[]}
+        onAddPlan={() => {}}
+        onPatchPlan={() => {}}
+        onRemovePlan={() => {}}
+        onImportTemplate={() => {}}
+      />,
+    );
+
+    expect(screen.getByText("編成プラン")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "+ 新しい編成プラン" })).toBeInTheDocument();
+  });
 });

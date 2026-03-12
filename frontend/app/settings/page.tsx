@@ -8,6 +8,7 @@ import { useState, useEffect, useCallback } from "react";
 import { settingsAPI, graderAPI, phaseTemplateAPI } from "@/lib/api";
 import type { AgentSettingsData, CreatorProfile, GraderData, PhaseTemplate, TemplateNode } from "@/lib/api";
 import type { PreQuestion } from "@/lib/preQuestions";
+import { isJaProjectLocale, persistClientLocale, resolveClientLocale } from "@/lib/project-locale";
 
 import { SystemPromptsSection } from "@/components/settings/system-prompts-section";
 import { ProfilesSection } from "@/components/settings/profiles-section";
@@ -21,17 +22,21 @@ import { ModelSettingsSection } from "@/components/settings/model-settings-secti
 import { LogsSection } from "@/components/settings/logs-section";
 
 type Tab = "prompts" | "profiles" | "templates" | "phase_templates" | "channels" | "graders" | "eval_prompts" | "agent" | "models" | "logs";
-type SystemPromptItem = { id: string; name: string; phase: string; content?: string };
+type SystemPromptItem = { id: string; name: string; stable_key?: string; locale?: string; phase: string; content?: string };
 type EvalPromptItem = {
   id: string;
   phase: string;
   name?: string;
+  stable_key?: string;
+  locale?: string;
   description?: string;
   content?: string;
 };
 type FieldTemplateItem = {
   id: string;
   name: string;
+  stable_key?: string;
+  locale?: string;
   description?: string;
   category?: string;
   schema_version?: number;
@@ -45,10 +50,11 @@ type FieldTemplateItem = {
   }>;
   root_nodes?: TemplateNode[];
 };
-type ChannelItem = { id: string; name: string; description?: string; platform?: string; prompt_template?: string };
+type ChannelItem = { id: string; name: string; stable_key?: string; locale?: string; description?: string; platform?: string; prompt_template?: string };
 type LogItem = { id: string; [key: string]: unknown };
 
 export default function SettingsPage() {
+  const [uiLocale, setUiLocale] = useState<"zh-CN" | "ja-JP" | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("prompts");
   const [profiles, setProfiles] = useState<CreatorProfile[]>([]);
   const [templates, setTemplates] = useState<FieldTemplateItem[]>([]);
@@ -60,6 +66,18 @@ export default function SettingsPage() {
   const [agentSettings, setAgentSettings] = useState<AgentSettingsData | null>(null);
   const [phaseTemplates, setPhaseTemplates] = useState<PhaseTemplate[]>([]);
   const [loading, setLoading] = useState(true);
+  const effectiveUiLocale = uiLocale || "zh-CN";
+  const isJa = isJaProjectLocale(effectiveUiLocale);
+
+  useEffect(() => {
+    setUiLocale(resolveClientLocale());
+  }, []);
+
+  useEffect(() => {
+    if (!uiLocale) return;
+    persistClientLocale(uiLocale);
+    document.title = isJa ? "設定" : "后台设置";
+  }, [isJa, uiLocale]);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -106,16 +124,16 @@ export default function SettingsPage() {
   }, [loadData]);
 
   const tabs: { id: Tab; label: string; icon: string }[] = [
-    { id: "prompts", label: "传统流程提示词", icon: "📝" },
-    { id: "profiles", label: "创作者特质", icon: "👤" },
-    { id: "templates", label: "内容块模板", icon: "📋" },
-    { id: "phase_templates", label: "流程模板", icon: "📐" },
-    { id: "channels", label: "渠道管理", icon: "📢" },
-    { id: "graders", label: "评分器", icon: "⚖️" },
-    { id: "eval_prompts", label: "评估提示词", icon: "🧪" },
-    { id: "agent", label: "Agent设置", icon: "🤖" },
-    { id: "models", label: "模型配置", icon: "🧠" },
-    { id: "logs", label: "调试日志", icon: "📊" },
+    { id: "prompts", label: isJa ? "従来フロープロンプト" : "传统流程提示词", icon: "📝" },
+    { id: "profiles", label: isJa ? "クリエイター特性" : "创作者特质", icon: "👤" },
+    { id: "templates", label: isJa ? "内容ブロックテンプレート" : "内容块模板", icon: "📋" },
+    { id: "phase_templates", label: isJa ? "フローテンプレート" : "流程模板", icon: "📐" },
+    { id: "channels", label: isJa ? "チャネル管理" : "渠道管理", icon: "📢" },
+    { id: "graders", label: isJa ? "評価器" : "评分器", icon: "⚖️" },
+    { id: "eval_prompts", label: isJa ? "評価プロンプト" : "评估提示词", icon: "🧪" },
+    { id: "agent", label: isJa ? "Agent 設定" : "Agent设置", icon: "🤖" },
+    { id: "models", label: isJa ? "モデル設定" : "模型配置", icon: "🧠" },
+    { id: "logs", label: isJa ? "デバッグログ" : "调试日志", icon: "📊" },
   ];
 
   return (
@@ -123,9 +141,9 @@ export default function SettingsPage() {
       <header className="h-14 border-b border-surface-3 bg-surface-1 flex items-center justify-between px-6">
         <div className="flex items-center gap-4">
           <a href="/workspace" className="text-zinc-400 hover:text-zinc-200 transition-colors">
-            ← 返回工作台
+            {isJa ? "← ワークスペースへ戻る" : "← 返回工作台"}
           </a>
-          <h1 className="text-lg font-semibold text-zinc-100">后台设置</h1>
+          <h1 className="text-lg font-semibold text-zinc-100">{isJa ? "設定" : "后台设置"}</h1>
         </div>
       </header>
 
@@ -151,7 +169,7 @@ export default function SettingsPage() {
 
         <main className="flex-1 p-6 max-w-5xl">
           {loading ? (
-            <div className="text-zinc-500">加载中...</div>
+            <div className="text-zinc-500">{isJa ? "読み込み中..." : "加载中..."}</div>
           ) : (
             <>
               {activeTab === "prompts" && <SystemPromptsSection prompts={prompts} onRefresh={loadData} />}

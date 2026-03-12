@@ -27,6 +27,8 @@ from datetime import datetime
 
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage
 
+from core.localization import DEFAULT_LOCALE, normalize_locale
+from core.locale_text import rt
 from core.llm import llm, get_chat_model
 from core.llm_compat import normalize_content
 from core.config import settings
@@ -79,6 +81,77 @@ class TrialResult:
     cost: float = 0.0
 
 
+def _is_ja_locale(locale: str) -> bool:
+    return normalize_locale(locale) == "ja-JP"
+
+
+def _locale_text(locale: str, ja: str, zh: str) -> str:
+    return ja if _is_ja_locale(locale) else zh
+
+
+def _default_dimensions(locale: str, zh_defaults: List[str]) -> List[str]:
+    if not _is_ja_locale(locale):
+        return zh_defaults
+    mapping = {
+        ("综合评价",): ["総合評価"],
+        ("找到答案效率", "信息完整性", "满意度"): ["回答到達効率", "情報完全性", "満足度"],
+        ("策略对齐度", "定位清晰度", "差异化程度", "完整性"): ["戦略整合性", "ポジショニング明確性", "差別化", "完全性"],
+        ("结构合理性", "语言质量", "风格一致性", "可读性"): ["構成妥当性", "言語品質", "文体一貫性", "可読性"],
+        ("事实准确性", "专业深度", "数据支撑", "行业相关性"): ["事実正確性", "専門性の深さ", "データ裏付け", "業界関連性"],
+        ("需求匹配度", "理解难度", "价值感知", "行动意愿"): ["ニーズ適合度", "理解しやすさ", "価値認知", "行動意欲"],
+        ("价值传达", "需求匹配", "异议处理", "转化结果"): ["価値伝達", "ニーズ適合", "異議対応", "成約結果"],
+    }
+    return mapping.get(tuple(zh_defaults), zh_defaults)
+
+
+def _score_schema(dimensions: List[str], locale: str) -> str:
+    score_label = "スコア(1-10)" if _is_ja_locale(locale) else "分数(1-10)"
+    return ", ".join([f'"{d}": {score_label}' for d in dimensions])
+
+
+def _comment_schema(dimensions: List[str], locale: str, detailed: bool = False) -> str:
+    if _is_ja_locale(locale):
+        comment_label = "具体講評（少なくとも2文）" if detailed else "講評"
+    else:
+        comment_label = "具体评语（至少2句话）" if detailed else "评语"
+    return ", ".join([f'"{d}": "{comment_label}"' for d in dimensions])
+
+
+def _content_end_label(locale: str) -> str:
+    return "内容終了" if _is_ja_locale(locale) else "内容结束"
+
+
+def _history_role_label(locale: str, role: str) -> str:
+    if role == "assistant":
+        return _locale_text(locale, "あなた(assistant)", "我方(assistant)")
+    if role == "user":
+        return _locale_text(locale, "相手(user)", "对方(user)")
+    return role
+
+
+def _default_eval_persona(locale: str) -> dict:
+    return {
+        "name": _locale_text(locale, "典型ユーザー", "典型用户"),
+        "background": _locale_text(locale, "この分野に関心のある読者", "对该领域感兴趣的读者"),
+    }
+
+
+def _default_user_name(locale: str) -> str:
+    return _locale_text(locale, "消費者", "消费者")
+
+
+def _default_content_name(locale: str, content_field_names: Optional[list] = None) -> str:
+    if content_field_names:
+        if len(content_field_names) == 1:
+            return f"「{content_field_names[0]}」" if _is_ja_locale(locale) else f"《{content_field_names[0]}》"
+        return (
+            f"「{content_field_names[0]}」など{len(content_field_names)}件"
+            if _is_ja_locale(locale)
+            else f"《{content_field_names[0]}》等{len(content_field_names)}篇"
+        )
+    return _locale_text(locale, "コンテンツ", "内容")
+
+
 # ============== LLM 调用封装（带日志） ==============
 
 async def _call_llm(
@@ -126,8 +199,10 @@ async def _call_llm_multi(
     messages: List[BaseMessage],
     step: str,
     temperature: float = 0.6,
+    locale: str = DEFAULT_LOCALE,
 ) -> Tuple[str, LLMCall]:
     """多消息版本的 LLM 调用（用于多轮对话）"""
+    locale = normalize_locale(locale)
     from core.llm import ainvoke_with_retry
     start_time = time.time()
     llm_t = get_chat_model(temperature=temperature)  # 自动选择 provider 对应的默认模型
@@ -141,9 +216,13 @@ async def _call_llm_multi(
         if isinstance(m, SystemMessage):
             system_prompt = normalize_content(m.content)
         elif isinstance(m, AIMessage):
-            conversation_parts.append(f"[我方(assistant)]: {normalize_content(m.content)}")
+            conversation_parts.append(
+                f"[{_history_role_label(locale, 'assistant')}]: {normalize_content(m.content)}"
+            )
         elif isinstance(m, HumanMessage):
-            conversation_parts.append(f"[对方(user)]: {normalize_content(m.content)}")
+            conversation_parts.append(
+                f"[{_history_role_label(locale, 'user')}]: {normalize_content(m.content)}"
+            )
     
     full_history = "\n---\n".join(conversation_parts) if conversation_parts else ""
     
@@ -229,9 +308,11 @@ async def run_task_trial(
             simulator_type, content, creator_profile, intent, persona, config, grader_cfg, content_field_names
         )
     else:
+        locale = normalize_locale(config.get("locale", grader_cfg.get("locale", DEFAULT_LOCALE)))
         return TrialResult(
             role=simulator_type, interaction_mode=interaction_mode,
-            success=False, error=f"不支持的交互模式: {interaction_mode}"
+            success=False,
+            error=_locale_text(locale, f"未対応のインタラクションモード: {interaction_mode}", f"不支持的交互模式: {interaction_mode}"),
         )
     
     result.role_display_name = display_name
@@ -249,6 +330,7 @@ async def _run_review(
 ) -> TrialResult:
     """审查模式：AI 一次性阅读全部内容，给出结构化反馈"""
     llm_calls = []
+    locale = normalize_locale(config.get("locale", DEFAULT_LOCALE))
     
     # 获取系统提示词（优先后台配置 > 硬编码 SIMULATOR_TYPES）
     type_info = SIMULATOR_TYPES.get(simulator_type, {})
@@ -257,26 +339,47 @@ async def _run_review(
     
     if custom_prompt:
         # 自定义模板：{content} 占位符指向 user_message，不在 system 里展开
-        base_prompt = custom_prompt.replace("{content}", "（见下方待评估内容）").replace("{persona}", persona_text)
+        base_prompt = custom_prompt.replace(
+            "{content}",
+            _locale_text(locale, "（下記の評価対象コンテンツを参照）", "（见下方待评估内容）"),
+        ).replace("{persona}", persona_text)
     else:
-        base_prompt = type_info.get("system_prompt", "请评估以下内容。")
+        base_prompt = type_info.get("system_prompt", rt(locale, "eval_engine.review_default"))
     
     # 注入上下文（角色背景放 system，内容放 user）
     system_prompt = base_prompt
     if creator_profile:
-        system_prompt += f"\n\n【创作者特质】\n{creator_profile}"
+        system_prompt += f"\n\n{_locale_text(locale, '【クリエイター特性】', '【创作者特质】')}\n{creator_profile}"
     if intent:
-        system_prompt += f"\n\n【项目意图】\n{intent}"
+        system_prompt += f"\n\n{_locale_text(locale, '【プロジェクト意図】', '【项目意图】')}\n{intent}"
     if persona:
-        system_prompt += f"\n\n【目标消费者】\n{persona_text}"
+        system_prompt += f"\n\n{_locale_text(locale, '【対象顧客】', '【目标消费者】')}\n{persona_text}"
     
     # 获取评分维度
-    dimensions = grader_cfg.get("dimensions", []) or type_info.get("default_dimensions", ["综合评价"])
-    dim_str = ", ".join([f'"{d}": 分数(1-10)' for d in dimensions])
-    dim_comment_str = ", ".join([f'"{d}": "具体评语（至少2句话）"' for d in dimensions])
+    dimensions = grader_cfg.get("dimensions", []) or _default_dimensions(
+        locale, type_info.get("default_dimensions", ["综合评价"])
+    )
+    dim_str = _score_schema(dimensions, locale)
+    dim_comment_str = _comment_schema(dimensions, locale, detailed=True)
     
     # user_message: 只在这里传内容（唯一一次）
-    user_message = f"""【待评估内容】
+    user_message = (
+        f"""【評価対象コンテンツ】
+{content}
+
+専門家として評価してください。
+
+**JSON 形式のみで出力してください**:
+{{
+    "scores": {{{dim_str}}},
+    "comments": {{{dim_comment_str}}},
+    "strengths": ["長所1", "長所2", "長所3"],
+    "weaknesses": ["課題1", "課題2", "課題3"],
+    "suggestions": ["改善提案1", "改善提案2", "改善提案3"],
+    "summary": "総合評価（100-200字）"
+}}"""
+        if locale == "ja-JP" else
+        f"""【待评估内容】
 {content}
 
 请以你的专业身份进行评估。
@@ -290,6 +393,7 @@ async def _run_review(
     "suggestions": ["具体改进建议1", "具体改进建议2", "具体改进建议3"],
     "summary": "总体评价（100-200字）"
 }}"""
+    )
 
     try:
         response_text, call = await _call_llm(
@@ -368,32 +472,59 @@ async def _run_exploration(
     3. 最终给出结构化评价
     """
     llm_calls = []
-    
-    persona = persona or {"name": "典型用户", "background": "对该领域感兴趣的读者"}
-    user_name = persona.get("name", "消费者")
+    locale = normalize_locale(config.get("locale", DEFAULT_LOCALE))
+
+    persona = persona or _default_eval_persona(locale)
+    user_name = persona.get("name", _default_user_name(locale))
     persona_text = json.dumps(persona, ensure_ascii=False, indent=2)
-    
-    content_name = "内容"
-    if content_field_names:
-        content_name = f"《{content_field_names[0]}》" if len(content_field_names) == 1 else f"《{content_field_names[0]}》等{len(content_field_names)}篇"
+
+    content_name = _default_content_name(locale, content_field_names)
     
     # 根据 persona 的痛点推导探索任务
     pain_points = persona.get("pain_points", [])
     task_hint = ""
     if pain_points:
-        task_hint = f"你最想解决的问题：{'; '.join(pain_points[:3])}"
+        separator = " / " if _is_ja_locale(locale) else "; "
+        task_hint = (
+            f"あなたが最も解決したい課題: {separator.join(pain_points[:3])}"
+            if _is_ja_locale(locale)
+            else f"你最想解决的问题：{separator.join(pain_points[:3])}"
+        )
     else:
-        task_hint = f"你想了解 {content_name} 是否对你有用"
+        task_hint = (
+            f"あなたは {content_name} が自分に役立つかを確かめたい"
+            if _is_ja_locale(locale)
+            else f"你想了解 {content_name} 是否对你有用"
+        )
     
     custom_prompt = config.get("system_prompt", "")
     
     # ===== 第一步：消费者制定探索计划 =====
     if custom_prompt:
-        plan_system = custom_prompt.replace("{persona}", persona_text).replace("{content}", "（见下方）").replace("{task}", task_hint)
+        plan_system = custom_prompt.replace("{persona}", persona_text).replace(
+            "{content}",
+            _locale_text(locale, "（下記参照）", "（见下方）"),
+        ).replace("{task}", task_hint)
         if persona_text not in plan_system:
-            plan_system += f"\n\n【你扮演的角色】\n{persona_text}"
+            plan_system += f"\n\n{_locale_text(locale, '【あなたが演じる役割】', '【你扮演的角色】')}\n{persona_text}"
     else:
-        plan_system = f"""你正在扮演一位真实用户。
+        plan_system = (
+            f"""あなたは実在のユーザーとしてこの内容を探索します。
+
+【あなたの役割】
+{persona_text}
+
+【背景】
+いま目の前には {content_name} があります。あなたの立場と目的に沿って、何を先に確認すべきか判断してください。
+{task_hint}
+
+【行動要件】
+1. 実際の顧客と同じ視点で、どこから確認するかを決めること
+2. 各ステップで感じた価値・疑問・不足を率直に記録すること
+3. 情報が不足している箇所や分かりにくい箇所は明確に指摘すること
+4. 最後に、この内容が自分に役立つかどうかを判断すること"""
+            if _is_ja_locale(locale)
+            else f"""你正在扮演一位真实用户。
 
 【你的角色】
 {persona_text}
@@ -407,18 +538,53 @@ async def _run_exploration(
 2. 每一步探索都要记录你的真实感受
 3. 如果发现内容有缺失或不清楚的地方，要指出来
 4. 最终判断这个内容是否对你有帮助"""
+        )
 
     if creator_profile:
-        plan_system += f"\n\n【创作者特质】\n{creator_profile}"
+        plan_system += f"\n\n{_locale_text(locale, '【クリエイター特性】', '【创作者特质】')}\n{creator_profile}"
     if intent:
-        plan_system += f"\n\n【项目意图】\n{intent}"
+        plan_system += f"\n\n{_locale_text(locale, '【プロジェクト意図】', '【项目意图】')}\n{intent}"
     
     type_info = SIMULATOR_TYPES.get(simulator_type, {})
-    dimensions = grader_cfg.get("dimensions", []) or type_info.get("default_dimensions", ["找到答案效率", "信息完整性", "满意度"])
-    dim_str = ", ".join([f'"{d}": 分数(1-10)' for d in dimensions])
-    dim_comment_str = ", ".join([f'"{d}": "具体评语（至少2句话）"' for d in dimensions])
+    dimensions = grader_cfg.get("dimensions", []) or _default_dimensions(
+        locale, type_info.get("default_dimensions", ["找到答案效率", "信息完整性", "满意度"])
+    )
+    dim_str = _score_schema(dimensions, locale)
+    dim_comment_str = _comment_schema(dimensions, locale, detailed=True)
     
-    plan_user = f"""以下是你要探索的内容：
+    plan_user = (
+        f"""以下は探索対象の内容です:
+
+=== 内容開始 ===
+{content}
+=== 内容終了 ===
+
+あなたの役割になりきって、探索プロセス全体をシミュレートしてください。
+
+**JSON 形式のみで出力してください**:
+{{
+    "exploration_plan": "どのように閲覧するか（1-2文）",
+    "exploration_steps": [
+        {{
+            "step": 1,
+            "action": "最初に見た箇所",
+            "reason": "その理由",
+            "finding": "得られた発見",
+            "feeling": "感じたこと"
+        }}
+    ],
+    "attention_points": ["目を引いた内容1"],
+    "found_answer": true,
+    "answer_quality": "答えの十分さ",
+    "difficulties": ["困難1"],
+    "missing_info": ["不足情報1"],
+    "scores": {{{dim_str}}},
+    "comments": {{{dim_comment_str}}},
+    "would_recommend": true,
+    "summary": "{user_name}としての総合評価（100-200字）"
+}}"""
+        if locale == "ja-JP" else
+        f"""以下是你要探索的内容：
 
 === 内容开始 ===
 {content}
@@ -455,6 +621,7 @@ async def _run_exploration(
     "would_recommend": true,
     "summary": "作为{user_name}，总体评价这个内容对我的帮助程度（100-200字）"
 }}"""
+    )
 
     try:
         response_text, call = await _call_llm(
@@ -473,7 +640,11 @@ async def _run_exploration(
         plan = result_data.get("exploration_plan", "")
         if plan:
             exploration_nodes.append({
-                "role": "consumer", "content": f"📋 探索计划：{plan}", "turn": 0,
+                "role": "consumer",
+                "content": (
+                    f"📋 探索計画: {plan}" if _is_ja_locale(locale) else f"📋 探索计划：{plan}"
+                ),
+                "turn": 0,
             })
         
         # 每一步探索
@@ -483,14 +654,18 @@ async def _run_exploration(
             reason = step_data.get("reason", "")
             finding = step_data.get("finding", "")
             feeling = step_data.get("feeling", "")
-            
-            step_content = f"🔍 步骤 {step_num}：{action}"
+
+            step_content = (
+                f"🔍 ステップ {step_num}: {action}"
+                if _is_ja_locale(locale)
+                else f"🔍 步骤 {step_num}：{action}"
+            )
             if reason:
-                step_content += f"\n💭 原因：{reason}"
+                step_content += f"\n💭 {_locale_text(locale, '理由', '原因')}: {reason}"
             if finding:
-                step_content += f"\n📝 发现：{finding}"
+                step_content += f"\n📝 {_locale_text(locale, '発見', '发现')}: {finding}"
             if feeling:
-                step_content += f"\n😊 感受：{feeling}"
+                step_content += f"\n😊 {_locale_text(locale, '感想', '感受')}: {feeling}"
             
             exploration_nodes.append({
                 "role": "consumer", "content": step_content, "turn": step_num,
@@ -500,7 +675,10 @@ async def _run_exploration(
         attention = result_data.get("attention_points", [])
         if attention:
             exploration_nodes.append({
-                "role": "system", "content": "⭐ 特别关注的内容：\n" + "\n".join(f"• {a}" for a in attention),
+                "role": "system",
+                "content": (
+                    "⭐ 特に注目した内容:\n" if _is_ja_locale(locale) else "⭐ 特别关注的内容：\n"
+                ) + "\n".join(f"• {a}" for a in attention),
             })
         
         # 困难与缺失
@@ -509,9 +687,13 @@ async def _run_exploration(
         if difficulties or missing:
             gap_text = ""
             if difficulties:
-                gap_text += "❌ 遇到的困难：\n" + "\n".join(f"• {d}" for d in difficulties)
+                gap_text += (
+                    "❌ つまずいた点:\n" if _is_ja_locale(locale) else "❌ 遇到的困难：\n"
+                ) + "\n".join(f"• {d}" for d in difficulties)
             if missing:
-                gap_text += "\n⚠️ 缺失的信息：\n" + "\n".join(f"• {m}" for m in missing)
+                gap_text += (
+                    "\n⚠️ 足りない情報:\n" if _is_ja_locale(locale) else "\n⚠️ 缺失的信息：\n"
+                ) + "\n".join(f"• {m}" for m in missing)
             exploration_nodes.append({
                 "role": "system", "content": gap_text.strip(),
             })
@@ -522,9 +704,15 @@ async def _run_exploration(
         summary = result_data.get("summary", "")
         exploration_nodes.append({
             "role": "consumer",
-            "content": f"{'✅' if found else '❌'} 是否找到答案：{'是' if found else '否'}"
-                       + (f"\n📊 答案质量：{quality}" if quality else "")
-                       + (f"\n\n{summary}" if summary else ""),
+            "content": (
+                f"{'✅' if found else '❌'} {'答えを見つけられたか' if _is_ja_locale(locale) else '是否找到答案'}:"
+                f"{'はい' if _is_ja_locale(locale) and found else 'いいえ' if _is_ja_locale(locale) else '是' if found else '否'}"
+            )
+            + (
+                f"\n📊 {'回答の充足度' if _is_ja_locale(locale) else '答案质量'}: {quality}"
+                if quality else ""
+            )
+            + (f"\n\n{summary}" if summary else ""),
         })
         
         scores = result_data.get("scores", {})
@@ -594,14 +782,13 @@ async def _run_dialogue(
     llm_calls = []
     interaction_log = []
     max_turns = config.get("max_turns", 5)
-    
-    persona = persona or {"name": "典型用户", "background": "对该领域感兴趣的读者"}
-    user_name = persona.get("name", "消费者")
+    locale = normalize_locale(config.get("locale", DEFAULT_LOCALE))
+
+    persona = persona or _default_eval_persona(locale)
+    user_name = persona.get("name", _default_user_name(locale))
     persona_text = json.dumps(persona, ensure_ascii=False, indent=2)
-    
-    content_name = "内容"
-    if content_field_names:
-        content_name = f"《{content_field_names[0]}》" if len(content_field_names) == 1 else f"《{content_field_names[0]}》等{len(content_field_names)}篇"
+
+    content_name = _default_content_name(locale, content_field_names)
     
     # 根据 simulator_type 或 interaction_type 确定对话方向
     # decision 类型模拟器 = 销售方主动 → prompt_template 是卖方提示词
@@ -622,23 +809,23 @@ async def _run_dialogue(
         # 用后台配置的提示词，替换占位符
         consumer_system = custom_sim_prompt.replace("{persona}", persona_text).replace("{content}", content)
         if persona_text not in consumer_system and "{persona}" not in custom_sim_prompt:
-            consumer_system += f"\n\n【你扮演的消费者角色】\n{persona_text}"
+            consumer_system += f"\n\n{_locale_text(locale, '【あなたが演じる消費者像】', '【你扮演的消费者角色】')}\n{persona_text}"
     else:
-        consumer_system = f"""你正在扮演一位真实用户进行模拟对话。
+        consumer_system = f"""{"あなたは実在のユーザーとして対話シミュレーションを行っています。" if locale == "ja-JP" else "你正在扮演一位真实用户进行模拟对话。"}
 
-【你的角色】
+【{"あなたの役割" if locale == "ja-JP" else "你的角色"}】
 {persona_text}
 
-【你的目标】
-你有一些困惑和问题想要解决。你正在通过阅读/咨询{content_name}来寻找答案。
+【{"あなたの目的" if locale == "ja-JP" else "你的目标"}】
+{"あなたには解決したい疑問や課題があります。" if locale == "ja-JP" else "你有一些困惑和问题想要解决。"}{"あなたは" if locale == "ja-JP" else "你正在通过阅读/咨询"}{content_name}{"を読み、相談しながら答えを探しています。" if locale == "ja-JP" else "来寻找答案。"}
 
-【行为要求】
-1. 每次只问一个问题，表达简短自然
-2. 问题要基于你的真实背景和痛点
-3. 如果对方的回答让你满意，可以表示感谢
-4. 如果对方的回答不够好，继续追问
-5. 如果觉得已经了解足够了，说"好的，我了解了"结束对话
-6. 每次发言不超过50字"""
+【{"行動要件" if locale == "ja-JP" else "行为要求"}】
+1. {"1回につき質問は1つだけ、自然で簡潔に話す" if locale == "ja-JP" else "每次只问一个问题，表达简短自然"}
+2. {"質問は自分の背景と課題に基づくこと" if locale == "ja-JP" else "问题要基于你的真实背景和痛点"}
+3. {"回答に納得したら感謝を示してよい" if locale == "ja-JP" else "如果对方的回答让你满意，可以表示感谢"}
+4. {"不十分なら追加で深掘りする" if locale == "ja-JP" else "如果对方的回答不够好，继续追问"}
+5. {"十分理解できたら「はい、理解できました」で終了する" if locale == "ja-JP" else '如果觉得已经了解足够了，说"好的，我了解了"结束对话'}
+6. {"各発話は50字以内" if locale == "ja-JP" else "每次发言不超过50字"}"""
 
     # ===== 内容代表/第二方提示词 =====
     custom_secondary = config.get("secondary_prompt", "")
@@ -648,20 +835,23 @@ async def _run_dialogue(
         # ===== 防御性检查：如果模板中没有 {content} 占位符，内容未被注入 =====
         # 这是最关键的修复：确保内容代表一定能看到项目内容
         if "{content}" not in custom_secondary and content and content.strip():
-            content_system += f"\n\n=== 你必须严格基于以下内容回答 ===\n{content}\n=== 内容结束 ==="
+            content_system += (
+                f"\n\n=== {'以下の内容に厳密に基づいて回答してください' if locale == 'ja-JP' else '你必须严格基于以下内容回答'} ===\n"
+                f"{content}\n=== {_content_end_label(locale)} ==="
+            )
     else:
-        content_system = f"""你是{content_name}的内容代表，严格基于以下内容回答问题。
+        content_system = f"""{"あなたは" if locale == "ja-JP" else "你是"}{content_name}{"の内容担当者です。以下の内容に厳密に基づいて回答してください。" if locale == "ja-JP" else "的内容代表，严格基于以下内容回答问题。"}
 
-=== 内容开始 ===
+=== {"内容開始" if locale == "ja-JP" else "内容开始"} ===
 {content}
-=== 内容结束 ===
+=== {_content_end_label(locale)} ===
 
-【回答规则】
-1. 严格基于内容回答，不要编造
-2. 如果内容中没有涉及，必须明确回复“内容未覆盖”，禁止臆测
-3. 尽量引用内容中的原话或核心观点
-4. 每次回复推进一个决策节点（需求/异议/价值映射/决定）
-5. 回复简洁，不超过50字"""
+【{"回答ルール" if locale == "ja-JP" else "回答规则"}】
+1. {"内容に厳密に基づいて回答し、作り話をしない" if locale == "ja-JP" else "严格基于内容回答，不要编造"}
+2. {"内容にない場合は「コンテンツには含まれていません」と明示し、推測しない" if locale == "ja-JP" else "如果内容中没有涉及，必须明确回复“内容未覆盖”，禁止臆测"}
+3. {"可能な限り原文または核心表現を引用する" if locale == "ja-JP" else "尽量引用内容中的原话或核心观点"}
+4. {"各応答で一つの意思決定ポイントを前に進める" if locale == "ja-JP" else "每次回复推进一个决策节点（需求/异议/价值映射/决定）"}
+5. {"返信は簡潔に、50字以内" if locale == "ja-JP" else "回复简洁，不超过50字"}"""
 
     try:
         for turn in range(max_turns):
@@ -673,11 +863,18 @@ async def _run_dialogue(
                 else:
                     user_messages.append(HumanMessage(content=log["content"]))
             
-            prompt = "请基于你的背景，提出你最想解决的第一个问题。" if turn == 0 else "请基于之前的对话，继续你的咨询。"
+            prompt = (
+                "あなたの背景を踏まえて、最初に解決したい質問を1つ挙げてください。"
+                if locale == "ja-JP" and turn == 0 else
+                "これまでの対話を踏まえて、相談を続けてください。"
+                if locale == "ja-JP" else
+                "请基于你的背景，提出你最想解决的第一个问题。"
+                if turn == 0 else "请基于之前的对话，继续你的咨询。"
+            )
             user_messages.append(HumanMessage(content=prompt))
             
             user_response_text, user_call = await _call_llm_multi(
-                user_messages, step=f"consumer_turn_{turn+1}", temperature=0.8
+                user_messages, step=f"consumer_turn_{turn+1}", temperature=0.8, locale=locale
             )
             llm_calls.append(user_call)
             
@@ -687,7 +884,11 @@ async def _run_dialogue(
             })
             
             # 检查是否结束
-            end_signals = ["了解了", "明白了", "好的谢谢", "谢谢", "再见", "不需要了", "足够了", "清楚了"]
+            end_signals = (
+                ["はい、理解できました", "理解できました", "ありがとうございます", "ありがとう", "失礼します", "もう大丈夫です", "十分です", "わかりました"]
+                if locale == "ja-JP"
+                else ["了解了", "明白了", "好的谢谢", "谢谢", "再见", "不需要了", "足够了", "清楚了"]
+            )
             if any(s in user_response_text for s in end_signals):
                 break
             
@@ -700,7 +901,7 @@ async def _run_dialogue(
                     content_messages.append(AIMessage(content=log["content"]))
             
             content_response_text, content_call = await _call_llm_multi(
-                content_messages, step=f"content_rep_turn_{turn+1}", temperature=0.5
+                content_messages, step=f"content_rep_turn_{turn+1}", temperature=0.5, locale=locale
             )
             llm_calls.append(content_call)
             
@@ -716,26 +917,48 @@ async def _run_dialogue(
         ])
         
         type_info = SIMULATOR_TYPES.get(simulator_type, {})
-        dimensions = grader_cfg.get("dimensions", []) or type_info.get("default_dimensions", ["综合评价"])
-        dim_str = ", ".join([f'"{d}": 分数(1-10)' for d in dimensions])
+        dimensions = grader_cfg.get("dimensions", []) or _default_dimensions(
+            locale, type_info.get("default_dimensions", ["综合评价"])
+        )
+        dim_str = _score_schema(dimensions, locale)
         
-        eval_system = f"""你是{user_name}，刚刚完成了一次咨询对话。
+        eval_system = (
+            f"あなたは{user_name}です。たった今、1回の相談対話を終えました。\nあなたの背景: {persona_text}\nこの内容がどの程度役立ったかを評価してください。"
+            if locale == "ja-JP" else
+            f"""你是{user_name}，刚刚完成了一次咨询对话。
 你的背景：{persona_text}
 请评估内容对你的帮助程度。"""
+        )
         
-        eval_user = f"""对话记录：
+        eval_user = (
+            f"""対話記録:
+{dialogue_transcript}
+
+JSON 形式で出力してください:
+{{
+    "scores": {{{dim_str}}},
+    "comments": {{{", ".join([f'"{d}": "講評"' for d in dimensions])}}},
+    "problems_solved": ["解決できた課題"],
+    "problems_unsolved": ["未解決の課題"],
+    "content_gaps": ["内容不足の点"],
+    "would_recommend": true,
+    "summary": "総合評価（100字以内）"
+}}"""
+            if locale == "ja-JP" else
+            f"""对话记录：
 {dialogue_transcript}
 
 请以JSON格式输出：
 {{
     "scores": {{{dim_str}}},
-    "comments": {{{", ".join([f'"{d}": "评语"' for d in dimensions])}}},
+    "comments": {{{_comment_schema(dimensions, locale)}}},
     "problems_solved": ["被解决的问题"],
     "problems_unsolved": ["未被解决的问题"],
     "content_gaps": ["内容缺失的部分"],
     "would_recommend": true,
     "summary": "总体评价（100字以内）"
 }}"""
+        )
         
         eval_text, eval_call = await _call_llm(
             eval_system, eval_user,
@@ -800,8 +1023,10 @@ async def _run_seller_dialogue(
     content_field_names: list = None,
 ) -> TrialResult:
     """销售对话：销售顾问主动推介，消费者回应"""
+    locale = normalize_locale(config.get("locale", DEFAULT_LOCALE))
     max_turns = config.get("max_turns", 8)
-    consumer_name = persona.get("name", "消费者")
+    persona = persona or _default_eval_persona(locale)
+    consumer_name = persona.get("name", _default_user_name(locale))
     persona_text = json.dumps(persona, ensure_ascii=False, indent=2)
     interaction_log = []
     
@@ -811,13 +1036,43 @@ async def _run_seller_dialogue(
         seller_system = custom_primary.replace("{content}", content).replace("{persona}", persona_text)
         # 防御性检查：销售方必须知道内容
         if "{content}" not in custom_primary and content and content.strip():
-            seller_system += f"\n\n=== 你掌握的内容（必须基于此销售）===\n{content}\n=== 内容结束 ==="
+            seller_system += (
+                f"\n\n=== {'あなたが把握している内容（必ずこれに基づいて提案すること）' if locale == 'ja-JP' else '你掌握的内容（必须基于此销售）'} ===\n"
+                f"{content}\n=== {_content_end_label(locale)} ==="
+            )
     else:
-        seller_system = f"""你是这个内容的销售顾问。你深入了解内容的每个细节。
+        seller_system = (
+            f"""あなたはこの内容の営業担当者です。内容の細部まで理解しています。
+
+=== あなたが把握している内容 ===
+{content}
+=== {_content_end_label(locale)} ===
+
+【対象顧客】
+{persona_text}
+
+【営業戦略】
+Phase 1（1ターン目）: 興味を引く導入と、ニーズ把握のための質問
+Phase 2（2-3ターン目）: 顧客の具体的な課題や背景を深掘りする
+Phase 3（4-5ターン目）: 内容の価値を顧客ニーズに結びつける
+Phase 4（6-7ターン目）: 異議や不安に対応する
+Phase 5（最終）: 価値を要約し、意思決定を確認する
+
+【行動要件】
+- 主導して対話を進める
+- 内容内の具体情報を引用する
+- 誠実さを保ちつつ説得力を持たせる
+- 各発話は50字以内
+
+【厳格な制約】
+1) 価値訴求は必ず与えられた内容に基づくこと。根拠のない外部情報は追加しない。
+2) 各ターンで必ず1つの意思決定ポイント（ニーズ確認 / 異議整理 / 価値接続 / 決定促進）を前進させる。"""
+            if locale == "ja-JP" else
+            f"""你是这个内容的销售顾问。你深入了解内容的每个细节。
 
 === 你掌握的内容 ===
 {content}
-=== 内容结束 ===
+=== {_content_end_label(locale)} ===
 
 【你的目标消费者】
 {persona_text}
@@ -834,13 +1089,29 @@ Phase 5 (最后): 总结价值，询问决定
 【强约束】
 1) 仅可使用给定内容进行价值陈述，若内容没有依据，不得补充“外部事实”。
 2) 每轮必须推进一个决策节点：需求确认/异议澄清/价值映射/促成决定。"""
+        )
 
     # 消费者方提示词：优先用后台配置的 secondary_prompt
     custom_secondary = config.get("secondary_prompt", "")
     if custom_secondary:
         consumer_system = custom_secondary.replace("{persona}", persona_text).replace("{content}", content)
     else:
-        consumer_system = f"""你是一位真实的潜在用户。有人正在向你推介内容/产品。
+        consumer_system = (
+            f"""あなたは実在の見込み顧客です。今、誰かがあなたに内容や商品を提案しています。
+
+【あなたの属性】
+{persona_text}
+
+【あなたのスタンス】
+- 実際の課題や目的を持っている
+- 簡単には納得せず、必要に応じて疑問をぶつける
+- 価値を感じたら受け入れる
+- 合わなければ明確に断る
+
+【行動要件】
+自分の背景に基づいて自然に応答し、必要に応じて疑義を示し、最後には明確な判断を伝えてください。各発話は50字以内です。"""
+            if locale == "ja-JP" else
+            f"""你是一位真实的潜在用户。有人正在向你推介内容/产品。
 
 【你的身份】
 {persona_text}
@@ -848,6 +1119,7 @@ Phase 5 (最后): 总结价值，询问决定
 【你的态度】- 有真实需求，但不轻易被说服 - 会提出真实质疑 - 如果确实有价值，愿意接受 - 不适合就明确拒绝
 
 【行为要求】基于真实背景回应，适当质疑，最后做出明确决定。每次发言不超过50字。"""
+        )
 
     try:
         for turn in range(max_turns):
@@ -858,13 +1130,17 @@ Phase 5 (最后): 总结价值，询问决定
                     seller_messages.append(AIMessage(content=log["content"]))
                 else:
                     seller_messages.append(HumanMessage(content=log["content"]))
-            seller_messages.append(HumanMessage(content="请开始你的销售开场白。" if turn == 0 else "请继续。"))
+            seller_messages.append(HumanMessage(content=(
+                "営業トークを開始してください。" if locale == "ja-JP" and turn == 0 else
+                "続きを話してください。" if locale == "ja-JP" else
+                "请开始你的销售开场白。" if turn == 0 else "请继续。"
+            )))
             
             seller_text, seller_call = await _call_llm_multi(
-                seller_messages, step=f"seller_turn_{turn+1}", temperature=0.7
+                seller_messages, step=f"seller_turn_{turn+1}", temperature=0.7, locale=locale
             )
             llm_calls.append(seller_call)
-            interaction_log.append({"role": "seller", "name": "销售顾问", "content": seller_text, "turn": turn + 1, "phase": _get_sales_phase(turn)})
+            interaction_log.append({"role": "seller", "name": ("営業担当" if locale == "ja-JP" else "销售顾问"), "content": seller_text, "turn": turn + 1, "phase": _get_sales_phase(turn)})
             
             # 消费者回应
             consumer_messages = [SystemMessage(content=consumer_system)]
@@ -875,38 +1151,63 @@ Phase 5 (最后): 总结价值，询问决定
                     consumer_messages.append(HumanMessage(content=log["content"]))
             
             consumer_text, consumer_call = await _call_llm_multi(
-                consumer_messages, step=f"consumer_turn_{turn+1}", temperature=0.8
+                consumer_messages, step=f"consumer_turn_{turn+1}", temperature=0.8, locale=locale
             )
             llm_calls.append(consumer_call)
             interaction_log.append({"role": "consumer", "name": consumer_name, "content": consumer_text, "turn": turn + 1})
             
             # 检查决定
-            decision_signals = ["我决定", "我接受", "我不需要", "我拒绝", "可以", "好的"]
+            decision_signals = (
+                ["決めました", "受け入れます", "今回は不要です", "見送ります", "大丈夫です", "お願いします"]
+                if _is_ja_locale(locale)
+                else ["我决定", "我接受", "我不需要", "我拒绝", "可以", "好的"]
+            )
             if turn >= 3 and any(s in consumer_text for s in decision_signals):
                 break
         
         # 评估
         dialogue_transcript = "\n".join([f"[{log.get('name', log['role'])}]: {log['content']}" for log in interaction_log])
         
-        dimensions = grader_cfg.get("dimensions", []) or SIMULATOR_TYPES.get("seller", {}).get("default_dimensions", ["综合评价"])
-        dim_str = ", ".join([f'"{d}": 分数(1-10)' for d in dimensions])
+        dimensions = grader_cfg.get("dimensions", []) or _default_dimensions(
+            locale, SIMULATOR_TYPES.get("seller", {}).get("default_dimensions", ["综合评价"])
+        )
+        dim_str = _score_schema(dimensions, locale)
         
         eval_text, eval_call = await _call_llm(
+            "あなたは営業効果評価の専門家です。以下の営業対話を分析し、先に根拠を示し、その後に採点してください。"
+            if locale == "ja-JP" else
             "你是一位销售效果评估专家。请分析以下销售对话的效果。先列证据，再给分。",
-            f"""销售对话记录：
+            (
+                f"""営業対話記録:
+{dialogue_transcript}
+
+JSON 形式で出力してください:
+{{
+    "scores": {{{dim_str}}},
+    "comments": {{{", ".join([f'"{d}": "講評"' for d in dimensions])}}},
+    "conversion": true,
+    "conversion_factors": ["要因"],
+    "rejection_factors": ["要因"],
+    "content_strengths": ["強み"],
+    "content_gaps": ["不足"],
+    "summary": "営業効果の総合評価（100-200字）"
+}}"""
+                if locale == "ja-JP" else
+                f"""销售对话记录：
 {dialogue_transcript}
 
 请以JSON格式输出：
 {{
     "scores": {{{dim_str}}},
-    "comments": {{{", ".join([f'"{d}": "评语"' for d in dimensions])}}},
+    "comments": {{{_comment_schema(dimensions, locale)}}},
     "conversion": true,
     "conversion_factors": ["因素"],
     "rejection_factors": ["因素"],
     "content_strengths": ["优势"],
     "content_gaps": ["缺失"],
     "summary": "销售效果总体评价（100-200字）"
-}}""",
+}}"""
+            ),
             step="grader_content_seller",
             temperature=0.5,
         )
@@ -964,6 +1265,7 @@ async def run_individual_grader(
     content: str,
     trial_result_data: dict,
     process_transcript: str = "",
+    grader_cfg: Optional[dict] = None,
 ) -> Tuple[dict, Optional[LLMCall]]:
     """
     运行单个 Grader。
@@ -984,7 +1286,9 @@ async def run_individual_grader(
     Returns:
         (grader_output_dict, LLMCall_or_None)
     """
-    dims = dimensions or ["综合评价"]
+    grader_cfg = grader_cfg or {}
+    locale = normalize_locale(grader_cfg.get("locale", DEFAULT_LOCALE))
+    dims = dimensions or _default_dimensions(locale, ["综合评价"])
     
     # ===== 核心：模板就是最终提示词，只做占位符替换 =====
     raw_template = prompt_template or ""
@@ -993,23 +1297,35 @@ async def run_individual_grader(
         # 直接替换占位符
         system_prompt = raw_template
         # 评估报告需要可追溯完整输入，禁止在此处截断内容。
-        system_prompt = system_prompt.replace("{content}", content if content else "（无内容）")
+        system_prompt = system_prompt.replace("{content}", content if content else _locale_text(locale, "（内容なし）", "（无内容）"))
         
         # {process}: content_and_process 类型才填充，否则标注无
         if grader_type == "content_and_process" and process_transcript:
             system_prompt = system_prompt.replace("{process}", process_transcript)
         else:
-            system_prompt = system_prompt.replace("{process}", "（无互动过程）")
+            system_prompt = system_prompt.replace("{process}", _locale_text(locale, "（対話過程なし）", "（无互动过程）"))
     else:
         # 无模板时的兜底（不应发生，预置评分器都有模板）
-        dim_score_str = ", ".join([f'"{d}": 分数(1-10)' for d in dims])
-        dim_comment_str = ", ".join([f'"{d}": "评语"' for d in dims])
+        dim_score_str = _score_schema(dims, locale)
+        dim_comment_str = _comment_schema(dims, locale)
         
         process_section = ""
         if grader_type == "content_and_process" and process_transcript:
-            process_section = f"\n\n【互动过程记录】\n{process_transcript}"
+            process_section = f"\n\n{_locale_text(locale, '【対話過程記録】', '【互动过程记录】')}\n{process_transcript}"
         
-        system_prompt = f"""你是「{grader_name}」，请对以下内容进行客观、严谨的评分。
+        system_prompt = (
+            f"""あなたは「{grader_name}」です。以下の内容を客観的かつ厳密に評価してください。
+
+【評価対象コンテンツ】
+{content if content else '（内容なし）'}{process_section}
+
+【評価観点】
+{chr(10).join([f'{i+1}. {d} (1-10)' for i, d in enumerate(dims)])}
+
+必ず以下の JSON のみを出力してください:
+{{"scores": {{{dim_score_str}}}, "comments": {{{dim_comment_str}}}, "feedback": "総合評価と改善提案（100-200字）"}}"""
+            if locale == "ja-JP" else
+            f"""你是「{grader_name}」，请对以下内容进行客观、严谨的评分。
 
 【被评估内容】
 {content if content else '（无内容）'}{process_section}
@@ -1019,9 +1335,14 @@ async def run_individual_grader(
 
 请严格输出以下 JSON 格式，不要输出其他内容：
 {{"scores": {{{dim_score_str}}}, "comments": {{{dim_comment_str}}}, "feedback": "整体评价和改进建议（100-200字）"}}"""
+        )
 
     # user_message: 简单指令即可，所有信息已在 system_prompt 中
     user_message = (
+        "上記要件に基づいて採点し、指定された JSON 形式のみで出力してください。"
+        "各観点は根拠を先に示し、その後に採点してください。"
+        "feedback には修正すべき要点と実行可能な改善策のみを書いてください。"
+        if locale == "ja-JP" else
         "请根据上述要求进行评分，严格按照指定的 JSON 格式输出。"
         "先给出每个维度的证据再评分，无证据不得给高分。"
         "其中 feedback 只保留需要修改的要点和可执行改法，不要写正面表扬；"
@@ -1054,7 +1375,7 @@ async def run_individual_grader(
             "grader_type": grader_type,
             "overall": None,
             "scores": {},
-            "feedback": f"评分失败: {str(e)}",
+            "feedback": _locale_text(locale, f"評価失敗: {str(e)}", f"评分失败: {str(e)}"),
             "error": str(e),
         }, None
 
@@ -1076,12 +1397,13 @@ async def _run_content_grader(
     
     # 转为新的 run_individual_grader
     return await run_individual_grader(
-        grader_name="内容质量评分",
+        grader_name=_locale_text(normalize_locale(grader_cfg.get("locale", DEFAULT_LOCALE)), "コンテンツ品質評価", "内容质量评分"),
         grader_type="content_only",
         prompt_template=custom_prompt,
-        dimensions=dimensions or ["综合评价"],
+        dimensions=dimensions or _default_dimensions(normalize_locale(grader_cfg.get("locale", DEFAULT_LOCALE)), ["综合评价"]),
         content=content,
         trial_result_data=trial_result_data,
+        grader_cfg=grader_cfg,
     )
 
 
@@ -1099,13 +1421,18 @@ async def _run_process_grader(
         return {}, None
     
     return await run_individual_grader(
-        grader_name="互动过程评分",
+        grader_name=_locale_text(normalize_locale(grader_cfg.get("locale", DEFAULT_LOCALE)), "対話プロセス評価", "互动过程评分"),
         grader_type="content_and_process",
         prompt_template="",
-        dimensions=["对话流畅性", "问题解决效率", "信息传递有效性", "用户体验"],
+        dimensions=(
+            ["対話の流暢さ", "課題解決効率", "情報伝達の有効性", "ユーザー体験"]
+            if normalize_locale(grader_cfg.get("locale", DEFAULT_LOCALE)) == "ja-JP"
+            else ["对话流畅性", "问题解决效率", "信息传递有效性", "用户体验"]
+        ),
         content="",
         trial_result_data={},
         process_transcript=dialogue_transcript,
+        grader_cfg=grader_cfg,
     )
 
 
@@ -1115,6 +1442,7 @@ async def run_diagnoser(
     trial_results: List[TrialResult],
     content_summary: str = "",
     intent: str = "",
+    locale: str = DEFAULT_LOCALE,
 ) -> Tuple[dict, Optional[LLMCall]]:
     """
     跨 Trial 综合诊断 - 不给分数，只做定性分析：
@@ -1123,26 +1451,52 @@ async def run_diagnoser(
     Returns:
         (diagnosis_dict, LLMCall_or_None)
     """
+    locale = normalize_locale(locale)
     if not trial_results:
-        return {"summary": "无可分析的Trial结果", "content_blocks_evaluated": [], "improvements": []}, None
+        return {"summary": (_locale_text(locale, "分析可能な Trial 結果がありません", "无可分析的Trial结果")), "content_blocks_evaluated": [], "improvements": []}, None
     
     trials_summary = []
     for tr in trial_results:
         if not tr.success:
             continue
         display_name = tr.role_display_name or SIMULATOR_TYPES.get(tr.role, {}).get("name", tr.role)
-        mode_label = {"review": "审查模式", "dialogue": "对话模式", "scenario": "情景模式"}.get(tr.interaction_mode, tr.interaction_mode)
-        summary_text = f"""### {display_name}（{mode_label}）
+        mode_label = (
+            {"review": "レビュー型", "dialogue": "対話型", "scenario": "シナリオ型"}.get(tr.interaction_mode, tr.interaction_mode)
+            if locale == "ja-JP" else
+            {"review": "审查模式", "dialogue": "对话模式", "scenario": "情景模式"}.get(tr.interaction_mode, tr.interaction_mode)
+        )
+        summary_text = (
+            f"""### {display_name}（{mode_label}）
+- 結果: {tr.result.get('outcome', 'N/A')}
+- まとめ: {tr.result.get('summary', 'N/A')}
+- 強み: {', '.join(tr.result.get('strengths', []))}
+- 課題: {', '.join(tr.result.get('weaknesses', []))}
+- 提案: {', '.join(tr.result.get('suggestions', []))}"""
+            if locale == "ja-JP" else
+            f"""### {display_name}（{mode_label}）
 - 结果: {tr.result.get('outcome', 'N/A')}
 - 总结: {tr.result.get('summary', 'N/A')}
 - 优点: {', '.join(tr.result.get('strengths', []))}
 - 问题: {', '.join(tr.result.get('weaknesses', []))}
 - 建议: {', '.join(tr.result.get('suggestions', []))}"""
+        )
         trials_summary.append(summary_text)
     
     trials_text = "\n\n---\n\n".join(trials_summary)
-    
-    system_prompt = """你是一位内容评估诊断专家。请基于多个试验的定性反馈，写一份简洁扼要的综合诊断报告。
+    system_prompt = (
+        """あなたは内容診断の専門家です。複数の試験から得られた定性フィードバックを基に、簡潔な総合診断レポートを書いてください。
+
+**重要: 点数は出さないこと。** 定性分析のみを行います。
+
+レポート構成:
+1. 概要
+2. 強み
+3. 改善課題
+4. 優先アクション
+
+必ず JSON 形式のみで出力してください。"""
+        if locale == "ja-JP" else
+        """你是一位内容评估诊断专家。请基于多个试验的定性反馈，写一份简洁扼要的综合诊断报告。
 
 **重要：不要给出任何分数。** 只做定性分析。
 
@@ -1153,8 +1507,28 @@ async def run_diagnoser(
 4. 建议：最值得先行动的 2-3 条改进建议
 
 请输出严格的JSON格式，语言简洁直接。"""
+    )
 
-    user_message = f"""# 项目意图
+    user_message = (
+        f"""# プロジェクト意図
+{intent or '未設定'}
+
+# 各試験の評価フィードバック（全 {len(trial_results)} 件）
+
+{trials_text}
+
+JSON を出力してください:
+{{
+    "overview": "概要",
+    "strengths": ["強み1", "強み2"],
+    "improvements": [
+        {{"issue": "課題", "priority": "high/medium/low", "suggested_action": "対策"}}
+    ],
+    "action_items": ["優先アクション1", "優先アクション2"],
+    "summary": "総合診断まとめ（100-200字）"
+}}"""
+        if locale == "ja-JP" else
+        f"""# 项目意图
 {intent or '未提供'}
 
 # 各试验评估反馈（共 {len(trial_results)} 个试验）
@@ -1171,6 +1545,7 @@ async def run_diagnoser(
     "action_items": ["最优先的行动建议1", "行动建议2"],
     "summary": "综合诊断总结（100-200字，不含分数）"
 }}"""
+    )
 
     try:
         text, call = await _call_llm(system_prompt, user_message, step="diagnoser", temperature=0.5)
@@ -1178,7 +1553,7 @@ async def run_diagnoser(
         return result, call
     except Exception as e:
         return {
-            "summary": f"诊断失败: {str(e)}",
+            "summary": f"{_locale_text(locale, '診断に失敗しました', '诊断失败')}: {str(e)}",
             "strengths": [], "improvements": [], "action_items": [], "error": str(e),
         }, None
 
@@ -1193,6 +1568,7 @@ async def run_eval(
     personas: List[dict] = None,
     max_turns: int = 5,
     content_field_names: list = None,
+    locale: str = DEFAULT_LOCALE,
 ) -> Tuple[List[TrialResult], dict]:
     """
     兼容旧接口：运行完整评估（所有角色并行执行）
@@ -1201,9 +1577,13 @@ async def run_eval(
     """
     if roles is None:
         roles = ["coach", "editor", "expert", "consumer", "seller"]
-    
+    locale = normalize_locale(locale)
+
     if personas is None:
-        personas = [{"name": "典型用户", "background": "对该领域感兴趣的普通读者"}]
+        personas = [{
+            "name": _locale_text(locale, "典型ユーザー", "典型用户"),
+            "background": _locale_text(locale, "この分野に関心のある一般読者", "对该领域感兴趣的普通读者"),
+        }]
     
     tasks = []
     
@@ -1212,7 +1592,8 @@ async def run_eval(
             tasks.append(run_task_trial(
                 simulator_type=role, interaction_mode="review",
                 content=content, creator_profile=creator_profile, intent=intent,
-                grader_config={"type": "content", "dimensions": []},
+                simulator_config={"locale": locale},
+                grader_config={"type": "content", "dimensions": [], "locale": locale},
             ))
         elif role == "consumer":
             for persona in personas[:2]:
@@ -1220,8 +1601,8 @@ async def run_eval(
                     simulator_type=role, interaction_mode="dialogue",
                     content=content, creator_profile=creator_profile, intent=intent,
                     persona=persona,
-                    simulator_config={"max_turns": max_turns},
-                    grader_config={"type": "combined", "dimensions": []},
+                    simulator_config={"max_turns": max_turns, "locale": locale},
+                    grader_config={"type": "combined", "dimensions": [], "locale": locale},
                     content_field_names=content_field_names,
                 ))
         elif role == "seller":
@@ -1230,8 +1611,8 @@ async def run_eval(
                     simulator_type=role, interaction_mode="dialogue",
                     content=content, creator_profile=creator_profile, intent=intent,
                     persona=persona,
-                    simulator_config={"max_turns": max_turns},
-                    grader_config={"type": "combined", "dimensions": []},
+                    simulator_config={"max_turns": max_turns, "locale": locale},
+                    grader_config={"type": "combined", "dimensions": [], "locale": locale},
                     content_field_names=content_field_names,
                 ))
     
@@ -1247,7 +1628,7 @@ async def run_eval(
         else:
             trial_results.append(result)
     
-    diagnosis, _ = await run_diagnoser(trial_results, content[:500] if content else "", intent)
+    diagnosis, _ = await run_diagnoser(trial_results, content[:500] if content else "", intent, locale=locale)
     
     return trial_results, diagnosis
 
@@ -1383,9 +1764,10 @@ def format_trial_result_markdown(trial: TrialResult) -> str:
     return md
 
 
-def format_diagnosis_markdown(diagnosis: dict) -> str:
+def format_diagnosis_markdown(diagnosis: dict, locale: str = DEFAULT_LOCALE) -> str:
     """将诊断结果格式化为 Markdown（定性分析，无分数）"""
-    md = "## 🔍 综合诊断\n\n"
+    locale = normalize_locale(locale)
+    md = "## 🔍 総合診断\n\n" if _is_ja_locale(locale) else "## 🔍 综合诊断\n\n"
     
     overview = diagnosis.get("overview", "")
     if overview:
@@ -1393,14 +1775,14 @@ def format_diagnosis_markdown(diagnosis: dict) -> str:
     
     strengths = diagnosis.get("strengths", [])
     if strengths:
-        md += "### ✅ 亮点\n"
+        md += "### ✅ 強み\n" if _is_ja_locale(locale) else "### ✅ 亮点\n"
         for s in strengths:
             md += f"- {s}\n"
         md += "\n"
     
     improvements = diagnosis.get("improvements", [])
     if improvements:
-        md += "### ⚠️ 待提升\n"
+        md += "### ⚠️ 改善課題\n" if _is_ja_locale(locale) else "### ⚠️ 待提升\n"
         for imp in improvements:
             if isinstance(imp, dict):
                 severity_icon = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(imp.get("priority", ""), "⚪")
@@ -1413,13 +1795,13 @@ def format_diagnosis_markdown(diagnosis: dict) -> str:
     
     action_items = diagnosis.get("action_items", [])
     if action_items:
-        md += "### 🎯 优先行动\n"
+        md += "### 🎯 優先アクション\n" if _is_ja_locale(locale) else "### 🎯 优先行动\n"
         for i, a in enumerate(action_items, 1):
             md += f"{i}. {a}\n"
         md += "\n"
     
     summary = diagnosis.get("summary", "")
     if summary:
-        md += f"### 总结\n{summary}\n"
+        md += f"### まとめ\n{summary}\n" if _is_ja_locale(locale) else f"### 总结\n{summary}\n"
     
     return md

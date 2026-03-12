@@ -19,10 +19,16 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from core.database import get_db
+from core.localization import DEFAULT_LOCALE, normalize_locale
 from core.models import AgentMode, generate_uuid
 
 router = APIRouter(prefix="/api/modes", tags=["modes"])
 logger = logging.getLogger("modes")
+
+
+def _stable_key(value: Optional[str], fallback: str) -> str:
+    resolved = (value or "").strip()
+    return resolved or fallback.strip()
 
 
 # ============== Schemas ==============
@@ -31,6 +37,8 @@ class ModeResponse(PydanticBaseModel):
     """角色响应"""
     id: str
     name: str
+    stable_key: str
+    locale: str
     project_id: Optional[str] = None
     display_name: str
     description: str
@@ -47,6 +55,8 @@ class ModeCreate(PydanticBaseModel):
     """创建项目角色请求"""
     project_id: str
     display_name: str
+    stable_key: str = ""
+    locale: str = DEFAULT_LOCALE
     description: str = ""
     system_prompt: str
     icon: str = "🤖"
@@ -56,6 +66,8 @@ class ModeCreate(PydanticBaseModel):
 class ModeUpdate(PydanticBaseModel):
     """更新项目角色请求"""
     display_name: Optional[str] = None
+    stable_key: Optional[str] = None
+    locale: Optional[str] = None
     description: Optional[str] = None
     system_prompt: Optional[str] = None
     icon: Optional[str] = None
@@ -102,6 +114,8 @@ def _normalize_legacy_system_templates(db: Session) -> None:
 
     for row in legacy_rows:
         row.is_template = True
+        row.locale = normalize_locale(getattr(row, "locale", DEFAULT_LOCALE))
+        row.stable_key = getattr(row, "stable_key", "") or row.name
     db.commit()
     logger.warning("Backfilled %s legacy system roles as templates", len(legacy_rows))
 
@@ -170,6 +184,8 @@ def create_mode(data: ModeCreate, db: Session = Depends(get_db)):
         id=generate_uuid(),
         project_id=data.project_id,
         name=_generate_internal_name(),
+        stable_key=_stable_key(data.stable_key, display_name),
+        locale=normalize_locale(data.locale),
         display_name=display_name,
         description=_sanitize_text(data.description),
         system_prompt=system_prompt,
@@ -195,8 +211,11 @@ def import_templates(data: ImportTemplatesRequest, db: Session = Depends(get_db)
     if not templates:
         raise HTTPException(status_code=404, detail="No templates found")
 
-    existing_names = {
-        row.display_name
+    existing_keys = {
+        (
+            getattr(row, "stable_key", "") or row.display_name,
+            normalize_locale(getattr(row, "locale", DEFAULT_LOCALE)),
+        )
         for row in db.query(AgentMode).filter(
             AgentMode.project_id == data.project_id,
             AgentMode.is_template.is_(False),
@@ -206,13 +225,19 @@ def import_templates(data: ImportTemplatesRequest, db: Session = Depends(get_db)
     imported: list[AgentMode] = []
     skipped = 0
     for template in templates:
-        if template.display_name in existing_names:
+        template_key = (
+            getattr(template, "stable_key", "") or template.display_name,
+            normalize_locale(getattr(template, "locale", DEFAULT_LOCALE)),
+        )
+        if template_key in existing_keys:
             skipped += 1
             continue
         cloned = AgentMode(
             id=generate_uuid(),
             project_id=data.project_id,
             name=_generate_internal_name(),
+            stable_key=getattr(template, "stable_key", "") or template.name,
+            locale=normalize_locale(getattr(template, "locale", DEFAULT_LOCALE)),
             display_name=template.display_name,
             description=template.description,
             system_prompt=template.system_prompt,
@@ -223,7 +248,7 @@ def import_templates(data: ImportTemplatesRequest, db: Session = Depends(get_db)
         )
         next_sort += 1
         imported.append(cloned)
-        existing_names.add(template.display_name)
+        existing_keys.add(template_key)
         db.add(cloned)
 
     db.commit()
@@ -243,6 +268,10 @@ def update_mode(mode_id: str, data: ModeUpdate, db: Session = Depends(get_db)):
         if not display_name:
             raise HTTPException(status_code=400, detail="display_name 不能为空")
         mode.display_name = display_name
+    if data.stable_key is not None:
+        mode.stable_key = _stable_key(data.stable_key, data.display_name or mode.display_name)
+    if data.locale is not None:
+        mode.locale = normalize_locale(data.locale)
     if data.description is not None:
         mode.description = _sanitize_text(data.description)
     if data.system_prompt is not None:

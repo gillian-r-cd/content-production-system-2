@@ -3,8 +3,8 @@
 // 主要测试: TemplateTreeEditor
 // 数据结构: TemplateNode[] / DraftDependencyOption[]
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DraftDependencyOption, TemplateNode } from "@/lib/api";
 import { TemplateTreeEditor } from "./template-tree-editor";
 
@@ -46,7 +46,18 @@ function makeOptions(): DraftDependencyOption[] {
 }
 
 describe("TemplateTreeEditor", () => {
+  const originalLanguage = navigator.language;
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    Object.defineProperty(window.navigator, "language", {
+      configurable: true,
+      value: originalLanguage,
+    });
+  });
+
   afterEach(() => {
+    window.localStorage.clear();
     cleanup();
   });
 
@@ -72,5 +83,29 @@ describe("TemplateTreeEditor", () => {
     ]);
     expect(screen.getByText("项目 / 已有内容块")).toBeInTheDocument();
     expect(screen.getAllByText("当前 chunk 依赖")).toHaveLength(1);
+  });
+
+  it("renders japanese copy when browser locale is ja-JP", async () => {
+    Object.defineProperty(window.navigator, "language", {
+      configurable: true,
+      value: "ja-JP",
+    });
+
+    render(
+      <TemplateTreeEditor
+        nodes={makeNodes()}
+        onChange={vi.fn()}
+        availableModels={[]}
+        topLevelCreateTypes={["field"]}
+        externalDependencyOptions={makeOptions()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("+ 最上位内容ブロック")).toBeInTheDocument();
+    });
+
+    expect(screen.getByLabelText("現在の chunk の元内容ブロックに依存する")).toBeInTheDocument();
+    expect(screen.getByText("生成前ヒアリングはまだありません。必須または任意の質問を追加できます。")).toBeInTheDocument();
   });
 });

@@ -18,12 +18,19 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from core.database import get_db
+from core.localization import DEFAULT_LOCALE, normalize_locale
+from core.locale_text import rt
 from core.models import Project, CreatorProfile, PROJECT_PHASES, generate_uuid
 from core.llm_compat import get_model_name
+from core.project_mode_bootstrap import ensure_project_agent_modes
 from core.pre_question_utils import normalize_pre_answers, normalize_pre_questions
 
 
 router = APIRouter()
+
+
+def _project_locale(project: Project) -> str:
+    return normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
 
 
 # ============== Schemas ==============
@@ -34,6 +41,7 @@ class ProjectCreate(BaseModel):
     creator_profile_id: Optional[str] = None
     use_deep_research: bool = True
     use_flexible_architecture: bool = True  # [已废弃] 统一为 True
+    locale: str = DEFAULT_LOCALE
     phase_order: Optional[List[str]] = None  # 自定义阶段顺序，None 使用默认，[] 表示从零开始
 
 
@@ -46,6 +54,7 @@ class ProjectUpdate(BaseModel):
     golden_context: Optional[dict] = None  # [已废弃] P3-2: 不再使用，保留兼容旧API客户端
     use_deep_research: Optional[bool] = None
     use_flexible_architecture: Optional[bool] = None
+    locale: Optional[str] = None
 
 
 class ProjectResponse(BaseModel):
@@ -63,6 +72,7 @@ class ProjectResponse(BaseModel):
     golden_context: dict  # [已废弃] P3-2: 保留兼容旧数据，新项目为空dict
     use_deep_research: bool
     use_flexible_architecture: bool = True  # [已废弃] 统一为 True
+    locale: str = DEFAULT_LOCALE
     created_at: str
     updated_at: str
 
@@ -84,6 +94,11 @@ class SaveAsFieldTemplateRequest(BaseModel):
 class ImportContentTreeJsonRequest(BaseModel):
     """项目级内容树追加导入请求"""
     data: Dict[str, Any]
+
+
+class BatchDeleteProjectsRequest(BaseModel):
+    """批量删除项目请求"""
+    project_ids: List[str]
 
 
 def _rewrite_draft_dependency_refs(value: Any, block_id_mapping: Dict[str, str]) -> Any:
@@ -170,16 +185,174 @@ def _import_structure_draft_for_project(
     )
 
 
+def _dedupe_project_ids(project_ids: List[str]) -> List[str]:
+    """保留原顺序去重，避免重复删除同一项目。"""
+    seen: set[str] = set()
+    unique_ids: List[str] = []
+    for project_id in project_ids:
+        if not project_id or project_id in seen:
+            continue
+        seen.add(project_id)
+        unique_ids.append(project_id)
+    return unique_ids
+
+
+def _resolve_surviving_parent_version_id(
+    parent_version_id: Optional[str],
+    *,
+    parent_map: Dict[str, Optional[str]],
+    deleting_ids: set[str],
+) -> Optional[str]:
+    """沿版本链向上找到最近一个未被删除的父版本。"""
+    current_id = parent_version_id
+    visited: set[str] = set()
+    while current_id and current_id in deleting_ids:
+        if current_id in visited:
+            return None
+        visited.add(current_id)
+        current_id = parent_map.get(current_id)
+    return current_id
+
+
+def _relink_project_version_children_before_delete(
+    db: Session,
+    *,
+    deleting_ids: set[str],
+) -> None:
+    """删除前重连版本链，避免父版本删除后剩余项目或待删子版本触发外键冲突。"""
+    if not deleting_ids:
+        return
+
+    parent_map = {
+        row.id: row.parent_version_id
+        for row in db.query(Project.id, Project.parent_version_id).all()
+    }
+    direct_children = db.query(Project).filter(Project.parent_version_id.in_(deleting_ids)).all()
+    for child in direct_children:
+        child.parent_version_id = _resolve_surviving_parent_version_id(
+            child.parent_version_id,
+            parent_map=parent_map,
+            deleting_ids=deleting_ids,
+        )
+    if direct_children:
+        db.flush()
+
+
+def _delete_project_with_related_data(db: Session, project: Project) -> None:
+    """删除单个项目及其所有关联数据，但不在内部提交事务。"""
+    from core.models import ProjectField, ContentBlock, BlockHistory, MemoryItem, ProjectStructureDraft, AgentMode
+    from core.models.chat_history import ChatMessage
+    from core.models.generation_log import GenerationLog
+    from core.models.simulation_record import SimulationRecord
+    from core.models.eval_run import EvalRun
+    from core.models.eval_task import EvalTask
+    from core.models.eval_trial import EvalTrial
+    from core.models.content_version import ContentVersion
+    from core.models.grader import Grader
+
+    project_id = project.id
+
+    # 收集所有 block/field ID，用于清理 ContentVersion
+    block_ids = [b.id for b in db.query(ContentBlock.id).filter(
+        ContentBlock.project_id == project_id
+    ).all()]
+    field_ids = [f.id for f in db.query(ProjectField.id).filter(
+        ProjectField.project_id == project_id
+    ).all()]
+    all_versioned_ids = block_ids + field_ids
+
+    # 删除 ContentVersion（通过 block_id 关联 block 和 field）
+    if all_versioned_ids:
+        db.query(ContentVersion).filter(
+            ContentVersion.block_id.in_(all_versioned_ids)
+        ).delete(synchronize_session=False)
+
+    # 删除 EvalTrial + EvalTask（通过 EvalRun 关联项目）
+    run_ids = [r.id for r in db.query(EvalRun.id).filter(
+        EvalRun.project_id == project_id
+    ).all()]
+    if run_ids:
+        db.query(EvalTrial).filter(EvalTrial.eval_run_id.in_(run_ids)).delete(synchronize_session=False)
+        db.query(EvalTask).filter(EvalTask.eval_run_id.in_(run_ids)).delete(synchronize_session=False)
+    db.query(EvalRun).filter(EvalRun.project_id == project_id).delete()
+
+    # 删除关联的生成日志
+    db.query(GenerationLog).filter(GenerationLog.project_id == project_id).delete()
+
+    # 删除关联的块历史记录
+    db.query(BlockHistory).filter(BlockHistory.project_id == project_id).delete()
+
+    # 删除关联的模拟记录
+    db.query(SimulationRecord).filter(SimulationRecord.project_id == project_id).delete()
+
+    # 删除项目记忆（仅项目级记忆，全局记忆不删）
+    db.query(MemoryItem).filter(MemoryItem.project_id == project_id).delete()
+
+    # 删除项目角色
+    db.query(AgentMode).filter(AgentMode.project_id == project_id).delete()
+
+    # 删除项目级结构草稿
+    db.query(ProjectStructureDraft).filter(ProjectStructureDraft.project_id == project_id).delete()
+
+    # 删除项目专用评分器
+    db.query(Grader).filter(Grader.project_id == project_id).delete()
+
+    # 删除关联的内容块
+    db.query(ContentBlock).filter(ContentBlock.project_id == project_id).delete()
+
+    # 删除关联的对话记录
+    db.query(ChatMessage).filter(ChatMessage.project_id == project_id).delete()
+
+    # 删除关联的字段（传统架构）
+    db.query(ProjectField).filter(ProjectField.project_id == project_id).delete()
+
+    # 删除项目本身
+    db.delete(project)
+
+
+def _delete_projects_atomically(
+    db: Session,
+    *,
+    project_ids: List[str],
+) -> List[str]:
+    """批量删除项目并保持版本链与事务一致性。"""
+    unique_ids = _dedupe_project_ids(project_ids)
+    if not unique_ids:
+        return []
+
+    projects = db.query(Project).filter(Project.id.in_(unique_ids)).all()
+    project_by_id = {project.id: project for project in projects}
+    missing_ids = [project_id for project_id in unique_ids if project_id not in project_by_id]
+    if missing_ids:
+        missing_text = ", ".join(missing_ids)
+        raise HTTPException(status_code=404, detail=f"Projects not found: {missing_text}")
+
+    _relink_project_version_children_before_delete(db, deleting_ids=set(unique_ids))
+    for project_id in unique_ids:
+        _delete_project_with_related_data(db, project_by_id[project_id])
+    return unique_ids
+
+
 # ============== Routes ==============
 
 @router.get("/", response_model=List[ProjectResponse])
 def list_projects(
     skip: int = 0,
-    limit: int = 100,
+    limit: Optional[int] = None,
     db: Session = Depends(get_db),
 ):
-    """获取项目列表"""
-    projects = db.query(Project).offset(skip).limit(limit).all()
+    """获取项目列表。
+
+    默认返回完整列表，并按最近更新时间倒序排列。
+    工作台项目选择器没有分页能力，因此这里不能静默截断前 100 条，
+    否则新建项目可能已经成功落库，却在前端列表中不可见。
+    """
+    query = db.query(Project).order_by(Project.updated_at.desc(), Project.created_at.desc())
+    if skip:
+        query = query.offset(skip)
+    if limit is not None:
+        query = query.limit(limit)
+    projects = query.all()
     return [_project_to_response(p) for p in projects]
 
 
@@ -211,6 +384,7 @@ def create_project(
         creator_profile_id=project.creator_profile_id,
         use_deep_research=project.use_deep_research,
         use_flexible_architecture=project.use_flexible_architecture,
+        locale=normalize_locale(project.locale),
         version=1,
         current_phase=initial_phase,
         phase_order=actual_phase_order,
@@ -219,6 +393,7 @@ def create_project(
     )
     
     db.add(db_project)
+    ensure_project_agent_modes(db, db_project.id, locale=db_project.locale)
     db.commit()
     db.refresh(db_project)
     
@@ -249,6 +424,8 @@ def update_project(
         raise HTTPException(status_code=404, detail="Project not found")
     
     update_data = update.model_dump(exclude_unset=True)
+    if "locale" in update_data:
+        update_data["locale"] = normalize_locale(update_data["locale"])
     for key, value in update_data.items():
         setattr(project, key, value)
     
@@ -268,79 +445,36 @@ def delete_project(
 
     按依赖顺序删除：先删子表/关联表，再删主表。
     """
-    from core.models import ProjectField, ContentBlock, BlockHistory, MemoryItem, ProjectStructureDraft, AgentMode
-    from core.models.chat_history import ChatMessage
-    from core.models.generation_log import GenerationLog
-    from core.models.simulation_record import SimulationRecord
-    from core.models.eval_run import EvalRun
-    from core.models.eval_task import EvalTask
-    from core.models.eval_trial import EvalTrial
-    from core.models.content_version import ContentVersion
-    from core.models.grader import Grader
-    
-    project = db.query(Project).filter(Project.id == project_id).first()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    
-    # 收集所有 block/field ID，用于清理 ContentVersion
-    block_ids = [b.id for b in db.query(ContentBlock.id).filter(
-        ContentBlock.project_id == project_id
-    ).all()]
-    field_ids = [f.id for f in db.query(ProjectField.id).filter(
-        ProjectField.project_id == project_id
-    ).all()]
-    all_versioned_ids = block_ids + field_ids
-    
-    # 删除 ContentVersion（通过 block_id 关联 block 和 field）
-    if all_versioned_ids:
-        db.query(ContentVersion).filter(
-            ContentVersion.block_id.in_(all_versioned_ids)
-        ).delete(synchronize_session=False)
-    
-    # 删除 EvalTrial + EvalTask（通过 EvalRun 关联项目）
-    run_ids = [r.id for r in db.query(EvalRun.id).filter(
-        EvalRun.project_id == project_id
-    ).all()]
-    if run_ids:
-        db.query(EvalTrial).filter(EvalTrial.eval_run_id.in_(run_ids)).delete(synchronize_session=False)
-        db.query(EvalTask).filter(EvalTask.eval_run_id.in_(run_ids)).delete(synchronize_session=False)
-    db.query(EvalRun).filter(EvalRun.project_id == project_id).delete()
-    
-    # 删除关联的生成日志
-    db.query(GenerationLog).filter(GenerationLog.project_id == project_id).delete()
-    
-    # 删除关联的块历史记录
-    db.query(BlockHistory).filter(BlockHistory.project_id == project_id).delete()
-    
-    # 删除关联的模拟记录
-    db.query(SimulationRecord).filter(SimulationRecord.project_id == project_id).delete()
-    
-    # 删除项目记忆（仅项目级记忆，全局记忆不删）
-    db.query(MemoryItem).filter(MemoryItem.project_id == project_id).delete()
+    try:
+        deleted_ids = _delete_projects_atomically(db, project_ids=[project_id])
+        if not deleted_ids:
+            raise HTTPException(status_code=404, detail="Project not found")
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
-    # 删除项目角色
-    db.query(AgentMode).filter(AgentMode.project_id == project_id).delete()
-
-    # 删除项目级结构草稿
-    db.query(ProjectStructureDraft).filter(ProjectStructureDraft.project_id == project_id).delete()
-    
-    # 删除项目专用评分器
-    db.query(Grader).filter(Grader.project_id == project_id).delete()
-    
-    # 删除关联的内容块
-    db.query(ContentBlock).filter(ContentBlock.project_id == project_id).delete()
-    
-    # 删除关联的对话记录
-    db.query(ChatMessage).filter(ChatMessage.project_id == project_id).delete()
-    
-    # 删除关联的字段（传统架构）
-    db.query(ProjectField).filter(ProjectField.project_id == project_id).delete()
-    
-    # 删除项目本身
-    db.delete(project)
-    db.commit()
-    
     return {"message": "Project deleted"}
+
+
+@router.post("/batch-delete")
+def batch_delete_projects(
+    request: BatchDeleteProjectsRequest,
+    db: Session = Depends(get_db),
+):
+    """批量删除多个项目，保持事务一致并在删除前重连版本链。"""
+    try:
+        deleted_ids = _delete_projects_atomically(db, project_ids=request.project_ids)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    return {
+        "ok": True,
+        "deleted_ids": deleted_ids,
+        "deleted_count": len(deleted_ids),
+    }
 
 
 @router.post("/{project_id}/duplicate", response_model=ProjectResponse)
@@ -378,14 +512,15 @@ def duplicate_project(
     old_project = db.query(Project).filter(Project.id == project_id).first()
     if not old_project:
         raise HTTPException(status_code=404, detail="Project not found")
+    source_locale = _project_locale(old_project)
     
     # 创建新项目
     new_project = Project(
         id=generate_uuid(),
-        name=f"{old_project.name} (副本)",
+        name=rt(source_locale, "project.duplicate.name", name=old_project.name),
         creator_profile_id=old_project.creator_profile_id,
         version=1,
-        version_note="从项目复制",
+        version_note=rt(source_locale, "project.duplicate.version_note"),
         current_phase=old_project.current_phase,
         phase_order=old_project.phase_order.copy() if old_project.phase_order else PROJECT_PHASES.copy(),
         phase_status=old_project.phase_status.copy() if old_project.phase_status else {},
@@ -393,6 +528,7 @@ def duplicate_project(
         golden_context={},  # P3-2: 已废弃，不再复制
         use_deep_research=old_project.use_deep_research,
         use_flexible_architecture=True,  # P0-1: 统一为 True
+        locale=source_locale,
     )
     
     db.add(new_project)
@@ -672,6 +808,8 @@ def duplicate_project(
             id=generate_uuid(),
             project_id=new_project.id,
             name=f"mode_{generate_uuid().replace('-', '')[:12]}",
+            stable_key=getattr(old_mode, "stable_key", "") or old_mode.name,
+            locale=normalize_locale(getattr(old_mode, "locale", getattr(old_project, "locale", DEFAULT_LOCALE))),
             display_name=old_mode.display_name,
             description=old_mode.description,
             system_prompt=old_mode.system_prompt,
@@ -690,6 +828,8 @@ def duplicate_project(
         new_grader = Grader(
             id=generate_uuid(),
             name=old_grader.name,
+            stable_key=getattr(old_grader, "stable_key", "") or old_grader.name,
+            locale=normalize_locale(getattr(old_grader, "locale", getattr(old_project, "locale", DEFAULT_LOCALE))),
             grader_type=old_grader.grader_type,
             prompt_template=old_grader.prompt_template,
             dimensions=old_grader.dimensions.copy() if old_grader.dimensions else [],
@@ -753,6 +893,7 @@ def create_new_version(
         golden_context={},  # P3-2: 已废弃，不再复制
         use_deep_research=old_project.use_deep_research,
         use_flexible_architecture=True,  # P0-1: 统一为 True
+        locale=normalize_locale(getattr(old_project, "locale", DEFAULT_LOCALE)),
     )
     
     db.add(new_project)
@@ -866,6 +1007,8 @@ def create_new_version(
             id=generate_uuid(),
             project_id=new_project.id,
             name=f"mode_{generate_uuid().replace('-', '')[:12]}",
+            stable_key=getattr(old_mode, "stable_key", "") or old_mode.name,
+            locale=normalize_locale(getattr(old_mode, "locale", getattr(old_project, "locale", DEFAULT_LOCALE))),
             display_name=old_mode.display_name,
             description=old_mode.description,
             system_prompt=old_mode.system_prompt,
@@ -1141,6 +1284,8 @@ def save_project_as_field_template(
     template = FieldTemplate(
         id=generate_uuid(),
         name=request.name.strip() or "未命名模板",
+        stable_key=(request.name.strip() or "未命名模板"),
+        locale=normalize_locale(getattr(db.query(Project).filter(Project.id == project_id).first(), "locale", DEFAULT_LOCALE)),
         description=request.description,
         category=request.category or "通用",
         schema_version=normalized["schema_version"],
@@ -1262,16 +1407,20 @@ def import_project(
             return []
         return [id_map.get(oid, oid) for oid in old_ids]
 
+    import_locale = DEFAULT_LOCALE
+
     try:
         # ============ 1. 创作者特质 ============
         cp_data = data.get("creator_profile")
         new_cp_id = None
         if cp_data:
             old_cp_id = cp_data.get("id", "")
+            creator_locale = normalize_locale(cp_data.get("locale", DEFAULT_LOCALE))
             if request.match_creator_profile and cp_data.get("name"):
                 # 尝试按名称匹配已有特质
                 existing = db.query(CreatorProfile).filter(
-                    CreatorProfile.name == cp_data["name"]
+                    CreatorProfile.name == cp_data["name"],
+                    CreatorProfile.locale == creator_locale,
                 ).first()
                 if existing:
                     new_cp_id = existing.id
@@ -1281,7 +1430,12 @@ def import_project(
                 new_cp_id = _new_id(old_cp_id)
                 cp = CreatorProfile(
                     id=new_cp_id,
-                    name=cp_data.get("name", "导入的创作者"),
+                    name=cp_data.get("name", rt(creator_locale, "project.import.default_creator_name")),
+                    stable_key=cp_data.get(
+                        "stable_key",
+                        cp_data.get("name", rt(creator_locale, "project.import.default_creator_name")),
+                    ),
+                    locale=creator_locale,
                     description=cp_data.get("description", ""),
                     traits=cp_data.get("traits", {}),
                 )
@@ -1290,15 +1444,17 @@ def import_project(
 
         # ============ 2. 项目 ============
         proj_data = data["project"]
+        import_locale = normalize_locale(proj_data.get("locale", DEFAULT_LOCALE))
         old_proj_id = proj_data.get("id", "")
         new_proj_id = _new_id(old_proj_id)
 
         new_project = Project(
             id=new_proj_id,
-            name=proj_data.get("name", "导入的项目"),
+            name=proj_data.get("name", rt(import_locale, "project.import.default_project_name")),
             creator_profile_id=new_cp_id,
+            locale=import_locale,
             version=proj_data.get("version", 1),
-            version_note=proj_data.get("version_note", "从导出文件导入"),
+            version_note=proj_data.get("version_note", rt(import_locale, "project.import.default_version_note")),
             current_phase=proj_data.get("current_phase", "intent"),
             phase_order=proj_data.get("phase_order", PROJECT_PHASES.copy()),
             phase_status=proj_data.get("phase_status", {}),
@@ -1466,7 +1622,7 @@ def import_project(
             new_run = EvalRun(
                 id=_new_id(old_id),
                 project_id=new_proj_id,
-                name=run.get("name", "评估运行"),
+                name=run.get("name", rt(import_locale, "project.import.default_eval_run_name")),
                 config=run.get("config", {}),
                 status=run.get("status", "completed"),
                 summary=run.get("summary", ""),
@@ -1544,11 +1700,14 @@ def import_project(
             old_id = mode_data.get("id", "")
             if old_id:
                 _new_id(old_id)
+            default_mode_name = rt(import_locale, "project.import.default_mode_display_name")
             new_mode = AgentMode(
                 id=_new_id(old_id),
                 project_id=new_proj_id,
                 name=f"mode_{generate_uuid().replace('-', '')[:12]}",
-                display_name=mode_data.get("display_name", "导入角色"),
+                stable_key=mode_data.get("stable_key", mode_data.get("name", mode_data.get("display_name", default_mode_name))),
+                locale=normalize_locale(mode_data.get("locale", proj_data.get("locale", DEFAULT_LOCALE))),
+                display_name=mode_data.get("display_name", default_mode_name),
                 description=mode_data.get("description", ""),
                 system_prompt=mode_data.get("system_prompt", ""),
                 icon=mode_data.get("icon", "🤖"),
@@ -1578,6 +1737,8 @@ def import_project(
             new_grader = Grader(
                 id=_new_id(old_id),
                 name=g.get("name", ""),
+                stable_key=g.get("stable_key", g.get("name", "")),
+                locale=normalize_locale(g.get("locale", proj_data.get("locale", DEFAULT_LOCALE))),
                 grader_type=g.get("grader_type", "content_only"),
                 prompt_template=g.get("prompt_template", ""),
                 dimensions=g.get("dimensions", []),
@@ -1610,12 +1771,17 @@ def import_project(
             _set_timestamps(new_log, log)
             db.add(new_log)
 
+        if not data.get("agent_modes"):
+            ensure_project_agent_modes(db, new_proj_id, locale=new_project.locale)
+
         db.commit()
         db.refresh(new_project)
 
+        project_response = _project_to_response(new_project).model_dump()
         return {
-            "message": f"项目「{new_project.name}」导入成功",
-            "project": _project_to_response(new_project),
+            "message": rt(import_locale, "project.import.success", name=new_project.name),
+            **project_response,
+            "project": project_response,
             "stats": {
                 "content_blocks": len(active_blocks),
                 "project_fields": len(data.get("project_fields", [])),
@@ -1633,7 +1799,7 @@ def import_project(
 
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"导入失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=rt(import_locale, "project.import.failed", message=str(e)))
 
 
 # ============== Global Search & Replace ==============
@@ -1909,6 +2075,7 @@ def _project_to_response(project: Project) -> ProjectResponse:
         golden_context=project.golden_context or {},
         use_deep_research=project.use_deep_research if hasattr(project, 'use_deep_research') else True,
         use_flexible_architecture=project.use_flexible_architecture if hasattr(project, 'use_flexible_architecture') else True,  # P0-1: 统一为 True
+        locale=normalize_locale(getattr(project, "locale", DEFAULT_LOCALE)),
         created_at=project.created_at.isoformat() if project.created_at else "",
         updated_at=project.updated_at.isoformat() if project.updated_at else "",
     )

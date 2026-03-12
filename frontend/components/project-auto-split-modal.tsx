@@ -18,12 +18,14 @@ import {
   type ProjectStructureDraftPayload,
   type TemplateNode,
 } from "@/lib/api";
+import { useUiIsJa } from "@/lib/ui-locale";
 import { ProjectSplitChunkList } from "./project-split-chunk-list";
 import { ProjectStructureDraftEditor } from "./project-structure-draft-editor";
 
 interface ProjectAutoSplitModalProps {
   open: boolean;
   projectId: string | null;
+  projectLocale?: string | null;
   onClose: () => void;
   onApplied?: () => void;
 }
@@ -48,9 +50,11 @@ function normalizeDraft(draft: ProjectStructureDraft): ProjectStructureDraft {
 export function ProjectAutoSplitModal({
   open,
   projectId,
+  projectLocale,
   onClose,
   onApplied,
 }: ProjectAutoSplitModalProps) {
+  const isJa = useUiIsJa(projectLocale);
   const [draft, setDraft] = useState<ProjectStructureDraft | null>(null);
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
   const [fieldTemplates, setFieldTemplates] = useState<FieldTemplate[]>([]);
@@ -93,7 +97,7 @@ export function ProjectAutoSplitModal({
       setPreviewSummary(null);
       setPreviewRootNodes([]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "加载自动拆分草稿失败");
+      setError(err instanceof Error ? err.message : (isJa ? "自動分割草稿の読み込みに失敗しました" : "加载自动拆分草稿失败"));
     } finally {
       setLoading(false);
     }
@@ -145,7 +149,7 @@ export function ProjectAutoSplitModal({
       setPreviewRootNodes([]);
       return normalized;
     } catch (err) {
-      setError(err instanceof Error ? err.message : "保存草稿失败");
+      setError(err instanceof Error ? err.message : (isJa ? "草稿の保存に失敗しました" : "保存草稿失败"));
       return null;
     } finally {
       setSaving(false);
@@ -165,7 +169,7 @@ export function ProjectAutoSplitModal({
       setPreviewSummary(null);
       setPreviewRootNodes([]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "自动拆分失败");
+      setError(err instanceof Error ? err.message : (isJa ? "自動分割に失敗しました" : "自动拆分失败"));
     } finally {
       setRunningSplit(false);
     }
@@ -183,7 +187,7 @@ export function ProjectAutoSplitModal({
       setPreviewSummary(resp.summary);
       setPreviewRootNodes(resp.preview_root_nodes || []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "校验失败");
+      setError(err instanceof Error ? err.message : (isJa ? "検証に失敗しました" : "校验失败"));
     } finally {
       setValidating(false);
     }
@@ -200,7 +204,7 @@ export function ProjectAutoSplitModal({
       onApplied?.();
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "应用失败");
+      setError(err instanceof Error ? err.message : (isJa ? "適用に失敗しました" : "应用失败"));
     } finally {
       setApplying(false);
     }
@@ -209,13 +213,13 @@ export function ProjectAutoSplitModal({
   const summaryLines = useMemo(() => {
     if (!previewSummary) return [];
     return [
-      `chunk 数: ${previewSummary.chunk_count ?? 0}`,
-      `方案数: ${previewSummary.plan_count ?? 0}`,
-      `开头内容节点数: ${previewSummary.shared_node_count ?? 0}`,
-      `结尾内容节点数: ${previewSummary.aggregate_node_count ?? 0}`,
-      `编译节点数: ${previewSummary.compiled_node_count ?? 0}`,
+      isJa ? `chunk 数: ${previewSummary.chunk_count ?? 0}` : `chunk 数: ${previewSummary.chunk_count ?? 0}`,
+      isJa ? `プラン数: ${previewSummary.plan_count ?? 0}` : `方案数: ${previewSummary.plan_count ?? 0}`,
+      isJa ? `冒頭内容ノード数: ${previewSummary.shared_node_count ?? 0}` : `开头内容节点数: ${previewSummary.shared_node_count ?? 0}`,
+      isJa ? `末尾内容ノード数: ${previewSummary.aggregate_node_count ?? 0}` : `结尾内容节点数: ${previewSummary.aggregate_node_count ?? 0}`,
+      isJa ? `コンパイル済みノード数: ${previewSummary.compiled_node_count ?? 0}` : `编译节点数: ${previewSummary.compiled_node_count ?? 0}`,
     ];
-  }, [previewSummary]);
+  }, [isJa, previewSummary]);
 
   const previewLines = useMemo(() => {
     const lines: Array<{ key: string; depth: number; label: string }> = [];
@@ -224,10 +228,10 @@ export function ProjectAutoSplitModal({
         const childCount = (node.children || []).length;
         const typeLabel =
           node.block_type === "field"
-            ? "内容块"
+            ? (isJa ? "内容ブロック" : "内容块")
             : node.block_type === "group"
-            ? "分组"
-            : "节点";
+            ? (isJa ? "グループ" : "分组")
+            : (isJa ? "ノード" : "节点");
         lines.push({
           key: `${node.template_node_id}-${depth}`,
           depth,
@@ -238,7 +242,7 @@ export function ProjectAutoSplitModal({
     };
     walk(previewRootNodes, 0);
     return lines;
-  }, [previewRootNodes]);
+  }, [isJa, previewRootNodes]);
 
   if (!open) return null;
 
@@ -248,9 +252,9 @@ export function ProjectAutoSplitModal({
       <div className="relative mx-4 flex h-[90vh] w-full max-w-7xl flex-col overflow-hidden rounded-xl border border-surface-3 bg-surface-1 shadow-2xl">
         <div className="flex items-start justify-between border-b border-surface-3 px-6 py-4">
           <div>
-            <h2 className="text-lg font-semibold text-zinc-100">项目级自动拆分内容</h2>
+            <h2 className="text-lg font-semibold text-zinc-100">{isJa ? "プロジェクト単位の自動内容分割" : "项目级自动拆分内容"}</h2>
             <p className="mt-1 text-sm text-zinc-500">
-              这里做的是拆分 + 编排，不在弹窗里触发生成。应用后会一次性追加到项目树中。
+              {isJa ? "ここでは分割と編成のみを行い、このダイアログ内では生成を実行しません。適用後、プロジェクトツリーへ一括追加されます。" : "这里做的是拆分 + 编排，不在弹窗里触发生成。应用后会一次性追加到项目树中。"}
             </p>
           </div>
           <button
@@ -258,21 +262,21 @@ export function ProjectAutoSplitModal({
             onClick={onClose}
             className="rounded-lg bg-surface-2 px-3 py-1.5 text-sm text-zinc-300 hover:bg-surface-3"
           >
-            关闭
+            {isJa ? "閉じる" : "关闭"}
           </button>
         </div>
 
         {loading || !draft ? (
-          <div className="flex flex-1 items-center justify-center text-zinc-400">加载草稿中...</div>
+          <div className="flex flex-1 items-center justify-center text-zinc-400">{isJa ? "草稿を読み込み中..." : "加载草稿中..."}</div>
         ) : (
           <>
             <div className="grid flex-1 grid-cols-[420px_1fr] gap-0 overflow-hidden">
               <div className="overflow-y-auto border-r border-surface-3 p-6 space-y-6">
                 <section className="space-y-3">
                   <div className="flex items-center justify-between">
-                    <label className="text-sm font-medium text-zinc-300">草稿名称</label>
+                    <label className="text-sm font-medium text-zinc-300">{isJa ? "草稿名" : "草稿名称"}</label>
                     <span className="text-xs text-zinc-500">
-                      已应用 {draft.apply_count} 次
+                      {isJa ? `${draft.apply_count} 回適用済み` : `已应用 ${draft.apply_count} 次`}
                     </span>
                   </div>
                   <input
@@ -283,18 +287,18 @@ export function ProjectAutoSplitModal({
                 </section>
 
                 <section className="space-y-3">
-                  <label className="block text-sm font-medium text-zinc-300">原文全文</label>
+                  <label className="block text-sm font-medium text-zinc-300">{isJa ? "元文全文" : "原文全文"}</label>
                   <textarea
                     value={draft.source_text}
                     onChange={(e) => patchDraft({ source_text: e.target.value })}
                     rows={12}
-                    placeholder="粘贴要拆分的完整内容"
+                    placeholder={isJa ? "分割したい全文を貼り付けてください" : "粘贴要拆分的完整内容"}
                     className="w-full rounded-lg border border-surface-3 bg-surface-2 px-3 py-2 text-sm text-zinc-200"
                   />
                 </section>
 
                 <section className="space-y-3 rounded-xl border border-surface-3 bg-surface-0 p-4">
-                  <div className="text-sm font-medium text-zinc-300">拆分配置</div>
+                  <div className="text-sm font-medium text-zinc-300">{isJa ? "分割設定" : "拆分配置"}</div>
                   <select
                     value={draft.split_config.mode}
                     onChange={(e) => patchDraft({
@@ -302,9 +306,9 @@ export function ProjectAutoSplitModal({
                     })}
                     className="w-full rounded-lg border border-surface-3 bg-surface-2 px-3 py-2 text-sm text-zinc-200"
                   >
-                    <option value="count">拆成几份</option>
-                    <option value="chars">每块多少字</option>
-                    <option value="rule">拆分规则</option>
+                    <option value="count">{isJa ? "何分割にするか" : "拆成几份"}</option>
+                    <option value="chars">{isJa ? "各 chunk の文字数" : "每块多少字"}</option>
+                    <option value="rule">{isJa ? "分割ルール" : "拆分规则"}</option>
                   </select>
 
                   {draft.split_config.mode === "count" && (
@@ -338,14 +342,14 @@ export function ProjectAutoSplitModal({
                         split_config: { ...draft.split_config, rule_prompt: e.target.value },
                       })}
                       rows={5}
-                      placeholder="说明希望如何按语义拆分"
+                      placeholder={isJa ? "意味単位でどう分割したいか説明してください" : "说明希望如何按语义拆分"}
                       className="w-full rounded-lg border border-surface-3 bg-surface-2 px-3 py-2 text-sm text-zinc-200"
                     />
                   )}
 
                   <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className="mb-1 block text-xs text-zinc-500">重叠字数</label>
+                      <label className="mb-1 block text-xs text-zinc-500">{isJa ? "重複文字数" : "重叠字数"}</label>
                       <input
                         type="number"
                         min={0}
@@ -357,7 +361,7 @@ export function ProjectAutoSplitModal({
                       />
                     </div>
                     <div>
-                      <label className="mb-1 block text-xs text-zinc-500">标题前缀</label>
+                      <label className="mb-1 block text-xs text-zinc-500">{isJa ? "タイトル接頭辞" : "标题前缀"}</label>
                       <input
                         value={draft.split_config.title_prefix || ""}
                         onChange={(e) => patchDraft({
@@ -371,6 +375,7 @@ export function ProjectAutoSplitModal({
 
                 <ProjectSplitChunkList
                   payload={draft.draft_payload}
+                  projectLocale={projectLocale}
                   onChange={(draft_payload) => patchDraft({ draft_payload })}
                 />
               </div>
@@ -378,6 +383,7 @@ export function ProjectAutoSplitModal({
               <div className="overflow-y-auto p-6">
                 <ProjectStructureDraftEditor
                   payload={draft.draft_payload}
+                  projectLocale={projectLocale}
                   availableModels={availableModels}
                   fieldTemplates={fieldTemplates}
                   projectBlocks={projectBlocks}
@@ -395,7 +401,7 @@ export function ProjectAutoSplitModal({
 
               {validationErrors.length > 0 && (
                 <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3">
-                  <div className="text-sm font-medium text-amber-300">校验错误</div>
+                  <div className="text-sm font-medium text-amber-300">{isJa ? "検証エラー" : "校验错误"}</div>
                   <ul className="mt-2 space-y-1 text-sm text-amber-200">
                     {validationErrors.map((item) => (
                       <li key={item}>- {item}</li>
@@ -406,7 +412,7 @@ export function ProjectAutoSplitModal({
 
               {previewLines.length > 0 && (
                 <div className="rounded-lg border border-surface-3 bg-surface-0 px-4 py-3">
-                  <div className="text-sm font-medium text-zinc-200">应用前结构预览</div>
+                  <div className="text-sm font-medium text-zinc-200">{isJa ? "適用前の構造プレビュー" : "应用前结构预览"}</div>
                   <div className="mt-2 max-h-48 overflow-y-auto space-y-1 text-xs text-zinc-400">
                     {previewLines.map((line) => (
                       <div
@@ -427,8 +433,8 @@ export function ProjectAutoSplitModal({
                     {summaryLines.length > 0
                       ? summaryLines.join(" | ")
                       : draft?.status === "draft"
-                      ? `当前已有 ${chunkCount} 个 chunk，修改后需先重新校验`
-                      : `当前已有 ${chunkCount} 个 chunk`}
+                      ? (isJa ? `現在 ${chunkCount} 個の chunk があります。変更後は再度検証が必要です` : `当前已有 ${chunkCount} 个 chunk，修改后需先重新校验`)
+                      : (isJa ? `現在 ${chunkCount} 個の chunk があります` : `当前已有 ${chunkCount} 个 chunk`)}
                   </div>
 
                   <div className="flex items-center gap-3">
@@ -438,7 +444,7 @@ export function ProjectAutoSplitModal({
                       disabled={!canOperate || saving || runningSplit || validating || applying}
                       className="rounded-lg bg-surface-3 px-4 py-2 text-sm text-zinc-200 hover:bg-surface-4 disabled:opacity-50"
                     >
-                      {saving ? "保存中..." : "保存草稿"}
+                      {saving ? (isJa ? "保存中..." : "保存中...") : (isJa ? "草稿を保存" : "保存草稿")}
                     </button>
                     <button
                       type="button"
@@ -446,7 +452,7 @@ export function ProjectAutoSplitModal({
                       disabled={!canOperate || runningSplit || validating || applying}
                       className="rounded-lg bg-brand-600 px-4 py-2 text-sm text-white hover:bg-brand-700 disabled:opacity-50"
                     >
-                      {runningSplit ? "拆分中..." : "执行拆分"}
+                      {runningSplit ? (isJa ? "分割中..." : "拆分中...") : (isJa ? "分割を実行" : "执行拆分")}
                     </button>
                     <button
                       type="button"
@@ -454,7 +460,7 @@ export function ProjectAutoSplitModal({
                       disabled={!canOperate || saving || runningSplit || validating || applying}
                       className="rounded-lg bg-surface-3 px-4 py-2 text-sm text-zinc-200 hover:bg-surface-4 disabled:opacity-50"
                     >
-                      {validating ? "校验中..." : "校验"}
+                      {validating ? (isJa ? "検証中..." : "校验中...") : (isJa ? "検証" : "校验")}
                     </button>
                     <button
                       type="button"
@@ -462,7 +468,7 @@ export function ProjectAutoSplitModal({
                       disabled={!canApply || saving || runningSplit || validating || applying}
                       className="rounded-lg bg-emerald-600 px-4 py-2 text-sm text-white hover:bg-emerald-700 disabled:opacity-50"
                     >
-                      {applying ? "应用中..." : "应用到项目"}
+                      {applying ? (isJa ? "適用中..." : "应用中...") : (isJa ? "プロジェクトへ適用" : "应用到项目")}
                     </button>
                   </div>
                 </div>

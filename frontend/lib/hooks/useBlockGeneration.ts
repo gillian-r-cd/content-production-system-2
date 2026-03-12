@@ -9,6 +9,7 @@
 import { useState, useRef, useMemo, useCallback } from "react";
 import { blockAPI, runAutoTriggerChain } from "@/lib/api";
 import { readSSEStream } from "@/lib/sse";
+import { useUiIsJa } from "@/lib/ui-locale";
 import { sendNotification } from "@/lib/utils";
 import type { ContentBlock } from "@/lib/api";
 import type { PreQuestion } from "@/lib/preQuestions";
@@ -17,6 +18,7 @@ import { countMissingRequiredPreQuestions } from "@/lib/preQuestions";
 interface UseBlockGenerationOptions {
   block: ContentBlock;
   projectId: string;
+  projectLocale?: string | null;
   allBlocks: ContentBlock[];
   preQuestions?: PreQuestion[];
   /** 预提问答案（生成前先保存） */
@@ -46,6 +48,7 @@ interface UseBlockGenerationReturn {
 export function useBlockGeneration({
   block,
   projectId,
+  projectLocale,
   allBlocks,
   preQuestions,
   preAnswers,
@@ -54,6 +57,7 @@ export function useBlockGeneration({
   onUpdate,
   onContentReady,
 }: UseBlockGenerationOptions): UseBlockGenerationReturn {
+  const isJa = useUiIsJa(projectLocale);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatingContent, setGeneratingContent] = useState("");
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -84,10 +88,18 @@ export function useBlockGeneration({
     if (!canGenerate) {
       const messages: string[] = [];
       if (unmetDependencies.length > 0) {
-        messages.push(`以下依赖内容为空:\n${unmetDependencies.map((d) => `• ${d.name}`).join("\n")}`);
+        messages.push(
+          isJa
+            ? `以下の依存コンテンツが未完了です:\n${unmetDependencies.map((d) => `• ${d.name}`).join("\n")}`
+            : `以下依赖内容为空:\n${unmetDependencies.map((d) => `• ${d.name}`).join("\n")}`,
+        );
       }
       if (missingRequiredPreQuestionCount > 0) {
-        messages.push(`还有 ${missingRequiredPreQuestionCount} 个必答生成前提问未回答。`);
+        messages.push(
+          isJa
+            ? `必須の生成前ヒアリングが ${missingRequiredPreQuestionCount} 件未回答です。`
+            : `还有 ${missingRequiredPreQuestionCount} 个必答生成前提问未回答。`,
+        );
       }
       alert(messages.join("\n\n"));
       return;
@@ -113,7 +125,7 @@ export function useBlockGeneration({
       // P0-1: 统一使用 blockAPI 流式生成
       const response = await blockAPI.generateStream(block.id, abortController.signal);
       if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: "生成失败" }));
+        const error = await response.json().catch(() => ({ detail: isJa ? "生成に失敗しました" : "生成失败" }));
         throw new Error(error.detail || `HTTP ${response.status}`);
       }
 
@@ -132,7 +144,10 @@ export function useBlockGeneration({
             onContentReady?.(finalContent);
           }
           onUpdate?.();
-          sendNotification("内容生成完成", `「${block.name}」已生成完毕，点击查看`);
+          sendNotification(
+            isJa ? "コンテンツ生成が完了しました" : "内容生成完成",
+            isJa ? `「${block.name}」の生成が完了しました。クリックして確認してください` : `「${block.name}」已生成完毕，点击查看`,
+          );
           if (projectId) {
             runAutoTriggerChain(projectId, () => onUpdate?.()).catch(console.error);
           }
@@ -148,7 +163,10 @@ export function useBlockGeneration({
       } else {
         console.error("生成失败:", err);
         if (generatingBlockIdRef.current === currentBlockId) {
-          alert("生成失败: " + (err instanceof Error ? err.message : "未知错误"));
+          alert(
+            (isJa ? "生成に失敗しました: " : "生成失败: ")
+            + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")),
+          );
         }
       }
     } finally {
@@ -162,7 +180,7 @@ export function useBlockGeneration({
   }, [
     block.id, block.name, projectId, canGenerate, unmetDependencies,
     missingRequiredPreQuestionCount, preAnswers, hasPreQuestions,
-    onSavePreAnswers, onUpdate, onContentReady,
+    onSavePreAnswers, onUpdate, onContentReady, isJa,
   ]);
 
   // ---- 停止 ----

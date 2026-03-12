@@ -8,7 +8,7 @@
 import type { DraftDependencyOption, ModelInfo, TemplateNode } from "@/lib/api";
 import { ProjectDraftDependencySelector } from "../project-draft-dependency-selector";
 import { createPreQuestion, normalizePreQuestions } from "@/lib/preQuestions";
-import { FormField } from "./shared";
+import { FormField, useSettingsUiIsJa } from "./shared";
 
 function refKey(ref: DraftDependencyOption["ref"]): string {
   return JSON.stringify(ref || {});
@@ -123,18 +123,22 @@ interface NodeEditorProps {
   onChange: (nodes: TemplateNode[]) => void;
   availableModels: ModelInfo[];
   externalDependencyOptions?: DraftDependencyOption[];
+  isJa: boolean;
 }
 
-/** 类型 → 名称 placeholder 映射 */
-const TYPE_PLACEHOLDER: Record<string, string> = {
-  group: "分组名称",
-  field: "内容块名称",
-};
+function getTypePlaceholder(isJa: boolean): Record<string, string> {
+  return {
+    group: isJa ? "グループ名" : "分组名称",
+    field: isJa ? "内容ブロック名" : "内容块名称",
+  };
+}
 
-const CREATE_BUTTON_LABELS: Record<string, string> = {
-  group: "+ 顶层分组",
-  field: "+ 顶层内容块",
-};
+function getCreateButtonLabels(isJa: boolean): Record<string, string> {
+  return {
+    group: isJa ? "+ 最上位グループ" : "+ 顶层分组",
+    field: isJa ? "+ 最上位内容ブロック" : "+ 顶层内容块",
+  };
+}
 
 const CREATE_BUTTON_STYLES: Record<string, string> = {
   group: "rounded-lg bg-surface-3 px-3 py-1.5 text-xs text-zinc-300",
@@ -148,12 +152,14 @@ function NodeEditor({
   onChange,
   availableModels,
   externalDependencyOptions = [],
+  isJa,
 }: NodeEditorProps) {
   const blockType = node.block_type || "field";
   const isContentBlock = blockType === "field";
   const hasChildren = (node.children || []).length > 0;
   const isCollapsed = node.is_collapsed === true;
   const nodePreQuestions = normalizePreQuestions(node.pre_questions || []);
+  const typePlaceholder = getTypePlaceholder(isJa);
 
   const patchNode = (patch: Partial<TemplateNode>) => {
     onChange(updateNodeById(nodes, node.template_node_id, (current) => ({ ...current, ...patch })));
@@ -182,14 +188,14 @@ function NodeEditor({
         <button
           onClick={toggleCollapse}
           className="flex-shrink-0 rounded p-0.5 text-zinc-400 hover:text-zinc-200"
-          title={isCollapsed ? "展开" : "折叠"}
+          title={isCollapsed ? (isJa ? "展開" : "展开") : (isJa ? "折りたたむ" : "折叠")}
         >
           {isCollapsed ? "▶" : "▼"}
         </button>
         <input
           value={node.name || ""}
           onChange={(e) => patchNode({ name: e.target.value })}
-          placeholder={TYPE_PLACEHOLDER[blockType] || "名称"}
+          placeholder={typePlaceholder[blockType] || "名称"}
           className="flex-1 rounded-lg border border-surface-3 bg-surface-2 px-3 py-2 text-sm text-zinc-200"
         />
         <select
@@ -197,8 +203,8 @@ function NodeEditor({
           onChange={(e) => patchNode({ block_type: e.target.value as TemplateNode["block_type"] })}
           className="rounded-lg border border-surface-3 bg-surface-2 px-2 py-2 text-xs text-zinc-300"
         >
-          <option value="group">分组</option>
-          <option value="field">内容块</option>
+          <option value="group">{isJa ? "グループ" : "分组"}</option>
+          <option value="field">{isJa ? "内容ブロック" : "内容块"}</option>
         </select>
         <button
           onClick={() => onChange(moveNode(nodes, node.template_node_id, "up"))}
@@ -216,10 +222,10 @@ function NodeEditor({
           onClick={() => onChange(removeNodeById(nodes, node.template_node_id))}
           className="rounded bg-red-600/20 px-2 py-1 text-xs text-red-400"
         >
-          删除
+          {isJa ? "削除" : "删除"}
         </button>
         {isCollapsed && hasChildren && (
-          <span className="text-xs text-zinc-500">{node.children?.length} 个子项</span>
+          <span className="text-xs text-zinc-500">{isJa ? `${node.children?.length} 件の子項目` : `${node.children?.length} 个子项`}</span>
         )}
       </div>
 
@@ -229,13 +235,13 @@ function NodeEditor({
           {/* ====== 内容块专属配置 ====== */}
           {isContentBlock && (
             <>
-              <FormField label="模型" hint="此内容块使用的 AI 模型，留空则使用项目默认模型">
+              <FormField label={isJa ? "モデル" : "模型"} hint={isJa ? "この内容ブロックに使う AI モデルです。空欄ならプロジェクト既定モデルを使います" : "此内容块使用的 AI 模型，留空则使用项目默认模型"}>
                 <select
                   value={node.model_override || ""}
                   onChange={(e) => patchNode({ model_override: e.target.value || null })}
                   className="w-full rounded-lg border border-surface-3 bg-surface-2 px-3 py-2 text-sm text-zinc-200"
                 >
-                  <option value="">默认</option>
+                  <option value="">{isJa ? "既定" : "默认"}</option>
                   {availableModels.map((model) => (
                     <option key={model.id} value={model.id}>{model.name}</option>
                   ))}
@@ -249,8 +255,8 @@ function NodeEditor({
                     checked={node.need_review !== false}
                     onChange={(e) => patchNode({ need_review: e.target.checked })}
                   />
-                  需要人工确认
-                  <span className="text-zinc-600">— AI 生成后仍需用户确认才算完成</span>
+                  {isJa ? "手動確認が必要" : "需要人工确认"}
+                  <span className="text-zinc-600">{isJa ? "— AI 生成後も、ユーザー確認が完了条件です" : "— AI 生成后仍需用户确认才算完成"}</span>
                 </label>
                 <label className="flex items-center gap-2 text-xs text-zinc-400">
                   <input
@@ -258,12 +264,12 @@ function NodeEditor({
                     checked={node.auto_generate === true}
                     onChange={(e) => patchNode({ auto_generate: e.target.checked })}
                   />
-                  自动生成
-                  <span className="text-zinc-600">— 依赖就绪时自动触发 AI 生成</span>
+                  {isJa ? "自動生成" : "自动生成"}
+                  <span className="text-zinc-600">{isJa ? "— 依存が整ったら自動で AI 生成を起動します" : "— 依赖就绪时自动触发 AI 生成"}</span>
                 </label>
               </div>
 
-              <FormField label="生成前提问" hint="生成前需要用户回答的问题，答案会注入 AI 提示词">
+              <FormField label={isJa ? "生成前ヒアリング" : "生成前提问"} hint={isJa ? "生成前にユーザーが回答する質問です。回答は AI プロンプトに注入されます" : "生成前需要用户回答的问题，答案会注入 AI 提示词"}>
                 <div className="space-y-2">
                   {nodePreQuestions.length > 0 ? (
                     nodePreQuestions.map((item, index) => (
@@ -278,7 +284,7 @@ function NodeEditor({
                                   : question
                               )),
                             })}
-                            placeholder={`问题 ${index + 1}`}
+                            placeholder={isJa ? `質問 ${index + 1}` : `问题 ${index + 1}`}
                             className="flex-1 rounded-lg border border-surface-3 bg-surface-1 px-3 py-2 text-sm text-zinc-200"
                           />
                           <label className="flex items-center gap-1.5 text-xs text-zinc-400">
@@ -293,7 +299,7 @@ function NodeEditor({
                                 )),
                               })}
                             />
-                            必答
+                            {isJa ? "必須" : "必答"}
                           </label>
                           <button
                             type="button"
@@ -302,17 +308,19 @@ function NodeEditor({
                             })}
                             className="rounded bg-red-600/20 px-2 py-1 text-xs text-red-400"
                           >
-                            删除
+                            {isJa ? "削除" : "删除"}
                           </button>
                         </div>
                         <p className="text-xs text-zinc-500">
-                          {item.required ? "必答题：未回答会阻止“全部开始”和自动/手动生成。" : "选答题：未回答也可生成，若填写会进入上下文。"}
+                          {item.required
+                            ? (isJa ? "必須質問: 未回答だと「すべて開始」と自動/手動生成を実行できません。" : "必答题：未回答会阻止“全部开始”和自动/手动生成。")
+                            : (isJa ? "任意質問: 未回答でも生成できますが、回答すると文脈に入ります。" : "选答题：未回答也可生成，若填写会进入上下文。")}
                         </p>
                       </div>
                     ))
                   ) : (
                     <div className="rounded-lg border border-dashed border-surface-3 px-3 py-3 text-xs text-zinc-500">
-                      暂无生成前提问。可添加必答题或选答题。
+                      {isJa ? "生成前ヒアリングはまだありません。必須または任意の質問を追加できます。" : "暂无生成前提问。可添加必答题或选答题。"}
                     </div>
                   )}
                   <div className="flex flex-wrap gap-2">
@@ -323,7 +331,7 @@ function NodeEditor({
                       })}
                       className="rounded-lg bg-surface-3 px-3 py-1.5 text-xs text-zinc-300"
                     >
-                      + 添加选答题
+                      {isJa ? "+ 任意質問を追加" : "+ 添加选答题"}
                     </button>
                     <button
                       type="button"
@@ -332,14 +340,14 @@ function NodeEditor({
                       })}
                       className="rounded-lg bg-amber-600/80 px-3 py-1.5 text-xs text-white"
                     >
-                      + 添加必答题
+                      {isJa ? "+ 必須質問を追加" : "+ 添加必答题"}
                     </button>
                   </div>
                 </div>
               </FormField>
 
               {dependencyOptions.length > 0 && (
-                <FormField label="依赖" hint="生成此内容块前需要先完成的其他内容块">
+                <FormField label={isJa ? "依存関係" : "依赖"} hint={isJa ? "この内容ブロックを生成する前に完了しておく必要がある他の内容ブロックです" : "生成此内容块前需要先完成的其他内容块"}>
                   <div className="flex flex-wrap gap-2">
                     {dependencyOptions.map((option) => {
                       const checked = (node.depends_on_template_node_ids || []).includes(option.template_node_id);
@@ -365,8 +373,8 @@ function NodeEditor({
 
               {currentChunkDependencyOption && (
                 <FormField
-                  label="当前 chunk 依赖"
-                  hint="逐个内容块决定是否依赖当前 chunk 的源内容块，不再由整个编排方案默认强制。"
+                  label={isJa ? "現在の chunk 依存" : "当前 chunk 依赖"}
+                  hint={isJa ? "現在の chunk の元内容ブロックに依存するかを、内容ブロックごとに選択します。編成プラン全体での強制既定はありません。" : "逐个内容块决定是否依赖当前 chunk 的源内容块，不再由整个编排方案默认强制。"}
                 >
                   <label className="flex items-center gap-2 text-xs text-zinc-300">
                     <input
@@ -380,7 +388,7 @@ function NodeEditor({
                         ),
                       })}
                     />
-                    依赖当前 chunk 的源内容块
+                    {isJa ? "現在の chunk の元内容ブロックに依存する" : "依赖当前 chunk 的源内容块"}
                   </label>
                 </FormField>
               )}
@@ -391,7 +399,7 @@ function NodeEditor({
                 onChange={(draft_dependency_refs) => patchNode({ draft_dependency_refs })}
               />
 
-              <FormField label="AI 提示词" hint="生成此内容块时给 AI 的指令，会与项目上下文一起发送">
+              <FormField label={isJa ? "AI プロンプト" : "AI 提示词"} hint={isJa ? "この内容ブロック生成時に AI へ渡す指示です。プロジェクト文脈と合わせて送信されます" : "生成此内容块时给 AI 的指令，会与项目上下文一起发送"}>
                 <textarea
                   value={node.ai_prompt || ""}
                   onChange={(e) => patchNode({ ai_prompt: e.target.value })}
@@ -399,7 +407,7 @@ function NodeEditor({
                   className="w-full rounded-lg border border-surface-3 bg-surface-2 px-3 py-2 text-sm text-zinc-200"
                 />
               </FormField>
-              <FormField label="预置内容" hint="应用模板后预填到内容块的初始内容">
+              <FormField label={isJa ? "初期内容" : "预置内容"} hint={isJa ? "テンプレート適用後に内容ブロックへ事前入力される初期内容です" : "应用模板后预填到内容块的初始内容"}>
                 <textarea
                   value={node.content || ""}
                   onChange={(e) => patchNode({ content: e.target.value })}
@@ -417,15 +425,15 @@ function NodeEditor({
               onClick={() => onChange(addChildNode(nodes, node.template_node_id, createTemplateNode("field")))}
               className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs text-white"
             >
-              + 子内容块
+              {isJa ? "+ 子内容ブロック" : "+ 子内容块"}
             </button>
             <button
               onClick={() => onChange(addChildNode(nodes, node.template_node_id, createTemplateNode("group")))}
               className="rounded-lg bg-surface-3 px-3 py-1.5 text-xs text-zinc-300"
             >
-              + 子分组
+              {isJa ? "+ 子グループ" : "+ 子分组"}
             </button>
-            {hasChildren && <span className="text-xs text-zinc-500">{node.children?.length} 个子项</span>}
+            {hasChildren && <span className="text-xs text-zinc-500">{isJa ? `${node.children?.length} 件の子項目` : `${node.children?.length} 个子项`}</span>}
           </div>
 
           {node.children?.length ? (
@@ -439,6 +447,7 @@ function NodeEditor({
                   onChange={onChange}
                   availableModels={availableModels}
                   externalDependencyOptions={externalDependencyOptions}
+                  isJa={isJa}
                 />
               ))}
             </div>
@@ -453,11 +462,15 @@ export function TemplateTreeEditor({
   nodes,
   onChange,
   availableModels,
-  topLevelLabel = "模板结构",
-  emptyText = "还没有添加内容，先添加顶层分组或内容块。",
+  topLevelLabel,
+  emptyText,
   externalDependencyOptions = [],
   topLevelCreateTypes = ["group", "field"],
 }: TemplateTreeEditorProps) {
+  const isJa = useSettingsUiIsJa();
+  const createButtonLabels = getCreateButtonLabels(isJa);
+  const resolvedTopLevelLabel = topLevelLabel || (isJa ? "テンプレート構造" : "模板结构");
+  const resolvedEmptyText = emptyText || (isJa ? "内容はまだありません。先に最上位グループまたは内容ブロックを追加してください。" : "还没有添加内容，先添加顶层分组或内容块。");
   const createTypes = topLevelCreateTypes.filter((type, index, list) => (
     ["group", "field"].includes(type) && list.indexOf(type) === index
   ));
@@ -465,7 +478,7 @@ export function TemplateTreeEditor({
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h4 className="text-sm font-medium text-zinc-300">{topLevelLabel}</h4>
+        <h4 className="text-sm font-medium text-zinc-300">{resolvedTopLevelLabel}</h4>
         <div className="flex gap-2">
           {createTypes.map((type) => (
             <button
@@ -473,7 +486,7 @@ export function TemplateTreeEditor({
               onClick={() => onChange([...(nodes || []), createTemplateNode(type)])}
               className={CREATE_BUTTON_STYLES[type]}
             >
-              {CREATE_BUTTON_LABELS[type]}
+              {createButtonLabels[type]}
             </button>
           ))}
         </div>
@@ -481,7 +494,7 @@ export function TemplateTreeEditor({
 
       {!nodes.length ? (
         <div className="rounded-lg border border-dashed border-surface-3 py-8 text-center text-zinc-500">
-          {emptyText}
+          {resolvedEmptyText}
         </div>
       ) : (
         <div className="space-y-3">
@@ -494,6 +507,7 @@ export function TemplateTreeEditor({
               onChange={onChange}
               availableModels={availableModels}
               externalDependencyOptions={externalDependencyOptions}
+              isJa={isJa}
             />
           ))}
         </div>

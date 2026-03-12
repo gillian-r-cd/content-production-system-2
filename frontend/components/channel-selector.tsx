@@ -8,6 +8,8 @@
 import { useState, useMemo, useEffect } from "react";
 import { blockAPI } from "@/lib/api";
 import type { ContentBlock } from "@/lib/api";
+import { isJaProjectLocale } from "@/lib/project-locale";
+import { useUiIsJa } from "@/lib/ui-locale";
 import { Check, Plus, Trash2, Send, Pencil, X } from "lucide-react";
 
 // 渠道定义
@@ -29,6 +31,7 @@ interface ChannelsData {
 
 interface ChannelSelectorProps {
   projectId: string;
+  projectLocale?: string | null;
   fieldId: string;
   content: string;
   onConfirm: () => void;
@@ -38,12 +41,15 @@ interface ChannelSelectorProps {
 
 export function ChannelSelector({
   projectId,
+  projectLocale,
   fieldId,
   content,
   onConfirm,
   onFieldsCreated,
   onSave,
 }: ChannelSelectorProps) {
+  const isJa = useUiIsJa(projectLocale);
+  const isProjectJa = isJaProjectLocale(projectLocale);
   // 解析渠道数据
   const initialData = useMemo<ChannelsData>(() => {
     try {
@@ -55,9 +61,9 @@ export function ChannelSelector({
       }));
       return { ...data, channels };
     } catch {
-      return { channels: [], error: "解析失败" };
+      return { channels: [], error: isJa ? "解析に失敗しました" : "解析失败" };
     }
-  }, [content]);
+  }, [content, isJa]);
 
   const [channelsData, setChannelsData] = useState<ChannelsData>(initialData);
   const [isConfirmed, setIsConfirmed] = useState(false);
@@ -94,8 +100,8 @@ export function ChannelSelector({
     const newChannel: Channel = {
       id: `custom_${Date.now()}`,
       name: newChannelName.trim(),
-      reason: "用户自定义渠道",
-      content_form: "待定义",
+      reason: isProjectJa ? "ユーザー定義チャネル" : "用户自定义渠道",
+      content_form: isProjectJa ? "未定義" : "待定义",
       priority: "medium",
       selected: true,
     };
@@ -136,7 +142,7 @@ export function ChannelSelector({
       onSave?.();
     } catch (err) {
       console.error("保存失败:", err);
-      alert("保存失败");
+      alert(isJa ? "保存に失敗しました" : "保存失败");
     } finally {
       setIsSaving(false);
     }
@@ -157,7 +163,7 @@ export function ChannelSelector({
   // 确认并创建内容块
   const handleConfirm = async () => {
     if (selectedChannels.length === 0) {
-      alert("请至少选择一个渠道");
+      alert(isJa ? "少なくとも 1 つのチャネルを選択してください" : "请至少选择一个渠道");
       return;
     }
 
@@ -173,9 +179,9 @@ export function ChannelSelector({
           parent_id: parentId,
           name: channel.name,
           block_type: "field",
-          ai_prompt: `为「${channel.name}」渠道创作内容。
-内容形式：${channel.content_form}
-渠道特点：${channel.reason}`,
+          ai_prompt: isProjectJa
+            ? `「${channel.name}」チャネル向けの内容を作成してください。\n内容形式: ${channel.content_form}\nチャネル特性: ${channel.reason}`
+            : `为「${channel.name}」渠道创作内容。\n内容形式：${channel.content_form}\n渠道特点：${channel.reason}`,
           need_review: true,
         });
       }
@@ -196,7 +202,7 @@ export function ChannelSelector({
       onConfirm();
     } catch (err) {
       console.error("创建内容块失败:", err);
-      alert("创建内容块失败");
+      alert(isJa ? "内容ブロックの作成に失敗しました" : "创建内容块失败");
     } finally {
       setIsCreatingFields(false);
     }
@@ -223,17 +229,17 @@ export function ChannelSelector({
       {/* 头部 */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold text-zinc-200">选择传播渠道</h2>
+          <h2 className="text-lg font-semibold text-zinc-200">{isJa ? "配信チャネルを選択" : "选择传播渠道"}</h2>
           <p className="text-sm text-zinc-500 mt-1">
-            {channelsData.summary || "选择要使用的渠道，确认后将进入外延生产组"}
+            {channelsData.summary || (isJa ? "使用するチャネルを選択すると、確認後に外延制作へ進みます" : "选择要使用的渠道，确认后将进入外延生产组")}
           </p>
         </div>
         <div className="flex items-center gap-2 text-sm">
-          <span className="text-zinc-500">已选择</span>
+          <span className="text-zinc-500">{isJa ? "選択済み" : "已选择"}</span>
           <span className="px-2 py-0.5 bg-brand-600 rounded-full font-medium">
             {selectedChannels.length}
           </span>
-          <span className="text-zinc-500">个渠道</span>
+          <span className="text-zinc-500">{isJa ? "件のチャネル" : "个渠道"}</span>
         </div>
       </div>
 
@@ -324,7 +330,7 @@ export function ChannelSelector({
                        flex items-center justify-center gap-2 text-zinc-500 hover:text-zinc-300 transition-colors"
           >
             <Plus className="w-5 h-5" />
-            <span>添加渠道</span>
+            <span>{isJa ? "チャネルを追加" : "添加渠道"}</span>
           </button>
         )}
       </div>
@@ -334,7 +340,7 @@ export function ChannelSelector({
         {isConfirmed ? (
           <div className="flex items-center gap-2 text-green-400">
             <Check className="w-5 h-5" />
-            <span>已确认 {selectedChannels.length} 个渠道，请在左侧查看</span>
+            <span>{isJa ? `${selectedChannels.length} 件のチャネルを確認しました。左側で確認してください` : `已确认 ${selectedChannels.length} 个渠道，请在左侧查看`}</span>
           </div>
         ) : (
           <>
@@ -343,7 +349,7 @@ export function ChannelSelector({
               disabled={isSaving}
               className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-200 transition-colors disabled:opacity-50"
             >
-              {isSaving ? "保存中..." : "保存修改"}
+              {isSaving ? (isJa ? "保存中..." : "保存中...") : (isJa ? "変更を保存" : "保存修改")}
             </button>
             <button
               onClick={handleConfirm}
@@ -352,11 +358,11 @@ export function ChannelSelector({
                          flex items-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isCreatingFields ? (
-                "创建中..."
+                (isJa ? "作成中..." : "创建中...")
               ) : (
                 <>
                   <Send className="w-4 h-4" />
-                  确认并进入外延生产
+                  {isJa ? "確認して外延制作へ進む" : "确认并进入外延生产"}
                 </>
               )}
             </button>
@@ -369,7 +375,7 @@ export function ChannelSelector({
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <div className="bg-surface-2 rounded-xl p-6 w-full max-w-md border border-surface-3">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-zinc-200">添加渠道</h3>
+              <h3 className="text-lg font-semibold text-zinc-200">{isJa ? "チャネルを追加" : "添加渠道"}</h3>
               <button
                 onClick={() => setShowAddModal(false)}
                 className="text-zinc-500 hover:text-zinc-300"
@@ -382,7 +388,7 @@ export function ChannelSelector({
               value={newChannelName}
               onChange={(e) => setNewChannelName(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && addChannel()}
-              placeholder="输入渠道名称，如：小红书、抖音..."
+              placeholder={isJa ? "チャネル名を入力。例: X、YouTube..." : "输入渠道名称，如：小红书、抖音..."}
               className="w-full px-4 py-3 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 
                          placeholder:text-zinc-600 focus:outline-none focus:border-brand-500"
               autoFocus
@@ -392,14 +398,14 @@ export function ChannelSelector({
                 onClick={() => setShowAddModal(false)}
                 className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-200"
               >
-                取消
+                {isJa ? "キャンセル" : "取消"}
               </button>
               <button
                 onClick={addChannel}
                 disabled={!newChannelName.trim()}
                 className="px-4 py-2 bg-brand-600 hover:bg-brand-700 rounded-lg text-sm disabled:opacity-50"
               >
-                添加
+                {isJa ? "追加" : "添加"}
               </button>
             </div>
           </div>

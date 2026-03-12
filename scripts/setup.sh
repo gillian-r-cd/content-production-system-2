@@ -16,6 +16,20 @@ BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
+DEFAULT_BACKEND_PORT=8000
+
+read_backend_port() {
+    local ENV_FILE="$PROJECT_DIR/backend/.env"
+    if [ -f "$ENV_FILE" ]; then
+        local PORT_VALUE
+        PORT_VALUE=$(grep -E "^BACKEND_PORT=" "$ENV_FILE" 2>/dev/null | tail -n 1 | cut -d= -f2 | tr -d '[:space:]' | tr -d '"' | tr -d "'")
+        if [[ "$PORT_VALUE" =~ ^[0-9]+$ ]]; then
+            echo "$PORT_VALUE"
+            return
+        fi
+    fi
+    echo "$DEFAULT_BACKEND_PORT"
+}
 
 echo ""
 echo "=========================================="
@@ -146,6 +160,9 @@ echo "=========================================="
 echo -e "${GREEN}  初始化完成！${NC}"
 echo "=========================================="
 echo ""
+
+BACKEND_PORT=$(read_backend_port)
+
 echo "  接下来请："
 echo ""
 if [ ! -f "$PROJECT_DIR/backend/.env" ] || grep -q "sk-xxxx" "$PROJECT_DIR/backend/.env" 2>/dev/null; then
@@ -161,7 +178,7 @@ fi
 echo ""
 echo "  服务启动后访问:"
 echo "     前端: http://localhost:3000"
-echo "     后端: http://localhost:8000"
+echo "     后端: http://localhost:$BACKEND_PORT"
 echo ""
 echo "  日常更新（拉取代码 + 同步依赖 + 启动）:"
 echo "     ./scripts/sync.sh start"

@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from core.database import get_db
+from core.localization import DEFAULT_LOCALE, normalize_locale
 from core.models import (
     CreatorProfile,
     FieldTemplate,
@@ -30,6 +31,11 @@ from core.template_schema import normalize_field_template_payload
 
 
 router = APIRouter()
+
+
+def _stable_key(value: Optional[str], fallback: str) -> str:
+    resolved = (value or "").strip()
+    return resolved or fallback.strip()
 
 EVAL_PROMPT_PRESETS = [
     {
@@ -67,6 +73,57 @@ EVAL_PROMPT_PRESETS = [
         "phase": "eval_cross_trial_analysis",
         "description": "Task级跨Trial模式分析模板",
         "content": "请分析以下Task下所有Trial结果：\n{all_trial_results}\n\n输出 JSON：{\"patterns\":[],\"suggestions\":[],\"strengths\":[],\"summary\":\"...\"}",
+    },
+]
+
+EVAL_PROMPT_PRESETS += [
+    {
+        "name": "探索計画プロンプト",
+        "stable_key": "eval_experience_plan",
+        "locale": "ja-JP",
+        "phase": "eval_experience_plan",
+        "description": "顧客体験ステップ1: 閲覧順と目的の計画",
+        "content": "あなたは実在の顧客です。\n\n【あなたの役割】\n{persona}\n\n{probe_section}\n\n以下の章一覧を基に探索計画を作成してください:\n{block_list}\n\n必ず JSON のみを出力してください: {\"plan\":[{\"block_id\":\"id\",\"reason\":\"...\"}],\"overall_goal\":\"...\"}\n\n厳格な制約:\n1) plan は 3ステップ以上とし（章が 3 未満なら全件列挙）、空にしないこと。\n2) 各ステップでは有効な block_id を引用し、捏造しないこと。\n3) 優先順位を判断しにくい場合でも、既定順で計画を提示すること。",
+    },
+    {
+        "name": "章別探索プロンプト",
+        "stable_key": "eval_experience_per_block",
+        "locale": "ja-JP",
+        "phase": "eval_experience_per_block",
+        "description": "顧客体験ステップ2: 各章の評価",
+        "content": "あなたは実在の顧客です。\n\n【あなたの役割】\n{persona}\n\n{probe_section}\n\n【これまでの閲覧記録】\n{exploration_memory}\n\n【現在の章】\n{block_title}\n{block_content}\n\n必ず JSON のみを出力してください: {\"concern_match\":\"...\",\"discovery\":\"...\",\"doubt\":\"...\",\"missing\":\"...\",\"feeling\":\"...\",\"score\":1}\n\n厳格な制約:\n1) score は 1-10 の整数でなければなりません。\n2) missing は実行可能な補足項目にし、抽象的な感想だけにしないこと。\n3) discovery / doubt は必ず現在の章の内容に根拠を持たせること。",
+    },
+    {
+        "name": "探索総括プロンプト",
+        "stable_key": "eval_experience_summary",
+        "locale": "ja-JP",
+        "phase": "eval_experience_summary",
+        "description": "顧客体験ステップ3: 総合まとめ",
+        "content": "あなたは実在の顧客です。\n\n【あなたの役割】\n{persona}\n\n{probe_section}\n\n以下は各章の結果です:\n{all_block_results}\n\n必ず JSON のみを出力してください: {\"overall_impression\":\"...\",\"concerns_addressed\":[],\"concerns_unaddressed\":[],\"would_recommend\":false,\"summary\":\"...\"}\n\n厳格な制約:\n1) concerns_addressed / concerns_unaddressed の各項目には章ごとの根拠を添えること。\n2) summary には推薦するかどうかと、その条件/理由を必ず含めること。\n3) 情報不足の場合は concerns_unaddressed に明示的に記録すること。",
+    },
+    {
+        "name": "シナリオ役割Aプロンプト",
+        "stable_key": "eval_scenario_role_a",
+        "locale": "ja-JP",
+        "phase": "eval_scenario_role_a",
+        "description": "シナリオ対話の役割Aテンプレート",
+        "content": "{persona}\n\nあなたは次の内容を把握しています:\n{content}\n\n{probe_section}\n\nルール:\n1) 各回答は50字以内\n2) 内容に基づいてのみ回答する\n3) 内容にない場合は必ず「コンテンツには含まれていません」と明示する\n4) 各ターンで1つの意思決定ポイントを前進させる",
+    },
+    {
+        "name": "シナリオ役割Bプロンプト",
+        "stable_key": "eval_scenario_role_b",
+        "locale": "ja-JP",
+        "phase": "eval_scenario_role_b",
+        "description": "シナリオ対話の役割Bテンプレート",
+        "content": "{persona}\n\n{probe_section}\n\nルール: 各回答は50字以内。懸念を持って主体的に質問し、簡単には納得しないでください。",
+    },
+    {
+        "name": "Trial横断分析プロンプト",
+        "stable_key": "eval_cross_trial_analysis",
+        "locale": "ja-JP",
+        "phase": "eval_cross_trial_analysis",
+        "description": "Task 単位の Trial 横断分析",
+        "content": "以下の Task に属するすべての Trial 結果を分析してください:\n{all_trial_results}\n\nJSON を出力: {\"patterns\":[],\"suggestions\":[],\"strengths\":[],\"summary\":\"...\"}",
     },
 ]
 
@@ -125,11 +182,76 @@ EVAL_SIMULATOR_PRESETS = [
     },
 ]
 
+EVAL_SIMULATOR_PRESETS += [
+    {
+        "name": "プリセット-即時判定シミュレーター",
+        "stable_key": "assessment_direct",
+        "locale": "ja-JP",
+        "description": "assessment 形態のベースシミュレーター",
+        "simulator_type": "expert",
+        "interaction_type": "reading",
+        "interaction_mode": "review",
+        "prompt_template": "あなたは評価補助役です。ルールに従って構造化結果を返してください。",
+        "secondary_prompt": "",
+        "grader_template": "",
+        "evaluation_dimensions": ["構成妥当性", "言語品質", "情報正確性", "可読性"],
+        "feedback_mode": "structured",
+        "max_turns": 1,
+    },
+    {
+        "name": "プリセット-観点レビューシミュレーター",
+        "stable_key": "review_editor",
+        "locale": "ja-JP",
+        "description": "review 形態の既定シミュレーター",
+        "simulator_type": "editor",
+        "interaction_type": "reading",
+        "interaction_mode": "review",
+        "prompt_template": "あなたは専門レビュー担当です。内容を基に構造化されたレビューを返してください。",
+        "secondary_prompt": "",
+        "grader_template": "",
+        "evaluation_dimensions": ["戦略明確性", "課題深刻度", "実行可能性"],
+        "feedback_mode": "structured",
+        "max_turns": 1,
+    },
+    {
+        "name": "プリセット-顧客体験シミュレーター",
+        "stable_key": "experience_consumer",
+        "locale": "ja-JP",
+        "description": "experience 形態の既定シミュレーター",
+        "simulator_type": "consumer",
+        "interaction_type": "exploration",
+        "interaction_mode": "review",
+        "prompt_template": "あなたは顧客です。探索フローに沿って章ごとのフィードバックを返してください。",
+        "secondary_prompt": "",
+        "grader_template": "",
+        "evaluation_dimensions": ["ニーズ適合度", "情報完全性", "価値認知", "内容構成"],
+        "feedback_mode": "structured",
+        "max_turns": 1,
+    },
+    {
+        "name": "プリセット-シナリオ対話シミュレーター",
+        "stable_key": "scenario_dialogue",
+        "locale": "ja-JP",
+        "description": "scenario 形態の既定シミュレーター",
+        "simulator_type": "seller",
+        "interaction_type": "dialogue",
+        "interaction_mode": "scenario",
+        "prompt_template": "あなたはシナリオ役割Aです。各回答は50字以内にしてください。",
+        "secondary_prompt": "あなたはシナリオ役割Bです。各回答は50字以内にしてください。",
+        "grader_template": "",
+        "evaluation_dimensions": ["価値伝達", "ニーズ適合", "異議対応", "信頼形成"],
+        "feedback_mode": "structured",
+        "max_turns": 5,
+    },
+]
+
 
 # ============== System Prompts ==============
 
 class SystemPromptUpdate(BaseModel):
     name: Optional[str] = None
+    stable_key: Optional[str] = None
+    locale: Optional[str] = None
     phase: Optional[str] = None
     content: Optional[str] = None
     description: Optional[str] = None
@@ -138,6 +260,8 @@ class SystemPromptUpdate(BaseModel):
 class SystemPromptResponse(BaseModel):
     id: str
     name: str
+    stable_key: str
+    locale: str
     phase: str
     content: str
     description: str
@@ -178,6 +302,10 @@ def update_system_prompt(
         raise HTTPException(status_code=404, detail="Not found")
     
     update_data = update.model_dump(exclude_unset=True)
+    if "locale" in update_data:
+        update_data["locale"] = normalize_locale(update_data["locale"])
+    if "stable_key" in update_data:
+        update_data["stable_key"] = _stable_key(update_data["stable_key"], update_data.get("phase") or prompt.phase or prompt.name)
     for key, value in update_data.items():
         setattr(prompt, key, value)
     
@@ -307,12 +435,16 @@ def update_agent_settings(
 
 class CreatorProfileCreate(BaseModel):
     name: str
+    stable_key: str = ""
+    locale: str = DEFAULT_LOCALE
     description: str = ""
     traits: dict = {}
 
 
 class CreatorProfileUpdate(BaseModel):
     name: Optional[str] = None
+    stable_key: Optional[str] = None
+    locale: Optional[str] = None
     description: Optional[str] = None
     traits: Optional[dict] = None
 
@@ -320,6 +452,8 @@ class CreatorProfileUpdate(BaseModel):
 class CreatorProfileResponse(BaseModel):
     id: str
     name: str
+    stable_key: str
+    locale: str
     description: str
     traits: dict
     created_at: str
@@ -343,6 +477,8 @@ def create_creator_profile(
     db_profile = CreatorProfile(
         id=generate_uuid(),
         name=profile.name,
+        stable_key=_stable_key(profile.stable_key, profile.name),
+        locale=normalize_locale(profile.locale),
         description=profile.description,
         traits=profile.traits,
     )
@@ -366,6 +502,10 @@ def update_creator_profile(
         raise HTTPException(status_code=404, detail="Not found")
     
     update_data = update.model_dump(exclude_unset=True)
+    if "locale" in update_data:
+        update_data["locale"] = normalize_locale(update_data["locale"])
+    if "stable_key" in update_data:
+        update_data["stable_key"] = _stable_key(update_data["stable_key"], update_data.get("name") or profile.name)
     for key, value in update_data.items():
         setattr(profile, key, value)
         # 对于 JSON 字段（如 traits），需要标记为已修改
@@ -392,6 +532,8 @@ def delete_creator_profile(profile_id: str, db: Session = Depends(get_db)):
 
 class FieldTemplateCreate(BaseModel):
     name: str
+    stable_key: str = ""
+    locale: str = DEFAULT_LOCALE
     description: str = ""
     category: str = "通用"
     fields: list = []
@@ -401,6 +543,8 @@ class FieldTemplateCreate(BaseModel):
 
 class FieldTemplateUpdate(BaseModel):
     name: Optional[str] = None
+    stable_key: Optional[str] = None
+    locale: Optional[str] = None
     description: Optional[str] = None
     category: Optional[str] = None
     fields: Optional[list] = None
@@ -411,6 +555,8 @@ class FieldTemplateUpdate(BaseModel):
 class FieldTemplateResponse(BaseModel):
     id: str
     name: str
+    stable_key: str
+    locale: str
     description: str
     category: str
     schema_version: int
@@ -445,6 +591,8 @@ def create_field_template(
     db_template = FieldTemplate(
         id=generate_uuid(),
         name=template.name,
+        stable_key=_stable_key(template.stable_key, template.name),
+        locale=normalize_locale(template.locale),
         description=template.description,
         category=template.category,
         schema_version=normalized["schema_version"],
@@ -471,6 +619,10 @@ def update_field_template(
         raise HTTPException(status_code=404, detail="Not found")
     
     update_data = update.model_dump(exclude_unset=True)
+    if "locale" in update_data:
+        update_data["locale"] = normalize_locale(update_data["locale"])
+    if "stable_key" in update_data:
+        update_data["stable_key"] = _stable_key(update_data["stable_key"], update_data.get("name") or template.name)
     merged_name = update_data.get("name", template.name)
     if "fields" in update_data or "root_nodes" in update_data or "schema_version" in update_data:
         normalized, errors = normalize_field_template_payload(
@@ -512,6 +664,8 @@ def delete_field_template(template_id: str, db: Session = Depends(get_db)):
 
 class ChannelCreate(BaseModel):
     name: str
+    stable_key: str = ""
+    locale: str = DEFAULT_LOCALE
     description: str = ""
     platform: str = "other"
     prompt_template: str = ""
@@ -520,6 +674,8 @@ class ChannelCreate(BaseModel):
 
 class ChannelUpdate(BaseModel):
     name: Optional[str] = None
+    stable_key: Optional[str] = None
+    locale: Optional[str] = None
     description: Optional[str] = None
     platform: Optional[str] = None
     prompt_template: Optional[str] = None
@@ -529,6 +685,8 @@ class ChannelUpdate(BaseModel):
 class ChannelResponse(BaseModel):
     id: str
     name: str
+    stable_key: str
+    locale: str
     description: str
     platform: str
     prompt_template: str
@@ -551,6 +709,8 @@ def create_channel(channel: ChannelCreate, db: Session = Depends(get_db)):
     db_channel = Channel(
         id=generate_uuid(),
         name=channel.name,
+        stable_key=_stable_key(channel.stable_key, channel.name),
+        locale=normalize_locale(channel.locale),
         description=channel.description,
         platform=channel.platform,
         prompt_template=channel.prompt_template,
@@ -574,6 +734,10 @@ def update_channel(
         raise HTTPException(status_code=404, detail="Not found")
     
     update_data = update.model_dump(exclude_unset=True)
+    if "locale" in update_data:
+        update_data["locale"] = normalize_locale(update_data["locale"])
+    if "stable_key" in update_data:
+        update_data["stable_key"] = _stable_key(update_data["stable_key"], update_data.get("name") or channel.name)
     for key, value in update_data.items():
         setattr(channel, key, value)
     
@@ -597,6 +761,8 @@ def delete_channel(channel_id: str, db: Session = Depends(get_db)):
 
 class SimulatorCreate(BaseModel):
     name: str
+    stable_key: str = ""
+    locale: str = DEFAULT_LOCALE
     description: str = ""
     simulator_type: str = "custom"
     interaction_type: str = "reading"
@@ -611,6 +777,8 @@ class SimulatorCreate(BaseModel):
 
 class SimulatorUpdate(BaseModel):
     name: Optional[str] = None
+    stable_key: Optional[str] = None
+    locale: Optional[str] = None
     description: Optional[str] = None
     simulator_type: Optional[str] = None
     interaction_type: Optional[str] = None
@@ -626,6 +794,8 @@ class SimulatorUpdate(BaseModel):
 class SimulatorResponse(BaseModel):
     id: str
     name: str
+    stable_key: str
+    locale: str
     description: str
     simulator_type: str
     interaction_type: str
@@ -655,6 +825,8 @@ def create_simulator(simulator: SimulatorCreate, db: Session = Depends(get_db)):
     db_simulator = Simulator(
         id=generate_uuid(),
         name=simulator.name,
+        stable_key=_stable_key(simulator.stable_key, simulator.name),
+        locale=normalize_locale(simulator.locale),
         description=simulator.description,
         simulator_type=simulator.simulator_type,
         interaction_type=simulator.interaction_type,
@@ -686,6 +858,10 @@ def update_simulator(
         raise HTTPException(status_code=404, detail="Not found")
     
     update_data = update.model_dump(exclude_unset=True)
+    if "locale" in update_data:
+        update_data["locale"] = normalize_locale(update_data["locale"])
+    if "stable_key" in update_data:
+        update_data["stable_key"] = _stable_key(update_data["stable_key"], update_data.get("name") or simulator.name)
     for key, value in update_data.items():
         setattr(simulator, key, value)
         # 对于 JSON 字段（如 evaluation_dimensions），需要标记为已修改
@@ -823,12 +999,17 @@ def export_logs(
 def _ensure_eval_prompt_presets(db: Session) -> None:
     changed = False
     for preset in EVAL_PROMPT_PRESETS:
-        existing = db.query(SystemPrompt).filter(SystemPrompt.phase == preset["phase"]).first()
+        existing = db.query(SystemPrompt).filter(
+            SystemPrompt.phase == preset["phase"],
+            SystemPrompt.locale == DEFAULT_LOCALE,
+        ).first()
         if existing:
             continue
         db.add(SystemPrompt(
             id=generate_uuid(),
             name=preset["name"],
+            stable_key=preset.get("stable_key", preset["phase"]),
+            locale=normalize_locale(preset.get("locale", DEFAULT_LOCALE)),
             phase=preset["phase"],
             content=preset["content"],
             description=preset["description"],
@@ -845,19 +1026,30 @@ def _sync_preset_graders(db: Session) -> tuple[int, int]:
         name = item.get("name", "")
         if not name:
             continue
-        existing = db.query(Grader).filter(Grader.name == name, Grader.is_preset == True).first()  # noqa: E712
+        stable_key = item.get("stable_key", name)
+        locale = normalize_locale(item.get("locale", DEFAULT_LOCALE))
+        existing = db.query(Grader).filter(
+            Grader.stable_key == stable_key,
+            Grader.locale == locale,
+            Grader.is_preset == True,
+        ).first()  # noqa: E712
         if existing:
+            existing.name = name
             existing.grader_type = item.get("grader_type", existing.grader_type)
             existing.prompt_template = item.get("prompt_template", existing.prompt_template)
             existing.dimensions = item.get("dimensions", existing.dimensions)
             existing.scoring_criteria = item.get("scoring_criteria", existing.scoring_criteria)
             existing.is_preset = True
             existing.project_id = None
+            existing.stable_key = stable_key
+            existing.locale = locale
             updated += 1
             continue
         db.add(Grader(
             id=generate_uuid(),
             name=name,
+            stable_key=stable_key,
+            locale=locale,
             grader_type=item.get("grader_type", "content_only"),
             prompt_template=item.get("prompt_template", ""),
             dimensions=item.get("dimensions", []),
@@ -876,8 +1068,15 @@ def _sync_preset_simulators(db: Session) -> tuple[int, int]:
         name = item.get("name", "")
         if not name:
             continue
-        existing = db.query(Simulator).filter(Simulator.name == name, Simulator.is_preset == True).first()  # noqa: E712
+        stable_key = item.get("stable_key", name)
+        locale = normalize_locale(item.get("locale", DEFAULT_LOCALE))
+        existing = db.query(Simulator).filter(
+            Simulator.stable_key == stable_key,
+            Simulator.locale == locale,
+            Simulator.is_preset == True,
+        ).first()  # noqa: E712
         if existing:
+            existing.name = name
             existing.description = item.get("description", existing.description)
             existing.simulator_type = item.get("simulator_type", existing.simulator_type)
             existing.interaction_type = item.get("interaction_type", existing.interaction_type)
@@ -889,11 +1088,15 @@ def _sync_preset_simulators(db: Session) -> tuple[int, int]:
             existing.feedback_mode = item.get("feedback_mode", existing.feedback_mode)
             existing.max_turns = item.get("max_turns", existing.max_turns)
             existing.is_preset = True
+            existing.stable_key = stable_key
+            existing.locale = locale
             updated += 1
             continue
         db.add(Simulator(
             id=generate_uuid(),
             name=name,
+            stable_key=stable_key,
+            locale=locale,
             description=item.get("description", ""),
             simulator_type=item.get("simulator_type", "custom"),
             interaction_type=item.get("interaction_type", "reading"),
@@ -914,6 +1117,8 @@ def _to_prompt_response(p: SystemPrompt) -> SystemPromptResponse:
     return SystemPromptResponse(
         id=p.id,
         name=p.name,
+        stable_key=getattr(p, "stable_key", "") or (p.phase or p.name),
+        locale=normalize_locale(getattr(p, "locale", DEFAULT_LOCALE)),
         phase=p.phase or "",
         content=p.content or "",
         description=p.description or "",
@@ -938,6 +1143,8 @@ def _to_profile_response(p: CreatorProfile) -> CreatorProfileResponse:
     return CreatorProfileResponse(
         id=p.id,
         name=p.name,
+        stable_key=getattr(p, "stable_key", "") or p.name,
+        locale=normalize_locale(getattr(p, "locale", DEFAULT_LOCALE)),
         description=p.description or "",
         traits=p.traits or {},
         created_at=p.created_at.isoformat() if p.created_at else "",
@@ -953,6 +1160,8 @@ def _to_template_response(t: FieldTemplate) -> FieldTemplateResponse:
     return FieldTemplateResponse(
         id=t.id,
         name=t.name,
+        stable_key=getattr(t, "stable_key", "") or t.name,
+        locale=normalize_locale(getattr(t, "locale", DEFAULT_LOCALE)),
         description=t.description or "",
         category=t.category or "通用",
         schema_version=normalized["schema_version"],
@@ -966,6 +1175,8 @@ def _to_channel_response(c: Channel) -> ChannelResponse:
     return ChannelResponse(
         id=c.id,
         name=c.name,
+        stable_key=getattr(c, "stable_key", "") or c.name,
+        locale=normalize_locale(getattr(c, "locale", DEFAULT_LOCALE)),
         description=c.description or "",
         platform=c.platform or "other",
         prompt_template=c.prompt_template or "",
@@ -989,6 +1200,8 @@ def _to_simulator_response(s: Simulator) -> SimulatorResponse:
     return SimulatorResponse(
         id=s.id,
         name=s.name,
+        stable_key=getattr(s, "stable_key", "") or s.name,
+        locale=normalize_locale(getattr(s, "locale", DEFAULT_LOCALE)),
         description=s.description or "",
         simulator_type=getattr(s, 'simulator_type', 'custom') or "custom",
         interaction_type=itype,
@@ -1057,6 +1270,8 @@ def export_field_templates(
         response = _to_template_response(t)
         export_data.append({
             "name": t.name,
+            "stable_key": getattr(t, "stable_key", "") or t.name,
+            "locale": normalize_locale(getattr(t, "locale", DEFAULT_LOCALE)),
             "description": t.description or "",
             "category": t.category or "通用",
             "schema_version": response.schema_version,
@@ -1085,6 +1300,8 @@ def import_field_templates(
         db_template = FieldTemplate(
             id=generate_uuid(),
             name=item.get("name", "导入模板"),
+            stable_key=item.get("stable_key", item.get("name", "导入模板")),
+            locale=normalize_locale(item.get("locale", DEFAULT_LOCALE)),
             description=item.get("description", ""),
             category=item.get("category", "通用"),
             schema_version=normalized["schema_version"],
@@ -1123,6 +1340,8 @@ def export_creator_profiles(
     for p in profiles:
         export_data.append({
             "name": p.name,
+            "stable_key": getattr(p, "stable_key", "") or p.name,
+            "locale": normalize_locale(getattr(p, "locale", DEFAULT_LOCALE)),
             "description": p.description or "",
             "traits": p.traits or {},
         })
@@ -1141,6 +1360,8 @@ def import_creator_profiles(
         db_profile = CreatorProfile(
             id=generate_uuid(),
             name=item.get("name", "导入特质"),
+            stable_key=item.get("stable_key", item.get("name", "导入特质")),
+            locale=normalize_locale(item.get("locale", DEFAULT_LOCALE)),
             description=item.get("description", ""),
             traits=item.get("traits", {}),
         )
@@ -1176,6 +1397,8 @@ def export_simulators(
     for s in simulators:
         export_data.append({
             "name": s.name,
+            "stable_key": getattr(s, "stable_key", "") or s.name,
+            "locale": normalize_locale(getattr(s, "locale", DEFAULT_LOCALE)),
             "description": s.description or "",
             "simulator_type": getattr(s, 'simulator_type', 'custom') or "custom",
             "interaction_type": s.interaction_type or "reading",
@@ -1205,8 +1428,16 @@ def import_simulators(
             continue
         
         # 检查同名
-        existing = db.query(Simulator).filter(Simulator.name == name).first()
+        stable_key = item.get("stable_key", name)
+        locale = normalize_locale(item.get("locale", DEFAULT_LOCALE))
+        existing = db.query(Simulator).filter(
+            Simulator.stable_key == stable_key,
+            Simulator.locale == locale,
+        ).first()
         if existing:
+            existing.name = name
+            existing.stable_key = stable_key
+            existing.locale = locale
             existing.description = item.get("description", existing.description)
             existing.simulator_type = item.get("simulator_type", getattr(existing, 'simulator_type', 'custom'))
             existing.interaction_type = item.get("interaction_type", existing.interaction_type)
@@ -1222,6 +1453,8 @@ def import_simulators(
             db_simulator = Simulator(
                 id=generate_uuid(),
                 name=name,
+                stable_key=stable_key,
+                locale=locale,
                 description=item.get("description", ""),
                 simulator_type=item.get("simulator_type", "custom"),
                 interaction_type=item.get("interaction_type", "reading"),
@@ -1269,6 +1502,8 @@ def export_system_prompts(
     for p in prompts:
         export_data.append({
             "name": p.name,
+            "stable_key": getattr(p, "stable_key", "") or (p.phase or p.name),
+            "locale": normalize_locale(getattr(p, "locale", DEFAULT_LOCALE)),
             "phase": p.phase or "",
             "content": p.content or "",
             "description": p.description or "",
@@ -1290,11 +1525,17 @@ def import_system_prompts(
         phase = item.get("phase", "")
         
         # 检查是否已存在同 phase 的提示词
-        existing = db.query(SystemPrompt).filter(SystemPrompt.phase == phase).first()
+        locale = normalize_locale(item.get("locale", DEFAULT_LOCALE))
+        existing = db.query(SystemPrompt).filter(
+            SystemPrompt.phase == phase,
+            SystemPrompt.locale == locale,
+        ).first()
         
         if existing:
             # 更新现有的
             existing.name = item.get("name", existing.name)
+            existing.stable_key = item.get("stable_key", existing.stable_key or existing.phase or existing.name)
+            existing.locale = locale
             existing.content = item.get("content", existing.content)
             existing.description = item.get("description", existing.description)
             updated += 1
@@ -1303,6 +1544,8 @@ def import_system_prompts(
             db_prompt = SystemPrompt(
                 id=generate_uuid(),
                 name=item.get("name", "导入提示词"),
+                stable_key=item.get("stable_key", phase or item.get("name", "导入提示词")),
+                locale=locale,
                 phase=phase,
                 content=item.get("content", ""),
                 description=item.get("description", ""),

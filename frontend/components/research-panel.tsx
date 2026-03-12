@@ -7,6 +7,7 @@
 
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { blockAPI, API_BASE } from "@/lib/api";
+import { useUiIsJa } from "@/lib/ui-locale";
 import { sendNotification } from "@/lib/utils";
 
 // 人物小传类型 - 匹配实际 AI 输出格式
@@ -54,6 +55,7 @@ interface ResearchData {
 
 interface ResearchPanelProps {
   projectId: string;
+  projectLocale?: string | null;
   fieldId: string;
   content: string;
   onUpdate?: () => void;
@@ -62,11 +64,13 @@ interface ResearchPanelProps {
 
 export function ResearchPanel({
   projectId,
+  projectLocale,
   fieldId,
   content,
   onUpdate,
   onAdvance,
 }: ResearchPanelProps) {
+  const isJa = useUiIsJa(projectLocale);
   // 解析调研数据（自动补全缺失字段防止渲染崩溃）
   const initialData = useMemo<ResearchData | null>(() => {
     try {
@@ -147,7 +151,7 @@ export function ResearchPanel({
       onUpdate?.();
     } catch (err) {
       console.error("保存失败:", err);
-      alert("保存失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "保存に失敗しました: " : "保存失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     } finally {
       setIsSaving(false);
     }
@@ -156,8 +160,8 @@ export function ResearchPanel({
   if (!data) {
     return (
       <div className="p-6 text-center text-red-400">
-        <p>调研报告数据解析失败</p>
-        <p className="text-sm mt-2 text-zinc-500">请在右侧对话框让Agent重新生成</p>
+        <p>{isJa ? "調査レポートの解析に失敗しました" : "调研报告数据解析失败"}</p>
+        <p className="text-sm mt-2 text-zinc-500">{isJa ? "右側の対話欄で Agent に再生成を依頼してください" : "请在右侧对话框让Agent重新生成"}</p>
       </div>
     );
   }
@@ -173,7 +177,7 @@ export function ResearchPanel({
   // 重新生成消费者调研
   const handleRegenerate = async () => {
     if (isRegenerating) return;
-    if (!confirm("确定要重新生成消费者调研报告吗？当前报告内容将被覆盖。")) return;
+    if (!confirm(isJa ? "顧客調査レポートを再生成しますか？現在の内容は上書きされます。" : "确定要重新生成消费者调研报告吗？当前报告内容将被覆盖。")) return;
     
     setIsRegenerating(true);
     const abortController = new AbortController();
@@ -186,7 +190,7 @@ export function ResearchPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           project_id: projectId,
-          message: "重新生成消费者调研",
+          message: isJa ? "顧客調査を再生成してください" : "重新生成消费者调研",
         }),
         signal: abortController.signal,
       });
@@ -218,13 +222,13 @@ export function ResearchPanel({
       
       // 完成后刷新数据
       onUpdate?.();
-      sendNotification("消费者调研完成", "消费者调研报告已重新生成，点击查看");
+      sendNotification(isJa ? "顧客調査が完了しました" : "消费者调研完成", isJa ? "顧客調査レポートを再生成しました。クリックして確認してください" : "消费者调研报告已重新生成，点击查看");
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
         console.log("[ResearchPanel] 用户停止了重新生成");
       } else {
         console.error("重新生成失败:", err);
-        alert("重新生成失败: " + (err instanceof Error ? err.message : "未知错误"));
+        alert((isJa ? "再生成に失敗しました: " : "重新生成失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
       }
     } finally {
       setIsRegenerating(false);
@@ -247,7 +251,7 @@ export function ResearchPanel({
 
       {/* 总体概述 */}
       <section className="bg-surface-2 border border-surface-3 rounded-xl p-5">
-        <h2 className="text-lg font-semibold text-zinc-200 mb-4">总体概述</h2>
+        <h2 className="text-lg font-semibold text-zinc-200 mb-4">{isJa ? "全体概要" : "总体概述"}</h2>
         <textarea
           value={data.summary}
           onChange={(e) => setData({ ...data, summary: e.target.value })}
@@ -257,12 +261,12 @@ export function ResearchPanel({
 
       {/* 消费者画像 */}
       <section className="bg-surface-2 border border-surface-3 rounded-xl p-5">
-        <h2 className="text-lg font-semibold text-zinc-200 mb-4">消费者画像</h2>
+        <h2 className="text-lg font-semibold text-zinc-200 mb-4">{isJa ? "顧客像" : "消费者画像"}</h2>
         <div className="space-y-5">
           {/* 年龄范围 */}
           {data.consumer_profile.age_range && (
             <div className="space-y-1.5 min-w-0">
-              <label className="text-xs font-medium text-zinc-400">年龄范围</label>
+              <label className="text-xs font-medium text-zinc-400">{isJa ? "年齢帯" : "年龄范围"}</label>
               <input
                 type="text"
                 value={data.consumer_profile.age_range}
@@ -284,7 +288,7 @@ export function ResearchPanel({
           {data.consumer_profile.occupation && (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <label className="text-xs font-medium text-zinc-400">职业类型</label>
+                <label className="text-xs font-medium text-zinc-400">{isJa ? "職業タイプ" : "职业类型"}</label>
                 <button
                   onClick={() => {
                     const occupations: string[] = Array.isArray(data.consumer_profile.occupation) 
@@ -300,7 +304,7 @@ export function ResearchPanel({
                   }}
                   className="px-2 py-0.5 text-xs bg-surface-3 hover:bg-surface-4 text-zinc-400 hover:text-zinc-200 rounded transition-colors"
                 >
-                  + 添加
+                  {isJa ? "+ 追加" : "+ 添加"}
                 </button>
               </div>
               <div className="space-y-2">
@@ -354,7 +358,7 @@ export function ResearchPanel({
           {data.consumer_profile.characteristics && Array.isArray(data.consumer_profile.characteristics) && (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <label className="text-xs font-medium text-zinc-400">典型特征</label>
+                <label className="text-xs font-medium text-zinc-400">{isJa ? "典型的な特徴" : "典型特征"}</label>
                 <button
                   onClick={() => setData({
                     ...data,
@@ -365,7 +369,7 @@ export function ResearchPanel({
                   })}
                   className="px-2 py-0.5 text-xs bg-surface-3 hover:bg-surface-4 text-zinc-400 hover:text-zinc-200 rounded transition-colors"
                 >
-                  + 添加
+                  {isJa ? "+ 追加" : "+ 添加"}
                 </button>
               </div>
               <div className="space-y-2">
@@ -413,7 +417,7 @@ export function ResearchPanel({
           {data.consumer_profile.behaviors && Array.isArray(data.consumer_profile.behaviors) && (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <label className="text-xs font-medium text-zinc-400">典型行为</label>
+                <label className="text-xs font-medium text-zinc-400">{isJa ? "典型的な行動" : "典型行为"}</label>
                 <button
                   onClick={() => setData({
                     ...data,
@@ -424,7 +428,7 @@ export function ResearchPanel({
                   })}
                   className="px-2 py-0.5 text-xs bg-surface-3 hover:bg-surface-4 text-zinc-400 hover:text-zinc-200 rounded transition-colors"
                 >
-                  + 添加
+                  {isJa ? "+ 追加" : "+ 添加"}
                 </button>
               </div>
               <div className="space-y-2 max-h-48 overflow-y-auto">
@@ -473,12 +477,12 @@ export function ResearchPanel({
       {/* 核心痛点 */}
       <section className="bg-surface-2 border border-surface-3 rounded-xl p-5">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold text-zinc-200">核心痛点</h2>
+          <h2 className="text-lg font-semibold text-zinc-200">{isJa ? "主要課題" : "核心痛点"}</h2>
           <button
             onClick={() => setData({ ...data, pain_points: [...data.pain_points, ""] })}
             className="px-3 py-1 text-xs bg-surface-3 hover:bg-surface-4 text-zinc-400 hover:text-zinc-200 rounded-lg transition-colors"
           >
-            + 添加痛点
+            {isJa ? "+ 課題を追加" : "+ 添加痛点"}
           </button>
         </div>
         <ul className="space-y-3">
@@ -487,7 +491,7 @@ export function ResearchPanel({
               <span className="text-amber-400 mt-2.5 text-lg shrink-0">•</span>
               <textarea
                 value={point}
-                placeholder="输入痛点描述..."
+                placeholder={isJa ? "課題の説明を入力..." : "输入痛点描述..."}
                 rows={2}
                 onChange={(e) => {
                   const newPoints = [...data.pain_points];
@@ -502,7 +506,7 @@ export function ResearchPanel({
                   setData({ ...data, pain_points: newPoints });
                 }}
                 className="opacity-0 group-hover:opacity-100 p-2 text-red-400 hover:text-red-300 hover:bg-red-400/10 rounded-lg transition-all shrink-0"
-                title="删除此痛点"
+                title={isJa ? "この課題を削除" : "删除此痛点"}
               >
                 ✕
               </button>
@@ -514,12 +518,12 @@ export function ResearchPanel({
       {/* 价值主张 */}
       <section className="bg-surface-2 border border-surface-3 rounded-xl p-5">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold text-zinc-200">价值主张</h2>
+          <h2 className="text-lg font-semibold text-zinc-200">{isJa ? "価値提案" : "价值主张"}</h2>
           <button
             onClick={() => setData({ ...data, value_propositions: [...data.value_propositions, ""] })}
             className="px-3 py-1 text-xs bg-surface-3 hover:bg-surface-4 text-zinc-400 hover:text-zinc-200 rounded-lg transition-colors"
           >
-            + 添加主张
+            {isJa ? "+ 提案を追加" : "+ 添加主张"}
           </button>
         </div>
         <ul className="space-y-3">
@@ -528,7 +532,7 @@ export function ResearchPanel({
               <span className="text-green-400 mt-2.5 text-lg shrink-0">✓</span>
               <textarea
                 value={prop}
-                placeholder="输入价值主张..."
+                placeholder={isJa ? "価値提案を入力..." : "输入价值主张..."}
                 rows={2}
                 onChange={(e) => {
                   const newProps = [...data.value_propositions];
@@ -543,7 +547,7 @@ export function ResearchPanel({
                   setData({ ...data, value_propositions: newProps });
                 }}
                 className="opacity-0 group-hover:opacity-100 p-2 text-red-400 hover:text-red-300 hover:bg-red-400/10 rounded-lg transition-all shrink-0"
-                title="删除此主张"
+                title={isJa ? "この提案を削除" : "删除此主张"}
               >
                 ✕
               </button>
@@ -556,10 +560,10 @@ export function ResearchPanel({
       <section>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-zinc-200">
-            典型用户小传
+            {isJa ? "代表的なユーザープロフィール" : "典型用户小传"}
           </h2>
           <span className="text-sm text-zinc-500">
-            已选中 {selectedCount}/{data.personas.length} 个用于模拟
+            {isJa ? `シミュレーション用に ${selectedCount}/${data.personas.length} 件を選択中` : `已选中 ${selectedCount}/${data.personas.length} 个用于模拟`}
           </span>
         </div>
         
@@ -581,7 +585,7 @@ export function ResearchPanel({
       {/* 信息来源（DeepResearch引用） */}
       <section className="bg-surface-2 border border-surface-3 rounded-xl p-5">
         <h2 className="text-lg font-semibold text-zinc-200 mb-4">
-          📚 信息来源 {data.sources && data.sources.length > 0 ? `(${data.sources.length})` : ""}
+          {isJa ? `📚 情報ソース ${data.sources && data.sources.length > 0 ? `(${data.sources.length})` : ""}` : `📚 信息来源 ${data.sources && data.sources.length > 0 ? `(${data.sources.length})` : ""}`}
         </h2>
         {data.sources && data.sources.length > 0 ? (
           <>
@@ -602,12 +606,12 @@ export function ResearchPanel({
               ))}
             </ul>
             <p className="text-xs text-zinc-600 mt-4">
-              以上信息来源由 DeepResearch 自动搜索并提取
+              {isJa ? "以上の情報ソースは DeepResearch により自動検索・抽出されました" : "以上信息来源由 DeepResearch 自动搜索并提取"}
             </p>
           </>
         ) : (
           <p className="text-sm text-zinc-500 italic">
-            暂无参考来源。如需基于真实网络数据的调研，请在后台设置中配置 Tavily API Key，然后点击&quot;重新生成消费者调研&quot;。
+            {isJa ? "参考ソースはまだありません。実際のWebデータに基づく調査を行うには、設定で Tavily API Key を構成してから「顧客調査を再生成」を実行してください。" : "暂无参考来源。如需基于真实网络数据的调研，请在后台设置中配置 Tavily API Key，然后点击\"重新生成消费者调研\"。"}
           </p>
         )}
       </section>
@@ -621,13 +625,13 @@ export function ResearchPanel({
         <div className="absolute inset-0 bg-zinc-900/60 z-20 flex items-center justify-center">
           <div className="bg-surface-2 border border-surface-3 rounded-xl p-6 text-center shadow-2xl max-w-sm">
             <div className="animate-spin w-8 h-8 border-2 border-brand-500 border-t-transparent rounded-full mx-auto mb-4" />
-            <p className="text-zinc-200 font-medium mb-2">正在重新生成消费者调研...</p>
-            <p className="text-zinc-500 text-sm mb-4">基于项目意图重新进行深度调研，请稍候</p>
+            <p className="text-zinc-200 font-medium mb-2">{isJa ? "顧客調査を再生成しています..." : "正在重新生成消费者调研..."}</p>
+            <p className="text-zinc-500 text-sm mb-4">{isJa ? "プロジェクト意図に基づいて再調査しています。しばらくお待ちください。" : "基于项目意图重新进行深度调研，请稍候"}</p>
             <button
               onClick={handleStopRegenerate}
               className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm rounded-lg transition-colors"
             >
-              停止生成
+              {isJa ? "生成を停止" : "停止生成"}
             </button>
           </div>
         </div>
@@ -636,7 +640,7 @@ export function ResearchPanel({
       {/* 底部固定按钮栏 */}
       <div className="shrink-0 px-6 py-4 border-t border-surface-3 bg-surface-1 flex items-center justify-between">
         <div className="text-sm text-zinc-500">
-          已选中 <span className="text-brand-400 font-medium">{selectedCount}</span> 个用户画像用于后续模拟
+          {isJa ? <>後続シミュレーション用に <span className="text-brand-400 font-medium">{selectedCount}</span> 件のユーザー像を選択済み</> : <>已选中 <span className="text-brand-400 font-medium">{selectedCount}</span> 个用户画像用于后续模拟</>}
         </div>
         <div className="flex gap-3">
           {/* 重新生成按钮 */}
@@ -645,21 +649,21 @@ export function ResearchPanel({
             disabled={isRegenerating || isSaving}
             className="px-5 py-2.5 bg-amber-600/20 hover:bg-amber-600/30 disabled:bg-zinc-700 text-amber-400 border border-amber-500/30 rounded-lg text-sm font-medium transition-all"
           >
-            {isRegenerating ? "重新生成中..." : "重新生成消费者调研"}
+            {isRegenerating ? (isJa ? "再生成中..." : "重新生成中...") : (isJa ? "顧客調査を再生成" : "重新生成消费者调研")}
           </button>
           <button
             onClick={handleSave}
             disabled={isSaving || isRegenerating}
             className="px-5 py-2.5 bg-surface-3 hover:bg-surface-4 disabled:bg-zinc-700 text-zinc-300 rounded-lg text-sm font-medium transition-all"
           >
-            {isSaving ? "保存中..." : "保存修改"}
+            {isSaving ? (isJa ? "保存中..." : "保存中...") : (isJa ? "変更を保存" : "保存修改")}
           </button>
           <button
             onClick={handleSaveAndAdvance}
             disabled={isSaving || isRegenerating}
             className="px-6 py-2.5 bg-brand-600 hover:bg-brand-700 disabled:bg-zinc-700 text-white rounded-lg text-sm font-medium transition-all shadow-lg hover:shadow-brand-600/25"
           >
-            确认并继续
+            {isJa ? "確認して続行" : "确认并继续"}
           </button>
         </div>
       </div>

@@ -1,5 +1,5 @@
 // frontend/components/create-project-modal.tsx
-// 功能: 创建项目对话框，支持两步流程：基本信息 → 选择模板
+// 功能: 创建项目对话框，支持两步流程：基本信息 → 选择模板，并按 locale 同步创作者特质与模板资产
 // 主要组件: CreateProjectModal
 // 集成: TemplateSelector 用于选择流程模板
 
@@ -8,6 +8,7 @@
 import { useState, useEffect } from "react";
 import { settingsAPI, projectAPI, blockAPI } from "@/lib/api";
 import type { CreatorProfile, Project, TemplateNode } from "@/lib/api";
+import { resolveClientLocale } from "@/lib/project-locale";
 
 // 统一模板项（仅展示结构模板树）
 interface TemplateItem {
@@ -41,6 +42,7 @@ interface FieldTemplateLikeField {
 interface FieldTemplateLike {
   id: string;
   name: string;
+  locale?: string;
   description?: string;
   category?: string;
   fields?: FieldTemplateLikeField[];
@@ -55,6 +57,68 @@ interface CreateProjectModalProps {
 }
 
 type Step = "info" | "template";
+
+const PROJECT_LOCALES = [
+  { value: "zh-CN", label: "简体中文" },
+  { value: "ja-JP", label: "日本語" },
+];
+
+const UI_TEXT = {
+  "zh-CN": {
+    title: "新建内容项目",
+    step1: "1. 基本信息",
+    step2: "2. 流程设置",
+    projectName: "项目名称",
+    projectNamePlaceholder: "例如：产品发布内容策划",
+    projectLanguage: "项目语言",
+    creatorProfile: "创作者特质",
+    noProfile: "还没有创作者特质，请先在后台设置中创建。",
+    selectPlaceholder: "请选择...",
+    deepResearch: "启用 DeepResearch",
+    deepResearchHint: "消费者调研阶段将使用网络搜索获取更深入的用户洞察",
+    templateTitle: "选择流程模板",
+    templateHint: "所有项目使用灵活架构，支持自定义阶段和内容块",
+    emptyTemplate: "从零开始",
+    emptyTemplateHint: "创建空白项目，自由添加组和字段",
+    defaultTag: "默认",
+    previous: "上一步",
+    cancel: "取消",
+    next: "下一步",
+    creating: "创建中...",
+    create: "创建项目",
+    needName: "请输入项目名称",
+    needProfile: "请选择创作者特质",
+    needRequired: "请填写必要信息",
+    createFailed: "创建失败",
+  },
+  "ja-JP": {
+    title: "新規コンテンツプロジェクト",
+    step1: "1. 基本情報",
+    step2: "2. フロー設定",
+    projectName: "プロジェクト名",
+    projectNamePlaceholder: "例: 新製品ローンチのコンテンツ企画",
+    projectLanguage: "プロジェクト言語",
+    creatorProfile: "クリエイタープロファイル",
+    noProfile: "利用可能なクリエイタープロファイルがありません。先に設定画面で作成してください。",
+    selectPlaceholder: "選択してください...",
+    deepResearch: "DeepResearch を有効化",
+    deepResearchHint: "顧客調査フェーズで Web 検索を使い、より深いインサイトを取得します。",
+    templateTitle: "フローテンプレートを選択",
+    templateHint: "すべてのプロジェクトは柔軟アーキテクチャを使用し、段階と内容ブロックを自由に構成できます。",
+    emptyTemplate: "ゼロから開始",
+    emptyTemplateHint: "空のプロジェクトを作成し、グループやブロックを自由に追加します。",
+    defaultTag: "既定",
+    previous: "戻る",
+    cancel: "キャンセル",
+    next: "次へ",
+    creating: "作成中...",
+    create: "プロジェクトを作成",
+    needName: "プロジェクト名を入力してください",
+    needProfile: "クリエイタープロファイルを選択してください",
+    needRequired: "必須項目を入力してください",
+    createFailed: "プロジェクトの作成に失敗しました",
+  },
+} as const;
 
 // 特殊处理器图标
 const specialHandlerIcons: Record<string, React.ReactNode> = {
@@ -74,6 +138,20 @@ function countFieldNodes(nodes: TemplateNode[] = []): number {
 
 function countContentNodes(nodes: TemplateNode[] = []): number {
   return flattenTemplateNodes(nodes).filter((node) => !!node.content).length;
+}
+
+function formatTemplateStructureSummary(locale: string, groupCount: number, fieldCount: number): string {
+  if (locale === "ja-JP") {
+    return `${groupCount} 個のグループ · ${fieldCount} 個の内容ブロック`;
+  }
+  return `${groupCount} 个组 · ${fieldCount} 个内容块`;
+}
+
+function formatTemplatePresetSummary(locale: string, contentCount: number): string {
+  if (locale === "ja-JP") {
+    return `${contentCount} 件の初期内容あり`;
+  }
+  return `${contentCount} 个有预置内容`;
 }
 
 function rootNodesToPreviewPhases(nodes: TemplateNode[] = [], fallbackName: string): TemplateItem["phases"] {
@@ -130,6 +208,7 @@ export function CreateProjectModal({
   // 基本信息
   const [name, setName] = useState("");
   const [creatorProfileId, setCreatorProfileId] = useState<string>("");
+  const [locale, setLocale] = useState<string>(() => resolveClientLocale());
   const [useDeepResearch, setUseDeepResearch] = useState(true);
   const [creatorProfiles, setCreatorProfiles] = useState<CreatorProfile[]>([]);
   
@@ -142,40 +221,54 @@ export function CreateProjectModal({
   // 状态
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const t = UI_TEXT[locale as keyof typeof UI_TEXT] || UI_TEXT["zh-CN"];
 
   // 加载数据
   useEffect(() => {
     if (isOpen) {
-      loadCreatorProfiles();
-      loadTemplates();
+      const nextLocale = resolveClientLocale();
       // 重置状态
       setStep("info");
       setName("");
+      setLocale(nextLocale);
+      setCreatorProfiles([]);
+      setTemplates([]);
+      setCreatorProfileId("");
+      setSelectedTemplateId(null);
+      setExpandedTemplateId(null);
+      setUseDeepResearch(true);
       setError(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen]);
 
-  const loadCreatorProfiles = async () => {
+  const loadCreatorProfiles = async (targetLocale: string, isCancelled: () => boolean) => {
     try {
       const profiles = await settingsAPI.listCreatorProfiles();
-      setCreatorProfiles(profiles);
-      if (profiles.length > 0 && !creatorProfileId) {
-        setCreatorProfileId(profiles[0].id);
-      }
+      if (isCancelled()) return;
+      const localizedProfiles = profiles.filter((profile) => (profile.locale || "zh-CN") === targetLocale);
+      setCreatorProfiles(localizedProfiles);
+      setCreatorProfileId((currentId) => {
+        if (localizedProfiles.some((profile) => profile.id === currentId)) {
+          return currentId;
+        }
+        return localizedProfiles[0]?.id || "";
+      });
     } catch (err) {
       console.error("加载创作者特质失败:", err);
     }
   };
   
-  const loadTemplates = async () => {
+  const loadTemplates = async (targetLocale: string, isCancelled: () => boolean) => {
     try {
       const fieldData = await settingsAPI.listFieldTemplates().catch(() => [] as FieldTemplateLike[]);
+      if (isCancelled()) return;
+      const localizedTemplates = fieldData.filter((template) => (template.locale || "zh-CN") === targetLocale);
 
       const items: TemplateItem[] = [];
 
       // FieldTemplate → TemplateItem
-      for (const ft of fieldData) {
+      for (const ft of localizedTemplates) {
         const fields = ft.fields || [];
         const rootNodes = ft.root_nodes || [];
         const previewPhases = rootNodes.length
@@ -206,28 +299,54 @@ export function CreateProjectModal({
         });
       }
 
+      if (isCancelled()) return;
       setTemplates(items);
 
-      // 默认选中默认模板（如果有）
       const defaultTemplate = items.find((t) => t.is_default);
-      if (defaultTemplate) {
-        setSelectedTemplateId(defaultTemplate.id);
-        setExpandedTemplateId(defaultTemplate.id);
-      } else {
-        setSelectedTemplateId(null);
-      }
+      setSelectedTemplateId((currentId) => {
+        if (currentId && items.some((template) => template.id === currentId)) {
+          return currentId;
+        }
+        return defaultTemplate?.id || null;
+      });
+      setExpandedTemplateId((currentId) => {
+        if (currentId && items.some((template) => template.id === currentId)) {
+          return currentId;
+        }
+        return defaultTemplate?.id || null;
+      });
     } catch (err) {
       console.error("加载模板失败:", err);
     }
   };
 
+  useEffect(() => {
+    if (!isOpen) return;
+
+    let cancelled = false;
+    const isCancelled = () => cancelled;
+
+    setCreatorProfiles([]);
+    setTemplates([]);
+    setCreatorProfileId("");
+    setSelectedTemplateId(null);
+    setExpandedTemplateId(null);
+
+    void loadCreatorProfiles(locale, isCancelled);
+    void loadTemplates(locale, isCancelled);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, locale]);
+
   const handleNextStep = () => {
     if (!name.trim()) {
-      setError("请输入项目名称");
+      setError(t.needName);
       return;
     }
     if (!creatorProfileId) {
-      setError("请选择创作者特质");
+      setError(t.needProfile);
       return;
     }
     setError(null);
@@ -241,7 +360,7 @@ export function CreateProjectModal({
 
   const handleSubmit = async () => {
     if (!name.trim() || !creatorProfileId) {
-      setError("请填写必要信息");
+      setError(t.needRequired);
       return;
     }
 
@@ -253,6 +372,7 @@ export function CreateProjectModal({
       const project = await projectAPI.create({
         name: name.trim(),
         creator_profile_id: creatorProfileId,
+        locale,
         use_deep_research: useDeepResearch,
         use_flexible_architecture: true,
       });
@@ -270,12 +390,13 @@ export function CreateProjectModal({
       
       // 重置表单
       setName("");
-      setCreatorProfileId(creatorProfiles[0]?.id || "");
+      setCreatorProfileId("");
+      setLocale(resolveClientLocale());
       setUseDeepResearch(true);
       setStep("info");
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "创建失败");
+      setError(err instanceof Error ? err.message : t.createFailed);
     } finally {
       setLoading(false);
     }
@@ -297,15 +418,15 @@ export function CreateProjectModal({
         <div className="px-6 pt-6 pb-4 border-b border-surface-3">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xl font-semibold text-zinc-100">
-              新建内容项目
+              {t.title}
             </h2>
             <div className="flex items-center gap-2 text-xs text-zinc-500">
               <span className={step === "info" ? "text-brand-400 font-medium" : ""}>
-                1. 基本信息
+                {t.step1}
               </span>
               <ChevronRight className="w-3 h-3" />
               <span className={step === "template" ? "text-brand-400 font-medium" : ""}>
-                2. 流程设置
+                {t.step2}
               </span>
             </div>
           </div>
@@ -326,13 +447,13 @@ export function CreateProjectModal({
               {/* 项目名称 */}
               <div>
                 <label className="block text-sm font-medium text-zinc-300 mb-2">
-                  项目名称 <span className="text-red-400">*</span>
+                  {t.projectName} <span className="text-red-400">*</span>
                 </label>
                 <input
                   type="text"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="例如：产品发布内容策划"
+                  placeholder={t.projectNamePlaceholder}
                   className="w-full px-4 py-2.5 bg-surface-2 border border-surface-3 rounded-lg text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent"
                   autoFocus
                 />
@@ -341,16 +462,33 @@ export function CreateProjectModal({
               {/* 创作者特质 */}
               <div>
                 <label className="block text-sm font-medium text-zinc-300 mb-2">
-                  创作者特质 <span className="text-red-400">*</span>
+                  {t.projectLanguage} <span className="text-red-400">*</span>
+                </label>
+                <select
+                  value={locale}
+                  onChange={(e) => setLocale(e.target.value)}
+                  className="w-full px-4 py-2.5 bg-surface-2 border border-surface-3 rounded-lg text-zinc-100 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent"
+                >
+                  {PROJECT_LOCALES.map((item) => (
+                    <option key={item.value} value={item.value}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* 创作者特质 */}
+              <div>
+                <label className="block text-sm font-medium text-zinc-300 mb-2">
+                  {t.creatorProfile} <span className="text-red-400">*</span>
                 </label>
                 {creatorProfiles.length === 0 ? (
                   <div className="p-4 bg-amber-900/20 border border-amber-700/50 rounded-lg">
                     <p className="text-sm text-amber-200">
-                      还没有创作者特质，请先在{" "}
+                      {t.noProfile}{" "}
                       <a href="/settings" className="underline hover:text-amber-100">
-                        后台设置
+                        /settings
                       </a>{" "}
-                      中创建。
                     </p>
                   </div>
                 ) : (
@@ -359,7 +497,7 @@ export function CreateProjectModal({
                     onChange={(e) => setCreatorProfileId(e.target.value)}
                     className="w-full px-4 py-2.5 bg-surface-2 border border-surface-3 rounded-lg text-zinc-100 focus:outline-none focus:ring-2 focus:ring-brand-500"
                   >
-                    <option value="">请选择...</option>
+                    <option value="">{t.selectPlaceholder}</option>
                     {creatorProfiles.map((profile) => (
                       <option key={profile.id} value={profile.id}>
                         {profile.name}
@@ -373,10 +511,10 @@ export function CreateProjectModal({
               <div className="flex items-center justify-between p-4 bg-surface-2 rounded-lg">
                 <div>
                   <p className="text-sm font-medium text-zinc-200">
-                    启用 DeepResearch
+                    {t.deepResearch}
                   </p>
                   <p className="text-xs text-zinc-500 mt-1">
-                    消费者调研阶段将使用网络搜索获取更深入的用户洞察
+                    {t.deepResearchHint}
                   </p>
                 </div>
                 <button
@@ -403,10 +541,10 @@ export function CreateProjectModal({
               <div className="flex items-center justify-between p-4 bg-surface-2 rounded-lg">
                 <div>
                   <p className="text-sm font-medium text-zinc-200">
-                    选择流程模板
+                    {t.templateTitle}
                   </p>
                   <p className="text-xs text-zinc-500 mt-1">
-                    所有项目使用灵活架构，支持自定义阶段和内容块
+                    {t.templateHint}
                   </p>
                 </div>
               </div>
@@ -415,7 +553,7 @@ export function CreateProjectModal({
               {(
                 <div className="space-y-3">
                   <label className="block text-sm font-medium text-zinc-300">
-                    选择流程模板
+                    {t.templateTitle}
                   </label>
                   
                   <div className="max-h-64 overflow-y-auto space-y-2">
@@ -443,11 +581,11 @@ export function CreateProjectModal({
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2">
                             <span className="text-sm font-medium text-zinc-200">
-                              从零开始
+                              {t.emptyTemplate}
                             </span>
                           </div>
                           <p className="text-xs text-zinc-500 mt-0.5">
-                            创建空白项目，自由添加组和字段
+                            {t.emptyTemplateHint}
                           </p>
                         </div>
                       </div>
@@ -487,15 +625,15 @@ export function CreateProjectModal({
                                 </span>
                                 {template.is_default && (
                                   <span className="px-1.5 py-0.5 text-xs bg-brand-500/20 text-brand-400 rounded">
-                                    默认
+                                    {t.defaultTag}
                                   </span>
                                 )}
                               </div>
                               <p className="text-xs text-zinc-500 truncate mt-0.5">
-                                {template.phases.length} 个组 · {template.fieldCount} 个内容块
+                                {formatTemplateStructureSummary(locale, template.phases.length, template.fieldCount)}
                                 {template.contentCount > 0 && (
                                   <span className="text-emerald-400/80 ml-1">
-                                    ({template.contentCount} 个有预置内容)
+                                    ({formatTemplatePresetSummary(locale, template.contentCount)})
                                   </span>
                                 )}
                               </p>
@@ -562,7 +700,7 @@ export function CreateProjectModal({
                 className="flex items-center gap-1 px-4 py-2 text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
               >
                 <ChevronLeft className="w-4 h-4" />
-                上一步
+                {t.previous}
               </button>
             )}
           </div>
@@ -573,7 +711,7 @@ export function CreateProjectModal({
               onClick={onClose}
               className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
             >
-              取消
+              {t.cancel}
             </button>
             
             {step === "info" ? (
@@ -583,7 +721,7 @@ export function CreateProjectModal({
                 disabled={!name.trim() || !creatorProfileId}
                 className="flex items-center gap-1 px-5 py-2 text-sm bg-brand-600 hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
               >
-                下一步
+                {t.next}
                 <ChevronRight className="w-4 h-4" />
               </button>
             ) : (
@@ -593,7 +731,7 @@ export function CreateProjectModal({
                 disabled={loading}
                 className="px-5 py-2 text-sm bg-brand-600 hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
               >
-                {loading ? "创建中..." : "创建项目"}
+                {loading ? t.creating : t.create}
               </button>
             )}
           </div>

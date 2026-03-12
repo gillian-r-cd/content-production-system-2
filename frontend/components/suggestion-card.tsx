@@ -7,6 +7,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useUiIsJa } from "@/lib/ui-locale";
 import { cn } from "@/lib/utils";
 import { API_BASE } from "@/lib/api";
 import ReactMarkdown from "react-markdown";
@@ -39,6 +40,7 @@ export interface SuggestionCardData {
 interface SuggestionCardProps {
   data: SuggestionCardData;
   projectId: string;
+  projectLocale?: string | null;
   onStatusChange: (id: string, status: SuggestionStatus, undoInfo?: { entity_id: string; version_id: string }) => void;
   onFollowUp: (data: SuggestionCardData) => void;
   onContentUpdate?: () => void;
@@ -55,13 +57,15 @@ interface UndoToastProps {
   entityId: string;
   versionId: string;
   targetField: string;
+  projectLocale?: string | null;
   onUndo: () => void;
   onExpire: () => void;
   /** Group 全部撤回时使用：多个 rollback 目标 */
   rollbackTargets?: RollbackTarget[];
 }
 
-export function UndoToast({ entityId, versionId, targetField, onUndo, onExpire, rollbackTargets }: UndoToastProps) {
+export function UndoToast({ entityId, versionId, targetField, projectLocale, onUndo, onExpire, rollbackTargets }: UndoToastProps) {
+  const isJa = useUiIsJa(projectLocale);
   const [remaining, setRemaining] = useState(15);
   const [loading, setLoading] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -122,14 +126,14 @@ export function UndoToast({ entityId, versionId, targetField, onUndo, onExpire, 
   return (
     <div className="flex items-center gap-3 px-4 py-2 bg-surface-2 border border-surface-3 rounded-lg shadow-lg animate-in slide-in-from-bottom-2">
       <span className="text-sm text-zinc-300">
-        修改已应用到「{targetField}」
+        {isJa ? `変更を「${targetField}」へ適用しました` : `修改已应用到「${targetField}」`}
       </span>
       <button
         onClick={handleUndo}
         disabled={loading}
         className="px-2 py-1 text-xs text-amber-400 hover:text-amber-300 hover:bg-surface-3 rounded transition-colors disabled:opacity-50"
       >
-        {loading ? "撤回中..." : "↩ 撤回"}
+        {loading ? (isJa ? "取り消し中..." : "撤回中...") : (isJa ? "↩ 元に戻す" : "↩ 撤回")}
       </button>
       <div className="w-16 h-1 bg-surface-4 rounded-full overflow-hidden">
         <div
@@ -144,7 +148,18 @@ export function UndoToast({ entityId, versionId, targetField, onUndo, onExpire, 
 
 // ============== SuggestionCard ==============
 
-export function SuggestionCard({ data, projectId, onStatusChange, onFollowUp, onContentUpdate }: SuggestionCardProps) {
+function getStatusLabels(isJa: boolean): Record<SuggestionStatus, string> {
+  return {
+    pending: "",
+    accepted: isJa ? "✓ 適用済み" : "✓ 已应用",
+    rejected: isJa ? "却下済み" : "已拒绝",
+    superseded: isJa ? "↪ 新しい提案で置換済み" : "↪ 已被新建议替代",
+    undone: isJa ? "↩ 取り消し済み" : "↩ 已撤回",
+  };
+}
+
+export function SuggestionCard({ data, projectId, projectLocale, onStatusChange, onFollowUp, onContentUpdate }: SuggestionCardProps) {
+  const isJa = useUiIsJa(projectLocale);
   const [loading, setLoading] = useState(false);
 
   // 状态样式映射
@@ -156,13 +171,7 @@ export function SuggestionCard({ data, projectId, onStatusChange, onFollowUp, on
     undone: "border-l-4 border-l-zinc-600 border-dashed bg-surface-2 opacity-50",
   };
 
-  const statusLabels: Record<SuggestionStatus, string> = {
-    pending: "",
-    accepted: "✓ 已应用",
-    rejected: "已拒绝",
-    superseded: "↪ 已被新建议替代",
-    undone: "↩ 已撤回",
-  };
+  const statusLabels = getStatusLabels(isJa);
 
   const callConfirmAPI = useCallback(async (action: "accept" | "reject") => {
     if (loading) return;
@@ -220,7 +229,7 @@ export function SuggestionCard({ data, projectId, onStatusChange, onFollowUp, on
             </span>
           </div>
           <span className="text-xs text-zinc-500">
-            目标: {data.target_field} · {data.edits_count} 处修改
+            {isJa ? `対象: ${data.target_field} · ${data.edits_count} 件の変更` : `目标: ${data.target_field} · ${data.edits_count} 处修改`}
           </span>
         </div>
         {data.status !== "pending" && (
@@ -256,7 +265,7 @@ export function SuggestionCard({ data, projectId, onStatusChange, onFollowUp, on
       {/* 修改原因 */}
       {data.reason && (
         <p className="text-xs text-zinc-500 mt-1 mb-2">
-          原因: {data.reason}
+          {isJa ? "理由" : "原因"}: {data.reason}
         </p>
       )}
 
@@ -268,21 +277,21 @@ export function SuggestionCard({ data, projectId, onStatusChange, onFollowUp, on
             disabled={loading}
             className="px-3 py-1.5 text-xs bg-green-600/80 hover:bg-green-600 text-white rounded transition-colors disabled:opacity-50"
           >
-            {loading ? "处理中..." : "✅ 应用"}
+            {loading ? (isJa ? "処理中..." : "处理中...") : (isJa ? "✅ 適用" : "✅ 应用")}
           </button>
           <button
             onClick={() => callConfirmAPI("reject")}
             disabled={loading}
             className="px-3 py-1.5 text-xs bg-surface-4 hover:bg-zinc-600 text-zinc-300 rounded transition-colors disabled:opacity-50"
           >
-            ❌ 拒绝
+            {isJa ? "❌ 却下" : "❌ 拒绝"}
           </button>
           <button
             onClick={() => onFollowUp(data)}
             disabled={loading}
             className="px-3 py-1.5 text-xs bg-surface-4 hover:bg-zinc-600 text-zinc-300 rounded transition-colors disabled:opacity-50"
           >
-            💬 追问
+            {isJa ? "💬 追質問" : "💬 追问"}
           </button>
         </div>
       )}
@@ -295,7 +304,7 @@ export function SuggestionCard({ data, projectId, onStatusChange, onFollowUp, on
             disabled={loading}
             className="px-3 py-1.5 text-xs bg-surface-4 hover:bg-zinc-600 text-zinc-400 rounded transition-colors disabled:opacity-50"
           >
-            仍然应用此版本
+            {isJa ? "この版をそのまま適用" : "仍然应用此版本"}
           </button>
         </div>
       )}
@@ -310,6 +319,7 @@ interface SuggestionGroupProps {
   groupSummary: string;
   cards: SuggestionCardData[];
   projectId: string;
+  projectLocale?: string | null;
   onStatusChange: (id: string, status: SuggestionStatus, undoInfo?: { entity_id: string; version_id: string }) => void;
   onFollowUp: (data: SuggestionCardData) => void;
   onContentUpdate?: () => void;
@@ -322,11 +332,13 @@ export function SuggestionGroup({
   groupSummary,
   cards,
   projectId,
+  projectLocale,
   onStatusChange,
   onFollowUp,
   onContentUpdate,
   onGroupApplied,
 }: SuggestionGroupProps) {
+  const isJa = useUiIsJa(projectLocale);
   const [selected, setSelected] = useState<Record<string, boolean>>(() => {
     const init: Record<string, boolean> = {};
     cards.forEach((c) => { init[c.id] = true; });
@@ -436,7 +448,7 @@ export function SuggestionGroup({
       <div className="mb-3">
         <div className="flex items-center gap-2 mb-1">
           <span className="text-xs px-2 py-0.5 bg-purple-900/30 text-purple-300 rounded">
-            {cards.length} 项关联修改
+            {isJa ? `${cards.length} 件の関連変更` : `${cards.length} 项关联修改`}
           </span>
         </div>
         {groupSummary && (
@@ -463,7 +475,7 @@ export function SuggestionGroup({
             )}
             {/* 简化版 Card（不含独立按钮，按钮在 Group 底部统一管理） */}
             <div className="flex-1">
-              <GroupItemCard data={card} />
+              <GroupItemCard data={card} isJa={isJa} />
             </div>
           </div>
         ))}
@@ -477,9 +489,9 @@ export function SuggestionGroup({
             disabled={loading || selectedCount === 0}
             className="px-3 py-1.5 text-xs bg-green-600/80 hover:bg-green-600 text-white rounded transition-colors disabled:opacity-50"
           >
-            {loading ? "处理中..." : selectedCount === pendingCards.length
-              ? `✅ 全部应用 (${selectedCount})`
-              : `✅ 应用已选 (${selectedCount}/${pendingCards.length})`
+            {loading ? (isJa ? "処理中..." : "处理中...") : selectedCount === pendingCards.length
+              ? (isJa ? `✅ すべて適用 (${selectedCount})` : `✅ 全部应用 (${selectedCount})`)
+              : (isJa ? `✅ 選択分を適用 (${selectedCount}/${pendingCards.length})` : `✅ 应用已选 (${selectedCount}/${pendingCards.length})`)
             }
           </button>
           <button
@@ -487,14 +499,14 @@ export function SuggestionGroup({
             disabled={loading}
             className="px-3 py-1.5 text-xs bg-surface-4 hover:bg-zinc-600 text-zinc-300 rounded transition-colors disabled:opacity-50"
           >
-            ❌ 全部拒绝
+            {isJa ? "❌ すべて却下" : "❌ 全部拒绝"}
           </button>
           <button
             onClick={handleGroupFollowUp}
             disabled={loading}
             className="px-3 py-1.5 text-xs bg-surface-4 hover:bg-zinc-600 text-zinc-300 rounded transition-colors disabled:opacity-50"
           >
-            💬 追问
+            {isJa ? "💬 追質問" : "💬 追问"}
           </button>
         </div>
       )}
@@ -504,7 +516,8 @@ export function SuggestionGroup({
 
 // ============== GroupItemCard (Group 内的简化单 Card) ==============
 
-function GroupItemCard({ data }: { data: SuggestionCardData }) {
+function GroupItemCard({ data, isJa }: { data: SuggestionCardData; isJa: boolean }) {
+  const statusLabels = getStatusLabels(isJa);
   const statusStyles: Record<SuggestionStatus, string> = {
     pending: "border-l-2 border-l-blue-500/50 bg-surface-1",
     accepted: "border-l-2 border-l-green-500/50 bg-surface-1 opacity-80",
@@ -513,21 +526,13 @@ function GroupItemCard({ data }: { data: SuggestionCardData }) {
     undone: "border-l-2 border-l-zinc-600/50 bg-surface-1 opacity-50",
   };
 
-  const statusLabels: Record<SuggestionStatus, string> = {
-    pending: "",
-    accepted: "✓ 已应用",
-    rejected: "已拒绝",
-    superseded: "↪ 已替代",
-    undone: "↩ 已撤回",
-  };
-
   return (
     <div className={cn("rounded p-3 my-1 transition-all", statusStyles[data.status])}>
       <div className="flex items-start justify-between mb-1">
         <div>
           <span className="text-sm font-medium text-zinc-200">{data.summary}</span>
           <span className="text-xs text-zinc-500 ml-2">
-            {data.target_field} · {data.edits_count} 处修改
+            {isJa ? `${data.target_field} · ${data.edits_count} 件の変更` : `${data.target_field} · ${data.edits_count} 处修改`}
           </span>
         </div>
         {data.status !== "pending" && (
@@ -550,7 +555,7 @@ function GroupItemCard({ data }: { data: SuggestionCardData }) {
         </div>
       )}
       {data.reason && (
-        <p className="text-xs text-zinc-500 mt-1">原因: {data.reason}</p>
+        <p className="text-xs text-zinc-500 mt-1">{isJa ? "理由" : "原因"}: {data.reason}</p>
       )}
     </div>
   );

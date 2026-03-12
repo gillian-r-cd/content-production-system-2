@@ -11,6 +11,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { evalAPI, blockAPI, graderAPI } from "@/lib/api";
+import { useUiIsJa } from "@/lib/ui-locale";
 import { sendNotification } from "@/lib/utils";
 import type { ContentBlock, GraderData } from "@/lib/api";
 import {
@@ -25,6 +26,7 @@ import {
 interface EvalFieldProps {
   block: ContentBlock;
   projectId: string;
+  projectLocale?: string | null;
   onUpdate?: () => void;
   /** M3: 将消息发送到 Agent 对话面板（用于 Eval 诊断→Agent 修改桥接） */
   onSendToAgent?: (message: string) => void;
@@ -159,7 +161,8 @@ const EMPTY_STATE = "text-center py-12 border-2 border-dashed border-surface-3 r
 
 // ============== 1. 人物画像设置 ==============
 
-export function EvalPersonaSetup({ block, projectId, onUpdate }: EvalFieldProps) {
+export function EvalPersonaSetup({ block, projectId, projectLocale, onUpdate }: EvalFieldProps) {
+  const isJa = useUiIsJa(projectLocale);
   const [personas, setPersonas] = useState<PersonaData[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -182,10 +185,10 @@ export function EvalPersonaSetup({ block, projectId, onUpdate }: EvalFieldProps)
       if (fetched.length > 0) {
         setPersonas(fetched);
       } else {
-        alert("调研中未找到画像，请先完成消费者调研或手动添加。");
+        alert(isJa ? "調査結果からペルソナが見つかりませんでした。先に顧客調査を完了するか、手動で追加してください。" : "调研中未找到画像，请先完成消费者调研或手动添加。");
       }
     } catch (e: unknown) {
-      alert("加载失败: " + getErrorMessage(e));
+      alert((isJa ? "読み込みに失敗しました: " : "加载失败: ") + getErrorMessage(e, isJa));
     } finally { setLoading(false); }
   };
 
@@ -197,7 +200,7 @@ export function EvalPersonaSetup({ block, projectId, onUpdate }: EvalFieldProps)
       const p = resp.persona;
       const generated: PersonaData = {
         id: `ai_${Date.now()}`,
-        name: p.name || "新画像",
+        name: p.name || (isJa ? "新しいペルソナ" : "新画像"),
         background: p.prompt || "",
         prompt: p.prompt || "",
         pain_points: [],
@@ -205,16 +208,16 @@ export function EvalPersonaSetup({ block, projectId, onUpdate }: EvalFieldProps)
       };
       setPersonas([...personas, generated]);
       setEditingIdx(personas.length);
-      sendNotification("AI 画像已生成，请确认后保存", "success");
+      sendNotification(isJa ? "AI ペルソナを生成しました。確認して保存してください" : "AI 画像已生成，请确认后保存", "success");
     } catch (e: unknown) {
-      sendNotification("AI 生成失败: " + getErrorMessage(e), "error");
+      sendNotification((isJa ? "AI 生成に失敗しました: " : "AI 生成失败: ") + getErrorMessage(e, isJa), "error");
     } finally {
       setLoading(false);
     }
   };
 
   const addPersona = () => {
-    setPersonas([...personas, { id: `p_${Date.now()}`, name: "新画像", background: "", pain_points: [] }]);
+    setPersonas([...personas, { id: `p_${Date.now()}`, name: isJa ? "新しいペルソナ" : "新画像", background: "", pain_points: [] }]);
     setEditingIdx(personas.length);
   };
 
@@ -246,7 +249,7 @@ export function EvalPersonaSetup({ block, projectId, onUpdate }: EvalFieldProps)
       });
       onUpdate?.();
     } catch (e: unknown) {
-      alert("保存失败: " + getErrorMessage(e));
+      alert((isJa ? "保存に失敗しました: " : "保存失败: ") + getErrorMessage(e, isJa));
     } finally { setSaving(false); }
   };
 
@@ -258,22 +261,22 @@ export function EvalPersonaSetup({ block, projectId, onUpdate }: EvalFieldProps)
           <div className="w-8 h-8 rounded-lg bg-blue-500/20 flex items-center justify-center">
             <Users className="w-4.5 h-4.5 text-blue-400" />
           </div>
-          人物画像设置
+          {isJa ? "ペルソナ設定" : "人物画像设置"}
         </h3>
         <div className="flex gap-2">
           <button onClick={generateWithAI} disabled={loading}
             className={`${BTN_PRIMARY} bg-brand-500/15 text-brand-300 hover:bg-brand-500/25 border border-brand-500/30`}>
             <Sparkles className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
-            AI 生成画像
+            {isJa ? "AI でペルソナ生成" : "AI 生成画像"}
           </button>
           <button onClick={loadFromResearch} disabled={loading}
             className={`${BTN_PRIMARY} bg-blue-500/15 text-blue-400 hover:bg-blue-500/25 border border-blue-500/30`}>
             <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
-            从调研加载
+            {isJa ? "調査から読み込む" : "从调研加载"}
           </button>
           <button onClick={addPersona}
             className={`${BTN_PRIMARY} bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 border border-emerald-500/30`}>
-            <Plus className="w-4 h-4" /> 手动添加
+            <Plus className="w-4 h-4" /> {isJa ? "手動追加" : "手动添加"}
           </button>
         </div>
       </div>
@@ -282,8 +285,8 @@ export function EvalPersonaSetup({ block, projectId, onUpdate }: EvalFieldProps)
       {personas.length === 0 ? (
         <div className={EMPTY_STATE}>
           <Users className="w-10 h-10 mx-auto mb-3 text-zinc-600" />
-          <p className="text-zinc-400 font-medium">暂无人物画像</p>
-          <p className="text-sm text-zinc-500 mt-1">点击「从调研加载」或「手动添加」开始配置</p>
+          <p className="text-zinc-400 font-medium">{isJa ? "ペルソナはまだありません" : "暂无人物画像"}</p>
+          <p className="text-sm text-zinc-500 mt-1">{isJa ? "「調査から読み込む」または「手動追加」で設定を始めてください" : "点击「从调研加载」或「手动添加」开始配置"}</p>
         </div>
       ) : (
         <div className="space-y-3">
@@ -300,17 +303,17 @@ export function EvalPersonaSetup({ block, projectId, onUpdate }: EvalFieldProps)
                       <input type="text" value={p.name}
                         onChange={(e) => updatePersona(idx, "name", e.target.value)}
                         className={`${INPUT} font-semibold text-base`}
-                        placeholder="画像名称"
+                        placeholder={isJa ? "ペルソナ名" : "画像名称"}
                         autoFocus />
                     ) : (
                       <h4 className="font-semibold text-base text-zinc-100 truncate">
                         {p.name}
-                        {p.source && <span className="text-xs text-zinc-500 font-normal ml-2">来自{p.source}</span>}
+                        {p.source && <span className="text-xs text-zinc-500 font-normal ml-2">{isJa ? `由来: ${p.source}` : `来自${p.source}`}</span>}
                       </h4>
                     )}
                     {editingIdx !== idx && (
                       <p className="text-sm text-zinc-400 mt-1 line-clamp-2">
-                        {p.background || "点击编辑添加背景描述..."}
+                        {p.background || (isJa ? "編集して背景説明を追加..." : "点击编辑添加背景描述...")}
                       </p>
                     )}
                   </div>
@@ -318,12 +321,12 @@ export function EvalPersonaSetup({ block, projectId, onUpdate }: EvalFieldProps)
                 <div className="flex gap-1 ml-3 flex-shrink-0">
                   <button onClick={() => setEditingIdx(editingIdx === idx ? null : idx)}
                     className="p-2 rounded-lg text-zinc-400 hover:text-brand-400 hover:bg-surface-3 transition-colors"
-                    title={editingIdx === idx ? "收起" : "编辑"}>
+                    title={editingIdx === idx ? (isJa ? "折りたたむ" : "收起") : (isJa ? "編集" : "编辑")}>
                     {editingIdx === idx ? <ChevronDown className="w-4 h-4" /> : <Pencil className="w-4 h-4" />}
                   </button>
                   <button onClick={() => removePersona(idx)}
                     className="p-2 rounded-lg text-zinc-400 hover:text-red-400 hover:bg-red-500/10 transition-colors"
-                    title="删除">
+                    title={isJa ? "削除" : "删除"}>
                     <Trash2 className="w-4 h-4" />
                   </button>
                 </div>
@@ -333,18 +336,18 @@ export function EvalPersonaSetup({ block, projectId, onUpdate }: EvalFieldProps)
               {editingIdx === idx && (
                 <div className="px-5 pb-5 space-y-4 border-t border-surface-3 pt-4">
                   <div>
-                    <label className={LABEL}>背景描述</label>
+                    <label className={LABEL}>{isJa ? "背景説明" : "背景描述"}</label>
                     <textarea value={p.background}
                       onChange={(e) => updatePersona(idx, "background", e.target.value)}
                       className={`${TEXTAREA} min-h-[100px]`}
-                      placeholder="年龄、职业、兴趣爱好、消费场景、生活方式..." />
+                      placeholder={isJa ? "年齢、職業、興味関心、消費シーン、ライフスタイル..." : "年龄、职业、兴趣爱好、消费场景、生活方式..."} />
                   </div>
                   <div>
-                    <label className={LABEL}>核心痛点（每行一个）</label>
+                    <label className={LABEL}>{isJa ? "主要ペインポイント（1行1件）" : "核心痛点（每行一个）"}</label>
                     <textarea value={(p.pain_points || []).join("\n")}
                       onChange={(e) => updatePersona(idx, "pain_points", e.target.value.split("\n").filter(Boolean))}
                       className={`${TEXTAREA} min-h-[80px]`}
-                      placeholder="痛点1&#10;痛点2&#10;痛点3" />
+                      placeholder={isJa ? "ペインポイント1&#10;ペインポイント2&#10;ペインポイント3" : "痛点1&#10;痛点2&#10;痛点3"} />
                   </div>
                 </div>
               )}
@@ -367,11 +370,11 @@ export function EvalPersonaSetup({ block, projectId, onUpdate }: EvalFieldProps)
       {/* 保存按钮 */}
       {personas.length > 0 && (
         <div className="flex justify-between items-center pt-2">
-          <span className="text-sm text-zinc-500">共 {personas.length} 个画像</span>
+          <span className="text-sm text-zinc-500">{isJa ? `合計 ${personas.length} 件のペルソナ` : `共 ${personas.length} 个画像`}</span>
           <button onClick={handleSave} disabled={saving}
             className={`${BTN_PRIMARY} bg-brand-600 text-white hover:bg-brand-700`}>
             <Save className="w-4 h-4" />
-            {saving ? "保存中..." : "保存画像配置"}
+            {saving ? (isJa ? "保存中..." : "保存中...") : (isJa ? "ペルソナ設定を保存" : "保存画像配置")}
           </button>
         </div>
       )}
@@ -382,18 +385,42 @@ export function EvalPersonaSetup({ block, projectId, onUpdate }: EvalFieldProps)
 
 // ============== 2. 评估任务配置 ==============
 
-const FORM_TYPE_STYLE: Record<string, { icon: string; label: string; color: string; desc: string }> = {
-  assessment: { icon: "🎯", label: "直接判定", color: "text-rose-400 bg-rose-500/15 border-rose-500/30", desc: "AI 直接评分，不产生交互过程" },
-  review: { icon: "✍️", label: "视角审查", color: "text-amber-400 bg-amber-500/15 border-amber-500/30", desc: "以特定角色视角审查内容" },
-  experience: { icon: "👤", label: "消费体验", color: "text-blue-400 bg-blue-500/15 border-blue-500/30", desc: "模拟消费者分块探索内容" },
-  scenario: { icon: "💬", label: "场景模拟", color: "text-emerald-400 bg-emerald-500/15 border-emerald-500/30", desc: "多轮对话模拟真实场景" },
-};
-
-function getFormStyle(formType?: string) {
-  return FORM_TYPE_STYLE[formType || "assessment"] || FORM_TYPE_STYLE.assessment;
+function getFormTypeStyle(isJa: boolean): Record<string, { icon: string; label: string; color: string; desc: string }> {
+  return {
+    assessment: {
+      icon: "🎯",
+      label: isJa ? "直接判定" : "直接判定",
+      color: "text-rose-400 bg-rose-500/15 border-rose-500/30",
+      desc: isJa ? "AI が直接採点し、対話プロセスは発生しません" : "AI 直接评分，不产生交互过程",
+    },
+    review: {
+      icon: "✍️",
+      label: isJa ? "視点レビュー" : "视角审查",
+      color: "text-amber-400 bg-amber-500/15 border-amber-500/30",
+      desc: isJa ? "特定ロールの視点で内容をレビューします" : "以特定角色视角审查内容",
+    },
+    experience: {
+      icon: "👤",
+      label: isJa ? "体験評価" : "消费体验",
+      color: "text-blue-400 bg-blue-500/15 border-blue-500/30",
+      desc: isJa ? "消費者が内容を分割探索する体験をシミュレートします" : "模拟消费者分块探索内容",
+    },
+    scenario: {
+      icon: "💬",
+      label: isJa ? "シナリオシミュレーション" : "场景模拟",
+      color: "text-emerald-400 bg-emerald-500/15 border-emerald-500/30",
+      desc: isJa ? "多ターン対話で実際のシーンをシミュレートします" : "多轮对话模拟真实场景",
+    },
+  };
 }
 
-export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
+function getFormStyle(formType: string | undefined, isJa: boolean) {
+  const styles = getFormTypeStyle(isJa);
+  return styles[formType || "assessment"] || styles.assessment;
+}
+
+export function EvalTaskConfig({ block, projectId, projectLocale, onUpdate }: EvalFieldProps) {
+  const isJa = useUiIsJa(projectLocale);
   const [trials, setTrials] = useState<TrialConfig[]>([]);
   const [personas, setPersonas] = useState<PersonaData[]>([]);
   const [graders, setGraders] = useState<GraderData[]>([]);
@@ -451,7 +478,7 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
 
   const addTrial = () => {
     const newTrial: TrialConfig = {
-      name: `试验 ${trials.length + 1}`,
+      name: isJa ? `トライアル ${trials.length + 1}` : `试验 ${trials.length + 1}`,
       target_block_ids: [],
       target_block_names: [],
       form_type: "assessment",
@@ -469,7 +496,7 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
     const newTrials: TrialConfig[] = [];
     let order = trials.length;
 
-    const targetFields = projectBlocks.length > 0 ? projectBlocks : [{ id: "all", name: "全部内容" }];
+    const targetFields = projectBlocks.length > 0 ? projectBlocks : [{ id: "all", name: isJa ? "すべての内容" : "全部内容" }];
     const fieldIds = targetFields.map(f => f.id);
     const fieldNames = targetFields.map(f => f.name);
 
@@ -477,11 +504,11 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
     const processGrader = graders.find(g => g.grader_type === "content_and_process") || graders[0];
     const allGraderIds = [contentGrader, processGrader].filter(Boolean).map(g => g!.id);
     const allGraderNames = [contentGrader, processGrader].filter(Boolean).map(g => g!.name);
-    const activePersonas = personas.length > 0 ? personas : [{ name: "典型用户", background: "目标读者" }];
+    const activePersonas = personas.length > 0 ? personas : [{ name: isJa ? "典型ユーザー" : "典型用户", background: isJa ? "対象読者" : "目标读者" }];
 
     // 1. 直接判定
     newTrials.push({
-      name: "直接判定评估",
+      name: isJa ? "直接判定評価" : "直接判定评估",
       target_block_ids: fieldIds, target_block_names: fieldNames,
       form_type: "assessment", interaction_mode: "review",
       persona_config: {},
@@ -492,7 +519,7 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
 
     // 2. 视角审查
     newTrials.push({
-      name: "视角审查评估",
+      name: isJa ? "視点レビュー評価" : "视角审查评估",
       target_block_ids: fieldIds, target_block_names: fieldNames,
       form_type: "review", interaction_mode: "review",
       persona_config: {},
@@ -504,7 +531,7 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
     // 3. 消费体验：每个 persona 一个
     for (const persona of activePersonas) {
       newTrials.push({
-        name: `消费体验 · ${persona.name}`,
+        name: isJa ? `体験評価 · ${persona.name}` : `消费体验 · ${persona.name}`,
         target_block_ids: fieldIds, target_block_names: fieldNames,
         form_type: "experience", interaction_mode: "exploration",
         persona_config: persona as unknown as TrialConfig["persona_config"],
@@ -516,7 +543,7 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
     // 4. 场景模拟：每个 persona 一个
     for (const persona of activePersonas) {
       newTrials.push({
-        name: `场景模拟 · ${persona.name}`,
+        name: isJa ? `シナリオシミュレーション · ${persona.name}` : `场景模拟 · ${persona.name}`,
         target_block_ids: fieldIds, target_block_names: fieldNames,
         form_type: "scenario", interaction_mode: "scenario",
         persona_config: persona as unknown as TrialConfig["persona_config"],
@@ -589,7 +616,7 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
       });
       onUpdate?.();
     } catch (e: unknown) {
-      alert("保存失败: " + getErrorMessage(e));
+      alert((isJa ? "保存に失敗しました: " : "保存失败: ") + getErrorMessage(e, isJa));
     } finally { setSaving(false); }
   };
 
@@ -601,9 +628,9 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
           <div className="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center">
             <SlidersHorizontal className="w-4.5 h-4.5 text-purple-400" />
           </div>
-          评估试验配置
+          {isJa ? "評価トライアル設定" : "评估试验配置"}
           <span className="text-sm font-normal text-zinc-500 ml-2">
-            核心：评什么字段 × 谁来评 × 用什么评分器
+            {isJa ? "核心: 何を評価するか × 誰が評価するか × どの評価器を使うか" : "核心：评什么字段 × 谁来评 × 用什么评分器"}
           </span>
         </h3>
       </div>
@@ -612,14 +639,14 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
       <div className="flex flex-wrap gap-2">
         <button onClick={addTrial}
           className={`${BTN_PRIMARY} bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 border border-emerald-500/30`}>
-          <Plus className="w-4 h-4" /> 添加试验
+          <Plus className="w-4 h-4" /> {isJa ? "トライアルを追加" : "添加试验"}
         </button>
         <button onClick={addFullRegression}
           className={`${BTN_PRIMARY} bg-purple-500/15 text-purple-400 hover:bg-purple-500/25 border border-purple-500/30`}>
-          <Zap className="w-4 h-4" /> 全回归模板
+          <Zap className="w-4 h-4" /> {isJa ? "フル回帰テンプレート" : "全回归模板"}
         </button>
         <span className="text-xs text-zinc-500 self-center ml-2">
-          字段: {projectBlocks.length} 个 · 评分器: {graders.length} 个 · 画像: {personas.length} 个
+          {isJa ? `フィールド: ${projectBlocks.length} 件 · 評価器: ${graders.length} 件 · ペルソナ: ${personas.length} 件` : `字段: ${projectBlocks.length} 个 · 评分器: ${graders.length} 个 · 画像: ${personas.length} 个`}
         </span>
       </div>
 
@@ -627,15 +654,15 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
       {trials.length === 0 ? (
         <div className={EMPTY_STATE}>
           <FileText className="w-10 h-10 mx-auto mb-3 text-zinc-600" />
-          <p className="text-zinc-400 font-medium">暂无评估试验</p>
+          <p className="text-zinc-400 font-medium">{isJa ? "評価トライアルはまだありません" : "暂无评估试验"}</p>
           <p className="text-sm text-zinc-500 mt-1">
-            点击「添加试验」逐个配置，或使用「全回归模板」一键创建：全部字段 × 5 种角色
+            {isJa ? "「トライアルを追加」で個別設定するか、「フル回帰テンプレート」で一括作成してください: 全フィールド × 5 役割" : "点击「添加试验」逐个配置，或使用「全回归模板」一键创建：全部字段 × 5 种角色"}
           </p>
         </div>
       ) : (
         <div className="space-y-3">
           {trials.map((trial, idx) => {
-            const style = getFormStyle(trial.form_type);
+            const style = getFormStyle(trial.form_type, isJa);
             const isExpanded = expandedTrial === idx;
             const targetCount = (trial.target_block_ids || []).length;
             return (
@@ -650,14 +677,14 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
                     <div className="font-medium text-zinc-100 text-base truncate">{trial.name}</div>
                     <div className="flex items-center gap-2 mt-1 flex-wrap">
                       <span className="text-xs px-2 py-0.5 rounded-md bg-blue-500/15 text-blue-400 border border-blue-500/30">
-                        📄 {targetCount > 0 ? `${targetCount} 个内容块` : "未选内容块"}
+                        📄 {targetCount > 0 ? (isJa ? `${targetCount} 件の内容ブロック` : `${targetCount} 个内容块`) : (isJa ? "内容ブロック未選択" : "未选内容块")}
                       </span>
                       <span className={`text-xs px-2 py-0.5 rounded-md border ${style.color}`}>
                         {style.label}
                       </span>
                       {(trial.grader_names || []).length > 0 && (
                         <span className="text-xs px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-400 border border-amber-500/30">
-                          ⚖️ {trial.grader_names.length} 个评分器
+                          ⚖️ {isJa ? `${trial.grader_names.length} 件の評価器` : `${trial.grader_names.length} 个评分器`}
                         </span>
                       )}
                       {trial.persona_config?.name && (
@@ -681,25 +708,25 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
                   <div className="border-t border-surface-3 px-5 py-5 bg-surface-1/50 space-y-5">
                     {/* 试验名称 */}
                     <div>
-                      <label className={LABEL}>试验名称</label>
+                      <label className={LABEL}>{isJa ? "トライアル名" : "试验名称"}</label>
                       <input type="text" value={trial.name}
                         onChange={(e) => updateTrial(idx, "name", e.target.value)}
-                        className={INPUT} placeholder="给这个试验起个名字" />
+                        className={INPUT} placeholder={isJa ? "このトライアル名を入力" : "给这个试验起个名字"} />
                     </div>
 
                     {/* ★ 目标字段选择（核心） */}
                     <div className={`${CARD_INNER} p-4`}>
                       <div className="flex items-center justify-between mb-3">
                         <label className="text-sm font-medium text-zinc-200 flex items-center gap-2">
-                          📄 评估目标字段
-                          <span className="text-xs font-normal text-zinc-500">（核心：要评价什么内容）</span>
+                          📄 {isJa ? "評価対象フィールド" : "评估目标字段"}
+                          <span className="text-xs font-normal text-zinc-500">{isJa ? "（核心: 何を評価するか）" : "（核心：要评价什么内容）"}</span>
                         </label>
                         {(() => {
                           const allSelected = projectBlocks.length > 0 && (trial.target_block_ids || []).length === projectBlocks.length;
                           return (
                             <button onClick={() => allSelected ? deselectAllBlocks(idx) : selectAllBlocks(idx)}
                               className="text-xs px-2.5 py-1 bg-surface-3 hover:bg-surface-4 rounded text-zinc-400 hover:text-zinc-200 transition-colors">
-                              {allSelected ? "取消全选" : "全选"}
+                              {allSelected ? (isJa ? "全選択を解除" : "取消全选") : (isJa ? "すべて選択" : "全选")}
                             </button>
                           );
                         })()}
@@ -724,18 +751,18 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
                           })}
                         </div>
                       ) : (
-                        <p className="text-sm text-zinc-500">项目中暂无内容块。请先在内容面板中创建内容块。</p>
+                        <p className="text-sm text-zinc-500">{isJa ? "プロジェクト内に内容ブロックがありません。先に内容パネルで内容ブロックを作成してください。" : "项目中暂无内容块。请先在内容面板中创建内容块。"}</p>
                       )}
                     </div>
 
                     {/* 评估形态选择 */}
                     <div className={`${CARD_INNER} p-4`}>
                       <label className="text-sm font-medium text-zinc-200 mb-3 block flex items-center gap-2">
-                        🎯 评估形态
-                        <span className="text-xs font-normal text-zinc-500">（决定交互方式；提示词在「后台设置 → 评估提示词」管理）</span>
+                        🎯 {isJa ? "評価形式" : "评估形态"}
+                        <span className="text-xs font-normal text-zinc-500">{isJa ? "（対話方式を決めます。プロンプトは「設定 → 評価プロンプト」で管理）" : "（决定交互方式；提示词在「后台设置 → 评估提示词」管理）"}</span>
                       </label>
                       <div className="grid grid-cols-2 gap-2">
-                        {Object.entries(FORM_TYPE_STYLE).map(([ft, info]) => {
+                        {Object.entries(getFormTypeStyle(isJa)).map(([ft, info]) => {
                           const selected = trial.form_type === ft;
                           return (
                             <label key={ft}
@@ -763,10 +790,10 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
                     <div className={`${CARD_INNER} p-4`}>
                       <div className="flex items-center justify-between mb-3">
                         <label className="text-sm font-medium text-zinc-200 flex items-center gap-2">
-                          ⚖️ 评分器（Grader）
-                          <span className="text-xs font-normal text-zinc-500">可多选，每个试验可用多个评分器打分</span>
+                          ⚖️ {isJa ? "評価器（Grader）" : "评分器（Grader）"}
+                          <span className="text-xs font-normal text-zinc-500">{isJa ? "複数選択可。各トライアルで複数の評価器を使えます" : "可多选，每个试验可用多个评分器打分"}</span>
                         </label>
-                        <span className="text-xs text-zinc-500">{(trial.grader_ids || []).length} / {graders.length} 已选</span>
+                        <span className="text-xs text-zinc-500">{(trial.grader_ids || []).length} / {graders.length} {isJa ? "選択済み" : "已选"}</span>
                       </div>
                       {graders.length > 0 ? (
                         <div className="space-y-2">
@@ -798,12 +825,12 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
                                         ? "bg-blue-500/15 text-blue-400"
                                         : "bg-purple-500/15 text-purple-400"
                                     }`}>
-                                      {g.grader_type === "content_only" ? "仅评内容" : "评内容+互动"}
+                                      {g.grader_type === "content_only" ? (isJa ? "内容のみ評価" : "仅评内容") : (isJa ? "内容+対話を評価" : "评内容+互动")}
                                     </span>
                                   </div>
                                   {g.dimensions.length > 0 && (
                                     <div className="text-xs text-zinc-500 mt-1 truncate">
-                                      维度: {g.dimensions.join("、")}
+                                      {isJa ? "評価軸" : "维度"}: {g.dimensions.join("、")}
                                     </div>
                                   )}
                                 </div>
@@ -813,7 +840,7 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
                         </div>
                       ) : (
                         <p className="text-sm text-zinc-500">
-                          暂无评分器。请到「后台设置 → 评分器」中创建。
+                          {isJa ? "評価器がありません。「設定 → 評価器」で作成してください。" : "暂无评分器。请到「后台设置 → 评分器」中创建。"}
                         </p>
                       )}
                     </div>
@@ -821,7 +848,7 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
                     {/* Persona 选择（experience/scenario 需要选择人物画像） */}
                     {(trial.form_type === "experience" || trial.form_type === "scenario" || trial.form_type === "review") && (
                       <div className={`${CARD_INNER} p-4`}>
-                        <label className="text-sm font-medium text-zinc-200 mb-2 block">👤 人物画像 <span className="text-xs font-normal text-zinc-500">（可选，决定评估视角）</span></label>
+                        <label className="text-sm font-medium text-zinc-200 mb-2 block">👤 {isJa ? "ペルソナ" : "人物画像"} <span className="text-xs font-normal text-zinc-500">{isJa ? "（任意。評価視点を決めます）" : "（可选，决定评估视角）"}</span></label>
                         {personas.length > 0 ? (
                           <div className="space-y-2">
                             {personas.map((p, pi) => (
@@ -846,7 +873,7 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
                           </div>
                         ) : (
                           <p className="text-sm text-zinc-500 mt-1">
-                            ⚠️ 请先在「人物画像设置」中配置画像
+                            ⚠️ {isJa ? "先に「ペルソナ設定」でペルソナを設定してください" : "请先在「人物画像设置」中配置画像"}
                           </p>
                         )}
                       </div>
@@ -855,14 +882,14 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
                     {/* 对话轮数（场景模拟需要） */}
                     {trial.form_type === "scenario" && (
                       <div>
-                        <label className={LABEL}>最大对话轮数</label>
+                        <label className={LABEL}>{isJa ? "最大対話ターン数" : "最大对话轮数"}</label>
                         <input type="number" min={1} max={20}
                           value={trial.form_config?.max_turns || 5}
                           onChange={(e) => updateTrial(idx, "form_config", {
                             ...trial.form_config, max_turns: parseInt(e.target.value) || 5,
                           })}
                           className={`${INPUT} w-40`} />
-                        <p className="text-xs text-zinc-500 mt-1">建议：消费者对话 3-5 轮，销售测试 5-8 轮</p>
+                        <p className="text-xs text-zinc-500 mt-1">{isJa ? "推奨: 消費者対話は 3-5 ターン、販売テストは 5-8 ターン" : "建议：消费者对话 3-5 轮，销售测试 5-8 轮"}</p>
                       </div>
                     )}
                   </div>
@@ -876,11 +903,11 @@ export function EvalTaskConfig({ block, projectId, onUpdate }: EvalFieldProps) {
       {/* 底部保存 */}
       {trials.length > 0 && (
         <div className="flex justify-between items-center pt-2">
-          <span className="text-sm text-zinc-500">共 {trials.length} 个评估试验</span>
+          <span className="text-sm text-zinc-500">{isJa ? `合計 ${trials.length} 件の評価トライアル` : `共 ${trials.length} 个评估试验`}</span>
           <button onClick={handleSave} disabled={saving}
             className={`${BTN_PRIMARY} bg-brand-600 text-white hover:bg-brand-700`}>
             <Save className="w-4 h-4" />
-            {saving ? "保存中..." : "保存试验配置"}
+            {saving ? (isJa ? "保存中..." : "保存中...") : (isJa ? "トライアル設定を保存" : "保存试验配置")}
           </button>
         </div>
       )}
@@ -905,7 +932,8 @@ function scoreBg(score: number, max: number = 10): string {
   return "bg-red-500";
 }
 
-export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldProps) {
+export function EvalReportPanel({ block, projectLocale, onUpdate, onSendToAgent }: EvalFieldProps) {
+  const isJa = useUiIsJa(projectLocale);
   const [executing, setExecuting] = useState(false);
   const [reportData, setReportData] = useState<EvalReportData | null>(null);
   const [expandedTrial, setExpandedTrial] = useState<number | null>(null);
@@ -986,8 +1014,8 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
           onUpdateRef.current?.(); // 刷新父组件数据
           // 浏览器通知
           sendNotification(
-            "评估执行完成",
-            freshBlock.status === "completed" ? "评估报告已生成，点击查看结果" : "评估执行出错，请检查"
+            isJa ? "評価実行が完了しました" : "评估执行完成",
+            freshBlock.status === "completed" ? (isJa ? "評価レポートを生成しました。クリックして結果を確認してください" : "评估报告已生成，点击查看结果") : (isJa ? "評価実行でエラーが発生しました。設定を確認してください" : "评估执行出错，请检查")
           );
         }
       } catch (err) {
@@ -1010,7 +1038,7 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
       if (mountedRef.current) onUpdateRef.current?.();
     }).catch((e: unknown) => {
       if (!mountedRef.current) return;
-      setPollError(getErrorMessage(e));
+      setPollError(getErrorMessage(e, isJa));
       setExecuting(false);
     });
   };
@@ -1042,18 +1070,18 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
           <div className="w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center">
             <BarChart3 className="w-4.5 h-4.5 text-emerald-400" />
           </div>
-          评估报告
+          {isJa ? "評価レポート" : "评估报告"}
         </h3>
         <button onClick={handleExecute} disabled={executing || block.status === "in_progress"}
           className={`${BTN_PRIMARY} ${executing || block.status === "in_progress"
             ? "bg-zinc-700 text-zinc-400"
             : "bg-emerald-600 text-white hover:bg-emerald-700 shadow-lg shadow-emerald-900/30"}`}>
           {executing || block.status === "in_progress" ? (
-            <><RefreshCw className="w-4 h-4 animate-spin" /> 并行执行中...</>
+            <><RefreshCw className="w-4 h-4 animate-spin" /> {isJa ? "並列実行中..." : "并行执行中..."}</>
           ) : trials.length > 0 ? (
-            <><RefreshCw className="w-4 h-4" /> 重新执行所有试验</>
+            <><RefreshCw className="w-4 h-4" /> {isJa ? "すべてのトライアルを再実行" : "重新执行所有试验"}</>
           ) : (
-            <><Play className="w-4 h-4" /> ▶ 一键并行执行所有试验</>
+            <><Play className="w-4 h-4" /> {isJa ? "▶ すべてのトライアルを一括並列実行" : "▶ 一键并行执行所有试验"}</>
           )}
         </button>
       </div>
@@ -1062,8 +1090,8 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
         <div className="flex items-center gap-3 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg text-sm text-emerald-300">
           <RefreshCw className="w-4 h-4 animate-spin flex-shrink-0" />
           <div>
-            <p>正在并行执行所有试验...</p>
-            <p className="text-emerald-400/60 text-xs mt-1">可以自由浏览其他内容块，回来后状态会自动恢复。</p>
+            <p>{isJa ? "すべてのトライアルを並列実行中..." : "正在并行执行所有试验..."}</p>
+            <p className="text-emerald-400/60 text-xs mt-1">{isJa ? "他の内容ブロックを自由に閲覧できます。戻ると状態は自動で復元されます。" : "可以自由浏览其他内容块，回来后状态会自动恢复。"}</p>
           </div>
         </div>
       )}
@@ -1071,7 +1099,7 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
       {block.status === "failed" && !executing && (
         <div className="flex items-center gap-3 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-300">
           <XCircle className="w-4 h-4 flex-shrink-0" />
-          <span>上次执行失败，请检查配置后重新执行。</span>
+          <span>{isJa ? "前回の実行に失敗しました。設定を確認して再実行してください。" : "上次执行失败，请检查配置后重新执行。"}</span>
         </div>
       )}
       {/* API 错误提示 */}
@@ -1084,7 +1112,7 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
       )}
       {!executing && trials.length === 0 && (
         <p className="text-xs text-zinc-500 -mt-3">
-          点击上方按钮将读取「评估任务配置」，并行执行所有 Trial，自动评分，生成综合诊断报告。
+          {isJa ? "上のボタンを押すと「評価タスク設定」を読み込み、すべてのトライアルを並列実行して自動採点し、総合診断レポートを生成します。" : "点击上方按钮将读取「评估任务配置」，并行执行所有 Trial，自动评分，生成综合诊断报告。"}
         </p>
       )}
 
@@ -1092,10 +1120,10 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
       {trials.length === 0 ? (
         <div className={EMPTY_STATE}>
           <BarChart3 className="w-10 h-10 mx-auto mb-3 text-zinc-600" />
-          <p className="text-zinc-400 font-medium">尚未执行评估</p>
-          <p className="text-sm text-zinc-500 mt-1">请先在「评估任务配置」中配置好试验，然后点击执行。</p>
+          <p className="text-zinc-400 font-medium">{isJa ? "まだ評価を実行していません" : "尚未执行评估"}</p>
+          <p className="text-sm text-zinc-500 mt-1">{isJa ? "先に「評価タスク設定」でトライアルを設定してから実行してください。" : "请先在「评估任务配置」中配置好试验，然后点击执行。"}</p>
           <p className="text-xs text-zinc-600 mt-2">
-            💡 支持多 Task：项目中所有「评估任务配置」块的试验会被自动合并执行。共享画像无需重复配置。
+            {isJa ? "💡 複数タスク対応: プロジェクト内のすべての「評価タスク設定」ブロック内トライアルを自動で統合実行します。共有ペルソナは再設定不要です。" : "💡 支持多 Task：项目中所有「评估任务配置」块的试验会被自动合并执行。共享画像无需重复配置。"}
           </p>
         </div>
       ) : (
@@ -1111,12 +1139,12 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
                     <div className={`text-4xl font-bold ${scoreColor(avgScore)}`}>
                       {avgScore.toFixed(1)}
                     </div>
-                    <div className="text-xs text-zinc-500 mt-1">总均分 / 10</div>
+                    <div className="text-xs text-zinc-500 mt-1">{isJa ? "平均総合点 / 10" : "总均分 / 10"}</div>
                   </>
                 ) : (
                   <>
                     <div className="text-4xl font-bold text-zinc-600">—</div>
-                    <div className="text-xs text-zinc-500 mt-1">无评分</div>
+                    <div className="text-xs text-zinc-500 mt-1">{isJa ? "スコアなし" : "无评分"}</div>
                   </>
                 )}
               </div>
@@ -1125,25 +1153,25 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
               <div className={`grid ${failedTrials.length > 0 ? "grid-cols-5" : "grid-cols-4"} gap-3 flex-1`}>
                 <div className="rounded-xl p-3 text-center border border-emerald-500/20 bg-emerald-500/10">
                   <div className="text-xl font-bold text-emerald-400">{completedTrials.length}</div>
-                  <div className="text-xs text-emerald-400/70 mt-0.5">完成</div>
+                  <div className="text-xs text-emerald-400/70 mt-0.5">{isJa ? "完了" : "完成"}</div>
                 </div>
                 {failedTrials.length > 0 && (
                   <div className="rounded-xl p-3 text-center border border-orange-500/20 bg-orange-500/10">
                     <div className="text-xl font-bold text-orange-400">{failedTrials.length}</div>
-                    <div className="text-xs text-orange-400/70 mt-0.5">失败</div>
+                    <div className="text-xs text-orange-400/70 mt-0.5">{isJa ? "失敗" : "失败"}</div>
                   </div>
                 )}
                 <div className="rounded-xl p-3 text-center border border-red-500/20 bg-red-500/10">
                   <div className="text-xl font-bold text-red-400">{belowStandard}</div>
-                  <div className="text-xs text-red-400/70 mt-0.5">不达标 (&lt;60%)</div>
+                  <div className="text-xs text-red-400/70 mt-0.5">{isJa ? "基準未達 (<60%)" : "不达标 (<60%)"}</div>
                 </div>
                 <div className="rounded-xl p-3 text-center border border-blue-500/20 bg-blue-500/10">
                   <div className="text-xl font-bold text-blue-400">{totalLLMCalls}</div>
-                  <div className="text-xs text-blue-400/70 mt-0.5">LLM 调用</div>
+                  <div className="text-xs text-blue-400/70 mt-0.5">{isJa ? "LLM 呼び出し" : "LLM 调用"}</div>
                 </div>
                 <div className="rounded-xl p-3 text-center border border-amber-500/20 bg-amber-500/10">
                   <div className="text-xl font-bold text-amber-400">¥{totalCost.toFixed(2)}</div>
-                  <div className="text-xs text-amber-400/70 mt-0.5">总费用</div>
+                  <div className="text-xs text-amber-400/70 mt-0.5">{isJa ? "総費用" : "总费用"}</div>
                 </div>
               </div>
             </div>
@@ -1152,7 +1180,7 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
             {failedTrials.length > 0 && (
               <div className="mt-3 flex items-center gap-2 px-3 py-2 bg-red-500/10 border border-red-500/20 rounded-lg">
                 <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0" />
-                <span className="text-sm text-red-300">{failedTrials.length} 个试验执行失败</span>
+                <span className="text-sm text-red-300">{isJa ? `${failedTrials.length} 件のトライアルが失敗しました` : `${failedTrials.length} 个试验执行失败`}</span>
               </div>
             )}
           </div>
@@ -1160,12 +1188,12 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
           {/* ===== 试验得分卡片列表 ===== */}
           <div className={`${CARD} p-4`}>
             <div className="flex items-center justify-between mb-3">
-              <h4 className="text-sm font-medium text-zinc-300">各试验得分一览</h4>
-              <span className="text-xs text-zinc-500">{scoredTrials.length} / {trials.length} 已评分</span>
+              <h4 className="text-sm font-medium text-zinc-300">{isJa ? "各トライアルの得点一覧" : "各试验得分一览"}</h4>
+              <span className="text-xs text-zinc-500">{scoredTrials.length} / {trials.length} {isJa ? "採点済み" : "已评分"}</span>
             </div>
             <div className="space-y-2.5">
               {trials.map((trial: ReportTrial, idx: number) => {
-                const style = getFormStyle(trial.simulator_type);
+                const style = getFormStyle(trial.simulator_type, isJa);
                 const score = trial.overall_score;
                 const isBelowStd = score != null && score < 6;
                 const graderEntries = trial.grader_scores ? Object.entries(trial.grader_scores) : [];
@@ -1204,7 +1232,7 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
                       <div className="flex items-center gap-3 flex-shrink-0">
                         {isBelowStd && (
                           <span className="text-xs px-2 py-0.5 rounded-full bg-red-500/20 text-red-400 border border-red-500/30 font-medium">
-                            不达标
+                            {isJa ? "基準未達" : "不达标"}
                           </span>
                         )}
                         {score != null ? (
@@ -1217,7 +1245,7 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
                         ) : trial.status === "failed" ? (
                           <div className="flex items-center gap-1.5">
                             <XCircle className="w-5 h-5 text-red-400" />
-                            <span className="text-xs text-red-400">失败</span>
+                            <span className="text-xs text-red-400">{isJa ? "失敗" : "失败"}</span>
                           </div>
                         ) : (
                           <Clock className="w-5 h-5 text-zinc-600" />
@@ -1256,7 +1284,7 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
           {expandedTrial != null && trials[expandedTrial] && (() => {
             const trial = trials[expandedTrial];
             const idx = expandedTrial;
-            const trialStyle = getFormStyle(trial.simulator_type);
+            const trialStyle = getFormStyle(trial.simulator_type, isJa);
             return (
               <div className={`${CARD} overflow-hidden ring-1 ring-brand-500/30`}>
                 {/* 试验标题栏 */}
@@ -1270,10 +1298,10 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
                           {trial.simulator_name || trial.simulator_type}
                         </span>
                         <span className="px-1.5 py-0.5 rounded bg-surface-3">
-                          {FORM_TYPE_STYLE[trial.interaction_mode || ""]?.label || trial.interaction_mode}
+                          {getFormTypeStyle(isJa)[trial.interaction_mode || ""]?.label || trial.interaction_mode}
                         </span>
                         {trial.persona_name && <span>👤 {trial.persona_name}</span>}
-                        <span>{trial.llm_calls?.length || 0} 次 LLM 调用</span>
+                        <span>{isJa ? `${trial.llm_calls?.length || 0} 回の LLM 呼び出し` : `${trial.llm_calls?.length || 0} 次 LLM 调用`}</span>
                       </div>
                     </div>
                   </div>
@@ -1282,7 +1310,7 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
                       <div className={`text-3xl font-bold ${scoreColor(trial.overall_score)}`}>
                         {trial.overall_score}
                       </div>
-                      <div className="text-xs text-zinc-500">总分 / 10</div>
+                      <div className="text-xs text-zinc-500">{isJa ? "総合点 / 10" : "总分 / 10"}</div>
                     </div>
                   )}
                 </div>
@@ -1291,7 +1319,7 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
                 {trial.status === "failed" && trial.error && (
                   <div className="px-5 py-4 border-t border-red-500/30 bg-red-500/5">
                     <h4 className="text-sm font-medium text-red-400 mb-2 flex items-center gap-2">
-                      <XCircle className="w-4 h-4" /> 执行失败
+                      <XCircle className="w-4 h-4" /> {isJa ? "実行失敗" : "执行失败"}
                     </h4>
                     <pre className="text-xs text-red-300/80 bg-red-500/10 p-3 rounded-lg border border-red-500/20 whitespace-pre-wrap break-words font-mono">
                       {trial.error}
@@ -1303,8 +1331,8 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
                 {trial.grader_results && trial.grader_results.length > 0 && (
                   <div className="px-5 py-4 border-t border-surface-3 bg-gradient-to-b from-surface-2/50 to-transparent">
                     <h4 className="text-sm font-semibold text-zinc-200 mb-4 flex items-center gap-2">
-                      ⚖️ 各 Grader 评分
-                      <span className="text-xs text-zinc-500 font-normal">（{trial.grader_results.length} 个评分器独立打分）</span>
+                      ⚖️ {isJa ? "各評価器の採点" : "各 Grader 评分"}
+                      <span className="text-xs text-zinc-500 font-normal">{isJa ? `（${trial.grader_results.length} 件の評価器が独立採点）` : `（${trial.grader_results.length} 个评分器独立打分）`}</span>
                     </h4>
                     {/* Grader 总览栏 */}
                     <div className="flex flex-wrap gap-3 mb-4">
@@ -1315,7 +1343,7 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
                               : gr.overall != null ? "border-red-500/25 bg-red-500/5"
                                 : "border-surface-3 bg-surface-2"
                         }`}>
-                          <span className="text-xs text-zinc-400">{gr.grader_name || `评分器 ${gi + 1}`}</span>
+                          <span className="text-xs text-zinc-400">{gr.grader_name || (isJa ? `評価器 ${gi + 1}` : `评分器 ${gi + 1}`)}</span>
                           {gr.overall != null && (
                             <span className={`text-base font-bold ${scoreColor(Number(gr.overall))}`}>
                               {typeof gr.overall === 'number' ? gr.overall.toFixed(1) : gr.overall}
@@ -1330,11 +1358,11 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
                         <div key={gi} className={`${CARD_INNER} p-4`}>
                           <div className="flex items-center justify-between mb-3">
                             <span className="text-sm font-medium text-zinc-200">
-                              {gr.grader_name || `评分器 ${gi + 1}`}
+                              {gr.grader_name || (isJa ? `評価器 ${gi + 1}` : `评分器 ${gi + 1}`)}
                               <span className={`ml-2 text-xs px-1.5 py-0.5 rounded ${
                                 gr.grader_type === "content_only" ? "bg-blue-500/15 text-blue-400" : "bg-purple-500/15 text-purple-400"
                               }`}>
-                                {gr.grader_type === "content_only" ? "仅评内容" : "评内容+互动"}
+                                {gr.grader_type === "content_only" ? (isJa ? "内容のみ評価" : "仅评内容") : (isJa ? "内容+対話を評価" : "评内容+互动")}
                               </span>
                             </span>
                             {gr.overall != null && (
@@ -1379,7 +1407,7 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
                 {/* ---- 维度评分（兼容旧格式 trial.result.scores） ---- */}
                 {!trial.grader_results && trial.result?.scores && Object.keys(trial.result.scores).length > 0 && (
                   <div className="px-5 py-4 bg-surface-1/50">
-                    <h4 className="text-sm font-medium text-zinc-300 mb-3">📊 维度评分</h4>
+                    <h4 className="text-sm font-medium text-zinc-300 mb-3">📊 {isJa ? "評価軸スコア" : "维度评分"}</h4>
                     <div className="space-y-2">
                       {Object.entries(trial.result.scores).map(([dim, score]) => (
                         <div key={dim} className="flex items-center gap-3">
@@ -1401,7 +1429,7 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
                     <div className="px-5 py-3 flex items-center justify-between cursor-pointer hover:bg-surface-3/30 transition-colors"
                       onClick={() => toggleSection(`nodes-${idx}`)}>
                       <h4 className="text-sm font-medium text-zinc-300 flex items-center gap-2">
-                        💬 交互记录 ({trial.nodes.length} 轮)
+                        💬 {isJa ? `対話記録 (${trial.nodes.length} ターン)` : `交互记录 (${trial.nodes.length} 轮)`}
                       </h4>
                       {expandedSection[`nodes-${idx}`] ? <ChevronDown className="w-4 h-4 text-zinc-500" /> : <ChevronRight className="w-4 h-4 text-zinc-500" />}
                     </div>
@@ -1410,12 +1438,12 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
                         {trial.nodes.map((node: ReportNode, ni: number) => {
                           // 根据 role 确定显示样式
                           const isLeft = node.role === "consumer" || node.role === "user";
-                          const roleLabel = node.role === "consumer" ? `🗣 ${trial.persona_name || "消费者"}`
-                            : node.role === "seller" ? "💼 销售顾问"
-                            : node.role === "system" ? "⚙️ 系统提示"
-                            : node.role === "user" ? "📝 评估请求"
-                            : node.role === "assistant" ? "🤖 评估反馈"
-                            : node.role === "content_rep" ? "📄 内容代表"
+                          const roleLabel = node.role === "consumer" ? `🗣 ${trial.persona_name || (isJa ? "消費者" : "消费者")}`
+                            : node.role === "seller" ? (isJa ? "💼 販売アドバイザー" : "💼 销售顾问")
+                            : node.role === "system" ? (isJa ? "⚙️ システムプロンプト" : "⚙️ 系统提示")
+                            : node.role === "user" ? (isJa ? "📝 評価リクエスト" : "📝 评估请求")
+                            : node.role === "assistant" ? (isJa ? "🤖 評価フィードバック" : "🤖 评估反馈")
+                            : node.role === "content_rep" ? (isJa ? "📄 コンテンツ担当" : "📄 内容代表")
                             : `📋 ${node.role}`;
                           const bgClass = node.role === "consumer" || node.role === "user"
                             ? "bg-blue-500/15 text-blue-200 border border-blue-500/20"
@@ -1429,7 +1457,7 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
                             <div className={`max-w-[80%] rounded-xl px-4 py-3 text-sm ${bgClass}`}>
                               <div className="text-xs font-medium mb-1.5 opacity-70">
                                 {roleLabel}
-                                {node.turn && ` · 第${node.turn}轮`}
+                                {node.turn && (isJa ? ` · 第${node.turn}ターン` : ` · 第${node.turn}轮`)}
                               </div>
                               <div className="leading-relaxed whitespace-pre-wrap">{node.content}</div>
                             </div>
@@ -1448,8 +1476,8 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
                       onClick={() => toggleSection(`llm-${idx}`)}>
                       <h4 className="text-sm font-medium text-zinc-300 flex items-center gap-2">
                         <Zap className="w-4 h-4 text-amber-400" />
-                        LLM 调用日志 ({trial.llm_calls.length} 次)
-                        <span className="text-xs text-zinc-500 font-normal">每次模型调用的完整输入输出</span>
+                        {isJa ? `LLM 呼び出しログ (${trial.llm_calls.length} 回)` : `LLM 调用日志 (${trial.llm_calls.length} 次)`}
+                        <span className="text-xs text-zinc-500 font-normal">{isJa ? "各モデル呼び出しの完全な入出力" : "每次模型调用的完整输入输出"}</span>
                       </h4>
                       {expandedSection[`llm-${idx}`] ? <ChevronDown className="w-4 h-4 text-zinc-500" /> : <ChevronRight className="w-4 h-4 text-zinc-500" />}
                     </div>
@@ -1458,7 +1486,7 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
                         {trial.llm_calls.map((call: ReportLLMCall, ci: number) => {
                           const callKey = `${idx}-${ci}`;
                           const isLLMExpanded = expandedLLMCall === callKey;
-                          const stepLabel = call.step || `调用 ${ci + 1}`;
+                          const stepLabel = call.step || (isJa ? `呼び出し ${ci + 1}` : `调用 ${ci + 1}`);
                           const isGrader = stepLabel.includes("grader");
                           const isSimulator = stepLabel.includes("simulator") || stepLabel.includes("consumer") || stepLabel.includes("seller") || stepLabel.includes("content_rep");
                           return (
@@ -1484,29 +1512,29 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
                                 <div className="border-t border-surface-3 p-4 space-y-3 bg-surface-1">
                                   <div>
                                     <div className="text-xs font-medium text-blue-400 mb-1.5 flex items-center gap-1.5">
-                                      📤 System Prompt
-                                      <span className="text-zinc-600 font-normal">（此次调用传给模型的系统提示词）</span>
+                                      📤 {isJa ? "システムプロンプト" : "System Prompt"}
+                                      <span className="text-zinc-600 font-normal">{isJa ? "（この呼び出しでモデルへ渡したシステムプロンプト）" : "（此次调用传给模型的系统提示词）"}</span>
                                     </div>
                                     <pre className="bg-surface-2 p-3 rounded-lg border border-surface-3 text-xs text-zinc-300 whitespace-pre-wrap max-h-[300px] overflow-y-auto leading-relaxed">
-                                      {call.input?.system_prompt || "(空)"}
+                                      {call.input?.system_prompt || (isJa ? "（空）" : "(空)")}
                                     </pre>
                                   </div>
                                   <div>
                                     <div className="text-xs font-medium text-emerald-400 mb-1.5 flex items-center gap-1.5">
-                                      📤 User Message
-                                      <span className="text-zinc-600 font-normal">（传入内容 / 上下文）</span>
+                                      📤 {isJa ? "ユーザーメッセージ" : "User Message"}
+                                      <span className="text-zinc-600 font-normal">{isJa ? "（入力内容 / 文脈）" : "（传入内容 / 上下文）"}</span>
                                     </div>
                                     <pre className="bg-surface-2 p-3 rounded-lg border border-surface-3 text-xs text-zinc-300 whitespace-pre-wrap max-h-[300px] overflow-y-auto leading-relaxed">
-                                      {call.input?.user_message || "(空)"}
+                                      {call.input?.user_message || (isJa ? "（空）" : "(空)")}
                                     </pre>
                                   </div>
                                   <div>
                                     <div className="text-xs font-medium text-purple-400 mb-1.5 flex items-center gap-1.5">
-                                      📥 AI Response
-                                      <span className="text-zinc-600 font-normal">（模型输出）</span>
+                                      📥 {isJa ? "AI 応答" : "AI Response"}
+                                      <span className="text-zinc-600 font-normal">{isJa ? "（モデル出力）" : "（模型输出）"}</span>
                                     </div>
                                     <pre className="bg-surface-2 p-3 rounded-lg border border-surface-3 text-xs text-zinc-300 whitespace-pre-wrap max-h-[400px] overflow-y-auto leading-relaxed">
-                                      {call.output || "(空)"}
+                                      {call.output || (isJa ? "（空）" : "(空)")}
                                     </pre>
                                   </div>
                                 </div>
@@ -1522,7 +1550,7 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
                 {/* ---- 评估总结 ---- */}
                 {trial.result?.summary && (
                   <div className="border-t border-surface-3 px-5 py-4 bg-amber-500/5">
-                    <h4 className="text-sm font-medium text-amber-400 mb-2">📝 评估总结</h4>
+                    <h4 className="text-sm font-medium text-amber-400 mb-2">📝 {isJa ? "評価まとめ" : "评估总结"}</h4>
                     <p className="text-sm text-zinc-300 leading-relaxed">{trial.result.summary}</p>
                   </div>
                 )}
@@ -1530,7 +1558,7 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
                 {/* ---- 错误信息 ---- */}
                 {trial.error && (
                   <div className="border-t border-surface-3 px-5 py-4 bg-red-500/5">
-                    <h4 className="text-sm font-medium text-red-400 mb-2">❌ 错误</h4>
+                    <h4 className="text-sm font-medium text-red-400 mb-2">❌ {isJa ? "エラー" : "错误"}</h4>
                     <pre className="text-xs text-red-300 whitespace-pre-wrap">{trial.error}</pre>
                   </div>
                 )}
@@ -1545,7 +1573,7 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
                 onClick={() => toggleSection("diagnosis")}>
                 <h4 className="text-sm font-medium text-zinc-200 flex items-center gap-2">
                   <AlertTriangle className="w-4 h-4 text-red-400" />
-                  综合诊断
+                  {isJa ? "総合診断" : "综合诊断"}
                 </h4>
                 {expandedSection["diagnosis"] ? <ChevronDown className="w-4 h-4 text-zinc-500" /> : <ChevronRight className="w-4 h-4 text-zinc-500" />}
               </div>
@@ -1559,13 +1587,15 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
                     <button
                       onClick={() => {
                         const diagnosisText = reportData.diagnosis;
-                        const message = `根据以下评估诊断结果，帮我逐项修改内容：\n\n${diagnosisText}`;
+                        const message = isJa
+                          ? `以下の評価診断結果に基づき、内容を項目ごとに修正してください:\n\n${diagnosisText}`
+                          : `根据以下评估诊断结果，帮我逐项修改内容：\n\n${diagnosisText}`;
                         onSendToAgent(message);
                       }}
                       className="mt-4 px-4 py-2 bg-brand-500 hover:bg-brand-600 text-white text-sm rounded-lg transition-colors flex items-center gap-2"
                     >
                       <Zap className="w-4 h-4" />
-                      让 Agent 修改
+                      {isJa ? "Agent に修正依頼" : "让 Agent 修改"}
                     </button>
                   )}
                 </div>
@@ -1578,9 +1608,9 @@ export function EvalReportPanel({ block, onUpdate, onSendToAgent }: EvalFieldPro
   );
 }
 
-function getErrorMessage(error: unknown): string {
+function getErrorMessage(error: unknown, isJa = false): string {
   if (error instanceof Error) return error.message;
-  return String(error ?? "未知错误");
+  return String(error ?? (isJa ? "不明なエラー" : "未知错误"));
 }
 
 

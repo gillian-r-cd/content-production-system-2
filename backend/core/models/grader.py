@@ -17,6 +17,7 @@ from typing import Optional, TYPE_CHECKING
 from sqlalchemy import String, Text, JSON, Boolean
 from sqlalchemy.orm import Mapped, mapped_column
 
+from core.localization import DEFAULT_LOCALE
 from core.models.base import BaseModel
 
 
@@ -41,6 +42,8 @@ GRADER_TYPE_CHOICES = {
 PRESET_GRADERS = [
     {
         "name": "策略对齐评分器",
+        "stable_key": "strategy_alignment",
+        "locale": "zh-CN",
         "grader_type": "content_only",
         "prompt_template": """你是一位战略策略评审专家。请对以下内容进行客观、严谨的评分。
 
@@ -61,6 +64,8 @@ PRESET_GRADERS = [
     },
     {
         "name": "内容质量评分器",
+        "stable_key": "content_quality",
+        "locale": "zh-CN",
         "grader_type": "content_only",
         "prompt_template": """你是一位内容质量评审专家。请对以下内容进行客观、严谨的评分。
 
@@ -81,6 +86,8 @@ PRESET_GRADERS = [
     },
     {
         "name": "消费者体验评分器",
+        "stable_key": "consumer_experience",
+        "locale": "zh-CN",
         "grader_type": "content_and_process",
         "prompt_template": """你是一位消费者体验评审专家。请基于以下内容和互动过程进行客观、严谨的评分。
 
@@ -104,6 +111,8 @@ PRESET_GRADERS = [
     },
     {
         "name": "销售转化评分器",
+        "stable_key": "sales_conversion",
+        "locale": "zh-CN",
         "grader_type": "content_and_process",
         "prompt_template": """你是一位销售转化评审专家。请基于以下内容和销售互动过程进行客观、严谨的评分。
 
@@ -122,6 +131,100 @@ PRESET_GRADERS = [
 请严格输出以下 JSON 格式，不要输出其他内容：
 {{"scores": {{"价值传达": 分数, "需求匹配": 分数, "异议处理": 分数, "转化结果": 分数}}, "comments": {{"价值传达": "评语", "需求匹配": "评语", "异议处理": "评语", "转化结果": "评语"}}, "feedback": "整体评价和改进建议（100-200字）"}}""",
         "dimensions": ["价值传达", "需求匹配", "异议处理", "转化结果"],
+        "scoring_criteria": {},
+        "is_preset": True,
+    },
+    {
+        "name": "戦略整合性評価",
+        "stable_key": "strategy_alignment",
+        "locale": "ja-JP",
+        "grader_type": "content_only",
+        "prompt_template": """あなたは戦略レビューの専門家です。以下の内容を客観的かつ厳密に評価してください。
+
+【評価対象コンテンツ】
+{content}
+
+【評価観点】
+1. 戦略整合性 (1-10): 内容の方向性はプロジェクト意図と一致しているか
+2. ポジショニング明確性 (1-10): 対象読者が明確か
+3. 差別化 (1-10): 類似内容と比べて差別化できているか
+4. 完整性 (1-10): 戦略上の抜け漏れや偏りがないか
+
+必ず以下の JSON のみを出力してください:
+{{"scores": {{"戦略整合性": 分数, "ポジショニング明確性": 分数, "差別化": 分数, "完整性": 分数}}, "comments": {{"戦略整合性": "講評", "ポジショニング明確性": "講評", "差別化": "講評", "完整性": "講評"}}, "feedback": "総合評価と改善提案（100-200字）"}}""",
+        "dimensions": ["戦略整合性", "ポジショニング明確性", "差別化", "完整性"],
+        "scoring_criteria": {},
+        "is_preset": True,
+    },
+    {
+        "name": "内容品質評価",
+        "stable_key": "content_quality",
+        "locale": "ja-JP",
+        "grader_type": "content_only",
+        "prompt_template": """あなたはコンテンツ品質レビューの専門家です。以下の内容を客観的かつ厳密に評価してください。
+
+【評価対象コンテンツ】
+{content}
+
+【評価観点】
+1. 構成妥当性 (1-10)
+2. 言語品質 (1-10)
+3. 文体一貫性 (1-10)
+4. 可読性 (1-10)
+
+必ず以下の JSON のみを出力してください:
+{{"scores": {{"構成妥当性": 分数, "言語品質": 分数, "文体一貫性": 分数, "可読性": 分数}}, "comments": {{"構成妥当性": "講評", "言語品質": "講評", "文体一貫性": "講評", "可読性": "講評"}}, "feedback": "総合評価と改善提案（100-200字）"}}""",
+        "dimensions": ["構成妥当性", "言語品質", "文体一貫性", "可読性"],
+        "scoring_criteria": {},
+        "is_preset": True,
+    },
+    {
+        "name": "顧客体験評価",
+        "stable_key": "consumer_experience",
+        "locale": "ja-JP",
+        "grader_type": "content_and_process",
+        "prompt_template": """あなたは顧客体験レビューの専門家です。以下の内容と対話過程を基に、客観的かつ厳密に評価してください。
+
+【評価対象コンテンツ】
+{content}
+
+【対話過程】
+{process}
+
+【評価観点】
+1. ニーズ適合度 (1-10)
+2. 理解しやすさ (1-10)
+3. 価値認知 (1-10)
+4. 行動意欲 (1-10)
+
+必ず以下の JSON のみを出力してください:
+{{"scores": {{"ニーズ適合度": 分数, "理解しやすさ": 分数, "価値認知": 分数, "行動意欲": 分数}}, "comments": {{"ニーズ適合度": "講評", "理解しやすさ": "講評", "価値認知": "講評", "行動意欲": "講評"}}, "feedback": "総合評価と改善提案（100-200字）"}}""",
+        "dimensions": ["ニーズ適合度", "理解しやすさ", "価値認知", "行動意欲"],
+        "scoring_criteria": {},
+        "is_preset": True,
+    },
+    {
+        "name": "営業転換評価",
+        "stable_key": "sales_conversion",
+        "locale": "ja-JP",
+        "grader_type": "content_and_process",
+        "prompt_template": """あなたは営業転換レビューの専門家です。以下の内容と営業対話を基に、客観的かつ厳密に評価してください。
+
+【評価対象コンテンツ】
+{content}
+
+【対話過程】
+{process}
+
+【評価観点】
+1. 価値伝達 (1-10)
+2. ニーズ適合 (1-10)
+3. 異議対応 (1-10)
+4. 転換結果 (1-10)
+
+必ず以下の JSON のみを出力してください:
+{{"scores": {{"価値伝達": 分数, "ニーズ適合": 分数, "異議対応": 分数, "転換結果": 分数}}, "comments": {{"価値伝達": "講評", "ニーズ適合": "講評", "異議対応": "講評", "転換結果": "講評"}}, "feedback": "総合評価と改善提案（100-200字）"}}""",
+        "dimensions": ["価値伝達", "ニーズ適合", "異議対応", "転換結果"],
         "scoring_criteria": {},
         "is_preset": True,
     },
@@ -147,6 +250,8 @@ class Grader(BaseModel):
     __tablename__ = "graders"
 
     name: Mapped[str] = mapped_column(String(200), nullable=False)
+    stable_key: Mapped[str] = mapped_column(String(100), default="", nullable=False)
+    locale: Mapped[str] = mapped_column(String(20), default=DEFAULT_LOCALE, nullable=False)
     grader_type: Mapped[str] = mapped_column(
         String(30), default="content_only"
     )  # content_only / content_and_process

@@ -221,4 +221,23 @@ describe("ProjectAutoSplitModal", () => {
     expect(onApplied).toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
   });
+
+  it("renders japanese copy when project locale is ja-JP", async () => {
+    apiMocks.getAutoSplitDraft.mockResolvedValue(makeDraft("draft"));
+
+    render(
+      <ProjectAutoSplitModal
+        open
+        projectId="project-1"
+        projectLocale="ja-JP"
+        onClose={() => {}}
+        onApplied={() => {}}
+      />
+    );
+
+    expect(await screen.findByText("プロジェクト単位の自動内容分割")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "閉じる" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "草稿を保存" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "プロジェクトへ適用" })).toBeDisabled();
+  });
 });

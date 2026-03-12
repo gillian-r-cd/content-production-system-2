@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, List, Tuple
 
 from core.content_block_reference import build_block_reference_lookup
+from core.locale_text import markdown_instructions, rt, rt_template
+from core.localization import DEFAULT_LOCALE, locale_fallback_chain, normalize_locale
 from core.models import (
     Project, 
     CreatorProfile, 
@@ -29,6 +31,26 @@ from core.models import (
     Channel,
 )
 from core.pre_question_utils import iter_answered_pre_question_items
+
+PHASE_PROMPT_RUNTIME_KEYS = {
+    "intent": "phase_prompt.intent.questioning",
+    "research": "phase_prompt.research",
+    "design_inner": "phase_prompt.design_inner",
+    "produce_inner": "phase_prompt.produce_inner",
+    "design_outer": "phase_prompt.design_outer",
+    "produce_outer": "phase_prompt.produce_outer",
+    "evaluate": "phase_prompt.evaluate",
+}
+
+PHASE_PROMPTS_ZH = {
+    phase: rt_template(DEFAULT_LOCALE, runtime_key)
+    for phase, runtime_key in PHASE_PROMPT_RUNTIME_KEYS.items()
+}
+
+PHASE_PROMPTS_JA = {
+    phase: rt_template("ja-JP", runtime_key)
+    for phase, runtime_key in PHASE_PROMPT_RUNTIME_KEYS.items()
+}
 
 
 @dataclass
@@ -46,11 +68,14 @@ class GoldenContext:
     - 其他阶段输出 → 通过字段依赖关系获取
     """
     creator_profile: str = ""
+    locale: str = DEFAULT_LOCALE
     
     def to_prompt(self) -> str:
         """转换为提示词格式"""
         if self.creator_profile:
-            return f"# 创作者特质\n{self.creator_profile}"
+            if self.creator_profile.lstrip().startswith("#"):
+                return self.creator_profile
+            return f"{rt(self.locale, 'golden_context.creator_profile_header')}\n{self.creator_profile}"
         return ""
     
     def is_empty(self) -> bool:
@@ -84,9 +109,10 @@ class PromptContext:
         引擎只负责替换占位符 {creator_profile} / {dependencies} / {channel}。
         如果模板中没有占位符（旧格式兼容），则使用传统拼接方式。
         """
-        creator_profile_text = self.golden_context.creator_profile or "（暂无创作者特质）"
-        dependencies_text = self.field_context or "（无依赖内容）"
-        channel_text = self.channel_context or "（无渠道信息）"
+        locale = normalize_locale(getattr(self.golden_context, "locale", DEFAULT_LOCALE))
+        creator_profile_text = self.golden_context.creator_profile or rt(locale, "fallback.no_creator_profile")
+        dependencies_text = self.field_context or rt(locale, "fallback.no_dependencies")
+        channel_text = self.channel_context or rt(locale, "fallback.no_channel")
         
         template = self.phase_context or ""
         
@@ -118,13 +144,13 @@ class PromptContext:
                 parts.append(gc)
             
             if self.phase_context:
-                parts.append(f"# 当前任务\n{self.phase_context}")
+                parts.append(f"{rt(locale, 'block.task_header')}\n{self.phase_context}")
             
             if self.field_context:
-                parts.append(f"# 参考内容\n{self.field_context}")
+                parts.append(f"{rt(locale, 'block.reference_header')}\n{self.field_context}")
             
             if self.channel_context:
-                parts.append(f"# 目标渠道\n{self.channel_context}")
+                parts.append(f"{rt(locale, 'prompt_context.channel_header')}\n{self.channel_context}")
             
             if self.custom_context:
                 parts.append(self.custom_context)
@@ -142,202 +168,15 @@ class PromptEngine:
     - 为不同阶段生成系统提示词
     """
     
-    # 意图分析阶段 - 两种模式的提示词
-    INTENT_QUESTIONING_PROMPT = """你是一个专业的内容策略顾问。你的任务是通过3个问题帮助用户澄清内容生产的意图。
-
-问题顺序（根据对话历史判断当前应该问哪个）：
-
-1. 【先了解项目是什么】如果用户还没说清楚想做什么内容，先问：
-   "你这次想做什么内容？请简单描述一下（比如：一篇文章、一个视频脚本、一份产品介绍...）"
-
-2. 【再问目标受众】了解内容是什么后，问：
-   "这个内容主要写给谁看？请用「岗位/角色 + 所在行业 + 当前面临的1-2个痛点」来描述，比如：'中大型制造企业的IT负责人，正在推进数字化转型但缺乏内部数据基础'"
-
-3. 【最后问期望效果】了解受众后，问：
-   "看完这个内容后，你最希望读者立刻采取的一个具体行动是什么？"
-
-规则：
-- 根据对话历史判断用户已经回答了哪些问题，不要重复问
-- 每次只问1个问题
-- 问题要简洁明了"""
-
-    INTENT_PRODUCING_PROMPT = """你是一个专业的内容策略顾问。根据用户的回答，提取3个核心字段。
-
-请严格按以下JSON格式输出（不要添加任何其他内容）：
-
-```json
-{
-  "做什么": "用一句话描述这个内容的主题和形式，例如：一份面向一线经理的AI对练chatbot设计方案",
-  "给谁看": "目标受众的具体描述，包含角色、行业、痛点，例如：互联网/制造业的一线经理，面临绩效面谈、冲突处理等管理场景缺乏练习机会",
-  "期望行动": "读者看完后最希望采取的具体行动，例如：主动尝试使用AI对练工具进行一次模拟管理对话"
-}
-```
-
-规则：
-- 每个字段的内容要简洁有力，1-2句话
-- 直接从用户回答中提炼，不要自己发挥
-- 只输出JSON，不要其他解释
-
-请基于用户的所有回答，生成完整、具体、可操作的意图分析报告。"""
-    
-    # 阶段系统提示词模板（完整版，所见即所得）
-    # 核心原则：这里的内容就是 LLM 收到的完整 system_prompt
-    # 引擎只负责替换占位符，不额外拼接任何内容
-    # 支持的占位符：
-    #   {creator_profile}  → 创作者特质（全局上下文）
-    #   {dependencies}     → 依赖字段的内容
-    #   {channel}          → 目标渠道信息（外延生产时）
-    PHASE_PROMPTS = {
-        "intent": INTENT_QUESTIONING_PROMPT,  # 意图分析是对话模式，不走此模板
-
-        "research": """【创作者特质】
-{creator_profile}
-
----
-
-你是一个资深的用户研究专家。基于以下参考内容，进行消费者调研。
-
-【参考内容】
-{dependencies}
-
-你需要输出：
-1. 总体用户画像（年龄、职业、特征）
-2. 核心痛点（3-5个）
-3. 价值主张（3-5个）
-4. 典型用户小传（3个，包含完整的故事背景）
-
-输出格式要求结构化、具体、可操作。""",
-
-        "design_inner": """【创作者特质】
-{creator_profile}
-
----
-
-你是一个资深的内容架构师。基于以下参考内容，设计3个不同的内容生产方案供用户选择。
-
-【参考内容】
-{dependencies}
-
-你必须输出严格的JSON格式（不要添加任何其他内容），包含3个方案：
-
-```json
-{{
-  "proposals": [
-    {{
-      "id": "proposal_1",
-      "name": "方案名称（简洁有力）",
-      "description": "方案核心思路描述（2-3句话）",
-      "fields": [
-        {{
-          "id": "field_1",
-          "name": "字段名称",
-          "field_type": "richtext",
-          "ai_prompt": "生成这个字段时的AI提示词",
-          "depends_on": [],
-          "order": 1,
-          "need_review": true
-        }},
-        {{
-          "id": "field_2",
-          "name": "第二个字段",
-          "field_type": "richtext",
-          "ai_prompt": "生成提示词",
-          "depends_on": ["field_1"],
-          "order": 2,
-          "need_review": false
-        }}
-      ]
-    }},
-    {{ ... }},
-    {{ ... }}
-  ]
-}}
-```
-
-要求：
-1. 3个方案要有明显差异（如：模块化 vs 线性 vs 场景驱动）
-2. 每个方案5-10个字段
-3. 字段依赖关系要合理（depends_on 填写依赖的字段id）
-4. need_review 默认为 true（需人工确认后才生成），仅对确定可自动执行的字段设为 false
-5. 紧扣用户痛点和项目意图""",
-
-        "produce_inner": """【创作者特质】
-{creator_profile}
-
----
-
-你是一个专业的内容创作者。根据以下参考内容，生产具体的内容。
-
-【参考内容】
-{dependencies}
-
-要求：
-1. 严格遵循创作者特质和风格
-2. 紧扣项目意图
-3. 回应用户痛点
-4. 输出高质量、可直接使用的内容""",
-
-        "design_outer": """【创作者特质】
-{creator_profile}
-
----
-
-你是一个资深的营销策略专家。基于以下已生产的内涵内容，设计外延传播方案。
-
-【参考内容】
-{dependencies}
-
-你需要输出：
-1. 推荐的传播渠道及理由
-2. 各渠道的内容策略
-3. 核心传播信息提炼
-4. 关键注意事项""",
-
-        "produce_outer": """【创作者特质】
-{creator_profile}
-
----
-
-你是一个全渠道内容运营专家。根据以下外延设计方案，为指定渠道生产内容。
-
-【参考内容】
-{dependencies}
-
-【目标渠道】
-{channel}
-
-要求：
-1. 严格遵循渠道规范和限制
-2. 保持与内涵内容的一致性
-3. 适配渠道用户的阅读习惯
-4. 输出可直接发布的内容""",
-
-        "evaluate": """【创作者特质】
-{creator_profile}
-
----
-
-你是一个资深的内容评审专家。请对以下内容进行全面评估。
-
-【参考内容】
-{dependencies}
-
-评估维度：
-1. 意图对齐度
-2. 用户匹配度
-3. 内容质量
-4. 模拟反馈综合
-
-输出：
-1. 各维度评分和评语
-2. 具体的修改建议（可操作）
-3. 总体评价""",
-    }
+    INTENT_QUESTIONING_PROMPT = PHASE_PROMPTS_ZH["intent"]
+    INTENT_PRODUCING_PROMPT = rt_template(DEFAULT_LOCALE, "phase_prompt.intent.producing")
+    JA_PHASE_PROMPTS = PHASE_PROMPTS_JA
+    PHASE_PROMPTS = PHASE_PROMPTS_ZH
     
     def __init__(self):
         pass
     
-    def _get_phase_prompt(self, phase: str, db=None) -> str:
+    def _get_phase_prompt(self, phase: str, db=None, locale: Optional[str] = None) -> str:
         """
         获取阶段提示词。
         优先级：DB system_prompts 表（后台可编辑）> 内置 PHASE_PROMPTS
@@ -349,15 +188,18 @@ class PromptEngine:
         if db:
             try:
                 from core.models.system_prompt import SystemPrompt
-                db_prompt = db.query(SystemPrompt).filter(
-                    SystemPrompt.phase == phase
-                ).first()
-                if db_prompt and db_prompt.content:
-                    return db_prompt.content
+                for candidate in locale_fallback_chain(locale):
+                    db_prompt = db.query(SystemPrompt).filter(
+                        SystemPrompt.phase == phase,
+                        SystemPrompt.locale == candidate,
+                    ).first()
+                    if db_prompt and db_prompt.content:
+                        return db_prompt.content
             except Exception:
                 pass
         # 兜底使用内置
-        return self.PHASE_PROMPTS.get(phase, "")
+        prompt_map = self.JA_PHASE_PROMPTS if normalize_locale(locale) == "ja-JP" else self.PHASE_PROMPTS
+        return prompt_map.get(phase, "")
 
     def build_golden_context(
         self,
@@ -376,12 +218,12 @@ class PromptEngine:
             project: 项目对象
             creator_profile: 创作者特质（可选，如未提供则从project关联获取）
         """
-        gc = GoldenContext()
+        gc = GoldenContext(locale=normalize_locale(getattr(project, "locale", DEFAULT_LOCALE)))
         
         # 创作者特质 - 唯一的全局上下文
         profile = creator_profile or getattr(project, 'creator_profile', None)
         if profile:
-            gc.creator_profile = profile.to_prompt_context()
+            gc.creator_profile = profile.to_prompt_context(locale=gc.locale)
         
         return gc
     
@@ -413,7 +255,11 @@ class PromptEngine:
         ctx.golden_context = golden_context or self.build_golden_context(project)
         
         # 阶段提示词：优先从DB加载（后台可编辑），兜底使用内置
-        ctx.phase_context = self._get_phase_prompt(phase, db=db)
+        ctx.phase_context = self._get_phase_prompt(
+            phase,
+            db=db,
+            locale=normalize_locale(getattr(project, "locale", DEFAULT_LOCALE)),
+        )
         
         # 字段依赖上下文
         if dependent_fields:
@@ -446,6 +292,7 @@ class PromptEngine:
         self,
         text: str,
         fields_by_name: Dict[str, ContentBlock],
+        locale: Optional[str] = None,
     ) -> Tuple[str, List[ContentBlock]]:
         """
         解析@引用语法，支持含空格的字段名
@@ -461,6 +308,7 @@ class PromptEngine:
         Returns:
             (替换后的文本, 引用的字段列表)
         """
+        target_locale = normalize_locale(locale)
         referenced_fields = []
         seen_field_ids = set()
 
@@ -513,7 +361,7 @@ class PromptEngine:
                     referenced_fields.append(field)
                     if field_id:
                         seen_field_ids.add(field_id)
-                replacement = self._format_reference_block(field, name)
+                replacement = self._format_reference_block(field, name, locale=target_locale)
                 result = result[:pos] + replacement + result[end_pos:]
                 used_ranges.append((pos, pos + len(replacement)))
                 search_start = pos + len(replacement)
@@ -535,7 +383,7 @@ class PromptEngine:
                     referenced_fields.append(field)
                     if field_id:
                         seen_field_ids.add(field_id)
-                return self._format_reference_block(field, ref)
+                return self._format_reference_block(field, ref, locale=target_locale)
             
             # 阶段.字段名 格式
             if '.' in ref:
@@ -547,7 +395,7 @@ class PromptEngine:
                         referenced_fields.append(field)
                         if field_id:
                             seen_field_ids.add(field_id)
-                    return self._format_reference_block(field, ref)
+                    return self._format_reference_block(field, ref, locale=target_locale)
             
             return match.group(0)
         
@@ -555,13 +403,24 @@ class PromptEngine:
         
         return result, referenced_fields
 
-    def _format_reference_block(self, field: ContentBlock, reference_key: str) -> str:
+    def _format_reference_block(
+        self,
+        field: ContentBlock,
+        reference_key: str,
+        *,
+        locale: str = DEFAULT_LOCALE,
+    ) -> str:
         """将引用块格式化为稳定、可回显的文本。"""
         label = getattr(field, "name", "") or reference_key
         field_id = getattr(field, "id", "") or ""
-        content = getattr(field, "content", "") or ""
+        content = getattr(field, "content", "") or rt(locale, "agent.reference_context.empty_content")
         id_suffix = f" | id:{field_id}" if field_id else ""
-        return f"\n\n---\n引用 [{label}{id_suffix}]:\n{content}\n---\n\n"
+        return (
+            f"\n\n---\n"
+            f"{rt(locale, 'agent.reference_context.target', label=f'{label}{id_suffix}')}\n"
+            f"{content}\n"
+            f"---\n\n"
+        )
     
     def get_field_generation_prompt(
         self,
@@ -578,25 +437,21 @@ class PromptEngine:
         Returns:
             完整的系统提示词
         """
+        locale = normalize_locale(getattr(context.golden_context, "locale", DEFAULT_LOCALE))
         parts = [context.to_system_prompt()]
         
         # 添加字段基本信息
-        parts.append(f"# 当前要生成的字段\n字段名称：{field.name}")
+        parts.append(
+            f"{rt(locale, 'prompt_context.field_target_header')}\n"
+            f"{rt(locale, 'prompt_context.field_name_line', name=field.name)}"
+        )
         
         # 固定 Markdown 输出格式指令（前端统一使用 ReactMarkdown 渲染）
-        parts.append(
-            "# 输出格式（必须遵守）\n"
-            "使用 Markdown 格式输出。\n"
-            "- 标题使用 # ## ### 格式\n"
-            "- 列表使用 - 或 1. 格式\n"
-            "- 重点内容使用 **粗体** 或 *斜体*\n"
-            "- 表格必须包含表头分隔行（如 | --- | --- |），且每行列数与表头一致\n"
-            "- 若一个单元格需要多条内容，用 <br> 换行，不要增加 | 列分隔符"
-        )
+        parts.append(markdown_instructions(locale))
         
         # 添加字段特定的AI提示词（核心指令）
         if field.ai_prompt and field.ai_prompt.strip() and field.ai_prompt != "请在这里编写生成提示词...":
-            parts.append(f"# 具体生成要求\n{field.ai_prompt}")
+            parts.append(f"{rt(locale, 'prompt_context.field_requirement_header')}\n{field.ai_prompt}")
 
         # 添加用户回答的预问题
         if field.pre_answers:
@@ -608,7 +463,7 @@ class PromptEngine:
                 )
             )
             if answers_text:
-                parts.append(f"# 用户补充信息\n{answers_text}")
+                parts.append(rt(locale, "prompt_context.field_pre_answers_header", answers=answers_text))
         
         return "\n\n---\n\n".join(parts)
 

@@ -5,6 +5,7 @@
 
 "use client";
 
+import { useUiIsJa } from "@/lib/ui-locale";
 import type {
   DraftDependencyOption,
   FieldTemplate,
@@ -18,6 +19,7 @@ import { TemplateTreeEditor } from "./settings/template-tree-editor";
 interface ProjectPlanSelectorProps {
   plans: ProjectStructurePlan[];
   chunks: ProjectStructureChunk[];
+  projectLocale?: string | null;
   availableModels: ModelInfo[];
   fieldTemplates: FieldTemplate[];
   sharedNodeOptions: DraftDependencyOption[];
@@ -31,6 +33,7 @@ interface ProjectPlanSelectorProps {
 export function ProjectPlanSelector({
   plans,
   chunks,
+  projectLocale,
   availableModels,
   fieldTemplates,
   sharedNodeOptions,
@@ -40,13 +43,14 @@ export function ProjectPlanSelector({
   onRemovePlan,
   onImportTemplate,
 }: ProjectPlanSelectorProps) {
+  const isJa = useUiIsJa(projectLocale);
   return (
     <section className="space-y-4 rounded-xl border border-surface-3 bg-surface-1 p-4">
       <div className="flex items-center justify-between">
         <div>
-          <h3 className="text-sm font-medium text-zinc-200">编排方案</h3>
+          <h3 className="text-sm font-medium text-zinc-200">{isJa ? "編成プラン" : "编排方案"}</h3>
           <p className="text-xs text-zinc-500 mt-1">
-            配置视图按方案组织，最终应用时仍按 chunk 顺序展开。
+            {isJa ? "設定ビューではプラン単位で整理されますが、最終適用時は chunk 順で展開されます。" : "配置视图按方案组织，最终应用时仍按 chunk 顺序展开。"}
           </p>
         </div>
         <button
@@ -54,13 +58,13 @@ export function ProjectPlanSelector({
           onClick={onAddPlan}
           className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs text-white hover:bg-brand-700"
         >
-          + 新编排方案
+          {isJa ? "+ 新しい編成プラン" : "+ 新编排方案"}
         </button>
       </div>
 
       {!plans.length ? (
         <div className="rounded-lg border border-dashed border-surface-3 px-4 py-6 text-sm text-zinc-500">
-          还没有编排方案。你可以先拆出 chunk，再新增一个方案并选择要作用到哪些 chunk。
+          {isJa ? "編成プランはまだありません。先に chunk を分割し、新しいプランを追加して対象 chunk を選択してください。" : "还没有编排方案。你可以先拆出 chunk，再新增一个方案并选择要作用到哪些 chunk。"}
         </div>
       ) : (
         <div className="space-y-4">
@@ -71,19 +75,19 @@ export function ProjectPlanSelector({
                   value={plan.name}
                   onChange={(e) => onPatchPlan(plan.plan_id, { name: e.target.value })}
                   className="flex-1 rounded-lg border border-surface-3 bg-surface-2 px-3 py-2 text-sm text-zinc-200"
-                  placeholder="方案名称"
+                  placeholder={isJa ? "プラン名" : "方案名称"}
                 />
                 <button
                   type="button"
                   onClick={() => onRemovePlan(plan.plan_id)}
                   className="rounded bg-red-600/20 px-2 py-1 text-xs text-red-400"
                 >
-                  删除方案
+                  {isJa ? "プランを削除" : "删除方案"}
                 </button>
               </div>
 
               <div className="space-y-2">
-                <div className="text-xs text-zinc-400">作用到哪些 chunk</div>
+                <div className="text-xs text-zinc-400">{isJa ? "どの chunk に適用するか" : "作用到哪些 chunk"}</div>
                 <div className="flex flex-wrap gap-2">
                   {chunks.map((chunk) => {
                     const checked = plan.target_chunk_ids.includes(chunk.chunk_id);
@@ -107,13 +111,14 @@ export function ProjectPlanSelector({
                     );
                   })}
                   {!chunks.length && (
-                    <span className="text-xs text-zinc-500">还没有 chunk，可先执行拆分。</span>
+                    <span className="text-xs text-zinc-500">{isJa ? "chunk はまだありません。先に分割を実行してください。" : "还没有 chunk，可先执行拆分。"}</span>
                   )}
                 </div>
               </div>
 
               <ProjectTemplateImportBar
-                title={`${plan.name || "当前方案"}模板`}
+                title={`${plan.name || (isJa ? "現在のプラン" : "当前方案")}${isJa ? "テンプレート" : "模板"}`}
+                projectLocale={projectLocale}
                 templates={fieldTemplates}
                 onImport={(template) => onImportTemplate(plan.plan_id, template)}
               />
@@ -122,13 +127,13 @@ export function ProjectPlanSelector({
                 nodes={plan.root_nodes || []}
                 onChange={(nodes) => onPatchPlan(plan.plan_id, { root_nodes: nodes })}
                 availableModels={availableModels}
-                topLevelLabel="方案结构"
-                emptyText="还没有结构，先添加顶层内容块或分组。"
+                topLevelLabel={isJa ? "プラン構造" : "方案结构"}
+                emptyText={isJa ? "構造はまだありません。最上位の内容ブロックまたはグループを追加してください。" : "还没有结构，先添加顶层内容块或分组。"}
                 topLevelCreateTypes={["field", "group"]}
                 externalDependencyOptions={[
                   {
                     id: `current-source:${plan.plan_id}`,
-                    label: "当前 chunk 的源内容块",
+                    label: isJa ? "現在の chunk の元内容ブロック" : "当前 chunk 的源内容块",
                     ref: { ref_type: "chunk_source", chunk_id: "current" },
                   },
                   ...sharedNodeOptions,

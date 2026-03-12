@@ -8,9 +8,13 @@
 全局设置，在开始项目时先选创作者特质，作为项目所有字段的输入
 """
 
+from typing import Optional
+
 from sqlalchemy import String, Text, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from core.localization import DEFAULT_LOCALE, normalize_locale
+from core.locale_text import rt
 from core.models.base import BaseModel
 
 
@@ -32,6 +36,8 @@ class CreatorProfile(BaseModel):
     __tablename__ = "creator_profiles"
 
     name: Mapped[str] = mapped_column(String(100), nullable=False)
+    stable_key: Mapped[str] = mapped_column(String(100), default="", nullable=False)
+    locale: Mapped[str] = mapped_column(String(20), default=DEFAULT_LOCALE, nullable=False)
     description: Mapped[str] = mapped_column(Text, default="")
     traits: Mapped[dict] = mapped_column(JSON, default=dict)
 
@@ -40,17 +46,27 @@ class CreatorProfile(BaseModel):
         "Project", back_populates="creator_profile"
     )
 
-    def to_prompt_context(self) -> str:
-        """转换为提示词上下文"""
-        lines = [f"## 创作者特质: {self.name}"]
+    def to_prompt_context(self, locale: Optional[str] = None) -> str:
+        """转换为提示词上下文。"""
+        target_locale = normalize_locale(locale or getattr(self, "locale", DEFAULT_LOCALE))
+        lines = [
+            rt(target_locale, "creator_profile.section_header"),
+            rt(target_locale, "creator_profile.name_line", name=self.name),
+        ]
         if self.description:
             lines.append(self.description)
         if self.traits:
             for key, value in self.traits.items():
+                runtime_key = f"creator_profile.trait.{key}"
+                label = rt(target_locale, runtime_key)
+                if label == runtime_key:
+                    label = str(key)
                 if isinstance(value, list):
-                    lines.append(f"- {key}: {', '.join(value)}")
+                    value_text = ", ".join(str(item) for item in value)
                 else:
-                    lines.append(f"- {key}: {value}")
+                    value_text = str(value)
+                if value_text:
+                    lines.append(f"- {label}: {value_text}")
         return "\n".join(lines)
 
 

@@ -18,6 +18,7 @@ Simulator = 交互引擎，定义 HOW to interact + HOW to collect feedback
 from sqlalchemy import String, Text, JSON, Boolean, Integer
 from sqlalchemy.orm import Mapped, mapped_column
 
+from core.localization import DEFAULT_LOCALE, normalize_locale
 from core.models.base import BaseModel
 
 
@@ -69,6 +70,8 @@ class Simulator(BaseModel):
     __tablename__ = "simulators"
 
     name: Mapped[str] = mapped_column(String(100), nullable=False)
+    stable_key: Mapped[str] = mapped_column(String(100), default="", nullable=False)
+    locale: Mapped[str] = mapped_column(String(20), default=DEFAULT_LOCALE, nullable=False)
     description: Mapped[str] = mapped_column(Text, default="")
     
     # 角色类型（新增）
@@ -89,7 +92,7 @@ class Simulator(BaseModel):
     is_preset: Mapped[bool] = mapped_column(Boolean, default=False)
 
     @classmethod
-    def get_default_template(cls, interaction_type: str) -> str:
+    def get_default_template(cls, interaction_type: str, locale: str = DEFAULT_LOCALE) -> str:
         """获取交互类型的默认主提示词模板（第一方/主动方）
         
         各模式的角色分配：
@@ -98,7 +101,7 @@ class Simulator(BaseModel):
         - decision: 第一方=销售方（推介），第二方=消费者（回应）
         - exploration: 单方=探索者（浏览+评价），无第二方
         """
-        templates = {
+        zh_templates = {
             "dialogue": """你是一位真实的用户，具有以下特征：
 {persona}
 
@@ -146,17 +149,62 @@ class Simulator(BaseModel):
 3. 答案是否完整解决了你的问题""",
             
         }
+        ja_templates = {
+            "dialogue": """あなたは実在のユーザーです。以下の特性を持っています:
+{persona}
+
+あなたはコンテンツ担当者と対話しています。相手は専門コンテンツを基に回答します。自分の背景と課題に沿って、自然に質問と反応を返してください。
+
+【行動要件】
+1. 1回につき質問は1つ、簡潔自然に（50字以内）
+2. 質問は自分の背景と課題に基づくこと
+3. 回答に納得したら肯定してよい
+4. 不十分なら追加質問する
+5. 十分理解できたら「はい、理解できました」で終了する""",
+            "reading": """あなたは実在の読者です。以下の特性を持っています:
+{persona}
+
+以下の内容を読み、率直なフィードバックを返してください:
+{content}
+
+以下の観点で評価してください:
+1. 理解しやすさ（1-10）
+2. 価値を感じたか、その理由
+3. 読後に取りたい行動""",
+            "decision": """あなたはこの内容の営業担当者です。内容の細部まで把握しています。
+
+=== あなたが把握している内容 ===
+{content}
+=== 内容終了 ===
+
+【営業方針】
+- 主体的に会話を進め、具体情報を引用する
+- 誠実でありつつ説得力を持たせる
+- 各発話は50字以内""",
+            "exploration": """あなたはユーザーです。以下の特性を持っています:
+{persona}
+
+あなたには解決したい具体的な課題があります: {task}
+
+以下の文書から答えを探してください。
+
+記録する内容:
+1. どのように答えを見つけたか
+2. どれくらい時間がかかったか
+3. 問題解決に十分だったか""",
+        }
+        templates = ja_templates if normalize_locale(locale) == "ja-JP" else zh_templates
         return templates.get(interaction_type, templates["reading"])
 
     @classmethod
-    def get_default_secondary_template(cls, interaction_type: str) -> str:
+    def get_default_secondary_template(cls, interaction_type: str, locale: str = DEFAULT_LOCALE) -> str:
         """获取交互类型的默认第二方提示词模板（被动方/回应方）
         
         - dialogue: 第二方=内容代表（基于内容回答消费者的问题）
         - decision: 第二方=消费者（回应销售方的推介）
         - reading/exploration: 无第二方，返回空字符串
         """
-        templates = {
+        zh_templates = {
             "dialogue": """你是内容的代表。严格基于以下内容回答问题，如果有超出内容范畴的问题，诚实说明内容中未涉及。
 
 === 你必须严格基于以下内容回答 ===
@@ -182,4 +230,30 @@ class Simulator(BaseModel):
 
 【行为要求】基于真实背景回应，适当质疑，最后做出明确决定。每次发言不超过50字。""",
         }
+        ja_templates = {
+            "dialogue": """あなたは内容担当者です。以下の内容に厳密に基づいて回答し、範囲外の質問には内容に記載がないと正直に伝えてください。
+
+=== 必ず基づくべき内容 ===
+{content}
+=== 内容終了 ===
+
+【回答ルール】
+1. 上記内容に厳密に基づいて回答する
+2. 内容にない場合は正直に伝える
+3. 可能な限り原文や核心表現を引用する
+4. 各回答は50字以内""",
+            "decision": """あなたは実在の見込み顧客です。いま誰かがあなたに内容/商品を提案しています。
+
+【あなたの属性】
+{persona}
+
+【あなたの態度】
+- 実際のニーズはあるが、簡単には納得しない
+- 現実的な疑問を投げかける
+- 価値が明確なら受け入れる
+- 合わない場合ははっきり断る
+
+【行動要件】自分の背景に基づいて応答し、適切に懸念を示し、最後は明確な判断を出してください。各発話は50字以内。""",
+        }
+        templates = ja_templates if normalize_locale(locale) == "ja-JP" else zh_templates
         return templates.get(interaction_type, "")

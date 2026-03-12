@@ -8,23 +8,40 @@
 import { useState, useEffect, useCallback } from "react";
 import { memoriesAPI } from "@/lib/api";
 import type { MemoryItemInfo } from "@/lib/api";
+import { isJaProjectLocale } from "@/lib/project-locale";
+import { useUiLocale } from "@/lib/ui-locale";
 
 interface MemoryPanelProps {
   projectId: string;
+  projectLocale?: string | null;
   onClose: () => void;
 }
 
-// 模式名称中文映射
-const MODE_LABELS: Record<string, string> = {
-  assistant: "助手",
-  strategist: "策略顾问",
-  critic: "审稿人",
-  reader: "目标读者",
-  creative: "创意伙伴",
-  manual: "手动添加",
-};
+function getModeLabels(locale?: string | null): Record<string, string> {
+  if (isJaProjectLocale(locale)) {
+    return {
+      assistant: "アシスタント",
+      strategist: "戦略アドバイザー",
+      critic: "レビュアー",
+      reader: "対象読者",
+      creative: "クリエイティブパートナー",
+      manual: "手動追加",
+    };
+  }
+  return {
+    assistant: "助手",
+    strategist: "策略顾问",
+    critic: "审稿人",
+    reader: "目标读者",
+    creative: "创意伙伴",
+    manual: "手动添加",
+  };
+}
 
-export function MemoryPanel({ projectId, onClose }: MemoryPanelProps) {
+export function MemoryPanel({ projectId, projectLocale, onClose }: MemoryPanelProps) {
+  const uiLocale = useUiLocale(projectLocale);
+  const isJa = isJaProjectLocale(uiLocale);
+  const modeLabels = getModeLabels(uiLocale);
   const [memories, setMemories] = useState<MemoryItemInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -116,20 +133,20 @@ export function MemoryPanel({ projectId, onClose }: MemoryPanelProps) {
         <div>
           <h2 className="font-semibold text-zinc-100 flex items-center gap-2">
             <span>🧠</span>
-            <span>项目记忆</span>
+            <span>{isJa ? "プロジェクト記憶" : "项目记忆"}</span>
             <span className="text-xs text-zinc-500 font-normal">
-              {memories.length} 条
+              {isJa ? `${memories.length} 件` : `${memories.length} 条`}
             </span>
           </h2>
           <p className="text-xs text-zinc-500 mt-0.5">
-            Agent 从对话中提炼的关键信息，跨模式共享
+            {isJa ? "Agent が対話から抽出した重要情報を、モード横断で共有します" : "Agent 从对话中提炼的关键信息，跨模式共享"}
           </p>
         </div>
         <button
           onClick={onClose}
           className="text-zinc-500 hover:text-zinc-300 text-sm px-2 py-1 rounded hover:bg-surface-2 transition"
         >
-          返回对话
+          {isJa ? "対話へ戻る" : "返回对话"}
         </button>
       </div>
 
@@ -138,14 +155,14 @@ export function MemoryPanel({ projectId, onClose }: MemoryPanelProps) {
         {loading ? (
           <div className="text-center text-zinc-500 py-8">
             <div className="w-4 h-4 border-2 border-zinc-500 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
-            加载中...
+            {isJa ? "読み込み中..." : "加载中..."}
           </div>
         ) : memories.length === 0 ? (
           <div className="text-center text-zinc-500 py-8">
             <p className="text-2xl mb-2">🧠</p>
-            <p>暂无记忆</p>
+            <p>{isJa ? "記憶はまだありません" : "暂无记忆"}</p>
             <p className="text-xs mt-1">
-              与 Agent 对话后，关键信息会自动提炼保存在这里
+              {isJa ? "Agent と対話すると、重要情報がここに自動保存されます" : "与 Agent 对话后，关键信息会自动提炼保存在这里"}
             </p>
           </div>
         ) : (
@@ -169,14 +186,14 @@ export function MemoryPanel({ projectId, onClose }: MemoryPanelProps) {
                       onClick={() => setEditingId(null)}
                       className="text-xs text-zinc-500 hover:text-zinc-300 px-2 py-1 rounded hover:bg-surface-3"
                     >
-                      取消
+                      {isJa ? "キャンセル" : "取消"}
                     </button>
                     <button
                       onClick={handleSaveEdit}
                       disabled={saving || !editContent.trim()}
                       className="text-xs text-brand-300 hover:text-brand-200 px-2 py-1 rounded hover:bg-brand-500/10 disabled:opacity-50"
                     >
-                      {saving ? "保存中..." : "保存"}
+                      {saving ? (isJa ? "保存中..." : "保存中...") : (isJa ? "保存" : "保存")}
                     </button>
                   </div>
                 </div>
@@ -185,27 +202,27 @@ export function MemoryPanel({ projectId, onClose }: MemoryPanelProps) {
                 <>
                   <p className="text-sm text-zinc-200 leading-relaxed">
                     {mem.project_id === null && (
-                      <span className="text-xs text-amber-500/80 mr-1.5">[全局]</span>
+                      <span className="text-xs text-amber-500/80 mr-1.5">{isJa ? "[全体]" : "[全局]"}</span>
                     )}
                     {mem.content}
                   </p>
                   <div className="flex items-center justify-between mt-1.5">
                     <span className="text-xs text-zinc-600">
-                      {MODE_LABELS[mem.source_mode] || mem.source_mode}
+                      {modeLabels[mem.source_mode] || mem.source_mode}
                       {mem.source_phase ? ` / ${mem.source_phase}` : ""}
                     </span>
                     <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button
                         onClick={() => handleStartEdit(mem)}
                         className="text-xs text-zinc-500 hover:text-zinc-300 px-1.5 py-0.5 rounded hover:bg-surface-3"
-                        title="编辑"
+                        title={isJa ? "編集" : "编辑"}
                       >
                         ✏️
                       </button>
                       <button
                         onClick={() => handleDelete(mem.id)}
                         className="text-xs text-zinc-500 hover:text-red-400 px-1.5 py-0.5 rounded hover:bg-surface-3"
-                        title="删除"
+                        title={isJa ? "削除" : "删除"}
                       >
                         🗑️
                       </button>
@@ -225,7 +242,7 @@ export function MemoryPanel({ projectId, onClose }: MemoryPanelProps) {
             <textarea
               value={newContent}
               onChange={(e) => setNewContent(e.target.value)}
-              placeholder="输入要记住的信息，如：用户偏好简洁风格..."
+              placeholder={isJa ? "記録したい情報を入力してください。例: ユーザーは簡潔な文体を好む" : "输入要记住的信息，如：用户偏好简洁风格..."}
               className="w-full bg-surface-1 border border-surface-3 rounded-lg px-3 py-2 text-sm text-zinc-200 resize-none focus:outline-none focus:border-brand-500 placeholder:text-zinc-600"
               rows={2}
               autoFocus
@@ -238,14 +255,14 @@ export function MemoryPanel({ projectId, onClose }: MemoryPanelProps) {
                 }}
                 className="text-xs text-zinc-500 hover:text-zinc-300 px-3 py-1.5 rounded hover:bg-surface-3"
               >
-                取消
+                {isJa ? "キャンセル" : "取消"}
               </button>
               <button
                 onClick={handleAdd}
                 disabled={saving || !newContent.trim()}
                 className="text-xs bg-brand-600 text-white px-3 py-1.5 rounded hover:bg-brand-500 disabled:opacity-50 transition"
               >
-                {saving ? "添加中..." : "添加记忆"}
+                {saving ? (isJa ? "追加中..." : "添加中...") : (isJa ? "記憶を追加" : "添加记忆")}
               </button>
             </div>
           </div>
@@ -254,7 +271,7 @@ export function MemoryPanel({ projectId, onClose }: MemoryPanelProps) {
             onClick={() => setShowAddForm(true)}
             className="w-full text-sm text-zinc-500 hover:text-zinc-300 border border-dashed border-surface-3 hover:border-zinc-500 rounded-lg py-2 transition"
           >
-            + 手动添加记忆
+            {isJa ? "+ 記憶を手動追加" : "+ 手动添加记忆"}
           </button>
         )}
       </div>

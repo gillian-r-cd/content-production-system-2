@@ -19,6 +19,20 @@ GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
+DEFAULT_BACKEND_PORT=8000
+
+read_backend_port() {
+    local ENV_FILE="$PROJECT_DIR/backend/.env"
+    if [ -f "$ENV_FILE" ]; then
+        local PORT_VALUE
+        PORT_VALUE=$(grep -E "^BACKEND_PORT=" "$ENV_FILE" 2>/dev/null | tail -n 1 | cut -d= -f2 | tr -d '[:space:]' | tr -d '"' | tr -d "'")
+        if [[ "$PORT_VALUE" =~ ^[0-9]+$ ]]; then
+            echo "$PORT_VALUE"
+            return
+        fi
+    fi
+    echo "$DEFAULT_BACKEND_PORT"
+}
 
 sync_code() {
     echo -e "${BLUE}[1/4] 同步代码...${NC}"
@@ -179,29 +193,32 @@ check_env() {
 start_services() {
     echo ""
     echo -e "${BLUE}🚀 启动服务...${NC}"
+    local BACKEND_PORT
+    BACKEND_PORT=$(read_backend_port)
+    local BACKEND_URL="http://localhost:$BACKEND_PORT"
     
     # 启动前检查 .env 配置
     check_env
     
     # 杀掉占用端口的进程
-    echo "  清理端口 8000 和 3000..."
-    lsof -i :8000 | grep LISTEN | awk '{print $2}' | xargs kill -9 2>/dev/null || true
+    echo "  清理端口 $BACKEND_PORT 和 3000..."
+    lsof -i :"$BACKEND_PORT" | grep LISTEN | awk '{print $2}' | xargs kill -9 2>/dev/null || true
     lsof -i :3000 | grep LISTEN | awk '{print $2}' | xargs kill -9 2>/dev/null || true
     sleep 1
     
     # ===== 启动后端 =====
-    echo -e "  ${BLUE}🐍 启动后端 (localhost:8000)...${NC}"
+    echo -e "  ${BLUE}🐍 启动后端 ($BACKEND_URL)...${NC}"
     cd "$PROJECT_DIR/backend"
     source venv/bin/activate
     python main.py > /tmp/backend.log 2>&1 &
     BACKEND_PID=$!
     echo "     后端 PID: $BACKEND_PID"
     
-    # 等待后端真正就绪（检测端口 8000，最多等 60 秒）
+    # 等待后端真正就绪（检测目标端口，最多等 60 秒）
     echo "  ⏳ 等待后端启动..."
     # 注意: 用 || true 防止 set -e 在非零返回时直接退出脚本
     BACKEND_STATUS=0
-    wait_for_port 8000 $BACKEND_PID "后端" 60 || BACKEND_STATUS=$?
+    wait_for_port "$BACKEND_PORT" "$BACKEND_PID" "后端" 60 || BACKEND_STATUS=$?
     
     if [ $BACKEND_STATUS -eq 1 ]; then
         echo -e "  ${RED}❌ 后端启动失败！错误日志:${NC}"
@@ -220,7 +237,7 @@ start_services() {
     # ===== 启动前端 =====
     echo -e "  ${BLUE}⚛️  启动前端 (localhost:3000)...${NC}"
     cd "$PROJECT_DIR/frontend"
-    npm run dev > /tmp/frontend.log 2>&1 &
+    NEXT_PUBLIC_BACKEND_URL="$BACKEND_URL" BACKEND_URL="$BACKEND_URL" npm run dev > /tmp/frontend.log 2>&1 &
     FRONTEND_PID=$!
     echo "     前端 PID: $FRONTEND_PID"
     
@@ -248,7 +265,7 @@ start_services() {
     echo -e "==========================================${NC}"
     echo ""
     echo "  🌐 前端: http://localhost:3000"
-    echo "  🔌 后端: http://localhost:8000"
+    echo "  🔌 后端: $BACKEND_URL"
     echo "  📝 后端日志: tail -f /tmp/backend.log"
     echo "  📝 前端日志: tail -f /tmp/frontend.log"
     echo ""

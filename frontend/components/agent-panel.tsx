@@ -5,10 +5,12 @@
 
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { cn, sendNotification, requestNotificationPermission } from "@/lib/utils";
 import { agentAPI, parseReferences, API_BASE, modesAPI } from "@/lib/api";
 import type { ChatMessageRecord, ContentBlock, AgentModeInfo, ConversationRecord, AgentSelectionRef } from "@/lib/api";
+import { isJaProjectLocale } from "@/lib/project-locale";
+import { useUiLocale } from "@/lib/ui-locale";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
@@ -29,6 +31,7 @@ interface MentionItem {
 
 interface AgentPanelProps {
   projectId: string | null;
+  projectLocale?: string | null;
   allBlocks?: ContentBlock[];  // 所有内容块
   onContentUpdate?: () => void;  // 当Agent生成内容后刷新
   /** M3: 外部组件注入的消息（如 Eval 诊断→Agent 修改桥接），消费后清空 */
@@ -40,42 +43,81 @@ interface AgentPanelProps {
 }
 
 // 工具名称映射（匹配后端 AGENT_TOOLS 的 tool.name）
-const TOOL_NAMES: Record<string, string> = {
-  propose_edit: "修改建议",
-  rewrite_field: "重写内容块",
-  generate_field_content: "生成内容块",
-  query_field: "查询内容块",
-  read_field: "读取内容块",
-  update_field: "覆写内容块",
-  manage_architecture: "架构操作",
-  run_research: "深度调研",
-  manage_persona: "人物管理",
-  run_evaluation: "内容评估",
-  generate_outline: "大纲生成",
-  manage_skill: "技能管理",
-  // 旧名称兼容
-  deep_research: "深度调研",
-  generate_field: "生成内容块",
-  evaluate_content: "内容评估",
-};
+function getToolNames(locale?: string | null): Record<string, string> {
+  if (isJaProjectLocale(locale)) {
+    return {
+      propose_edit: "修正提案",
+      rewrite_field: "内容ブロックを書き直す",
+      generate_field_content: "内容ブロックを生成",
+      query_field: "内容ブロックを照会",
+      read_field: "内容ブロックを読む",
+      update_field: "内容ブロックを上書き",
+      manage_architecture: "構成操作",
+      run_research: "詳細調査",
+      manage_persona: "ペルソナ管理",
+      run_evaluation: "内容評価",
+      generate_outline: "アウトライン生成",
+      manage_skill: "スキル管理",
+      deep_research: "詳細調査",
+      generate_field: "内容ブロックを生成",
+      evaluate_content: "内容評価",
+    };
+  }
+  return {
+    propose_edit: "修改建议",
+    rewrite_field: "重写内容块",
+    generate_field_content: "生成内容块",
+    query_field: "查询内容块",
+    read_field: "读取内容块",
+    update_field: "覆写内容块",
+    manage_architecture: "架构操作",
+    run_research: "深度调研",
+    manage_persona: "人物管理",
+    run_evaluation: "内容评估",
+    generate_outline: "大纲生成",
+    manage_skill: "技能管理",
+    deep_research: "深度调研",
+    generate_field: "生成内容块",
+    evaluate_content: "内容评估",
+  };
+}
 
-const TOOL_DESCS: Record<string, string> = {
-  propose_edit: "向用户展示修改建议和diff预览",
-  rewrite_field: "重写整个内容块（全文重写/风格调整）",
-  generate_field_content: "为指定内容块生成新内容",
-  query_field: "查询内容块状态信息",
-  read_field: "读取内容块完整原始内容",
-  update_field: "直接用给定内容完整覆写内容块",
-  manage_architecture: "添加/删除/移动组和内容块",
-  run_research: "使用DeepResearch进行网络调研",
-  manage_persona: "创建、编辑、选择消费者画像",
-  run_evaluation: "对项目内容执行全面质量评估",
-  generate_outline: "基于上下文生成内容大纲",
-  manage_skill: "管理和应用可复用的AI技能",
-};
+function getToolDescs(locale?: string | null): Record<string, string> {
+  if (isJaProjectLocale(locale)) {
+    return {
+      propose_edit: "修正提案と差分プレビューを表示",
+      rewrite_field: "内容ブロック全体を書き直す",
+      generate_field_content: "指定ブロックの新規内容を生成",
+      query_field: "内容ブロックの状態を確認",
+      read_field: "内容ブロックの完全原文を読む",
+      update_field: "指定内容で完全上書きする",
+      manage_architecture: "グループや内容ブロックを追加・削除・移動",
+      run_research: "DeepResearch を使って調査する",
+      manage_persona: "ペルソナを作成・編集・選択する",
+      run_evaluation: "プロジェクト内容を総合評価する",
+      generate_outline: "コンテキストからアウトラインを生成",
+      manage_skill: "再利用可能なAIスキルを管理・適用する",
+    };
+  }
+  return {
+    propose_edit: "向用户展示修改建议和diff预览",
+    rewrite_field: "重写整个内容块（全文重写/风格调整）",
+    generate_field_content: "为指定内容块生成新内容",
+    query_field: "查询内容块状态信息",
+    read_field: "读取内容块完整原始内容",
+    update_field: "直接用给定内容完整覆写内容块",
+    manage_architecture: "添加/删除/移动组和内容块",
+    run_research: "使用DeepResearch进行网络调研",
+    manage_persona: "创建、编辑、选择消费者画像",
+    run_evaluation: "对项目内容执行全面质量评估",
+    generate_outline: "基于上下文生成内容大纲",
+    manage_skill: "管理和应用可复用的AI技能",
+  };
+}
 
 export function AgentPanel({
   projectId,
+  projectLocale,
   allBlocks = [],
   onContentUpdate,
   externalMessage,
@@ -83,6 +125,10 @@ export function AgentPanel({
   externalSelection,
   onExternalSelectionConsumed,
 }: AgentPanelProps) {
+  const uiLocale = useUiLocale(projectLocale);
+  const isJa = isJaProjectLocale(uiLocale);
+  const toolNames = useMemo(() => getToolNames(uiLocale), [uiLocale]);
+  const toolDescs = useMemo(() => getToolDescs(uiLocale), [uiLocale]);
   const [messages, setMessages] = useState<ChatMessageRecord[]>([]);
   const [conversations, setConversations] = useState<ConversationRecord[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -210,7 +256,7 @@ export function AgentPanel({
           items.push({
             id: block.id,
             name: block.name,
-            label: parentBlock?.name || "内容块",
+            label: parentBlock?.name || (isJa ? "内容ブロック" : "内容块"),
             hasContent: !!(block.content && block.content.trim()),
           });
           
@@ -222,13 +268,13 @@ export function AgentPanel({
               if (Array.isArray(proposals)) {
                 proposals.forEach((p: { id?: string | number; name?: string }, i: number) => {
                   if (p && p.name) {
-                    const pName = `方案${i + 1}:${p.name}`;
+                    const pName = isJa ? `案${i + 1}:${p.name}` : `方案${i + 1}:${p.name}`;
                     if (!seen.has(pName)) {
                       seen.add(pName);
                       items.push({
                         id: `proposal_${p.id || i}`,
                         name: pName,
-                        label: "内涵设计",
+                        label: isJa ? "内部設計" : "内涵设计",
                         hasContent: true,
                       });
                     }
@@ -344,30 +390,30 @@ export function AgentPanel({
           .filter((id: string) => { if (seen.has(id)) return false; seen.add(id); return true; })  // 去重
           .map((toolId: string) => ({
             id: toolId,
-            name: TOOL_NAMES[toolId] || toolId,
-            desc: TOOL_DESCS[toolId] || "工具",
+            name: toolNames[toolId] || toolId,
+            desc: toolDescs[toolId] || (isJa ? "ツール" : "工具"),
           }));
         setAvailableTools(tools);
       } catch (err) {
         console.error("加载工具列表失败:", err);
         setAvailableTools([
-          { id: "propose_edit", name: "修改建议", desc: "向用户展示修改建议和diff预览" },
-          { id: "rewrite_field", name: "重写内容块", desc: "重写整个内容块（全文重写/风格调整）" },
-          { id: "generate_field_content", name: "生成内容块", desc: "为指定内容块生成新内容" },
-          { id: "query_field", name: "查询内容块", desc: "查询内容块状态信息" },
-          { id: "read_field", name: "读取内容块", desc: "读取内容块完整原始内容" },
-          { id: "update_field", name: "覆写内容块", desc: "直接用给定内容完整覆写内容块" },
-          { id: "manage_architecture", name: "架构操作", desc: "添加/删除/移动组和内容块" },
-          { id: "run_research", name: "深度调研", desc: "使用DeepResearch进行网络调研" },
-          { id: "manage_persona", name: "人物管理", desc: "创建、编辑、选择消费者画像" },
-          { id: "run_evaluation", name: "内容评估", desc: "对项目内容执行全面质量评估" },
-          { id: "generate_outline", name: "大纲生成", desc: "基于上下文生成内容大纲" },
-          { id: "manage_skill", name: "技能管理", desc: "管理和应用可复用的AI技能" },
+          { id: "propose_edit", name: toolNames.propose_edit, desc: toolDescs.propose_edit },
+          { id: "rewrite_field", name: toolNames.rewrite_field, desc: toolDescs.rewrite_field },
+          { id: "generate_field_content", name: toolNames.generate_field_content, desc: toolDescs.generate_field_content },
+          { id: "query_field", name: toolNames.query_field, desc: toolDescs.query_field },
+          { id: "read_field", name: toolNames.read_field, desc: toolDescs.read_field },
+          { id: "update_field", name: toolNames.update_field, desc: toolDescs.update_field },
+          { id: "manage_architecture", name: toolNames.manage_architecture, desc: toolDescs.manage_architecture },
+          { id: "run_research", name: toolNames.run_research, desc: toolDescs.run_research },
+          { id: "manage_persona", name: toolNames.manage_persona, desc: toolDescs.manage_persona },
+          { id: "run_evaluation", name: toolNames.run_evaluation, desc: toolDescs.run_evaluation },
+          { id: "generate_outline", name: toolNames.generate_outline, desc: toolDescs.generate_outline },
+          { id: "manage_skill", name: toolNames.manage_skill, desc: toolDescs.manage_skill },
         ]);
       }
     };
     loadTools();
-  }, []);
+  }, [isJa, toolDescs, toolNames]);
 
   // 自动滚动
   useEffect(() => {
@@ -635,7 +681,21 @@ export function AgentPanel({
                 console.log("[AgentPanel] Route:", currentRoute);
                 
                 // 显示当前正在执行的操作
-                const routeStatusNames: Record<string, string> = {
+                const routeStatusNames: Record<string, string> = isJa ? {
+                  "intent": "🔍 意図を分析しています...",
+                  "research": "📊 顧客調査を進めています...",
+                  "design_inner": "✏️ 内部構成を設計しています...",
+                  "produce_inner": "📝 内部コンテンツを生成しています...",
+                  "design_outer": "🎨 外部展開案を設計しています...",
+                  "produce_outer": "🖼️ 外部展開コンテンツを生成しています...",
+                  "evaluate": "📋 評価を実行しています...",
+                  "generate_field": "⚙️ 内容ブロックを生成しています...",
+                  "rewrite": "✏️ 内容を書き直しています...",
+                  "suggest": "✏️ 修正提案を作成しています...",
+                  "generic_research": "🔍 詳細調査を進めています...",
+                  "query": "🔎 内容ブロックを確認しています...",
+                  "chat": "💬 考えています...",
+                } : {
                   "intent": "🔍 正在分析意图...",
                   "research": "📊 正在进行消费者调研...",
                   "design_inner": "✏️ 正在设计内涵方案...",
@@ -650,7 +710,7 @@ export function AgentPanel({
                   "query": "🔎 正在查询内容块...",
                   "chat": "💬 正在思考...",
                 };
-                const statusText = routeStatusNames[currentRoute] || `⏳ 正在处理 [${currentRoute}]...`;
+                const statusText = routeStatusNames[currentRoute] || (isJa ? `⏳ 処理中 [${currentRoute}]...` : `⏳ 正在处理 [${currentRoute}]...`);
                 setMessages((prev) =>
                   prev.map((m) =>
                     m.id === tempAiMsg.id ? { ...m, content: statusText } : m
@@ -658,23 +718,23 @@ export function AgentPanel({
                 );
               } else if (data.type === "tool_start") {
                 // 工具开始执行（LangGraph 新事件）
-                const toolName = TOOL_NAMES[data.tool] || data.tool;
+                const toolName = toolNames[data.tool] || data.tool;
                 console.log("[AgentPanel] Tool start:", data.tool);
                 setMessages((prev) =>
                   prev.map((m) =>
                     m.id === tempAiMsg.id
-                      ? { ...m, content: `🔧 正在使用 ${toolName}...` }
+                      ? { ...m, content: isJa ? `🔧 ${toolName} を実行しています...` : `🔧 正在使用 ${toolName}...` }
                       : m
                   )
                 );
               } else if (data.type === "tool_progress") {
                 // 工具内部 LLM 生成进度
-                const toolName = TOOL_NAMES[data.tool] || data.tool;
+                const toolName = toolNames[data.tool] || data.tool;
                 const chars = data.chars || 0;
                 setMessages((prev) =>
                   prev.map((m) =>
                     m.id === tempAiMsg.id
-                      ? { ...m, content: `🔧 ${toolName} 生成中... (${chars} 字)` }
+                      ? { ...m, content: isJa ? `🔧 ${toolName} 実行中... (${chars} 字)` : `🔧 ${toolName} 生成中... (${chars} 字)` }
                       : m
                   )
                 );
@@ -685,12 +745,12 @@ export function AgentPanel({
                   onContentUpdate();
                 }
                 // 更新 AI 气泡：显示工具完成摘要（不再停留在"正在使用XXX"）
-                const toolName = TOOL_NAMES[data.tool] || data.tool;
+                const toolName = toolNames[data.tool] || data.tool;
                 const summary = data.output ? data.output.slice(0, 200) : "";
                 setMessages((prev) =>
                   prev.map((m) =>
                     m.id === tempAiMsg.id
-                      ? { ...m, content: `✅ ${toolName} 完成。${summary ? "\n" + summary : ""}` }
+                      ? { ...m, content: isJa ? `✅ ${toolName} が完了しました。${summary ? "\n" + summary : ""}` : `✅ ${toolName} 完成。${summary ? "\n" + summary : ""}` }
                       : m
                   )
                 );
@@ -779,7 +839,7 @@ export function AgentPanel({
                     // 优先用流式累积的 fullContent；如果为空，保留气泡中已有的内容（如工具完成摘要）
                     let finalContent = fullContent || m.content || "";
                     if (isProducing && (!finalContent || finalContent.includes("已生成【】"))) {
-                      finalContent = "✅ 内容已生成，请在左侧工作台查看和编辑。";
+                      finalContent = isJa ? "✅ 内容を生成しました。左側のワークスペースで確認・編集してください。" : "✅ 内容已生成，请在左侧工作台查看和编辑。";
                     }
                     return { ...m, id: data.message_id, content: finalContent };
                   })
@@ -796,15 +856,15 @@ export function AgentPanel({
                 // M7 T7.5: 流结束后清空 followUpSourceRef（AI 回复纯文字没有新卡片时避免残留）
                 followUpSourceRef.current = null;
                 sendNotification(
-                  isProducing ? "内容生成完成" : "Agent 回复完成",
-                  isProducing ? "内容已生成完毕，点击查看" : "Agent 已完成回复，点击查看"
+                  isProducing ? (isJa ? "内容生成が完了しました" : "内容生成完成") : (isJa ? "Agent の返信が完了しました" : "Agent 回复完成"),
+                  isProducing ? (isJa ? "内容生成が完了しました。クリックして確認" : "内容已生成完毕，点击查看") : (isJa ? "Agent の返信が完了しました。クリックして確認" : "Agent 已完成回复，点击查看")
                 );
               } else if (data.type === "error") {
                 console.error("Stream error:", data.error);
                 setMessages((prev) =>
                   prev.map((m) =>
                     m.id === tempAiMsg.id
-                      ? { ...m, content: `❌ 错误: ${data.error}` }
+                      ? { ...m, content: isJa ? `❌ エラー: ${data.error}` : `❌ 错误: ${data.error}` }
                       : m
                   )
                 );
@@ -827,9 +887,9 @@ export function AgentPanel({
         setMessages((prev) =>
           prev.map((m) =>
             m.id === tempAiMsg.id && !m.content
-              ? { ...m, content: "⏹️ 已停止生成" }
-              : m.id === tempAiMsg.id && m.content === "⏳ 正在生成内容..."
-              ? { ...m, content: "⏹️ 已停止生成" }
+              ? { ...m, content: isJa ? "⏹️ 生成を停止しました" : "⏹️ 已停止生成" }
+              : m.id === tempAiMsg.id && (m.content === "⏳ 正在生成内容..." || m.content === "⏳ 内容を生成しています...")
+              ? { ...m, content: isJa ? "⏹️ 生成を停止しました" : "⏹️ 已停止生成" }
               : m
           )
         );
@@ -839,7 +899,7 @@ export function AgentPanel({
         setMessages((prev) =>
           prev.map((m) =>
             m.id === tempAiMsg.id
-              ? { ...m, content: `❌ 发送失败: ${error}` }
+              ? { ...m, content: isJa ? `❌ 送信に失敗しました: ${error}` : `❌ 发送失败: ${error}` }
               : m
           )
         );
@@ -1002,7 +1062,15 @@ export function AgentPanel({
                 }
               } else if (data.type === "route") {
                 currentRoute = data.target;
-                const routeStatusNames: Record<string, string> = {
+                const routeStatusNames: Record<string, string> = isJa ? {
+                  "intent": "🔍 意図を分析しています...",
+                  "research": "📊 顧客調査を進めています...",
+                  "generate_field": "⚙️ 内容ブロックを生成しています...",
+                  "rewrite": "✏️ 内容を書き直しています...",
+                  "suggest": "✏️ 修正提案を作成しています...",
+                  "evaluate": "📋 評価を実行しています...",
+                  "chat": "💬 考えています...",
+                } : {
                   "intent": "🔍 正在分析意图...",
                   "research": "📊 正在进行消费者调研...",
                   "generate_field": "⚙️ 正在生成内容块...",
@@ -1011,31 +1079,31 @@ export function AgentPanel({
                   "evaluate": "📋 正在执行评估...",
                   "chat": "💬 正在思考...",
                 };
-                const statusText = routeStatusNames[currentRoute] || `⏳ 正在处理...`;
+                const statusText = routeStatusNames[currentRoute] || (isJa ? "⏳ 処理中..." : "⏳ 正在处理...");
                 setMessages(prev =>
                   prev.map(m => m.id === tempAiMsg.id ? { ...m, content: statusText } : m)
                 );
               } else if (data.type === "tool_start") {
-                const toolName = TOOL_NAMES[data.tool] || data.tool;
+                const toolName = toolNames[data.tool] || data.tool;
                 setMessages(prev =>
-                  prev.map(m => m.id === tempAiMsg.id ? { ...m, content: `🔧 正在使用 ${toolName}...` } : m)
+                  prev.map(m => m.id === tempAiMsg.id ? { ...m, content: isJa ? `🔧 ${toolName} を実行しています...` : `🔧 正在使用 ${toolName}...` } : m)
                 );
               } else if (data.type === "tool_progress") {
-                const toolName = TOOL_NAMES[data.tool] || data.tool;
+                const toolName = toolNames[data.tool] || data.tool;
                 const chars = data.chars || 0;
                 setMessages(prev =>
                   prev.map(m => m.id === tempAiMsg.id
-                    ? { ...m, content: `🔧 ${toolName} 生成中... (${chars} 字)` }
+                    ? { ...m, content: isJa ? `🔧 ${toolName} 実行中... (${chars} 字)` : `🔧 ${toolName} 生成中... (${chars} 字)` }
                     : m)
                 );
               } else if (data.type === "tool_end") {
                 if (data.field_updated && onContentUpdate) {
                   onContentUpdate();
                 }
-                const tn = TOOL_NAMES[data.tool] || data.tool;
+                const tn = toolNames[data.tool] || data.tool;
                 const sm = data.output ? data.output.slice(0, 200) : "";
                 setMessages(prev =>
-                  prev.map(m => m.id === tempAiMsg.id ? { ...m, content: `✅ ${tn} 完成。${sm ? "\n" + sm : ""}` } : m)
+                  prev.map(m => m.id === tempAiMsg.id ? { ...m, content: isJa ? `✅ ${tn} が完了しました。${sm ? "\n" + sm : ""}` : `✅ ${tn} 完成。${sm ? "\n" + sm : ""}` } : m)
                 );
               } else if (data.type === "suggestion_card") {
                 console.log("[AgentPanel] Suggestion card (edit):", data.id, data.target_field, "→ msg:", tempAiMsg.id, "mode:", activeModeId);
@@ -1100,7 +1168,7 @@ export function AgentPanel({
                   prev.map(m => {
                     if (m.id !== tempAiMsg.id) return m;
                     let fc = fullContent || m.content || "";
-                    if (isProducing && !fc) fc = "✅ 内容已生成，请在左侧工作台查看和编辑。";
+                    if (isProducing && !fc) fc = isJa ? "✅ 内容を生成しました。左側のワークスペースで確認・編集してください。" : "✅ 内容已生成，请在左侧工作台查看和编辑。";
                     return { ...m, id: data.message_id, content: fc };
                   })
                 );
@@ -1134,10 +1202,10 @@ export function AgentPanel({
   const handleCopy = async (content: string) => {
     try {
       await navigator.clipboard.writeText(content);
-      setToast({ message: "已复制到剪贴板", type: "success" });
+      setToast({ message: isJa ? "クリップボードにコピーしました" : "已复制到剪贴板", type: "success" });
     } catch (err) {
       console.error("复制失败:", err);
-      setToast({ message: "复制失败", type: "error" });
+      setToast({ message: isJa ? "コピーに失敗しました" : "复制失败", type: "error" });
     }
   };
 
@@ -1235,21 +1303,21 @@ export function AgentPanel({
     // 把工具 ID 翻译为自然语言指令，通过 Agent 流式对话发送
     // 这样 Agent 有上下文、有流式进度，比直接调 /tool 好得多
     const TOOL_INSTRUCTIONS: Record<string, string> = {
-      propose_edit: "请帮我看看当前内容有什么可以改进的，用修改建议卡片展示。",
-      rewrite_field: "请帮我重写内容块。",
-      generate_field_content: "请帮我生成当前内容块的内容。",
-      query_field: "请查询当前内容块的状态。",
-      read_field: "请读取当前内容块的内容。",
-      update_field: "请帮我覆写内容块。",
-      manage_architecture: "请帮我管理项目结构。",
-      run_research: "请帮我进行深度调研。",
-      manage_persona: "请列出当前项目的消费者画像。",
-      run_evaluation: "请对当前项目内容进行全面质量评估。",
-      generate_outline: "请帮我生成内容大纲。",
-      manage_skill: "请列出可用的AI技能。",
+      propose_edit: isJa ? "現在の内容で改善できる点を、修正提案カードで示してください。" : "请帮我看看当前内容有什么可以改进的，用修改建议卡片展示。",
+      rewrite_field: isJa ? "内容ブロックを書き直してください。" : "请帮我重写内容块。",
+      generate_field_content: isJa ? "現在の内容ブロックの内容を生成してください。" : "请帮我生成当前内容块的内容。",
+      query_field: isJa ? "現在の内容ブロックの状態を確認してください。" : "请查询当前内容块的状态。",
+      read_field: isJa ? "現在の内容ブロックの内容を読んでください。" : "请读取当前内容块的内容。",
+      update_field: isJa ? "内容ブロックを上書きしてください。" : "请帮我覆写内容块。",
+      manage_architecture: isJa ? "プロジェクト構造を管理してください。" : "请帮我管理项目结构。",
+      run_research: isJa ? "詳細調査を行ってください。" : "请帮我进行深度调研。",
+      manage_persona: isJa ? "現在のプロジェクトのペルソナ一覧を見せてください。" : "请列出当前项目的消费者画像。",
+      run_evaluation: isJa ? "現在のプロジェクト内容を総合評価してください。" : "请对当前项目内容进行全面质量评估。",
+      generate_outline: isJa ? "内容アウトラインを生成してください。" : "请帮我生成内容大纲。",
+      manage_skill: isJa ? "利用可能なAIスキルを一覧表示してください。" : "请列出可用的AI技能。",
     };
 
-    const instruction = TOOL_INSTRUCTIONS[toolId] || `请执行工具：${TOOL_NAMES[toolId] || toolId}`;
+    const instruction = TOOL_INSTRUCTIONS[toolId] || (isJa ? `ツールを実行してください: ${toolNames[toolId] || toolId}` : `请执行工具：${toolNames[toolId] || toolId}`);
     // 直接调用 handleSend 并传入指令（不依赖 input state，避免异步竞态）
     await handleSend(instruction);
   };
@@ -1267,6 +1335,7 @@ export function AgentPanel({
       setSuggestions([]);
     } catch (err) {
       console.error("创建会话失败:", err);
+      setToast({ message: isJa ? "会話の作成に失敗しました" : "创建会话失败", type: "error" });
     }
   };
 
@@ -1290,6 +1359,7 @@ export function AgentPanel({
       }
     } catch (err) {
       console.error("删除会话失败:", err);
+      setToast({ message: isJa ? "会話の削除に失敗しました" : "删除会话失败", type: "error" });
     }
   };
 
@@ -1313,6 +1383,7 @@ export function AgentPanel({
       setSelectedConvIds(new Set());
     } catch (err) {
       console.error("批量删除会话失败:", err);
+      setToast({ message: isJa ? "会話の一括削除に失敗しました" : "批量删除会话失败", type: "error" });
     }
   };
 
@@ -1360,6 +1431,7 @@ export function AgentPanel({
       {showMemoryPanel && projectId && (
         <MemoryPanel
           projectId={projectId}
+          projectLocale={projectLocale}
           onClose={() => setShowMemoryPanel(false)}
         />
       )}
@@ -1368,6 +1440,7 @@ export function AgentPanel({
       {!showMemoryPanel && projectId && showModeManager && (
         <AgentModeManager
           projectId={projectId}
+          projectLocale={projectLocale}
           activeModeId={activeModeId}
           onSelectMode={handleModeSelection}
           onClose={handleModeManagerClose}
@@ -1382,21 +1455,21 @@ export function AgentPanel({
           <div>
             <h2 className="font-semibold text-zinc-100">AI Agent</h2>
             <p className="text-xs text-zinc-500">
-              {projectId ? "与 Agent 对话推进内容生产" : "请先选择项目"}
+              {projectId ? (isJa ? "Agent と対話しながらコンテンツ制作を進めます" : "与 Agent 对话推进内容生产") : (isJa ? "先にプロジェクトを選択してください" : "请先选择项目")}
             </p>
           </div>
           {projectId && (
             <div className="flex items-center gap-1">
               <button
                 onClick={() => setShowModeManager(true)}
-                title="管理角色"
+                title={isJa ? "役割を管理" : "管理角色"}
                 className="text-zinc-500 hover:text-zinc-300 p-2 rounded hover:bg-surface-2 transition"
               >
                 <Users size={16} />
               </button>
               <button
                 onClick={() => setShowMemoryPanel(true)}
-                title="查看项目记忆"
+                title={isJa ? "プロジェクト記憶を見る" : "查看项目记忆"}
                 className="text-zinc-500 hover:text-zinc-300 text-lg px-2 py-1 rounded hover:bg-surface-2 transition"
               >
                 🧠
@@ -1425,7 +1498,7 @@ export function AgentPanel({
                 </button>
               ))
             ) : (
-              <div className="px-3 py-1.5 text-sm text-zinc-500">暂无角色</div>
+              <div className="px-3 py-1.5 text-sm text-zinc-500">{isJa ? "役割がありません" : "暂无角色"}</div>
             )}
           </div>
           {/* 新建会话 + 会话历史 icon */}
@@ -1433,14 +1506,14 @@ export function AgentPanel({
             <button
               onClick={handleCreateConversation}
               disabled={!projectId || !activeModeId || sending}
-              title="新建会话"
+              title={isJa ? "新しい会話" : "新建会话"}
               className="p-1.5 rounded text-zinc-500 hover:text-zinc-300 hover:bg-surface-2 disabled:opacity-50 transition"
             >
               <Plus size={14} />
             </button>
             <button
               onClick={() => { setShowConversationList((v) => !v); setSelectedConvIds(new Set()); }}
-              title="会话历史"
+              title={isJa ? "会話履歴" : "会话历史"}
               className={cn(
                 "p-1.5 rounded transition",
                 showConversationList
@@ -1460,16 +1533,16 @@ export function AgentPanel({
           >
               {/* 列表头 */}
               <div className="flex items-center justify-between px-3 py-2 border-b border-surface-3">
-                <span className="text-xs font-medium text-zinc-400">会话历史</span>
+                <span className="text-xs font-medium text-zinc-400">{isJa ? "会話履歴" : "会话历史"}</span>
                 <div className="flex items-center gap-1">
                   {selectedConvIds.size > 0 && (
                     <button
                       onClick={handleBatchDeleteConversations}
-                      title={`删除选中的 ${selectedConvIds.size} 个会话`}
+                      title={isJa ? `選択した ${selectedConvIds.size} 件の会話を削除` : `删除选中的 ${selectedConvIds.size} 个会话`}
                       className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/20 transition"
                     >
                       <Trash2 size={11} />
-                      <span>删除({selectedConvIds.size})</span>
+                      <span>{isJa ? `削除(${selectedConvIds.size})` : `删除(${selectedConvIds.size})`}</span>
                     </button>
                   )}
                   <button
@@ -1483,7 +1556,7 @@ export function AgentPanel({
               {/* 会话列表 */}
               <div className="max-h-60 overflow-y-auto p-1.5 space-y-0.5">
                 {conversations.length === 0 ? (
-                  <div className="text-center text-zinc-500 text-xs py-4">暂无会话</div>
+                  <div className="text-center text-zinc-500 text-xs py-4">{isJa ? "会話がありません" : "暂无会话"}</div>
                 ) : (
                   conversations.map((conv) => (
                     <div
@@ -1506,11 +1579,11 @@ export function AgentPanel({
                         onClick={() => { setActiveConversationId(conv.id); setShowConversationList(false); setSelectedConvIds(new Set()); }}
                         className="flex-1 text-left truncate min-w-0"
                       >
-                        {conv.title || "新会话"}
+                        {conv.title || (isJa ? "新しい会話" : "新会话")}
                       </button>
                       <button
                         onClick={(e) => { e.stopPropagation(); handleDeleteConversation(conv.id); }}
-                        title="删除此会话"
+                        title={isJa ? "この会話を削除" : "删除此会话"}
                         className="shrink-0 p-0.5 rounded text-zinc-600 hover:text-red-400 hover:bg-red-500/10 opacity-0 group-hover:opacity-100 transition-opacity"
                       >
                         <Trash2 size={12} />
@@ -1531,25 +1604,25 @@ export function AgentPanel({
         {modesLoaded && availableModes.length === 0 ? (
           <div className="h-full flex items-center justify-center">
             <div className="w-full max-w-md rounded-xl border border-surface-3 bg-surface-2 p-5 text-center">
-              <h3 className="text-sm font-medium text-zinc-100">当前项目还没有 Agent 角色</h3>
+              <h3 className="text-sm font-medium text-zinc-100">{isJa ? "このプロジェクトにはまだ Agent 役割がありません" : "当前项目还没有 Agent 角色"}</h3>
               <p className="mt-2 text-sm text-zinc-400">
-                先为当前项目创建角色，或导入默认模板。角色会直接决定右侧 Agent 的身份与行为。
+                {isJa ? "先に役割を作成するか、既定テンプレートを取り込んでください。役割は右側 Agent の人格と振る舞いを決定します。" : "先为当前项目创建角色，或导入默认模板。角色会直接决定右侧 Agent 的身份与行为。"}
               </p>
               <div className="mt-4 flex items-center justify-center gap-2">
                 <button
                   onClick={() => setShowModeManager(true)}
                   className="rounded-lg bg-brand-600 px-4 py-2 text-sm text-white hover:bg-brand-500 transition"
                 >
-                  配置角色
+                  {isJa ? "役割を設定" : "配置角色"}
                 </button>
               </div>
             </div>
           </div>
         ) : messages.length === 0 && (
           <div className="text-center text-zinc-500 py-8">
-            <p>开始对话吧！</p>
+            <p>{isJa ? "会話を始めましょう" : "开始对话吧！"}</p>
             <p className="text-sm mt-2">
-              你可以说 &quot;开始&quot; 来启动内容生产流程
+              {isJa ? "「開始」と入力してコンテンツ制作フローを始められます" : "你可以说 \"开始\" 来启动内容生产流程"}
             </p>
           </div>
         )}
@@ -1558,6 +1631,7 @@ export function AgentPanel({
           <div key={msg.id}>
             <MessageBubble
               message={msg}
+              projectLocale={projectLocale}
               isEditing={editingMessageId === msg.id}
               editContent={editContent}
               onEditContentChange={setEditContent}
@@ -1576,6 +1650,7 @@ export function AgentPanel({
                   <SuggestionCard
                     data={card}
                     projectId={projectId || ""}
+                    projectLocale={projectLocale}
                     onStatusChange={handleSuggestionStatusChange}
                     onFollowUp={handleSuggestionFollowUp}
                     onContentUpdate={onContentUpdate}
@@ -1598,6 +1673,7 @@ export function AgentPanel({
               <SuggestionCard
                 data={card}
                 projectId={projectId || ""}
+                projectLocale={projectLocale}
                 onStatusChange={handleSuggestionStatusChange}
                 onFollowUp={handleSuggestionFollowUp}
                 onContentUpdate={onContentUpdate}
@@ -1608,7 +1684,7 @@ export function AgentPanel({
         {sending && (
           <div className="flex items-center gap-2 text-zinc-500">
             <div className="w-2 h-2 bg-brand-500 rounded-full animate-pulse" />
-            <span className="text-sm">Agent 正在思考...</span>
+            <span className="text-sm">{isJa ? "Agent が考えています..." : "Agent 正在思考..."}</span>
           </div>
         )}
 
@@ -1625,13 +1701,14 @@ export function AgentPanel({
               entityId={current.entityId}
               versionId={current.versionId}
               targetField={current.targetField}
+              projectLocale={projectLocale}
               onUndo={() => handleUndoComplete(current.suggestionId)}
               onExpire={() => setUndoQueue((prev) => prev.slice(1))}
               rollbackTargets={current.rollbackTargets}
             />
             {undoQueue.length > 1 && (
               <div className="text-xs text-zinc-500 mt-1 text-center">
-                还有 {undoQueue.length - 1} 项修改可撤回
+                {isJa ? `あと ${undoQueue.length - 1} 件の変更を元に戻せます` : `还有 ${undoQueue.length - 1} 项修改可撤回`}
               </div>
             )}
           </div>
@@ -1645,7 +1722,7 @@ export function AgentPanel({
           {showMentions && filteredMentionItems.length > 0 && (
             <div className="absolute bottom-full left-0 right-0 mb-1 bg-surface-2 border border-surface-3 rounded-lg shadow-xl max-h-48 overflow-y-auto z-10">
               <div className="p-2 text-xs text-zinc-500 border-b border-surface-3">
-                选择要引用的内容块（{filteredMentionItems.length} 个可用）
+                {isJa ? `参照する内容ブロックを選択 (${filteredMentionItems.length} 件)` : `选择要引用的内容块（${filteredMentionItems.length} 个可用）`}
               </div>
               {filteredMentionItems.map((item, idx) => (
                 <button
@@ -1667,7 +1744,7 @@ export function AgentPanel({
           {showTools && (
             <div className="absolute bottom-full left-0 right-0 mb-1 bg-surface-2 border border-surface-3 rounded-lg shadow-xl z-10">
               <div className="p-2 text-xs text-zinc-500 border-b border-surface-3">
-                选择要调用的工具
+                {isJa ? "呼び出すツールを選択" : "选择要调用的工具"}
               </div>
               {availableTools.map((tool) => (
                 <button
@@ -1685,14 +1762,14 @@ export function AgentPanel({
           {/* M7 T7.2: 追问标签条 — 与输入框视觉一体 */}
           {followUpTarget && (
             <div className="flex items-center gap-2 px-3 py-1.5 bg-surface-3 border border-surface-3 border-b-0 rounded-t-lg text-sm">
-              <span className="text-zinc-400">💬 追问：</span>
+              <span className="text-zinc-400">{isJa ? "💬 追問:" : "💬 追问："}</span>
               <span className="text-zinc-200 truncate">
                 「{followUpTarget.targetField}」{followUpTarget.summary}
               </span>
               <button
                 onClick={() => setFollowUpTarget(null)}
                 className="ml-auto text-zinc-500 hover:text-zinc-300 shrink-0 px-1"
-                title="取消追问"
+                title={isJa ? "追問を取り消す" : "取消追问"}
               >
                 ✕
               </button>
@@ -1702,7 +1779,7 @@ export function AgentPanel({
           {/* B: 选中文字引用卡片 — 与输入框视觉一体，叠加在追问标签条下方 */}
           {selectionRef && (
             <div className="flex items-center gap-2 px-3 py-1.5 bg-brand-900/30 border border-brand-700/40 border-b-0 rounded-t-lg text-sm">
-              <span className="text-brand-400 shrink-0">引用</span>
+              <span className="text-brand-400 shrink-0">{isJa ? "参照" : "引用"}</span>
               <span className="text-zinc-300 font-medium shrink-0">「{selectionRef.blockName}」</span>
               <span className="text-zinc-400 truncate">
                 {selectionRef.selectedText.length > 50
@@ -1712,7 +1789,7 @@ export function AgentPanel({
               <button
                 onClick={() => setSelectionRef(null)}
                 className="ml-auto text-zinc-500 hover:text-zinc-300 shrink-0 px-1"
-                title="移除引用"
+                title={isJa ? "参照を外す" : "移除引用"}
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -1727,10 +1804,12 @@ export function AgentPanel({
               onKeyDown={handleKeyDown}
               placeholder={
                 !projectId
-                  ? "请先选择项目"
+                  ? (isJa ? "先にプロジェクトを選択してください" : "请先选择项目")
                   : availableModes.length === 0
-                    ? "请先配置当前项目的 Agent 角色"
-                    : `输入消息... 使用 @ 引用内容块${mentionItems.length > 0 ? ` (${mentionItems.length}个可用)` : ""}`
+                    ? (isJa ? "先にこのプロジェクトの Agent 役割を設定してください" : "请先配置当前项目的 Agent 角色")
+                    : isJa
+                      ? `メッセージを入力... @ で内容ブロックを参照${mentionItems.length > 0 ? ` (${mentionItems.length}件)` : ""}`
+                      : `输入消息... 使用 @ 引用内容块${mentionItems.length > 0 ? ` (${mentionItems.length}个可用)` : ""}`
               }
               disabled={!projectId || !activeConversationId || sending || availableModes.length === 0}
               rows={2}
@@ -1744,19 +1823,19 @@ export function AgentPanel({
               <button
                 onClick={handleStopGeneration}
                 className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg transition-colors text-white flex items-center gap-1.5"
-                title="停止生成"
+                title={isJa ? "生成を停止" : "停止生成"}
               >
                 <Square className="w-4 h-4" />
-                停止
+                {isJa ? "停止" : "停止"}
               </button>
             ) : (
               <button
                 onClick={() => handleSend()}
                 disabled={!projectId || !activeConversationId || !input.trim() || availableModes.length === 0}
                 className="px-4 py-2 bg-brand-600 hover:bg-brand-700 disabled:bg-surface-3 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center gap-1.5"
-                title="发送消息 (⌘/Ctrl+Enter)"
+                title={isJa ? "メッセージを送信 (⌘/Ctrl+Enter)" : "发送消息 (⌘/Ctrl+Enter)"}
               >
-                发送
+                {isJa ? "送信" : "发送"}
                 <kbd className="text-[10px] opacity-60 font-sans">⌘↵</kbd>
               </button>
             )}
@@ -1765,15 +1844,15 @@ export function AgentPanel({
 
         {/* 快捷操作 */}
         <div className="flex gap-2 mt-2 flex-wrap items-center">
-          <QuickAction label="继续" onClick={() => setInput("继续")} disabled={!projectId || sending || availableModes.length === 0} />
-          <QuickAction label="开始调研" onClick={() => setInput("开始消费者调研")} disabled={!projectId || sending || availableModes.length === 0} />
-          <QuickAction label="评估" onClick={() => setInput("评估当前内容")} disabled={!projectId || sending || availableModes.length === 0} />
+          <QuickAction label={isJa ? "続行" : "继续"} onClick={() => setInput(isJa ? "続行" : "继续")} disabled={!projectId || sending || availableModes.length === 0} />
+          <QuickAction label={isJa ? "調査開始" : "开始调研"} onClick={() => setInput(isJa ? "顧客調査を開始してください" : "开始消费者调研")} disabled={!projectId || sending || availableModes.length === 0} />
+          <QuickAction label={isJa ? "評価" : "评估"} onClick={() => setInput(isJa ? "現在の内容を評価してください" : "评估当前内容")} disabled={!projectId || sending || availableModes.length === 0} />
           <button
             onClick={() => setShowTools(!showTools)}
             disabled={!projectId || sending || availableModes.length === 0}
             className="px-2 py-1 text-xs text-brand-400 hover:text-brand-300 hover:bg-surface-3 disabled:opacity-50 rounded transition-colors flex items-center gap-1"
           >
-            🔧 调用工具
+            {isJa ? "🔧 ツールを呼び出す" : "🔧 调用工具"}
           </button>
         </div>
       </div>
@@ -1785,6 +1864,7 @@ export function AgentPanel({
 
 interface MessageBubbleProps {
   message: ChatMessageRecord;
+  projectLocale?: string | null;
   isEditing: boolean;
   editContent: string;
   onEditContentChange: (content: string) => void;
@@ -1797,6 +1877,7 @@ interface MessageBubbleProps {
 
 function MessageBubble({
   message,
+  projectLocale,
   isEditing,
   editContent,
   onEditContentChange,
@@ -1807,6 +1888,9 @@ function MessageBubble({
   onCopy,
 }: MessageBubbleProps) {
   const isUser = message.role === "user";
+  const uiLocale = useUiLocale(projectLocale);
+  const isJa = isJaProjectLocale(uiLocale);
+  const toolNames = getToolNames(uiLocale);
 
   // 渲染用户消息（高亮 @ 引用）
   const renderUserContent = (content: string) => {
@@ -1880,7 +1964,7 @@ function MessageBubble({
         {/* B: 用户消息气泡上方的选中文字引用卡片 */}
         {isUser && message.metadata?.selection_context && (
           <div className="mb-1 px-3 py-1.5 bg-brand-900/40 border border-brand-700/30 rounded-lg text-xs text-zinc-300">
-            <span className="text-brand-400">引用</span>
+            <span className="text-brand-400">{isJa ? "参照" : "引用"}</span>
             <span className="font-medium ml-1">「{(message.metadata.selection_context as { block_name: string }).block_name}」</span>
             <span className="text-zinc-400 ml-1">
               {(() => {
@@ -1908,10 +1992,10 @@ function MessageBubble({
               />
               <div className="flex gap-2">
                 <button onClick={onSaveEdit} className="px-2 py-1 text-xs bg-brand-600 rounded">
-                  保存并重发
+                  {isJa ? "保存して再送" : "保存并重发"}
                 </button>
                 <button onClick={onCancelEdit} className="px-2 py-1 text-xs bg-surface-4 rounded">
-                  取消
+                  {isJa ? "キャンセル" : "取消"}
                 </button>
               </div>
             </div>
@@ -1921,17 +2005,17 @@ function MessageBubble({
                 {isUser ? renderUserContent(message.content) : renderAiContent(message.content)}
               </div>
               {message.is_edited && (
-                <span className="text-xs opacity-50 ml-1">(已编辑)</span>
+                <span className="text-xs opacity-50 ml-1">{isJa ? "(編集済み)" : "(已编辑)"}</span>
               )}
               {message.metadata?.tools_used && Array.isArray(message.metadata.tools_used) && message.metadata.tools_used.length > 0 && (
                 <span className="text-xs opacity-70 block mt-1">
-                  🔧 {message.metadata.tools_used.map((t: string) => TOOL_NAMES[t] || t).join(", ")}
+                  🔧 {message.metadata.tools_used.map((t: string) => toolNames[t] || t).join(", ")}
                 </span>
               )}
               {/* 旧格式兼容 */}
               {message.metadata?.tool_used && !message.metadata?.tools_used && (
                 <span className="text-xs opacity-70 block mt-1">
-                  🔧 {TOOL_NAMES[message.metadata.tool_used] || message.metadata.tool_used}
+                  🔧 {toolNames[message.metadata.tool_used] || message.metadata.tool_used}
                 </span>
               )}
             </>
@@ -1947,9 +2031,9 @@ function MessageBubble({
               isUser ? "left-0 -translate-x-full -ml-2" : "right-0 translate-x-full ml-2"
             )}
           >
-            <ActionButton icon="📋" title="复制" onClick={onCopy} />
-            {isUser && <ActionButton icon="✏️" title="编辑重发" onClick={onEdit} />}
-            {!isUser && <ActionButton icon="🔄" title="再试一次" onClick={onRetry} />}
+            <ActionButton icon="📋" title={isJa ? "コピー" : "复制"} onClick={onCopy} />
+            {isUser && <ActionButton icon="✏️" title={isJa ? "編集して再送" : "编辑重发"} onClick={onEdit} />}
+            {!isUser && <ActionButton icon="🔄" title={isJa ? "もう一度試す" : "再试一次"} onClick={onRetry} />}
           </div>
         )}
       </div>

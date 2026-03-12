@@ -79,4 +79,29 @@ describe("ContentTreeTemplateSaveModal", () => {
       });
     });
   });
+
+  it("renders japanese defaults when project locale is ja-JP", async () => {
+    render(
+      <ContentTreeTemplateSaveModal
+        open
+        projectLocale="ja-JP"
+        scope={{ type: "project", projectId: "project-1", label: "テストプロジェクト" }}
+        onClose={() => {}}
+      />,
+    );
+
+    expect(screen.getByText("内容ブロックテンプレートとして保存")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("テストプロジェクト テンプレート")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("汎用")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "テンプレートを保存" }));
+
+    await waitFor(() => {
+      expect(apiMocks.saveProjectTemplate).toHaveBeenCalledWith("project-1", {
+        name: "テストプロジェクト テンプレート",
+        description: "",
+        category: "汎用",
+      });
+    });
+  });
 });

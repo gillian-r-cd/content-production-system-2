@@ -20,6 +20,7 @@ from sqlalchemy import String, Text, Boolean, Integer, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.orm import relationship
 
+from core.localization import DEFAULT_LOCALE
 from core.models.base import BaseModel
 
 if TYPE_CHECKING:
@@ -30,6 +31,12 @@ class AgentMode(BaseModel):
     """Agent 运行模式/角色定义"""
     __tablename__ = "agent_modes"
 
+    def __init__(self, **kwargs):
+        display_name = (kwargs.get("display_name") or "").strip()
+        if not display_name:
+            kwargs["display_name"] = (kwargs.get("name") or kwargs.get("stable_key") or "Agent").strip()
+        super().__init__(**kwargs)
+
     project_id: Mapped[Optional[str]] = mapped_column(
         String(36),
         ForeignKey("projects.id"),
@@ -38,6 +45,8 @@ class AgentMode(BaseModel):
         comment="所属项目；NULL 表示系统模板",
     )
     name: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, comment="内部稳定键；用户不直接编辑")
+    stable_key: Mapped[str] = mapped_column(String(100), nullable=False, default="", comment="跨 locale 对齐的稳定业务键")
+    locale: Mapped[str] = mapped_column(String(20), nullable=False, default=DEFAULT_LOCALE, comment="角色模板的语言")
     display_name: Mapped[str] = mapped_column(String(50), nullable=False, comment="显示名，如 助手, 策略顾问, 审稿人")
     description: Mapped[str] = mapped_column(String(200), nullable=False, default="", comment="简短描述（前端 tooltip 用）")
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False, default="", comment="身份段 prompt（替换 build_system_prompt 的开头）")

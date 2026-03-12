@@ -8,9 +8,11 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { Search, Replace, X, ChevronDown, ChevronRight, CaseSensitive, ArrowRight } from "lucide-react";
 import { projectAPI } from "@/lib/api";
 import type { SearchResult } from "@/lib/api";
+import { useUiIsJa } from "@/lib/ui-locale";
 
 interface GlobalSearchModalProps {
   projectId: string;
+  projectLocale?: string | null;
   open: boolean;
   onClose: () => void;
   onNavigateToField?: (fieldId: string, fieldType: "field" | "block") => void;
@@ -19,11 +21,13 @@ interface GlobalSearchModalProps {
 
 export function GlobalSearchModal({
   projectId,
+  projectLocale,
   open,
   onClose,
   onNavigateToField,
   onContentUpdate,
 }: GlobalSearchModalProps) {
+  const isJa = useUiIsJa(projectLocale);
   const [searchQuery, setSearchQuery] = useState("");
   const [replaceText, setReplaceText] = useState("");
   const [showReplace, setShowReplace] = useState(false);
@@ -95,12 +99,12 @@ export function GlobalSearchModal({
         caseSensitive,
         targets: [{ type: result.type, id: result.id, indices: [snippetIndex] }],
       });
-      setToast({ message: `已替换 ${data.replaced_count} 处`, type: "success" });
+      setToast({ message: isJa ? `${data.replaced_count} 件を置換しました` : `已替换 ${data.replaced_count} 处`, type: "success" });
       // 重新搜索
       await doSearch(searchQuery);
       onContentUpdate?.();
     } catch (e) {
-      setToast({ message: `替换失败: ${e}`, type: "error" });
+      setToast({ message: isJa ? `置換に失敗しました: ${e}` : `替换失败: ${e}`, type: "error" });
     } finally {
       setIsReplacing(false);
     }
@@ -114,11 +118,11 @@ export function GlobalSearchModal({
         caseSensitive,
         targets: [{ type: result.type, id: result.id }],
       });
-      setToast({ message: `已替换 ${data.replaced_count} 处`, type: "success" });
+      setToast({ message: isJa ? `${data.replaced_count} 件を置換しました` : `已替换 ${data.replaced_count} 处`, type: "success" });
       await doSearch(searchQuery);
       onContentUpdate?.();
     } catch (e) {
-      setToast({ message: `替换失败: ${e}`, type: "error" });
+      setToast({ message: isJa ? `置換に失敗しました: ${e}` : `替换失败: ${e}`, type: "error" });
     } finally {
       setIsReplacing(false);
     }
@@ -127,7 +131,9 @@ export function GlobalSearchModal({
   // 全局替换所有
   const handleReplaceAll = async () => {
     if (!searchQuery.trim()) return;
-    const confirmMsg = `确定要将所有 ${totalMatches} 处「${searchQuery}」替换为「${replaceText}」吗？此操作会保存版本记录。`;
+    const confirmMsg = isJa
+      ? `「${searchQuery}」に一致する ${totalMatches} 件をすべて「${replaceText}」へ置換しますか？この操作はバージョン履歴に保存されます。`
+      : `确定要将所有 ${totalMatches} 处「${searchQuery}」替换为「${replaceText}」吗？此操作会保存版本记录。`;
     if (!confirm(confirmMsg)) return;
 
     setIsReplacing(true);
@@ -136,13 +142,15 @@ export function GlobalSearchModal({
         caseSensitive,
       });
       setToast({
-        message: `已替换 ${data.replaced_count} 处（涉及 ${data.affected_items.length} 个内容块）`,
+        message: isJa
+          ? `${data.replaced_count} 件を置換しました（${data.affected_items.length} 個の内容ブロックに影響）`
+          : `已替换 ${data.replaced_count} 处（涉及 ${data.affected_items.length} 个内容块）`,
         type: "success",
       });
       await doSearch(searchQuery);
       onContentUpdate?.();
     } catch (e) {
-      setToast({ message: `替换失败: ${e}`, type: "error" });
+      setToast({ message: isJa ? `置換に失敗しました: ${e}` : `替换失败: ${e}`, type: "error" });
     } finally {
       setIsReplacing(false);
     }
@@ -196,12 +204,12 @@ export function GlobalSearchModal({
               ref={searchInputRef}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="搜索项目中的所有内容..."
+              placeholder={isJa ? "プロジェクト内のすべての内容を検索..." : "搜索项目中的所有内容..."}
               className="flex-1 bg-transparent text-zinc-200 text-sm outline-none placeholder:text-zinc-500"
             />
             <button
               onClick={() => setCaseSensitive(!caseSensitive)}
-              title="区分大小写"
+              title={isJa ? "大文字・小文字を区別" : "区分大小写"}
               className={`p-1 rounded transition-colors ${
                 caseSensitive
                   ? "bg-brand-600 text-white"
@@ -212,7 +220,7 @@ export function GlobalSearchModal({
             </button>
             <button
               onClick={() => setShowReplace(!showReplace)}
-              title="替换"
+              title={isJa ? "置換" : "替换"}
               className={`p-1 rounded transition-colors ${
                 showReplace
                   ? "bg-brand-600 text-white"
@@ -233,7 +241,7 @@ export function GlobalSearchModal({
               <input
                 value={replaceText}
                 onChange={(e) => setReplaceText(e.target.value)}
-                placeholder="替换为..."
+                placeholder={isJa ? "置換後の文字列..." : "替换为..."}
                 className="flex-1 bg-surface-3 text-zinc-200 text-sm outline-none rounded px-2 py-1.5 placeholder:text-zinc-500"
               />
               <button
@@ -241,7 +249,7 @@ export function GlobalSearchModal({
                 disabled={isReplacing || !searchQuery.trim() || totalMatches === 0}
                 className="px-3 py-1 text-xs bg-red-600 hover:bg-red-700 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
               >
-                全部替换 ({totalMatches})
+                {isJa ? `すべて置換 (${totalMatches})` : `全部替换 (${totalMatches})`}
               </button>
             </div>
           )}
@@ -250,8 +258,8 @@ export function GlobalSearchModal({
           {searchQuery.trim() && (
             <div className="mt-2 text-xs text-zinc-500">
               {isSearching
-                ? "正在搜索..."
-                : `找到 ${totalMatches} 个匹配，分布在 ${results.length} 个内容块中`}
+                ? (isJa ? "検索中..." : "正在搜索...")
+                : (isJa ? `${totalMatches} 件の一致が見つかりました（${results.length} 個の内容ブロック）` : `找到 ${totalMatches} 个匹配，分布在 ${results.length} 个内容块中`)}
             </div>
           )}
         </div>
@@ -260,7 +268,7 @@ export function GlobalSearchModal({
         <div className="flex-1 overflow-y-auto min-h-0">
           {results.length === 0 && searchQuery.trim() && !isSearching ? (
             <div className="p-8 text-center text-zinc-500 text-sm">
-              没有找到匹配的内容
+              {isJa ? "一致する内容は見つかりませんでした" : "没有找到匹配的内容"}
             </div>
           ) : (
             results.map((result) => (
@@ -281,7 +289,7 @@ export function GlobalSearchModal({
                         ? "bg-blue-900/50 text-blue-400"
                         : "bg-purple-900/50 text-purple-400"
                     }`}>
-                      {result.type === "field" ? "内容块" : "内容块"}
+                      {isJa ? "内容ブロック" : "内容块"}
                     </span>
                     <span className="text-sm text-zinc-200 truncate font-medium">{result.name}</span>
                     {result.phase && (
@@ -289,7 +297,7 @@ export function GlobalSearchModal({
                     )}
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
-                    <span className="text-xs text-zinc-500">{result.match_count} 个匹配</span>
+                    <span className="text-xs text-zinc-500">{isJa ? `${result.match_count} 件一致` : `${result.match_count} 个匹配`}</span>
                     {showReplace && (
                       <button
                         onClick={(e) => {
@@ -298,9 +306,9 @@ export function GlobalSearchModal({
                         }}
                         disabled={isReplacing}
                         className="px-2 py-0.5 text-xs bg-orange-600/80 hover:bg-orange-600 text-white rounded disabled:opacity-50"
-                        title={`替换此内容块中的所有匹配`}
+                        title={isJa ? "この内容ブロック内の一致をすべて置換" : "替换此内容块中的所有匹配"}
                       >
-                        替换全部
+                        {isJa ? "全置換" : "替换全部"}
                       </button>
                     )}
                     <button
@@ -309,9 +317,9 @@ export function GlobalSearchModal({
                         onNavigateToField?.(result.id, result.type);
                       }}
                       className="px-2 py-0.5 text-xs bg-brand-600/80 hover:bg-brand-600 text-white rounded"
-                      title="定位到此内容块"
+                      title={isJa ? "この内容ブロックへ移動" : "定位到此内容块"}
                     >
-                      定位
+                      {isJa ? "移動" : "定位"}
                     </button>
                   </div>
                 </div>
@@ -339,9 +347,9 @@ export function GlobalSearchModal({
                             onClick={() => handleReplaceSingle(result, snippet.index)}
                             disabled={isReplacing}
                             className="px-1.5 py-0.5 text-xs text-zinc-400 hover:text-white hover:bg-orange-600 rounded opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-50 shrink-0"
-                            title="替换此处"
+                            title={isJa ? "この箇所を置換" : "替换此处"}
                           >
-                            替换
+                            {isJa ? "置換" : "替换"}
                           </button>
                         )}
                       </div>

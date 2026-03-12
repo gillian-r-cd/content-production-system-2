@@ -5,7 +5,7 @@
 
 "use client";
 
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { 
   LayoutTemplate, 
   Check, 
@@ -17,6 +17,7 @@ import {
   BarChart3,
 } from "lucide-react";
 import { PhaseTemplate, phaseTemplateAPI, blockAPI } from "@/lib/api";
+import { useUiIsJa } from "@/lib/ui-locale";
 
 interface TemplateSelectorProps {
   projectId?: string;
@@ -51,6 +52,7 @@ export default function TemplateSelector({
   onApply,
   mode = "select",
 }: TemplateSelectorProps) {
+  const isJa = useUiIsJa();
   const [templates, setTemplates] = useState<PhaseTemplate[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -59,11 +61,7 @@ export default function TemplateSelector({
   const [error, setError] = useState<string | null>(null);
 
   // 加载模板列表
-  useEffect(() => {
-    loadTemplates();
-  }, []);
-
-  const loadTemplates = async () => {
+  const loadTemplates = useCallback(async () => {
     setIsLoading(true);
     setError(null);
     try {
@@ -78,11 +76,15 @@ export default function TemplateSelector({
       }
     } catch (err) {
       console.error("加载模板失败:", err);
-      setError("加载模板失败");
+      setError(isJa ? "テンプレートの読み込みに失敗しました" : "加载模板失败");
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [isJa]);
+
+  useEffect(() => {
+    void loadTemplates();
+  }, [loadTemplates]);
 
   // 处理选择
   const handleSelect = (template: PhaseTemplate) => {
@@ -103,7 +105,7 @@ export default function TemplateSelector({
       onApply?.(template);
     } catch (err) {
       console.error("应用模板失败:", err);
-      alert("应用模板失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "テンプレート適用に失敗しました: " : "应用模板失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     } finally {
       setIsApplying(false);
     }
@@ -130,7 +132,7 @@ export default function TemplateSelector({
           onClick={loadTemplates}
           className="mt-4 px-4 py-2 bg-surface-2 rounded-lg hover:bg-surface-3 transition-colors"
         >
-          重试
+          {isJa ? "再試行" : "重试"}
         </button>
       </div>
     );
@@ -140,7 +142,7 @@ export default function TemplateSelector({
     <div className="space-y-4">
       <div className="flex items-center gap-2 text-sm text-zinc-400 mb-4">
         <LayoutTemplate className="w-4 h-4" />
-        <span>选择流程模板</span>
+        <span>{isJa ? "フローテンプレートを選択" : "选择流程模板"}</span>
       </div>
 
       {/* 模板列表 */}
@@ -187,17 +189,17 @@ export default function TemplateSelector({
                     <h3 className="font-medium text-zinc-200">{template.name}</h3>
                     {template.is_default && (
                       <span className="px-2 py-0.5 text-xs bg-brand-500/20 text-brand-400 rounded">
-                        默认
+                        {isJa ? "既定" : "默认"}
                       </span>
                     )}
                     {template.is_system && (
                       <span className="px-2 py-0.5 text-xs bg-zinc-700 text-zinc-400 rounded">
-                        系统
+                        {isJa ? "システム" : "系统"}
                       </span>
                     )}
                   </div>
                   <p className="text-sm text-zinc-500 mt-1 line-clamp-2">
-                    {template.description || "无描述"}
+                    {template.description || (isJa ? "説明なし" : "无描述")}
                   </p>
                 </div>
 
@@ -220,7 +222,7 @@ export default function TemplateSelector({
               {isExpanded && (
                 <div className="px-4 pb-4 pt-2 border-t border-surface-3">
                   <div className="text-xs text-zinc-500 mb-2">
-                    包含 {containerCount} 个容器节点 · {fieldCount} 个内容块
+                    {isJa ? `${containerCount} 個のコンテナノード・${fieldCount} 個の内容ブロックを含みます` : `包含 ${containerCount} 个容器节点 · ${fieldCount} 个内容块`}
                   </div>
                   <div className="space-y-1">
                     {template.phases.map((phase, idx) => (
@@ -237,7 +239,7 @@ export default function TemplateSelector({
                         <span className="text-sm text-zinc-300">{phase.name}</span>
                         {phase.default_fields && phase.default_fields.length > 0 && (
                           <span className="text-xs text-zinc-600 ml-auto">
-                            {phase.default_fields.length} 个内容块
+                            {isJa ? `${phase.default_fields.length} 個の内容ブロック` : `${phase.default_fields.length} 个内容块`}
                           </span>
                         )}
                       </div>
@@ -266,19 +268,19 @@ export default function TemplateSelector({
           {isApplying ? (
             <span className="flex items-center justify-center gap-2">
               <div className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full" />
-              应用中...
+              {isJa ? "適用中..." : "应用中..."}
             </span>
           ) : (
-            "应用模板"
+            (isJa ? "テンプレートを適用" : "应用模板")
           )}
         </button>
       )}
 
       {/* 说明 */}
       <p className="text-xs text-zinc-600 text-center">
-        选择模板后，将自动创建对应的流程阶段和默认字段。
+        {isJa ? "テンプレート選択後、対応するフローフェーズと既定フィールドが自動作成されます。" : "选择模板后，将自动创建对应的流程阶段和默认字段。"}
         <br />
-        你可以随时调整阶段顺序、添加或删除内容。
+        {isJa ? "フェーズ順の調整や内容の追加・削除は後からいつでも行えます。" : "你可以随时调整阶段顺序、添加或删除内容。"}
       </p>
     </div>
   );

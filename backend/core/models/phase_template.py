@@ -11,6 +11,7 @@
 from sqlalchemy import String, Text, JSON, Boolean
 from sqlalchemy.orm import Mapped, mapped_column
 
+from core.localization import DEFAULT_LOCALE
 from core.models.base import BaseModel
 from core.template_schema import instantiate_template_nodes, phase_template_to_root_nodes
 
@@ -102,6 +103,8 @@ class PhaseTemplate(BaseModel):
     __tablename__ = "phase_templates"
 
     name: Mapped[str] = mapped_column(String(200), nullable=False)
+    stable_key: Mapped[str] = mapped_column(String(100), default="", nullable=False)
+    locale: Mapped[str] = mapped_column(String(20), default=DEFAULT_LOCALE, nullable=False)
     description: Mapped[str] = mapped_column(Text, default="")
     
     # 阶段定义：包含每个阶段的配置

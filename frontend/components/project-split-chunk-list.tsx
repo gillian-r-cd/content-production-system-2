@@ -7,6 +7,7 @@
 
 import { useState } from "react";
 import type { ProjectStructureChunk, ProjectStructureDraftPayload } from "@/lib/api";
+import { useUiIsJa } from "@/lib/ui-locale";
 import {
   mergePayloadChunks,
   normalizeChunkOrder,
@@ -17,10 +18,12 @@ import {
 
 interface ProjectSplitChunkListProps {
   payload: ProjectStructureDraftPayload;
+  projectLocale?: string | null;
   onChange: (payload: ProjectStructureDraftPayload) => void;
 }
 
-export function ProjectSplitChunkList({ payload, onChange }: ProjectSplitChunkListProps) {
+export function ProjectSplitChunkList({ payload, projectLocale, onChange }: ProjectSplitChunkListProps) {
+  const isJa = useUiIsJa(projectLocale);
   const chunks = payload.chunks || [];
   const [resplitChunkId, setResplitChunkId] = useState<string | null>(null);
   const [resplitMode, setResplitMode] = useState<ChunkResplitMode>("paragraph");
@@ -78,7 +81,7 @@ export function ProjectSplitChunkList({ payload, onChange }: ProjectSplitChunkLi
         ...normalizeChunkOrder(chunks),
         {
           chunk_id: crypto.randomUUID(),
-          title: `内容片段 ${String(chunks.length + 1).padStart(2, "0")}`,
+          title: isJa ? `内容チャンク ${String(chunks.length + 1).padStart(2, "0")}` : `内容片段 ${String(chunks.length + 1).padStart(2, "0")}`,
           content: "",
           order_index: chunks.length,
         },
@@ -89,19 +92,19 @@ export function ProjectSplitChunkList({ payload, onChange }: ProjectSplitChunkLi
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-medium text-zinc-200">拆分结果</h3>
+        <h3 className="text-sm font-medium text-zinc-200">{isJa ? "分割結果" : "拆分结果"}</h3>
         <button
           type="button"
           onClick={addChunk}
           className="rounded-lg bg-surface-3 px-3 py-1.5 text-xs text-zinc-200 hover:bg-surface-4"
         >
-          + 手动补一个 chunk
+          {isJa ? "+ chunk を手動追加" : "+ 手动补一个 chunk"}
         </button>
       </div>
 
       {!chunks.length ? (
         <div className="rounded-xl border border-dashed border-surface-3 px-4 py-8 text-center text-sm text-zinc-500">
-          还没有 chunk，先执行一次拆分，或手动补一个 chunk。
+          {isJa ? "chunk はまだありません。先に一度分割するか、手動で chunk を追加してください。" : "还没有 chunk，先执行一次拆分，或手动补一个 chunk。"}
         </div>
       ) : (
         <div className="space-y-3">
@@ -112,7 +115,7 @@ export function ProjectSplitChunkList({ payload, onChange }: ProjectSplitChunkLi
                 <input
                   value={chunk.title}
                   onChange={(e) => patchChunk(chunk.chunk_id, { title: e.target.value })}
-                  placeholder="chunk 标题"
+                  placeholder={isJa ? "chunk タイトル" : "chunk 标题"}
                   className="flex-1 rounded-lg border border-surface-3 bg-surface-2 px-3 py-2 text-sm text-zinc-200"
                 />
                 <button
@@ -134,7 +137,7 @@ export function ProjectSplitChunkList({ payload, onChange }: ProjectSplitChunkLi
                   onClick={() => removeChunk(chunk.chunk_id)}
                   className="rounded bg-red-600/20 px-2 py-1 text-xs text-red-400"
                 >
-                  删除
+                  {isJa ? "削除" : "删除"}
                 </button>
               </div>
 
@@ -145,7 +148,7 @@ export function ProjectSplitChunkList({ payload, onChange }: ProjectSplitChunkLi
                   disabled={index === 0}
                   className="rounded bg-surface-3 px-2 py-1 text-xs text-zinc-300 disabled:opacity-50"
                 >
-                  与上合并
+                  {isJa ? "上と結合" : "与上合并"}
                 </button>
                 <button
                   type="button"
@@ -153,7 +156,7 @@ export function ProjectSplitChunkList({ payload, onChange }: ProjectSplitChunkLi
                   disabled={index === chunks.length - 1}
                   className="rounded bg-surface-3 px-2 py-1 text-xs text-zinc-300 disabled:opacity-50"
                 >
-                  与下合并
+                  {isJa ? "下と結合" : "与下合并"}
                 </button>
                 <button
                   type="button"
@@ -165,7 +168,7 @@ export function ProjectSplitChunkList({ payload, onChange }: ProjectSplitChunkLi
                   }}
                   className="rounded bg-surface-3 px-2 py-1 text-xs text-zinc-300"
                 >
-                  再拆
+                  {isJa ? "再分割" : "再拆"}
                 </button>
               </div>
 
@@ -173,7 +176,7 @@ export function ProjectSplitChunkList({ payload, onChange }: ProjectSplitChunkLi
                 value={chunk.content}
                 onChange={(e) => patchChunk(chunk.chunk_id, { content: e.target.value })}
                 rows={6}
-                placeholder="chunk 正文"
+                placeholder={isJa ? "chunk 本文" : "chunk 正文"}
                 className="w-full rounded-lg border border-surface-3 bg-surface-2 px-3 py-2 text-sm text-zinc-200"
               />
 
@@ -188,8 +191,8 @@ export function ProjectSplitChunkList({ payload, onChange }: ProjectSplitChunkLi
                       }}
                       className="rounded-lg border border-surface-3 bg-surface-2 px-3 py-2 text-sm text-zinc-200"
                     >
-                      <option value="paragraph">按段落空行再拆</option>
-                      <option value="separator">按自定义分隔符再拆</option>
+                      <option value="paragraph">{isJa ? "段落の空行で再分割" : "按段落空行再拆"}</option>
+                      <option value="separator">{isJa ? "カスタム区切り文字で再分割" : "按自定义分隔符再拆"}</option>
                     </select>
                     {resplitMode === "separator" && (
                       <input
@@ -198,7 +201,7 @@ export function ProjectSplitChunkList({ payload, onChange }: ProjectSplitChunkLi
                           setCustomSeparator(e.target.value);
                           setResplitError(null);
                         }}
-                        placeholder="输入分隔符，如 ###"
+                        placeholder={isJa ? "区切り文字を入力。例: ###" : "输入分隔符，如 ###"}
                         className="flex-1 rounded-lg border border-surface-3 bg-surface-2 px-3 py-2 text-sm text-zinc-200"
                       />
                     )}
@@ -207,7 +210,7 @@ export function ProjectSplitChunkList({ payload, onChange }: ProjectSplitChunkLi
                       onClick={() => applyResplit(chunk)}
                       className="rounded-lg bg-brand-600 px-3 py-2 text-sm text-white hover:bg-brand-700"
                     >
-                      执行再拆
+                      {isJa ? "再分割を実行" : "执行再拆"}
                     </button>
                   </div>
                   {resplitError && (

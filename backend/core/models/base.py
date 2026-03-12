@@ -9,8 +9,8 @@
 """
 
 import uuid
-from datetime import datetime
-from sqlalchemy import String, DateTime, func
+from datetime import UTC, datetime
+from sqlalchemy import String, DateTime
 from sqlalchemy.orm import Mapped, mapped_column
 
 from core.database import Base
@@ -19,6 +19,11 @@ from core.database import Base
 def generate_uuid() -> str:
     """生成UUID字符串"""
     return str(uuid.uuid4())
+
+
+def utcnow_naive() -> datetime:
+    """返回不带时区的 UTC 当前时间，兼容现有 SQLite DateTime 列。"""
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class BaseModel(Base):
@@ -35,13 +40,13 @@ class BaseModel(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
-        default=func.now(),
+        default=utcnow_naive,
         nullable=False,
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
-        default=func.now(),
-        onupdate=func.now(),
+        default=utcnow_naive,
+        onupdate=utcnow_naive,
         nullable=False,
     )
 

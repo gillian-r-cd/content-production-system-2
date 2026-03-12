@@ -15,6 +15,7 @@ from typing import Optional, List
 from sqlalchemy import String, Text, JSON, Integer
 from sqlalchemy.orm import Mapped, mapped_column
 
+from core.localization import DEFAULT_LOCALE
 from core.models.base import BaseModel
 from core.template_schema import normalize_field_template_payload
 
@@ -99,6 +100,8 @@ class FieldTemplate(BaseModel):
     __tablename__ = "field_templates"
 
     name: Mapped[str] = mapped_column(String(100), nullable=False)
+    stable_key: Mapped[str] = mapped_column(String(100), default="", nullable=False)
+    locale: Mapped[str] = mapped_column(String(20), default=DEFAULT_LOCALE, nullable=False)
     description: Mapped[str] = mapped_column(Text, default="")
     category: Mapped[str] = mapped_column(String(50), default="通用")
     schema_version: Mapped[int] = mapped_column(Integer, default=1)

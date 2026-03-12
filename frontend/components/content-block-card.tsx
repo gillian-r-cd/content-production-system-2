@@ -13,6 +13,7 @@ import { blockAPI, runAutoTriggerChain, modelsAPI } from "@/lib/api";
 import { useBlockGeneration } from "@/lib/hooks/useBlockGeneration";
 import type { ContentBlock, ModelInfo } from "@/lib/api";
 import type { PreQuestion } from "@/lib/preQuestions";
+import { useUiIsJa } from "@/lib/ui-locale";
 import {
   countAnsweredPreQuestions,
   countAnsweredRequiredPreQuestions,
@@ -50,19 +51,29 @@ import {
 interface ContentBlockCardProps {
   block: ContentBlock;
   projectId: string;
+  projectLocale?: string | null;
   allBlocks?: ContentBlock[];  // 用于依赖选择
   onUpdate?: () => void;
   onSelect?: () => void;  // 点击选中此块（用于进入子组/分组）
 }
 
+function getBlockStatusLabel(status: string, isJa: boolean) {
+  if (status === "completed") return isJa ? "完了" : "已完成";
+  if (status === "in_progress") return isJa ? "生成中" : "生成中";
+  if (status === "failed") return isJa ? "失敗" : "失败";
+  return isJa ? "待機中" : "待处理";
+}
+
 export function ContentBlockCard({ 
   block, 
   projectId, 
+  projectLocale,
   allBlocks = [], 
   onUpdate,
   onSelect 
 }: ContentBlockCardProps) {
   // P0-1: 统一使用 blockAPI（已移除 fieldAPI/isVirtual 分支）
+  const isJa = useUiIsJa(projectLocale);
   
   const [isExpanded, setIsExpanded] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -133,7 +144,7 @@ export function ContentBlockCard({
     isGenerating, generatingContent, canGenerate, unmetDependencies,
     handleGenerate: _handleGenerate, handleStop: _handleStop,
   } = useBlockGeneration({
-    block, projectId, allBlocks,
+    block, projectId, projectLocale, allBlocks,
     preQuestions,
     preAnswers, hasPreQuestions,
     onUpdate,
@@ -190,7 +201,7 @@ export function ContentBlockCard({
       }
     } catch (err) {
       console.error("保存答案失败:", err);
-      alert("保存失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "保存に失敗しました: " : "保存失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     } finally {
       setIsSavingPreAnswers(false);
     }
@@ -268,10 +279,10 @@ export function ContentBlockCard({
       setModelOverride(modelId);
       setShowModelSelector(false);
       onUpdate?.();
-      sendNotification(modelId ? `已设置模型: ${modelId}` : "已恢复为默认模型", "success");
+      sendNotification(modelId ? (isJa ? `モデルを設定しました: ${modelId}` : `已设置模型: ${modelId}`) : (isJa ? "既定モデルに戻しました" : "已恢复为默认模型"), "success");
     } catch (err: unknown) {
       console.error("保存模型覆盖失败:", err);
-      sendNotification("保存模型失败: " + (err instanceof Error ? err.message : "未知错误"), "error");
+      sendNotification((isJa ? "モデルの保存に失敗しました: " : "保存模型失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")), "error");
     }
   };
 
@@ -294,7 +305,7 @@ export function ContentBlockCard({
         onUpdate?.();
       } catch (err) {
         console.error("更新名称失败:", err);
-        alert("更新名称失败: " + (err instanceof Error ? err.message : "未知错误"));
+        alert((isJa ? "名前の更新に失敗しました: " : "更新名称失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
         setEditedName(block.name);
       }
     }
@@ -309,7 +320,7 @@ export function ContentBlockCard({
       onUpdate?.();
     } catch (err) {
       console.error("保存失败:", err);
-      alert("保存失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "保存に失敗しました: " : "保存失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     }
   };
 
@@ -324,7 +335,7 @@ export function ContentBlockCard({
       onUpdate?.();
     } catch (err) {
       console.error("保存提示词失败:", err);
-      alert("保存提示词失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "プロンプトの保存に失敗しました: " : "保存提示词失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     }
   };
 
@@ -341,7 +352,7 @@ export function ContentBlockCard({
       setEditedPrompt(result.prompt);
       setAiPromptPurpose("");
     } catch (e: unknown) {
-      alert("生成提示词失败: " + (e instanceof Error ? e.message : "未知错误"));
+      alert((isJa ? "プロンプト生成に失敗しました: " : "生成提示词失败: ") + (e instanceof Error ? e.message : (isJa ? "不明なエラー" : "未知错误")));
     } finally {
       setGeneratingPrompt(false);
     }
@@ -355,7 +366,7 @@ export function ContentBlockCard({
       onUpdate?.();
     } catch (err) {
       console.error("保存依赖失败:", err);
-      alert("保存依赖失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "依存関係の保存に失敗しました: " : "保存依赖失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     }
   };
 
@@ -373,13 +384,13 @@ export function ContentBlockCard({
   // 删除内容块
   const handleDelete = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!confirm(`确定要删除「${block.name}」吗？此操作不可撤销。`)) return;
+    if (!confirm(isJa ? `「${block.name}」を削除しますか？この操作は元に戻せません。` : `确定要删除「${block.name}」吗？此操作不可撤销。`)) return;
     try {
       await blockAPI.delete(block.id);
       onUpdate?.();
     } catch (err) {
       console.error("删除失败:", err);
-      alert("删除失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "削除に失敗しました: " : "删除失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     }
   };
 
@@ -435,13 +446,13 @@ export function ContentBlockCard({
               
               {/* 类型标签 */}
               <span className="px-2 py-0.5 text-xs rounded flex-shrink-0 bg-amber-600/20 text-amber-400">
-                子组
+                {isJa ? "子グループ" : "子组"}
               </span>
               
               {/* 子节点数量 */}
               {childCount > 0 && (
                 <span className="text-xs text-zinc-500">
-                  包含 {childCount} 项
+                  {isJa ? `${childCount} 件を含む` : `包含 ${childCount} 项`}
                 </span>
               )}
               
@@ -452,9 +463,7 @@ export function ContentBlockCard({
                 block.status === "failed" ? "bg-red-600/20 text-red-400" :
                 "bg-zinc-700 text-zinc-400"
               }`}>
-                {block.status === "completed" ? "已完成" :
-                 block.status === "in_progress" ? "生成中" :
-                 block.status === "failed" ? "失败" : "待处理"}
+                {getBlockStatusLabel(block.status, isJa)}
               </span>
             </div>
             
@@ -466,12 +475,12 @@ export function ContentBlockCard({
                   handleDelete(e);
                 }}
                 className="p-1.5 text-zinc-500 hover:text-red-400 hover:bg-red-600/10 rounded transition-colors"
-                title="删除"
+                title={isJa ? "削除" : "删除"}
               >
                 <Trash2 className="w-4 h-4" />
               </button>
               <span className="text-zinc-500 text-sm flex items-center gap-1">
-                点击进入
+                {isJa ? "クリックして開く" : "点击进入"}
                 <ChevronRight className="w-4 h-4" />
               </span>
             </div>
@@ -498,14 +507,14 @@ export function ContentBlockCard({
   
   if (isSpecialField) {
     const specialLabels: Record<string, { icon: string; title: string; desc: string }> = {
-      "intent_analysis": { icon: "💬", title: "意图分析", desc: "由 Agent 通过对话完成，请点击进入内容块查看" },
-      "intent": { icon: "💬", title: "意图分析", desc: "由 Agent 通过对话完成，请点击进入内容块查看" },
-      "consumer_research": { icon: "🔍", title: "消费者调研", desc: "包含 DeepResearch 调研结果和消费者画像" },
-      "research": { icon: "🔍", title: "消费者调研", desc: "包含 DeepResearch 调研结果和消费者画像" },
-      "consumer_simulation": { icon: "🎭", title: "消费者模拟", desc: "模拟消费者体验和反馈" },
-      "simulate": { icon: "🎭", title: "消费者模拟", desc: "模拟消费者体验和反馈" },
+      "intent_analysis": { icon: "💬", title: isJa ? "意図分析" : "意图分析", desc: isJa ? "Agent との対話で完了します。クリックして内容ブロックを開いてください" : "由 Agent 通过对话完成，请点击进入内容块查看" },
+      "intent": { icon: "💬", title: isJa ? "意図分析" : "意图分析", desc: isJa ? "Agent との対話で完了します。クリックして内容ブロックを開いてください" : "由 Agent 通过对话完成，请点击进入内容块查看" },
+      "consumer_research": { icon: "🔍", title: isJa ? "顧客調査" : "消费者调研", desc: isJa ? "DeepResearch の結果と顧客ペルソナを含みます" : "包含 DeepResearch 调研结果和消费者画像" },
+      "research": { icon: "🔍", title: isJa ? "顧客調査" : "消费者调研", desc: isJa ? "DeepResearch の結果と顧客ペルソナを含みます" : "包含 DeepResearch 调研结果和消费者画像" },
+      "consumer_simulation": { icon: "🎭", title: isJa ? "顧客シミュレーション" : "消费者模拟", desc: isJa ? "顧客体験とフィードバックをシミュレートします" : "模拟消费者体验和反馈" },
+      "simulate": { icon: "🎭", title: isJa ? "顧客シミュレーション" : "消费者模拟", desc: isJa ? "顧客体験とフィードバックをシミュレートします" : "模拟消费者体验和反馈" },
     };
-    const info = specialLabels[specialHandler] || { icon: "⚡", title: specialHandler, desc: "特殊处理内容块" };
+    const info = specialLabels[specialHandler] || { icon: "⚡", title: specialHandler, desc: isJa ? "特殊処理用の内容ブロック" : "特殊处理内容块" };
     
     return (
       <div className="bg-surface-2 border border-surface-3 rounded-lg overflow-hidden">
@@ -527,13 +536,11 @@ export function ContentBlockCard({
                 block.status === "failed" ? "bg-red-600/20 text-red-400" :
                 "bg-zinc-700 text-zinc-400"
               }`}>
-                {block.status === "completed" ? "已完成" :
-                 block.status === "in_progress" ? "生成中" :
-                 block.status === "failed" ? "失败" : "待处理"}
+                {getBlockStatusLabel(block.status, isJa)}
               </span>
             </div>
             <span className="text-zinc-500 text-sm flex items-center gap-1 flex-shrink-0">
-              点击进入
+              {isJa ? "クリックして開く" : "点击进入"}
               <ChevronRight className="w-4 h-4" />
             </span>
           </div>
@@ -542,7 +549,7 @@ export function ContentBlockCard({
           </div>
           {block.content && (
             <div className="mt-1 text-xs text-emerald-500 pl-8">
-              ✓ 已有内容
+              {isJa ? "✓ 内容あり" : "✓ 已有内容"}
             </div>
           )}
         </div>
@@ -600,7 +607,7 @@ export function ContentBlockCard({
                   e.stopPropagation();
                   setIsEditingName(true);
                 }}
-                title="点击编辑名称"
+                title={isJa ? "クリックして名前を編集" : "点击编辑名称"}
               >
                 {block.name}
               </span>
@@ -613,9 +620,7 @@ export function ContentBlockCard({
                 block.status === "failed" ? "bg-red-600/20 text-red-400" :
                 "bg-zinc-700 text-zinc-400"
               }`}>
-                {block.status === "completed" ? "已完成" :
-                 block.status === "in_progress" ? "生成中" :
-                 block.status === "failed" ? "失败" : "待处理"}
+                {getBlockStatusLabel(block.status, isJa)}
               </span>
           </div>
           
@@ -632,7 +637,7 @@ export function ContentBlockCard({
                   ? "text-brand-400 hover:bg-brand-600/20" 
                   : "text-red-400 hover:bg-red-600/20"
               }`}
-              title={savedPrompt ? "查看/编辑提示词" : "未配置提示词"}
+              title={savedPrompt ? (isJa ? "プロンプトを表示 / 編集" : "查看/编辑提示词") : (isJa ? "プロンプト未設定" : "未配置提示词")}
             >
               <MessageSquarePlus className="w-4 h-4" />
             </button>
@@ -649,8 +654,8 @@ export function ContentBlockCard({
                   : "text-zinc-500 hover:bg-surface-3"
               }`}
               title={dependencyBlocks.length > 0 
-                ? `依赖: ${dependencyBlocks.map(d => d.name).join(", ")}` 
-                : "无依赖（点击配置）"}
+                ? `${isJa ? "依存" : "依赖"}: ${dependencyBlocks.map(d => d.name).join(", ")}` 
+                : (isJa ? "依存なし（クリックして設定）" : "无依赖（点击配置）")}
             >
               <Workflow className="w-4 h-4" />
             </button>
@@ -666,7 +671,7 @@ export function ContentBlockCard({
                   ? "text-amber-400 hover:bg-amber-600/20" 
                   : "text-emerald-400 hover:bg-emerald-600/20"
               }`}
-              title={block.need_review ? "需要人工确认（点击切换）" : "无需确认（点击切换）"}
+              title={block.need_review ? (isJa ? "手動確認が必要（クリックで切替）" : "需要人工确认（点击切换）") : (isJa ? "確認不要（クリックで切替）" : "无需确认（点击切换）")}
             >
               {block.need_review ? <ShieldCheck className="w-4 h-4" /> : <Zap className="w-4 h-4" />}
             </button>
@@ -683,7 +688,7 @@ export function ContentBlockCard({
                     ? "text-blue-400 hover:bg-blue-600/20"
                     : "text-zinc-500 hover:bg-surface-3"
                 }`}
-                title={block.auto_generate ? "自动生成（依赖就绪时自动触发，点击切换）" : "手动触发（点击切换为自动生成）"}
+                title={block.auto_generate ? (isJa ? "自動生成（依存準備完了で自動実行、クリックで切替）" : "自动生成（依赖就绪时自动触发，点击切换）") : (isJa ? "手動実行（クリックで自動生成へ切替）" : "手动触发（点击切换为自动生成）")}
               >
                 <Sparkles className="w-4 h-4" />
               </button>
@@ -702,7 +707,7 @@ export function ContentBlockCard({
                     ? "text-purple-400 hover:bg-purple-600/20"
                     : "text-zinc-500 hover:bg-surface-3"
                 }`}
-                title={modelOverride ? `模型: ${modelOverride}` : "使用默认模型（点击切换）"}
+                title={modelOverride ? `${isJa ? "モデル" : "模型"}: ${modelOverride}` : (isJa ? "既定モデルを使用（クリックで切替）" : "使用默认模型（点击切换）")}
               >
                 <Cpu className="w-4 h-4" />
               </button>
@@ -722,8 +727,8 @@ export function ContentBlockCard({
                 }`}
                 title={
                   !canGenerate
-                    ? `依赖内容为空: ${unmetDependencies.map(d => d.name).join(", ")}`
-                    : block.status === "completed" ? "重新生成" : "生成内容"
+                    ? `${isJa ? "依存内容が空です" : "依赖内容为空"}: ${unmetDependencies.map(d => d.name).join(", ")}`
+                    : block.status === "completed" ? (isJa ? "再生成" : "重新生成") : (isJa ? "内容を生成" : "生成内容")
                 }
               >
                 {block.status === "completed" ? <RefreshCw className="w-4 h-4" /> : <Play className="w-4 h-4" />}
@@ -734,10 +739,10 @@ export function ContentBlockCard({
               <button
                 onClick={handleStopGeneration}
                 className="flex items-center gap-1 px-2 py-1 text-xs bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/30 rounded transition-colors"
-                title="停止生成"
+                title={isJa ? "生成を停止" : "停止生成"}
               >
                 <Square className="w-3 h-3" />
-                停止
+                {isJa ? "停止" : "停止"}
               </button>
             )}
 
@@ -746,6 +751,7 @@ export function ContentBlockCard({
               <VersionHistoryButton
                 entityId={block.id}
                 entityName={block.name}
+                projectLocale={projectLocale}
                 onRollback={() => onUpdate?.()}
               />
             )}
@@ -754,7 +760,7 @@ export function ContentBlockCard({
             <button
               onClick={handleDelete}
               className="p-1.5 text-zinc-500 hover:text-red-400 hover:bg-red-600/10 rounded transition-colors"
-              title="删除"
+              title={isJa ? "削除" : "删除"}
             >
               <Trash2 className="w-4 h-4" />
             </button>
@@ -773,16 +779,16 @@ export function ContentBlockCard({
           {/* 依赖数量 */}
           {dependencyBlocks.length > 0 && (
             <span className="flex items-center gap-1">
-              <Workflow className="w-3 h-3 inline" /> 依赖 {dependencyBlocks.length} 项
+              <Workflow className="w-3 h-3 inline" /> {isJa ? `依存 ${dependencyBlocks.length} 件` : `依赖 ${dependencyBlocks.length} 项`}
               {dependencyBlocks.some(d => d.status !== "completed") && (
-                <span className="text-red-400">（未完成）</span>
+                <span className="text-red-400">{isJa ? "（未完了）" : "（未完成）"}</span>
               )}
             </span>
           )}
           
           {/* 需要审核 */}
           {block.need_review && (
-            <span className="text-amber-400 flex items-center gap-1"><ShieldCheck className="w-3 h-3" /> 需确认</span>
+            <span className="text-amber-400 flex items-center gap-1"><ShieldCheck className="w-3 h-3" /> {isJa ? "確認必要" : "需确认"}</span>
           )}
         </div>
       </div>
@@ -796,19 +802,21 @@ export function ContentBlockCard({
               <div className="flex items-center justify-between mb-3">
                 <span className="text-amber-400 text-sm font-medium">
                   {hasPreQuestions
-                    ? `生成前提问（必答 ${answeredRequiredPreQuestionCount}/${requiredPreQuestionCount}，全部已答 ${answeredPreQuestionCount}/${preQuestions.length}）`
-                    : "生成前提问"}
+                    ? (isJa
+                      ? `生成前ヒアリング（必須 ${answeredRequiredPreQuestionCount}/${requiredPreQuestionCount}、全回答 ${answeredPreQuestionCount}/${preQuestions.length}）`
+                      : `生成前提问（必答 ${answeredRequiredPreQuestionCount}/${requiredPreQuestionCount}，全部已答 ${answeredPreQuestionCount}/${preQuestions.length}）`)
+                    : (isJa ? "生成前ヒアリング" : "生成前提问")}
                 </span>
                 <div className="flex items-center gap-2">
                   {preAnswersSaved && (
-                    <span className="text-xs text-green-400">✓ 已保存</span>
+                    <span className="text-xs text-green-400">{isJa ? "✓ 保存済み" : "✓ 已保存"}</span>
                   )}
                   <button
                     onClick={handleSavePreAnswers}
                     disabled={isSavingPreAnswers}
                     className="px-3 py-1 text-xs bg-amber-600 hover:bg-amber-700 disabled:bg-amber-800 text-white rounded transition-colors"
                   >
-                    {isSavingPreAnswers ? "保存中..." : "保存回答"}
+                    {isSavingPreAnswers ? (isJa ? "保存中..." : "保存中...") : (isJa ? "回答を保存" : "保存回答")}
                   </button>
                 </div>
               </div>
@@ -829,7 +837,7 @@ export function ContentBlockCard({
                             )));
                             setPreAnswersSaved(false);
                           }}
-                          placeholder={`${idx + 1}. 输入问题`}
+                          placeholder={isJa ? `${idx + 1}. 質問を入力` : `${idx + 1}. 输入问题`}
                           className="flex-1 rounded border border-surface-3 bg-surface-2 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-amber-500/50"
                         />
                         <label className="flex items-center gap-1.5 text-xs text-zinc-400">
@@ -845,13 +853,13 @@ export function ContentBlockCard({
                               setPreAnswersSaved(false);
                             }}
                           />
-                          必答
+                          {isJa ? "必須" : "必答"}
                         </label>
                         <button
                           onClick={() => handleRemovePreQuestion(question.id)}
                           className="px-2 py-0.5 text-xs bg-red-600/20 text-red-300 rounded hover:bg-red-600/30"
                         >
-                          删除
+                          {isJa ? "削除" : "删除"}
                         </button>
                       </div>
                       <input
@@ -863,13 +871,13 @@ export function ContentBlockCard({
                           setPreAnswersSaved(false);
                         }}
                         className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-                        placeholder={question.required ? "请输入必答问题的回答..." : "选答：可留空"}
+                        placeholder={question.required ? (isJa ? "必須質問への回答を入力してください..." : "请输入必答问题的回答...") : (isJa ? "任意回答: 空欄可" : "选答：可留空")}
                       />
                     </div>
                   ))
                 ) : (
                   <div className="rounded-lg border border-dashed border-amber-500/30 bg-surface-1/60 px-4 py-3 text-sm text-zinc-500">
-                    还没有生成前提问。你可以先添加问题，再保存回答，生成时这些问答会进入上下文。
+                    {isJa ? "生成前ヒアリングはまだありません。先に質問を追加し、回答を保存すると、生成時にそれらが文脈へ入ります。" : "还没有生成前提问。你可以先添加问题，再保存回答，生成时这些问答会进入上下文。"}
                   </div>
                 )}
               </div>
@@ -885,25 +893,25 @@ export function ContentBlockCard({
                     }
                   }}
                   className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-                  placeholder="新增生成前提问..."
+                  placeholder={isJa ? "生成前ヒアリングを追加..." : "新增生成前提问..."}
                 />
                 <button
                   onClick={() => handleAddPreQuestion(false)}
                   className="px-3 py-2 text-xs bg-surface-3 text-zinc-200 rounded hover:bg-surface-4"
                 >
-                  添加选答题
+                  {isJa ? "任意質問を追加" : "添加选答题"}
                 </button>
                 <button
                   onClick={() => handleAddPreQuestion(true)}
                   className="px-3 py-2 text-xs bg-amber-600/80 text-white rounded hover:bg-amber-600"
                 >
-                  添加必答题
+                  {isJa ? "必須質問を追加" : "添加必答题"}
                 </button>
               </div>
               <p className="mt-3 text-xs text-zinc-500">
                 {missingRequiredPreQuestionCount > 0
-                  ? `还有 ${missingRequiredPreQuestionCount} 个必答问题未回答；必答题会阻止“全部开始”和手动生成。`
-                  : "填写完毕后请点击「保存回答」按钮，答案会作为生成内容的上下文传递给 AI；选答题可留空。"}
+                  ? (isJa ? `必須質問があと ${missingRequiredPreQuestionCount} 件未回答です。必須質問が残っていると「すべて開始」と手動生成を実行できません。` : `还有 ${missingRequiredPreQuestionCount} 个必答问题未回答；必答题会阻止“全部开始”和手动生成。`)
+                  : (isJa ? "入力後は「回答を保存」をクリックしてください。回答は生成内容の文脈として AI に渡されます。任意質問は空欄でも構いません。" : "填写完毕后请点击「保存回答」按钮，答案会作为生成内容的上下文传递给 AI；选答题可留空。")}
               </p>
             </div>
           )}
@@ -917,7 +925,7 @@ export function ContentBlockCard({
                   {generatingContent ? (
                     <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ table: ({ children, ...props }) => (<div className="table-wrapper"><table {...props}>{children}</table></div>) }}>{generatingContent}</ReactMarkdown>
                   ) : (
-                    <p className="text-zinc-500 animate-pulse">正在生成内容...</p>
+                    <p className="text-zinc-500 animate-pulse">{isJa ? "内容を生成中..." : "正在生成内容..."}</p>
                   )}
                   <span className="inline-block w-2 h-4 bg-brand-500 animate-pulse ml-0.5" />
                 </div>
@@ -926,7 +934,7 @@ export function ContentBlockCard({
               /* 后台生成中（用户导航离开后回来） */
               <div className="flex items-center gap-2 py-4 justify-center">
                 <span className="inline-block w-2 h-4 bg-brand-500 animate-pulse" />
-                <span className="text-sm text-brand-400 animate-pulse">后台生成中，请稍候...</span>
+                <span className="text-sm text-brand-400 animate-pulse">{isJa ? "バックグラウンドで生成中です。しばらくお待ちください..." : "后台生成中，请稍候..."}</span>
               </div>
             ) : isEditing ? (
               <div className="space-y-3">
@@ -934,7 +942,7 @@ export function ContentBlockCard({
                   value={editedContent}
                   onChange={(e) => setEditedContent(e.target.value)}
                   className="w-full bg-surface-1 border border-surface-3 rounded-lg p-3 text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-brand-500 resize-none font-mono text-sm min-h-[150px]"
-                  placeholder="在此编辑内容..."
+                  placeholder={isJa ? "ここで内容を編集..." : "在此编辑内容..."}
                 />
                 <div className="flex justify-end gap-2">
                   <button
@@ -944,14 +952,14 @@ export function ContentBlockCard({
                     }}
                     className="px-3 py-1.5 text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
                   >
-                    取消
+                    {isJa ? "キャンセル" : "取消"}
                   </button>
                   <button
                     onClick={handleSaveContent}
                     className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-brand-600 hover:bg-brand-700 text-white rounded-lg transition-colors"
                   >
                     <Save className="w-4 h-4" />
-                    保存
+                    {isJa ? "保存" : "保存"}
                   </button>
                 </div>
               </div>
@@ -965,17 +973,17 @@ export function ContentBlockCard({
                       <button
                         onClick={(e) => { e.stopPropagation(); handleCopyContent(e); }}
                         className="flex items-center gap-1 px-2 py-1 text-xs bg-surface-3 text-zinc-400 hover:text-zinc-200 rounded"
-                        title="复制全文（Markdown格式）"
+                        title={isJa ? "全文をコピー（Markdown 形式）" : "复制全文（Markdown格式）"}
                       >
                         {copied ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
-                        {copied ? "已复制" : "复制"}
+                        {copied ? (isJa ? "コピー済み" : "已复制") : (isJa ? "コピー" : "复制")}
                       </button>
                       <button 
                         onClick={(e) => { e.stopPropagation(); setIsEditing(true); }}
                         className="flex items-center gap-1 px-2 py-1 text-xs bg-surface-3 text-zinc-400 hover:text-zinc-200 rounded"
                       >
                         <Pencil className="w-3 h-3" />
-                        编辑
+                        {isJa ? "編集" : "编辑"}
                       </button>
                     </div>
                     <div className="prose prose-invert prose-sm max-w-none">
@@ -988,8 +996,8 @@ export function ContentBlockCard({
                     onClick={() => setIsEditing(true)}
                   >
                     <Pencil className="w-6 h-6 mb-2 opacity-50" />
-                    <p className="text-sm">点击此处编辑内容</p>
-                    <p className="text-xs mt-1">或使用「生成」按钮让 AI 生成</p>
+                    <p className="text-sm">{isJa ? "ここをクリックして内容を編集" : "点击此处编辑内容"}</p>
+                    <p className="text-xs mt-1">{isJa ? "または「生成」ボタンで AI に生成させてください" : "或使用「生成」按钮让 AI 生成"}</p>
                   </div>
                 )}
               </div>
@@ -1003,7 +1011,7 @@ export function ContentBlockCard({
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setShowPromptModal(false)}>
           <div className="w-full max-w-2xl bg-surface-1 border border-surface-3 rounded-xl shadow-2xl" onClick={e => e.stopPropagation()}>
             <div className="px-5 py-4 border-b border-surface-3 flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-zinc-200">编辑 AI 提示词 - {block.name}</h3>
+              <h3 className="text-lg font-semibold text-zinc-200">{isJa ? `AI プロンプトを編集 - ${block.name}` : `编辑 AI 提示词 - ${block.name}`}</h3>
               <button 
                 onClick={() => setShowPromptModal(false)}
                 className="p-1 text-zinc-500 hover:text-zinc-300"
@@ -1017,23 +1025,23 @@ export function ContentBlockCard({
                 onChange={(e) => setEditedPrompt(e.target.value)}
                 rows={8}
                 className="w-full bg-surface-2 border border-surface-3 rounded-lg p-4 text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-brand-500 resize-none"
-                placeholder="输入 AI 生成此内容块时使用的提示词..."
+                placeholder={isJa ? "この内容ブロック生成時に使う AI プロンプトを入力..." : "输入 AI 生成此内容块时使用的提示词..."}
               />
               <p className="text-xs text-zinc-500">
-                提示词会与项目上下文（创作者特质、意图、用户画像）一起发送给 AI，用于生成内容。
+                {isJa ? "このプロンプトはプロジェクト文脈（クリエイター特性、意図、ユーザーペルソナ）と一緒に AI へ送られ、内容生成に使われます。" : "提示词会与项目上下文（创作者特质、意图、用户画像）一起发送给 AI，用于生成内容。"}
               </p>
 
               {/* 🤖 用 AI 生成提示词 */}
               <div className="p-3 bg-surface-2/50 border border-surface-3 rounded-lg">
                 <div className="flex items-center gap-2 mb-2">
-                  <span className="text-xs text-zinc-400">🤖 用 AI 生成提示词</span>
+                  <span className="text-xs text-zinc-400">{isJa ? "🤖 AI でプロンプトを生成" : "🤖 用 AI 生成提示词"}</span>
                 </div>
                 <div className="flex gap-2">
                   <input
                     type="text"
                     value={aiPromptPurpose}
                     onChange={(e) => setAiPromptPurpose(e.target.value)}
-                    placeholder="简述内容块目的，如：介绍产品核心卖点"
+                    placeholder={isJa ? "内容ブロックの目的を簡潔に説明。例: 商品の主要価値を紹介する" : "简述内容块目的，如：介绍产品核心卖点"}
                     className="flex-1 px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-brand-500"
                     onKeyDown={(e) => {
                       if (e.key === "Enter" && aiPromptPurpose.trim() && !generatingPrompt) {
@@ -1049,9 +1057,9 @@ export function ContentBlockCard({
                     {generatingPrompt ? (
                       <>
                         <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
-                        生成中...
+                        {isJa ? "生成中..." : "生成中..."}
                       </>
-                    ) : "AI 生成"}
+                    ) : (isJa ? "AI 生成" : "AI 生成")}
                   </button>
                 </div>
               </div>
@@ -1061,13 +1069,13 @@ export function ContentBlockCard({
                 onClick={() => setShowPromptModal(false)}
                 className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-200"
               >
-                取消
+                {isJa ? "キャンセル" : "取消"}
               </button>
               <button
                 onClick={handleSavePrompt}
                 className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-700 text-white rounded-lg"
               >
-                保存
+                {isJa ? "保存" : "保存"}
               </button>
             </div>
           </div>
@@ -1079,7 +1087,7 @@ export function ContentBlockCard({
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setShowDependencyModal(false)}>
           <div className="w-full max-w-lg bg-surface-1 border border-surface-3 rounded-xl shadow-2xl" onClick={e => e.stopPropagation()}>
             <div className="px-5 py-4 border-b border-surface-3 flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-zinc-200">设置依赖 - {block.name}</h3>
+              <h3 className="text-lg font-semibold text-zinc-200">{isJa ? `依存関係を設定 - ${block.name}` : `设置依赖 - ${block.name}`}</h3>
               <button 
                 onClick={() => setShowDependencyModal(false)}
                 className="p-1 text-zinc-500 hover:text-zinc-300"
@@ -1089,7 +1097,7 @@ export function ContentBlockCard({
             </div>
             <div className="p-5">
               <p className="text-sm text-zinc-400 mb-4">
-                选择「{block.name}」依赖的内容块。只有依赖的内容块完成后，才能生成此内容。
+                {isJa ? `「${block.name}」が依存する内容ブロックを選択します。依存先が完了してからこの内容を生成できます。` : `选择「${block.name}」依赖的内容块。只有依赖的内容块完成后，才能生成此内容。`}
               </p>
               
               {availableDependencies.length > 0 ? (
@@ -1114,9 +1122,9 @@ export function ContentBlockCard({
                           <span className="text-sm text-zinc-200">{dep.name}</span>
                           {dep.special_handler && (
                             <span className="px-1.5 py-0.5 text-xs rounded bg-purple-600/20 text-purple-400">
-                              {dep.special_handler === "intent" ? "意图分析" :
-                               dep.special_handler === "research" ? "消费者调研" :
-                               dep.special_handler === "evaluate" ? "评估结果" : dep.special_handler}
+                              {dep.special_handler === "intent" ? (isJa ? "意図分析" : "意图分析") :
+                               dep.special_handler === "research" ? (isJa ? "顧客調査" : "消费者调研") :
+                               dep.special_handler === "evaluate" ? (isJa ? "評価結果" : "评估结果") : dep.special_handler}
                             </span>
                           )}
                           <span className={`px-1.5 py-0.5 text-xs rounded ${
@@ -1126,7 +1134,7 @@ export function ContentBlockCard({
                               ? "bg-amber-600/20 text-amber-400"
                               : "bg-zinc-700 text-zinc-400"
                           }`}>
-                            {dep.status === "completed" ? "已完成" : (dep.content && dep.content.trim() !== "") ? "待确认" : "未完成"}
+                            {dep.status === "completed" ? getBlockStatusLabel(dep.status, isJa) : (dep.content && dep.content.trim() !== "") ? (isJa ? "確認待ち" : "待确认") : (isJa ? "未完了" : "未完成")}
                           </span>
                         </div>
                       </div>
@@ -1135,7 +1143,7 @@ export function ContentBlockCard({
                 </div>
               ) : (
                 <div className="text-center py-8 text-zinc-500">
-                  暂无可选的依赖内容块
+                  {isJa ? "選択できる依存内容ブロックはありません" : "暂无可选的依赖内容块"}
                 </div>
               )}
             </div>
@@ -1147,13 +1155,13 @@ export function ContentBlockCard({
                 }}
                 className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-200"
               >
-                取消
+                {isJa ? "キャンセル" : "取消"}
               </button>
               <button
                 onClick={handleSaveDependencies}
                 className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-700 text-white rounded-lg"
               >
-                保存
+                {isJa ? "保存" : "保存"}
               </button>
             </div>
           </div>
@@ -1169,7 +1177,7 @@ export function ContentBlockCard({
           onClick={(e) => e.stopPropagation()}
         >
           <div className="p-2 border-b border-surface-3">
-            <p className="text-xs text-zinc-500">为「{block.name}」选择模型</p>
+            <p className="text-xs text-zinc-500">{isJa ? `「${block.name}」のモデルを選択` : `为「${block.name}」选择模型`}</p>
           </div>
           <div className="max-h-48 overflow-y-auto">
             <button
@@ -1178,7 +1186,7 @@ export function ContentBlockCard({
                 !modelOverride ? "text-brand-400 bg-brand-600/10" : "text-zinc-300"
               }`}
             >
-              跟随全局默认
+              {isJa ? "全体既定に従う" : "跟随全局默认"}
             </button>
             {availableModels.map((m) => (
               <button

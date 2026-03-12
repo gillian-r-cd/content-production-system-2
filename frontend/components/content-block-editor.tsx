@@ -21,6 +21,7 @@ import {
   normalizePreQuestions,
 } from "@/lib/preQuestions";
 import { sendNotification } from "@/lib/utils";
+import { useUiIsJa } from "@/lib/ui-locale";
 import type { ContentBlock, ModelInfo, AgentSelectionRef } from "@/lib/api";
 import type { PreQuestion } from "@/lib/preQuestions";
 import { getEvalFieldEditor } from "./eval-field-editors";
@@ -51,19 +52,22 @@ import {
 // ===== 版本警告弹窗组件（含保存新版本功能） =====
 function VersionWarningDialog({
   projectId,
+  projectLocale,
   warning,
   affectedBlocks,
   onClose,
   onVersionCreated,
 }: {
   projectId: string;
+  projectLocale?: string | null;
   warning: string;
   affectedBlocks: string[] | null;
   onClose: () => void;
   onVersionCreated: () => void;
 }) {
+  const isJa = useUiIsJa(projectLocale);
   const [versionNote, setVersionNote] = useState(
-    `变更前快照 — ${new Date().toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}`
+    `${isJa ? "変更前スナップショット" : "变更前快照"} — ${new Date().toLocaleString(isJa ? "ja-JP" : "zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}`
   );
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -72,13 +76,13 @@ function VersionWarningDialog({
     if (saving) return;
     setSaving(true);
     try {
-      await projectAPI.createVersion(projectId, versionNote || "上游变更前快照");
+      await projectAPI.createVersion(projectId, versionNote || (isJa ? "上流変更前スナップショット" : "上游变更前快照"));
       setSaved(true);
-      sendNotification("已成功创建新版本快照", "success");
+      sendNotification(isJa ? "新しいバージョンスナップショットを作成しました" : "已成功创建新版本快照", "success");
       // 短暂显示成功状态后关闭
       setTimeout(() => onVersionCreated(), 800);
     } catch (err) {
-      alert("创建版本失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "バージョン作成に失敗しました: " : "创建版本失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     } finally {
       setSaving(false);
     }
@@ -89,14 +93,14 @@ function VersionWarningDialog({
       <div className="bg-surface-1 border border-surface-3 rounded-xl shadow-2xl max-w-md w-full mx-4">
         <div className="px-5 py-4 border-b border-surface-3">
           <h3 className="text-base font-semibold text-amber-400 flex items-center gap-2">
-            上游内容变更提醒
+            {isJa ? "上流内容の変更通知" : "上游内容变更提醒"}
           </h3>
         </div>
         <div className="p-5 space-y-3">
           <p className="text-sm text-zinc-300">{warning}</p>
           {affectedBlocks && affectedBlocks.length > 0 && (
             <div className="bg-surface-2 rounded-lg p-3">
-              <p className="text-xs text-zinc-400 mb-2">受影响的内容：</p>
+              <p className="text-xs text-zinc-400 mb-2">{isJa ? "影響を受ける内容:" : "受影响的内容："}</p>
               <ul className="space-y-1">
                 {affectedBlocks.map((name, i) => (
                   <li key={i} className="text-sm text-amber-300 flex items-center gap-1.5">
@@ -110,12 +114,12 @@ function VersionWarningDialog({
           {/* 保存新版本输入区 */}
           {!saved && (
             <div className="space-y-2 pt-2">
-              <label className="text-xs text-zinc-400">版本备注（可选）</label>
+              <label className="text-xs text-zinc-400">{isJa ? "バージョンメモ（任意）" : "版本备注（可选）"}</label>
               <input
                 type="text"
                 value={versionNote}
                 onChange={(e) => setVersionNote(e.target.value)}
-                placeholder="如：修改某内容块前的快照"
+                placeholder={isJa ? "例: 特定ブロック修正前のスナップショット" : "如：修改某内容块前的快照"}
                 className="w-full px-3 py-2 bg-surface-2 border border-surface-3 rounded-lg text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-brand-500"
               />
             </div>
@@ -124,7 +128,7 @@ function VersionWarningDialog({
           {saved && (
             <div className="flex items-center gap-2 text-sm text-green-400 bg-green-900/20 rounded-lg px-3 py-2">
               <Check className="w-4 h-4" />
-              版本已保存
+              {isJa ? "バージョンを保存しました" : "版本已保存"}
             </div>
           )}
         </div>
@@ -133,7 +137,7 @@ function VersionWarningDialog({
             onClick={onClose}
             className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-200 bg-surface-2 hover:bg-surface-3 rounded-lg transition-colors"
           >
-            {saved ? "关闭" : "不保存，关闭"}
+            {saved ? (isJa ? "閉じる" : "关闭") : (isJa ? "保存せず閉じる" : "不保存，关闭")}
           </button>
           {!saved && (
             <button
@@ -141,7 +145,7 @@ function VersionWarningDialog({
               disabled={saving}
               className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-700 text-white rounded-lg transition-colors disabled:opacity-50"
             >
-              {saving ? "保存中..." : "保存新版本"}
+              {saving ? (isJa ? "保存中..." : "保存中...") : (isJa ? "新しいバージョンを保存" : "保存新版本")}
             </button>
           )}
         </div>
@@ -154,6 +158,7 @@ function VersionWarningDialog({
 interface ContentBlockEditorProps {
   block: ContentBlock;
   projectId: string;
+  projectLocale?: string | null;
   allBlocks?: ContentBlock[];  // 用于依赖选择
   onUpdate?: () => void;
   /** 版本创建后通知父组件刷新项目列表 */
@@ -164,7 +169,8 @@ interface ContentBlockEditorProps {
   onSendSelectionToAgent?: (ref: AgentSelectionRef) => void;
 }
 
-export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate, onVersionCreated, onSendToAgent, onSendSelectionToAgent }: ContentBlockEditorProps) {
+export function ContentBlockEditor({ block, projectId, projectLocale, allBlocks = [], onUpdate, onVersionCreated, onSendToAgent, onSendSelectionToAgent }: ContentBlockEditorProps) {
+  const isJa = useUiIsJa(projectLocale);
   // P0-1: 统一使用 blockAPI（已移除 fieldAPI/isVirtual 分支）
   const [isEditing, setIsEditing] = useState(false);
   const [isEditingName, setIsEditingName] = useState(false);
@@ -246,7 +252,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
     isGenerating, generatingContent, canGenerate, unmetDependencies,
     handleGenerate: _handleGenerate, handleStop: handleStopGeneration,
   } = useBlockGeneration({
-    block, projectId, allBlocks,
+    block, projectId, projectLocale, allBlocks,
     preQuestions,
     preAnswers, hasPreQuestions,
     onUpdate,
@@ -424,7 +430,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
       }
     } catch (err) {
       console.error("保存预提问答案失败:", err);
-      alert("保存失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "保存に失敗しました: " : "保存失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     } finally {
       setIsSavingPreAnswers(false);
     }
@@ -438,7 +444,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
         onUpdate?.();
       } catch (err) {
         console.error("更新名称失败:", err);
-        alert("更新名称失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "名称更新に失敗しました: " : "更新名称失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
         setEditedName(block.name);
       }
     }
@@ -499,7 +505,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
       }
     } catch (err) {
       console.error("保存失败:", err);
-      alert("保存失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "保存に失敗しました: " : "保存失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     }
   };
 
@@ -516,7 +522,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
       setEditedPrompt(result.prompt);
       setAiPromptPurpose("");
     } catch (e: unknown) {
-      alert("生成提示词失败: " + (e instanceof Error ? e.message : "未知错误"));
+      alert((isJa ? "プロンプト生成に失敗しました: " : "生成提示词失败: ") + (e instanceof Error ? e.message : (isJa ? "不明なエラー" : "未知错误")));
     } finally {
       setGeneratingPrompt(false);
     }
@@ -533,7 +539,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
       onUpdate?.();
     } catch (err) {
       console.error("保存提示词失败:", err);
-      alert("保存提示词失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "プロンプト保存に失敗しました: " : "保存提示词失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     }
   };
 
@@ -545,7 +551,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
       onUpdate?.();
     } catch (err) {
       console.error("保存依赖失败:", err);
-      alert("保存依赖失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "依存関係の保存に失敗しました: " : "保存依赖失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     }
   };
 
@@ -557,10 +563,10 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
       setModelOverride(modelId);
       setShowModelSelector(false);
       onUpdate?.();
-      sendNotification(modelId ? `已设置模型: ${modelId}` : "已恢复为默认模型", "success");
+      sendNotification(modelId ? (isJa ? `モデルを設定しました: ${modelId}` : `已设置模型: ${modelId}`) : (isJa ? "既定モデルに戻しました" : "已恢复为默认模型"), "success");
     } catch (err) {
       console.error("保存模型覆盖失败:", err);
-      sendNotification("保存模型失败: " + (err instanceof Error ? err.message : "未知错误"), "error");
+      sendNotification((isJa ? "モデル保存に失敗しました: " : "保存模型失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")), "error");
     }
   };
 
@@ -580,13 +586,13 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
 
   // 删除内容块
   const handleDelete = async () => {
-    if (!confirm(`确定要删除「${block.name}」吗？此操作不可撤销。`)) return;
+    if (!confirm(isJa ? `「${block.name}」を削除しますか？この操作は取り消せません。` : `确定要删除「${block.name}」吗？此操作不可撤销。`)) return;
     try {
       await blockAPI.delete(block.id);
       onUpdate?.();
     } catch (err) {
       console.error("删除失败:", err);
-      alert("删除失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "削除に失敗しました: " : "删除失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     }
   };
 
@@ -666,7 +672,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
       });
     } catch (err) {
       console.error("[M4] Inline edit failed:", err);
-      sendNotification("AI 编辑失败: " + (err instanceof Error ? err.message : "未知错误"), "error");
+      sendNotification((isJa ? "AI 編集に失敗しました: " : "AI 编辑失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")), "error");
     } finally {
       setInlineEditLoading(false);
     }
@@ -693,7 +699,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
       } else {
         // 真的找不到 → 复制到剪贴板让用户手动替换
         await navigator.clipboard.writeText(replacement);
-        sendNotification("无法自动定位原文（可能含格式标记），修改后的文本已复制到剪贴板，请手动替换", "warning");
+        sendNotification(isJa ? "原文を自動特定できませんでした。修正後のテキストをクリップボードにコピーしたので手動で置き換えてください。" : "无法自动定位原文（可能含格式标记），修改后的文本已复制到剪贴板，请手动替换", "warning");
         setInlineEditResult(null);
         setSelectedText("");
         setToolbarPosition(null);
@@ -709,10 +715,10 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
       setToolbarPosition(null);
       clearSelectionHighlight();
       onUpdate?.();
-      sendNotification("已应用 AI 修改", "success");
+      sendNotification(isJa ? "AI の修正を適用しました" : "已应用 AI 修改", "success");
     } catch (err) {
       console.error("[M4] Apply inline edit failed:", err);
-      sendNotification("保存失败: " + (err instanceof Error ? err.message : "未知错误"), "error");
+      sendNotification((isJa ? "保存に失敗しました: " : "保存失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")), "error");
     }
   }, [inlineEditResult, block.content, block.id, onUpdate, clearSelectionHighlight]);
 
@@ -753,7 +759,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
       {/* 面包屑导航 */}
       <div className="flex items-center gap-2 text-sm text-zinc-500 mb-4">
         <Folder className="w-4 h-4" />
-        <span>内容块</span>
+        <span>{isJa ? "内容ブロック" : "内容块"}</span>
         <ChevronRight className="w-3 h-3" />
         <FileText className="w-4 h-4" />
         <span className="text-zinc-300">{block.name}</span>
@@ -784,7 +790,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
               <h2 
                 className="text-lg font-semibold text-zinc-200 cursor-pointer hover:text-brand-400 transition-colors"
                 onClick={() => setIsEditingName(true)}
-                title="点击编辑名称"
+                title={isJa ? "クリックして名称を編集" : "点击编辑名称"}
               >
                 {block.name} <span className="text-xs text-zinc-600">✏️</span>
               </h2>
@@ -796,9 +802,9 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
               block.status === "failed" ? "bg-red-600/20 text-red-400" :
               "bg-zinc-700 text-zinc-400"
             }`}>
-              {block.status === "completed" ? "已完成" :
-               block.status === "in_progress" ? "生成中" :
-               block.status === "failed" ? "失败" : "待处理"}
+              {block.status === "completed" ? (isJa ? "完了" : "已完成") :
+               block.status === "in_progress" ? (isJa ? "生成中" : "生成中") :
+               block.status === "failed" ? (isJa ? "失敗" : "失败") : (isJa ? "待機中" : "待处理")}
             </span>
           </div>
           
@@ -809,10 +815,10 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
               <button
                 onClick={handleStopGeneration}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-red-600 hover:bg-red-700 text-white transition-colors"
-                title="停止生成"
+                title={isJa ? "生成を停止" : "停止生成"}
               >
                 <Square className="w-4 h-4" />
-                停止生成
+                {isJa ? "生成を停止" : "停止生成"}
               </button>
             )}
             {/* 生成按钮 */}
@@ -825,17 +831,17 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                     ? "bg-brand-600 hover:bg-brand-700 text-white"
                     : "bg-zinc-700 text-zinc-500 cursor-not-allowed"
                 }`}
-                title={!canGenerate ? `依赖内容为空: ${unmetDependencies.map(d => d.name).join(", ")}` : "生成内容"}
+                title={!canGenerate ? (isJa ? `依存内容が空です: ${unmetDependencies.map(d => d.name).join(", ")}` : `依赖内容为空: ${unmetDependencies.map(d => d.name).join(", ")}`) : (isJa ? "内容を生成" : "生成内容")}
               >
                 <Play className="w-4 h-4" />
-                生成
+                {isJa ? "生成" : "生成"}
               </button>
             )}
             
             {/* 依赖内容为空警告 */}
             {!canGenerate && !isGenerating && (
-              <span className="text-xs text-amber-500" title={`依赖内容为空: ${unmetDependencies.map(d => d.name).join(", ")}`}>
-                {unmetDependencies.length}个依赖内容为空
+              <span className="text-xs text-amber-500" title={isJa ? `依存内容が空です: ${unmetDependencies.map(d => d.name).join(", ")}` : `依赖内容为空: ${unmetDependencies.map(d => d.name).join(", ")}`}>
+                {isJa ? `${unmetDependencies.length} 件の依存内容が空です` : `${unmetDependencies.length}个依赖内容为空`}
               </span>
             )}
             
@@ -850,12 +856,12 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                     runAutoTriggerChain(projectId, () => onUpdate?.()).catch(console.error);
                   } catch (err) {
                     console.error("确认失败:", err);
-                    alert("确认失败: " + (err instanceof Error ? err.message : "未知错误"));
+                    alert((isJa ? "確認に失敗しました: " : "确认失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
                   }
                 }}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition-colors"
               >
-                <Check className="w-4 h-4" /> 确认
+                <Check className="w-4 h-4" /> {isJa ? "確認" : "确认"}
               </button>
             )}
             
@@ -866,12 +872,12 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                 className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-amber-600/20 hover:bg-amber-600/30 text-amber-400 border border-amber-500/30 rounded-lg transition-colors"
               >
                 <RefreshCw className="w-4 h-4" />
-                重新生成
+                {isJa ? "再生成" : "重新生成"}
               </button>
             )}
             
             {isGenerating && (
-              <span className="text-sm text-brand-400 animate-pulse">生成中...</span>
+              <span className="text-sm text-brand-400 animate-pulse">{isJa ? "生成中..." : "生成中..."}</span>
             )}
 
             {/* 版本历史按钮 */}
@@ -879,6 +885,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
               <VersionHistoryButton
                 entityId={block.id}
                 entityName={block.name}
+                projectLocale={projectLocale}
                 onRollback={() => onUpdate?.()}
               />
             )}
@@ -887,7 +894,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
             <button
               onClick={handleDelete}
               className="p-1.5 text-zinc-500 hover:text-red-400 transition-colors"
-              title="删除此内容块"
+              title={isJa ? "この内容ブロックを削除" : "删除此内容块"}
             >
               <Trash2 className="w-4 h-4" />
             </button>
@@ -906,7 +913,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
             }`}
           >
             <MessageSquarePlus className="w-3.5 h-3.5" />
-            {savedPrompt ? "已配置提示词" : "未配置提示词"}
+            {savedPrompt ? (isJa ? "プロンプト設定済み" : "已配置提示词") : (isJa ? "プロンプト未設定" : "未配置提示词")}
           </button>
           
           {/* 依赖配置 */}
@@ -917,7 +924,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
             <Workflow className="w-3.5 h-3.5" />
             {dependencyBlocks.length > 0 ? (
               <span className="flex items-center gap-1">
-                依赖:
+                {isJa ? "依存:" : "依赖:"}
                 {dependencyBlocks.map(dep => (
                   <span key={dep.id} className={`px-1.5 py-0.5 rounded ${
                     (dep.content && dep.content.trim() !== "")
@@ -929,7 +936,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                 ))}
               </span>
             ) : (
-              <span className="text-zinc-500">无依赖（点击配置）</span>
+              <span className="text-zinc-500">{isJa ? "依存なし（クリックして設定）" : "无依赖（点击配置）"}</span>
             )}
           </button>
           
@@ -948,10 +955,10 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                 ? "bg-amber-600/10 text-amber-400 hover:bg-amber-600/20"
                 : "bg-emerald-600/10 text-emerald-400 hover:bg-emerald-600/20"
             }`}
-            title={block.need_review ? "需要人工确认（点击切换）" : "无需确认（点击切换）"}
+            title={block.need_review ? (isJa ? "手動確認が必要（クリックで切替）" : "需要人工确认（点击切换）") : (isJa ? "確認不要（クリックで切替）" : "无需确认（点击切换）")}
           >
             {block.need_review ? <ShieldCheck className="w-3.5 h-3.5" /> : <Zap className="w-3.5 h-3.5" />}
-            {block.need_review ? "需要人工确认" : "无需确认"}
+            {block.need_review ? (isJa ? "手動確認が必要" : "需要人工确认") : (isJa ? "確認不要" : "无需确认")}
           </button>
 
           {/* auto_generate 状态（可切换）：所有 field 类型块均可切换 */}
@@ -970,10 +977,10 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                   ? "bg-blue-600/10 text-blue-400 hover:bg-blue-600/20"
                   : "bg-zinc-600/10 text-zinc-400 hover:bg-zinc-600/20"
               }`}
-              title={block.auto_generate ? "自动生成（依赖就绪时自动触发，点击切换）" : "手动触发（点击切换为自动生成）"}
+              title={block.auto_generate ? (isJa ? "自動生成（依存準備完了時に自動実行、クリックで切替）" : "自动生成（依赖就绪时自动触发，点击切换）") : (isJa ? "手動実行（クリックで自動生成へ切替）" : "手动触发（点击切换为自动生成）")}
             >
               <Sparkles className="w-3.5 h-3.5" />
-              {block.auto_generate ? "自动生成" : "手动触发"}
+              {block.auto_generate ? (isJa ? "自動生成" : "自动生成") : (isJa ? "手動実行" : "手动触发")}
             </button>
           )}
 
@@ -989,13 +996,13 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                 }`}
               >
                 <Cpu className="w-3.5 h-3.5" />
-                {modelOverride ? modelOverride : "默认模型"}
+                {modelOverride ? modelOverride : (isJa ? "既定モデル" : "默认模型")}
               </button>
 
               {showModelSelector && (
                 <div className="absolute top-full left-0 mt-1 z-50 w-64 bg-surface-1 border border-surface-3 rounded-lg shadow-xl overflow-hidden">
                   <div className="p-2 border-b border-surface-3">
-                    <p className="text-xs text-zinc-500">为此内容块选择模型</p>
+                    <p className="text-xs text-zinc-500">{isJa ? "この内容ブロックに使うモデルを選択" : "为此内容块选择模型"}</p>
                   </div>
                   <div className="max-h-60 overflow-y-auto">
                     <button
@@ -1004,7 +1011,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                         !modelOverride ? "text-brand-400" : "text-zinc-300"
                       }`}
                     >
-                      <span>使用默认模型</span>
+                      <span>{isJa ? "既定モデルを使用" : "使用默认模型"}</span>
                       {!modelOverride && <Check className="w-3.5 h-3.5" />}
                     </button>
                     {availableModels.map(m => (
@@ -1042,16 +1049,18 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                 ) : (
                   <ChevronRight className="w-4 h-4 text-amber-400" />
                 )}
-                <span className="text-amber-400 text-sm font-medium">生成前提问</span>
+                <span className="text-amber-400 text-sm font-medium">{isJa ? "生成前ヒアリング" : "生成前提问"}</span>
                 <span className="text-xs text-zinc-500">
                   {hasPreQuestions
-                    ? `（必答 ${answeredRequiredPreQuestionCount}/${requiredPreQuestionCount}，全部已答 ${answeredPreQuestionCount}/${preQuestions.length}）`
-                    : "（暂无问题，点击添加）"}
+                    ? (isJa
+                      ? `（必須 ${answeredRequiredPreQuestionCount}/${requiredPreQuestionCount}、回答済み ${answeredPreQuestionCount}/${preQuestions.length}）`
+                      : `（必答 ${answeredRequiredPreQuestionCount}/${requiredPreQuestionCount}，全部已答 ${answeredPreQuestionCount}/${preQuestions.length}）`)
+                    : (isJa ? "（ヒアリング項目はまだありません。クリックして追加）" : "（暂无问题，点击添加）")}
                 </span>
               </div>
               <div className="flex items-center gap-2">
                 {preAnswersSaved && (
-                  <span className="text-xs text-green-400">✓ 已保存</span>
+                  <span className="text-xs text-green-400">{isJa ? "✓ 保存済み" : "✓ 已保存"}</span>
                 )}
               </div>
             </button>
@@ -1074,7 +1083,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                               )));
                               setPreAnswersSaved(false);
                             }}
-                            placeholder={`${idx + 1}. 输入问题`}
+                            placeholder={isJa ? `${idx + 1}. 質問を入力` : `${idx + 1}. 输入问题`}
                             className="flex-1 rounded border border-surface-3 bg-surface-1 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-amber-500/50"
                           />
                           <label className="flex items-center gap-1.5 text-xs text-zinc-400">
@@ -1090,13 +1099,13 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                                 setPreAnswersSaved(false);
                               }}
                             />
-                            必答
+                            {isJa ? "必須" : "必答"}
                           </label>
                           <button
                             onClick={() => handleRemovePreQuestion(question.id)}
                             className="px-2 py-0.5 text-xs bg-red-600/20 text-red-300 rounded hover:bg-red-600/30"
                           >
-                            删除
+                            {isJa ? "削除" : "删除"}
                           </button>
                         </div>
                         <input
@@ -1107,14 +1116,14 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                             setPreAnswers(newAnswers);
                             setPreAnswersSaved(false);
                           }}
-                          placeholder={question.required ? "请输入必答问题的回答..." : "选答：可留空"}
+                          placeholder={question.required ? (isJa ? "必須質問への回答を入力..." : "请输入必答问题的回答...") : (isJa ? "任意回答：空欄可" : "选答：可留空")}
                           className="w-full px-3 py-2 bg-surface-2 border border-amber-500/30 rounded-lg text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-500/50"
                         />
                       </div>
                     ))
                   ) : (
                     <div className="rounded-lg border border-dashed border-amber-500/30 bg-surface-2/40 px-4 py-3 text-sm text-zinc-500">
-                      还没有生成前提问。你可以先添加问题，再保存回答，生成时这些问答会进入上下文。
+                      {isJa ? "生成前ヒアリングはまだありません。先に質問を追加して回答を保存すると、生成時にそれらが文脈として渡されます。" : "还没有生成前提问。你可以先添加问题，再保存回答，生成时这些问答会进入上下文。"}
                     </div>
                   )}
                 </div>
@@ -1129,34 +1138,34 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                         handleAddPreQuestion();
                       }
                     }}
-                    placeholder="新增生成前提问..."
+                    placeholder={isJa ? "生成前ヒアリングを追加..." : "新增生成前提问..."}
                     className="flex-1 px-3 py-2 bg-surface-2 border border-amber-500/30 rounded-lg text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-500/50"
                   />
                   <button
                     onClick={() => handleAddPreQuestion(false)}
                     className="px-3 py-2 text-xs bg-surface-3 text-zinc-200 rounded hover:bg-surface-4"
                   >
-                    添加选答题
+                    {isJa ? "任意質問を追加" : "添加选答题"}
                   </button>
                   <button
                     onClick={() => handleAddPreQuestion(true)}
                     className="px-3 py-2 text-xs bg-amber-600/80 text-white rounded hover:bg-amber-600"
                   >
-                    添加必答题
+                    {isJa ? "必須質問を追加" : "添加必答题"}
                   </button>
                 </div>
                 <div className="flex items-center justify-between mt-3">
                   <p className="text-xs text-amber-500/60">
                     {missingRequiredPreQuestionCount > 0
-                      ? `还有 ${missingRequiredPreQuestionCount} 个必答问题未回答；必答题会阻止“全部开始”和手动生成。`
-                      : "答案会作为生成内容的上下文传递给 AI；选答题可留空。"}
+                      ? (isJa ? `必須質問があと ${missingRequiredPreQuestionCount} 件未回答です。必須質問が未回答だと「すべて開始」と手動生成を実行できません。` : `还有 ${missingRequiredPreQuestionCount} 个必答问题未回答；必答题会阻止“全部开始”和手动生成。`)
+                      : (isJa ? "回答は内容生成時の文脈として AI に渡されます。任意質問は空欄のままで構いません。" : "答案会作为生成内容的上下文传递给 AI；选答题可留空。")}
                   </p>
                   <button
                     onClick={handleSavePreAnswers}
                     disabled={isSavingPreAnswers}
                     className="px-3 py-1 text-xs bg-amber-600 hover:bg-amber-700 disabled:bg-amber-800 text-white rounded transition-colors"
                   >
-                    {isSavingPreAnswers ? "保存中..." : "保存回答"}
+                    {isSavingPreAnswers ? (isJa ? "保存中..." : "保存中...") : (isJa ? "回答を保存" : "保存回答")}
                   </button>
                 </div>
               </div>
@@ -1170,7 +1179,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
           {block.special_handler && getEvalFieldEditor(block.special_handler) ? (
             (() => {
               const EvalEditor = getEvalFieldEditor(block.special_handler!)!;
-              return <EvalEditor block={block} projectId={projectId} onUpdate={onUpdate} onSendToAgent={onSendToAgent} />;
+              return <EvalEditor block={block} projectId={projectId} projectLocale={projectLocale} onUpdate={onUpdate} onSendToAgent={onSendToAgent} />;
             })()
           ) : isEditing ? (
             <div className="h-full flex flex-col gap-3">
@@ -1178,7 +1187,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                 value={editedContent}
                 onChange={(e) => setEditedContent(e.target.value)}
                 className="flex-1 w-full bg-surface-2 border border-surface-3 rounded-lg p-4 text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-brand-500 resize-none font-mono text-sm"
-                placeholder="在此编辑内容..."
+                placeholder={isJa ? "ここで内容を編集..." : "在此编辑内容..."}
               />
               <div className="flex justify-end gap-2">
                 <button
@@ -1188,14 +1197,14 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                   }}
                   className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
                 >
-                  取消
+                  {isJa ? "キャンセル" : "取消"}
                 </button>
                 <button
                   onClick={handleSaveContent}
                   className="flex items-center gap-1.5 px-4 py-2 text-sm bg-brand-600 hover:bg-brand-700 text-white rounded-lg transition-colors"
                 >
                   <Save className="w-4 h-4" />
-                  保存
+                  {isJa ? "保存" : "保存"}
                 </button>
               </div>
             </div>
@@ -1206,13 +1215,13 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
             >
               {isGenerating ? (
                 <div className="prose prose-invert prose-sm max-w-none">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{generatingContent || "正在生成..."}</ReactMarkdown>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{generatingContent || (isJa ? "生成中..." : "正在生成...")}</ReactMarkdown>
                   <span className="inline-block w-2 h-4 bg-brand-500 animate-pulse" />
                 </div>
               ) : block.status === "in_progress" && !block.content ? (
                 <div className="flex items-center gap-2 py-8 justify-center">
                   <span className="inline-block w-2 h-4 bg-brand-500 animate-pulse" />
-                  <span className="text-sm text-brand-400 animate-pulse">后台生成中，请稍候...</span>
+                  <span className="text-sm text-brand-400 animate-pulse">{isJa ? "バックグラウンドで生成中です。しばらくお待ちください..." : "后台生成中，请稍候..."}</span>
                 </div>
               ) : block.content ? (
                 <div ref={contentDisplayRef}>
@@ -1220,17 +1229,17 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                     <button 
                       onClick={(e) => { e.stopPropagation(); handleCopyContent(); }}
                       className="flex items-center gap-1 px-2 py-1 text-xs bg-surface-2 border border-surface-3 text-zinc-400 hover:text-zinc-200 rounded"
-                      title="复制全文（Markdown格式）"
+                      title={isJa ? "全文をコピー（Markdown形式）" : "复制全文（Markdown格式）"}
                     >
                       {copied ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
-                      {copied ? "已复制" : "复制"}
+                      {copied ? (isJa ? "コピー済み" : "已复制") : (isJa ? "复制" : "复制")}
                     </button>
                     <button 
                       onClick={(e) => { e.stopPropagation(); setIsEditing(true); }}
                       className="flex items-center gap-1 px-2 py-1 text-xs bg-surface-2 border border-surface-3 text-zinc-400 hover:text-zinc-200 rounded"
                     >
                       <Pencil className="w-3 h-3" />
-                      编辑
+                      {isJa ? "編集" : "编辑"}
                     </button>
                   </div>
                   <div className="prose prose-invert prose-sm max-w-none">
@@ -1243,8 +1252,8 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                   onClick={() => setIsEditing(true)}
                 >
                   <Pencil className="w-8 h-8 mb-2 opacity-50" />
-                  <p>点击此处编辑内容</p>
-                  <p className="text-xs mt-1">或使用「生成」按钮让 AI 生成</p>
+                  <p>{isJa ? "ここをクリックして内容を編集" : "点击此处编辑内容"}</p>
+                  <p className="text-xs mt-1">{isJa ? "または「生成」ボタンで AI に生成させます" : "或使用「生成」按钮让 AI 生成"}</p>
                 </div>
               )}
             </div>
@@ -1257,7 +1266,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
           <div className="w-full max-w-2xl bg-surface-1 border border-surface-3 rounded-xl shadow-2xl">
             <div className="px-5 py-4 border-b border-surface-3 flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-zinc-200">编辑 AI 提示词</h3>
+              <h3 className="text-lg font-semibold text-zinc-200">{isJa ? "AI プロンプトを編集" : "编辑 AI 提示词"}</h3>
               <button 
                 onClick={() => setShowPromptModal(false)}
                 className="p-1 text-zinc-500 hover:text-zinc-300"
@@ -1271,23 +1280,23 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                 onChange={(e) => setEditedPrompt(e.target.value)}
                 rows={8}
                 className="w-full bg-surface-2 border border-surface-3 rounded-lg p-4 text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-brand-500 resize-none"
-                placeholder="输入 AI 生成此内容块时使用的提示词..."
+                placeholder={isJa ? "この内容ブロック生成時に使う AI プロンプトを入力..." : "输入 AI 生成此内容块时使用的提示词..."}
               />
               <p className="text-xs text-zinc-500">
-                提示词会与项目上下文（创作者特质、意图、用户画像）一起发送给 AI，用于生成内容。
+                {isJa ? "プロンプトはプロジェクト文脈（作成者特性、意図、ユーザー像）と一緒に AI へ送信され、内容生成に使われます。" : "提示词会与项目上下文（创作者特质、意图、用户画像）一起发送给 AI，用于生成内容。"}
               </p>
 
               {/* 🤖 用 AI 生成提示词 */}
               <div className="p-3 bg-surface-2/50 border border-surface-3 rounded-lg">
                 <div className="flex items-center gap-2 mb-2">
-                  <span className="text-xs text-zinc-400">🤖 用 AI 生成提示词</span>
+                  <span className="text-xs text-zinc-400">🤖 {isJa ? "AI でプロンプトを生成" : "用 AI 生成提示词"}</span>
                 </div>
                 <div className="flex gap-2">
                   <input
                     type="text"
                     value={aiPromptPurpose}
                     onChange={(e) => setAiPromptPurpose(e.target.value)}
-                    placeholder="简述内容块目的，如：介绍产品核心卖点"
+                    placeholder={isJa ? "内容ブロックの目的を簡潔に入力。例: 商品の主要価値を紹介" : "简述内容块目的，如：介绍产品核心卖点"}
                     className="flex-1 px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-brand-500"
                     onKeyDown={(e) => {
                       if (e.key === "Enter" && aiPromptPurpose.trim() && !generatingPrompt) {
@@ -1303,9 +1312,9 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                     {generatingPrompt ? (
                       <>
                         <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
-                        生成中...
+                        {isJa ? "生成中..." : "生成中..."}
                       </>
-                    ) : "AI 生成"}
+                    ) : (isJa ? "AI 生成" : "AI 生成")}
                   </button>
                 </div>
               </div>
@@ -1315,13 +1324,13 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                 onClick={() => setShowPromptModal(false)}
                 className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-200"
               >
-                取消
+                {isJa ? "キャンセル" : "取消"}
               </button>
               <button
                 onClick={handleSavePrompt}
                 className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-700 text-white rounded-lg"
               >
-                保存
+                {isJa ? "保存" : "保存"}
               </button>
             </div>
           </div>
@@ -1333,7 +1342,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
           <div className="w-full max-w-lg bg-surface-1 border border-surface-3 rounded-xl shadow-2xl">
             <div className="px-5 py-4 border-b border-surface-3 flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-zinc-200">设置依赖关系</h3>
+              <h3 className="text-lg font-semibold text-zinc-200">{isJa ? "依存関係を設定" : "设置依赖关系"}</h3>
               <button 
                 onClick={() => setShowDependencyModal(false)}
                 className="p-1 text-zinc-500 hover:text-zinc-300"
@@ -1343,7 +1352,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
             </div>
             <div className="p-5">
               <p className="text-sm text-zinc-400 mb-4">
-                选择「{block.name}」依赖的内容块。只有依赖的内容块完成后，才能生成此内容。
+                {isJa ? `「${block.name}」が依存する内容ブロックを選択します。依存ブロックが完了してからこの内容を生成できます。` : `选择「${block.name}」依赖的内容块。只有依赖的内容块完成后，才能生成此内容。`}
               </p>
               
               {availableDependencies.length > 0 ? (
@@ -1352,7 +1361,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                   {fieldDependencies.length > 0 && (
                     <div>
                       <h4 className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2 flex items-center gap-1">
-                        内容块
+                        {isJa ? "内容ブロック" : "内容块"}
                       </h4>
                       <div className="space-y-2">
                         {fieldDependencies.map(dep => (
@@ -1380,7 +1389,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                                     ? "bg-amber-600/20 text-amber-400"
                                     : "bg-zinc-700 text-zinc-400"
                                 }`}>
-                                  {dep.status === "completed" ? "已完成" : (dep.content && dep.content.trim() !== "") ? "待确认" : "未完成"}
+                                  {dep.status === "completed" ? (isJa ? "完了" : "已完成") : (dep.content && dep.content.trim() !== "") ? (isJa ? "確認待ち" : "待确认") : (isJa ? "未完了" : "未完成")}
                                 </span>
                               </div>
                             </div>
@@ -1392,7 +1401,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                 </div>
               ) : (
                 <div className="text-center py-8 text-zinc-500">
-                  暂无可选的依赖内容块
+                  {isJa ? "選択可能な依存内容ブロックがありません" : "暂无可选的依赖内容块"}
                 </div>
               )}
             </div>
@@ -1404,13 +1413,13 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                 }}
                 className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-200"
               >
-                取消
+                {isJa ? "キャンセル" : "取消"}
               </button>
               <button
                 onClick={handleSaveDependencies}
                 className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-700 text-white rounded-lg"
               >
-                保存依赖关系
+                {isJa ? "依存関係を保存" : "保存依赖关系"}
               </button>
             </div>
           </div>
@@ -1421,6 +1430,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
       {versionWarning && (
         <VersionWarningDialog
           projectId={projectId}
+            projectLocale={projectLocale}
           warning={versionWarning}
           affectedBlocks={affectedBlocks}
           onClose={() => { setVersionWarning(null); setAffectedBlocks(null); }}
@@ -1449,7 +1459,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
           {inlineEditLoading && (
             <div className="flex items-center gap-2 px-4 py-2 bg-surface-1 border border-brand-500/40 rounded-lg shadow-xl">
               <Loader2 className="w-4 h-4 text-brand-400 animate-spin" />
-              <span className="text-sm text-brand-300">AI 处理中...</span>
+              <span className="text-sm text-brand-300">{isJa ? "AI が処理中..." : "AI 处理中..."}</span>
             </div>
           )}
 
@@ -1459,7 +1469,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
               <div className="px-4 py-2.5 border-b border-surface-3 flex items-center justify-between">
                 <h4 className="text-sm font-medium text-zinc-200 flex items-center gap-1.5">
                   <Sparkles className="w-3.5 h-3.5 text-brand-400" />
-                  AI 修改建议
+                  {isJa ? "AI 修正提案" : "AI 修改建议"}
                 </h4>
                 <button
                   onClick={handleRejectInlineEdit}
@@ -1471,14 +1481,14 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
               <div className="p-4 space-y-3 max-h-[300px] overflow-y-auto">
                 {/* 原文 */}
                 <div>
-                  <span className="text-xs text-zinc-500 mb-1 block">原文</span>
+                  <span className="text-xs text-zinc-500 mb-1 block">{isJa ? "原文" : "原文"}</span>
                   <div className="px-3 py-2 bg-red-950/30 border border-red-500/20 rounded-lg text-sm text-red-300/80 line-through whitespace-pre-wrap">
                     {inlineEditResult.original}
                   </div>
                 </div>
                 {/* 修改后 */}
                 <div>
-                  <span className="text-xs text-zinc-500 mb-1 block">修改后</span>
+                  <span className="text-xs text-zinc-500 mb-1 block">{isJa ? "修正後" : "修改后"}</span>
                   <div className="px-3 py-2 bg-emerald-950/30 border border-emerald-500/20 rounded-lg text-sm text-emerald-300 whitespace-pre-wrap">
                     {inlineEditResult.replacement}
                   </div>
@@ -1489,14 +1499,14 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                   onClick={handleRejectInlineEdit}
                   className="px-3 py-1.5 text-sm text-zinc-400 hover:text-zinc-200 bg-surface-2 hover:bg-surface-3 rounded-lg transition-colors"
                 >
-                  拒绝
+                  {isJa ? "却下" : "拒绝"}
                 </button>
                 <button
                   onClick={handleAcceptInlineEdit}
                   className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-brand-600 hover:bg-brand-700 text-white rounded-lg transition-colors"
                 >
                   <Check className="w-3.5 h-3.5" />
-                  接受修改
+                  {isJa ? "修正を適用" : "接受修改"}
                 </button>
               </div>
             </div>
@@ -1511,21 +1521,21 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                   onClick={() => handleInlineEdit("rewrite")}
                   className="px-2.5 py-1 text-xs text-zinc-300 hover:text-white hover:bg-brand-600/30 rounded transition-colors"
                 >
-                  改写
+                  {isJa ? "書き換え" : "改写"}
                 </button>
                 <div className="w-px h-4 bg-surface-3" />
                 <button
                   onClick={() => handleInlineEdit("expand")}
                   className="px-2.5 py-1 text-xs text-zinc-300 hover:text-white hover:bg-brand-600/30 rounded transition-colors"
                 >
-                  扩展
+                  {isJa ? "拡張" : "扩展"}
                 </button>
                 <div className="w-px h-4 bg-surface-3" />
                 <button
                   onClick={() => handleInlineEdit("condense")}
                   className="px-2.5 py-1 text-xs text-zinc-300 hover:text-white hover:bg-brand-600/30 rounded transition-colors"
                 >
-                  精简
+                  {isJa ? "要約" : "精简"}
                 </button>
                 <div className="w-px h-4 bg-surface-3" />
                 <button
@@ -1535,7 +1545,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                   }}
                   className="px-2.5 py-1 text-xs text-brand-300 hover:text-white hover:bg-brand-600/30 rounded transition-colors"
                 >
-                  对话改
+                  {isJa ? "指示して修正" : "对话改"}
                 </button>
                 {onSendSelectionToAgent && (
                   <>
@@ -1552,7 +1562,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                       className="px-2.5 py-1 text-xs text-zinc-300 hover:text-white hover:bg-brand-600/30 rounded transition-colors flex items-center gap-1"
                     >
                       <MessageSquarePlus className="w-3 h-3" />
-                      问问 Agent
+                      {isJa ? "Agent に相談" : "问问 Agent"}
                     </button>
                   </>
                 )}
@@ -1575,7 +1585,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                         setCustomInstruction("");
                       }
                     }}
-                    placeholder="描述修改方向..."
+                    placeholder={isJa ? "修正の方向性を入力..." : "描述修改方向..."}
                     className="flex-1 min-w-[200px] px-2 py-1 text-xs bg-surface-2 border border-surface-3 rounded text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-brand-500/50"
                   />
                   <button
@@ -1588,7 +1598,7 @@ export function ContentBlockEditor({ block, projectId, allBlocks = [], onUpdate,
                     disabled={!customInstruction.trim()}
                     className="px-2.5 py-1 text-xs bg-brand-600 hover:bg-brand-700 disabled:bg-surface-3 disabled:text-zinc-600 text-white rounded transition-colors"
                   >
-                    提交
+                    {isJa ? "送信" : "提交"}
                   </button>
                 </div>
               )}

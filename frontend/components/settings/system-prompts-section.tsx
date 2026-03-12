@@ -5,28 +5,32 @@
 
 import { useState } from "react";
 import { settingsAPI } from "@/lib/api";
-import { FormField, ImportExportButtons, SingleExportButton, downloadJSON } from "./shared";
+import { FormField, ImportExportButtons, SingleExportButton, downloadJSON, LOCALE_OPTIONS, LocaleBadge, useSettingsUiIsJa, useSettingsUiLocale } from "./shared";
 
 interface SystemPromptItem {
   id: string;
   name: string;
+  stable_key?: string;
+  locale?: string;
   phase: string;
   content?: string;
 }
 
 export function SystemPromptsSection({ prompts, onRefresh }: { prompts: SystemPromptItem[]; onRefresh: () => void }) {
+  const uiLocale = useSettingsUiLocale();
+  const isJa = useSettingsUiIsJa();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<Partial<SystemPromptItem>>({});
 
   const PHASE_NAMES: Record<string, string> = {
-    intent: "意图分析",
-    research: "消费者调研",
-    design_inner: "内涵设计",
-    produce_inner: "内涵生产",
-    design_outer: "外延设计",
-    produce_outer: "外延生产",
-    simulate: "消费者模拟",
-    evaluate: "评估",
+    intent: isJa ? "意図分析" : "意图分析",
+    research: isJa ? "顧客調査" : "消费者调研",
+    design_inner: isJa ? "内部設計" : "内涵设计",
+    produce_inner: isJa ? "内部制作" : "内涵生产",
+    design_outer: isJa ? "外部設計" : "外延设计",
+    produce_outer: isJa ? "外部制作" : "外延生产",
+    simulate: isJa ? "顧客シミュレーション" : "消费者模拟",
+    evaluate: isJa ? "評価" : "评估",
   };
 
   const handleEdit = (prompt: SystemPromptItem) => {
@@ -40,7 +44,7 @@ export function SystemPromptsSection({ prompts, onRefresh }: { prompts: SystemPr
       setEditingId(null);
       onRefresh();
     } catch (err) {
-      alert("保存失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "保存に失敗しました: " : "保存失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     }
   };
 
@@ -49,7 +53,7 @@ export function SystemPromptsSection({ prompts, onRefresh }: { prompts: SystemPr
       const result = await settingsAPI.exportSystemPrompts();
       downloadJSON(result, `system_prompts_${new Date().toISOString().split("T")[0]}.json`);
     } catch {
-      alert("导出失败");
+      alert(isJa ? "エクスポートに失敗しました" : "导出失败");
     }
   };
 
@@ -59,7 +63,7 @@ export function SystemPromptsSection({ prompts, onRefresh }: { prompts: SystemPr
       const prompt = prompts.find(p => p.id === id);
       downloadJSON(result, `system_prompt_${prompt?.phase || id}.json`);
     } catch {
-      alert("导出失败");
+      alert(isJa ? "エクスポートに失敗しました" : "导出失败");
     }
   };
 
@@ -72,13 +76,13 @@ export function SystemPromptsSection({ prompts, onRefresh }: { prompts: SystemPr
     <div>
       <div className="flex justify-between items-center mb-6">
         <div>
-          <h2 className="text-xl font-semibold text-zinc-100">传统流程提示词</h2>
+          <h2 className="text-xl font-semibold text-zinc-100">{isJa ? "従来フロープロンプト" : "传统流程提示词"}</h2>
           <p className="text-sm text-zinc-500 mt-1">
-            传统流程中各组的提示词。此提示词将完整发送给 LLM，所见即所得。
+            {isJa ? "従来フロー各グループ用のプロンプトです。このプロンプトはそのまま LLM に送信されます。" : "传统流程中各组的提示词。此提示词将完整发送给 LLM，所见即所得。"}
           </p>
         </div>
         <ImportExportButtons
-          typeName="传统流程提示词"
+          typeName={isJa ? "従来フロープロンプト" : "传统流程提示词"}
           onExportAll={handleExportAll}
           onImport={handleImport}
         />
@@ -89,7 +93,7 @@ export function SystemPromptsSection({ prompts, onRefresh }: { prompts: SystemPr
           <div key={prompt.id} className="p-5 bg-surface-2 border border-surface-3 rounded-xl">
             {editingId === prompt.id ? (
               <div className="space-y-4">
-                <FormField label="提示词名称">
+                <FormField label={isJa ? "プロンプト名" : "提示词名称"}>
                   <input
                     type="text"
                     value={editForm.name || ""}
@@ -97,7 +101,18 @@ export function SystemPromptsSection({ prompts, onRefresh }: { prompts: SystemPr
                     className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200"
                   />
                 </FormField>
-                <FormField label="适用组">
+                <FormField label={isJa ? "言語" : "语言"}>
+                  <select
+                    value={editForm.locale || uiLocale}
+                    onChange={(e) => setEditForm({ ...editForm, locale: e.target.value })}
+                    className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200"
+                  >
+                    {LOCALE_OPTIONS.map((item) => (
+                      <option key={item.value} value={item.value}>{item.label}</option>
+                    ))}
+                  </select>
+                </FormField>
+                <FormField label={isJa ? "適用グループ" : "适用组"}>
                   <select
                     value={editForm.phase || ""}
                     onChange={(e) => setEditForm({ ...editForm, phase: e.target.value })}
@@ -108,7 +123,7 @@ export function SystemPromptsSection({ prompts, onRefresh }: { prompts: SystemPr
                     ))}
                   </select>
                 </FormField>
-                <FormField label="提示词内容（完整版）" hint="此提示词将完整发送给 LLM，所见即所得。占位符：{creator_profile} = 创作者特质，{dependencies} = 依赖内容块内容，{channel} = 目标渠道">
+                <FormField label={isJa ? "プロンプト内容（完全版）" : "提示词内容（完整版）"} hint={isJa ? "このプロンプトはそのまま LLM に送信されます。プレースホルダー: {creator_profile} = クリエイター特性, {dependencies} = 依存内容ブロック, {channel} = 対象チャネル" : "此提示词将完整发送给 LLM，所见即所得。占位符：{creator_profile} = 创作者特质，{dependencies} = 依赖内容块内容，{channel} = 目标渠道"}>
                   <textarea
                     value={editForm.content || ""}
                     onChange={(e) => setEditForm({ ...editForm, content: e.target.value })}
@@ -128,23 +143,26 @@ export function SystemPromptsSection({ prompts, onRefresh }: { prompts: SystemPr
                   </div>
                 </FormField>
                 <div className="flex gap-2">
-                  <button onClick={handleSave} className="px-4 py-2 bg-brand-600 hover:bg-brand-700 rounded-lg">保存</button>
-                  <button onClick={() => setEditingId(null)} className="px-4 py-2 bg-surface-3 hover:bg-surface-4 rounded-lg">取消</button>
+                  <button onClick={handleSave} className="px-4 py-2 bg-brand-600 hover:bg-brand-700 rounded-lg">{isJa ? "保存" : "保存"}</button>
+                  <button onClick={() => setEditingId(null)} className="px-4 py-2 bg-surface-3 hover:bg-surface-4 rounded-lg">{isJa ? "キャンセル" : "取消"}</button>
                 </div>
               </div>
             ) : (
               <div>
                 <div className="flex justify-between items-start">
                   <div>
-                    <h3 className="font-medium text-zinc-200">{prompt.name}</h3>
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-medium text-zinc-200">{prompt.name}</h3>
+                      <LocaleBadge locale={prompt.locale} />
+                    </div>
                     <span className="inline-block mt-1 text-xs bg-brand-600/20 text-brand-400 px-2 py-0.5 rounded">
                       {PHASE_NAMES[prompt.phase] || prompt.phase}
                     </span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <SingleExportButton onExport={() => handleExportSingle(prompt.id)} title="导出此提示词" />
+                    <SingleExportButton onExport={() => handleExportSingle(prompt.id)} title={isJa ? "このプロンプトをエクスポート" : "导出此提示词"} />
                     <button onClick={() => handleEdit(prompt)} className="px-3 py-1 text-sm bg-surface-3 hover:bg-surface-4 rounded-lg">
-                      编辑
+                      {isJa ? "編集" : "编辑"}
                     </button>
                   </div>
                 </div>
@@ -155,7 +173,7 @@ export function SystemPromptsSection({ prompts, onRefresh }: { prompts: SystemPr
                   <span className={`text-xs px-1.5 py-0.5 rounded font-mono ${prompt.content?.includes("{dependencies}") ? "bg-green-500/15 text-green-400 border border-green-500/30" : "bg-zinc-700/50 text-zinc-500 border border-zinc-600/30"}`}>
                     {prompt.content?.includes("{dependencies}") ? "✓" : "○"} {"{dependencies}"}
                   </span>
-                  <span className="text-xs text-zinc-600">← 所见即所得</span>
+                  <span className="text-xs text-zinc-600">{isJa ? "← 送信内容そのまま" : "← 所见即所得"}</span>
                 </div>
                 <p className="text-sm text-zinc-500 mt-2 whitespace-pre-wrap line-clamp-3">{prompt.content}</p>
               </div>

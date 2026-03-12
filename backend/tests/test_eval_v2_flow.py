@@ -46,8 +46,8 @@ def client_and_session():
         app.dependency_overrides.clear()
 
 
-def _seed_minimal_eval_context(session):
-    project = Project(id=generate_uuid(), name="Eval V2 Test Project")
+def _seed_minimal_eval_context(session, locale="zh-CN"):
+    project = Project(id=generate_uuid(), name="Eval V2 Test Project", locale=locale)
     session.add(project)
     session.flush()
 
@@ -67,6 +67,8 @@ def _seed_minimal_eval_context(session):
     grader = Grader(
         id=generate_uuid(),
         name="测试评分器",
+        stable_key="test_grader_guard",
+        locale=locale,
         grader_type="content_only",
         prompt_template="请评分 {content}",
         dimensions=["结构", "价值"],
@@ -140,6 +142,144 @@ async def test_eval_v2_task_execute_and_aggregate(client_and_session, monkeypatc
     latest = latest_resp.json()
     assert len(latest["trials"]) == 2
     assert latest["task"]["latest_scores"]["overall"]["mean"] == 7.0
+
+
+@pytest.mark.asyncio
+async def test_eval_v2_runtime_propagates_project_locale(client_and_session, monkeypatch):
+    client, session = client_and_session
+    project, content_block, grader = _seed_minimal_eval_context(session, locale="ja-JP")
+
+    persona_block = ContentBlock(
+        id=generate_uuid(),
+        project_id=project.id,
+        parent_id=None,
+        name="人物画像設定",
+        block_type="field",
+        content=(
+            '{"personas":['
+            '{"id":"p_exp","name":"佐藤","prompt":"あなたは佐藤です。費用対効果を重視します。"},'
+            '{"id":"p_rev","name":"高橋","prompt":"あなたは高橋です。再現性を重視します。"},'
+            '{"id":"p_role_a","name":"営業A","prompt":"あなたは営業担当です。"},'
+            '{"id":"p_role_b","name":"顧客B","prompt":"あなたは慎重な顧客です。"}'
+            ']}'
+        ),
+        status="completed",
+        special_handler="eval_persona_setup",
+        order_index=2,
+    )
+    session.add(persona_block)
+    session.commit()
+
+    captured = {"experience": [], "tasks": [], "graders": []}
+
+    async def fake_run_experience_trial(**kwargs):
+        captured["experience"].append(kwargs)
+        return type(
+            "Exp",
+            (),
+            {
+                "process": [{"type": "plan", "stage": "ステップ1-探索計画", "data": {"plan": []}}],
+                "llm_calls": [{"step": "experience_plan", "input": {"system_prompt": "s", "user_message": "u"}, "output": "o"}],
+                "exploration_score": 7.0,
+                "summary": {"summary": "ok"},
+                "error": "",
+            },
+        )()
+
+    async def fake_run_task_trial(**kwargs):
+        captured["tasks"].append(kwargs)
+        return type(
+            "Trial",
+            (),
+            {
+                "role": kwargs.get("simulator_type", "editor"),
+                "interaction_mode": kwargs.get("interaction_mode", "review"),
+                "role_display_name": "",
+                "nodes": [{"role": "assistant", "content": "ok", "turn": 1}],
+                "result": {"summary": "ok"},
+                "grader_outputs": [],
+                "llm_calls": [{"step": "sim_call", "input": {"system_prompt": "s", "user_message": "u"}, "output": "o"}],
+                "overall_score": 7.0,
+                "success": True,
+                "error": "",
+                "tokens_in": 1,
+                "tokens_out": 1,
+                "cost": 0.0,
+            },
+        )()
+
+    async def fake_run_individual_grader(**kwargs):
+        captured["graders"].append(kwargs)
+        return (
+            {
+                "grader_name": kwargs.get("grader_name", "評価器"),
+                "scores": {"総合評価": 8},
+                "comments": {"総合評価": "根拠あり"},
+                "feedback": "追加の根拠を補ってください。",
+            },
+            None,
+        )
+
+    monkeypatch.setattr("api.eval.run_experience_trial", fake_run_experience_trial)
+    monkeypatch.setattr("api.eval.run_task_trial", fake_run_task_trial)
+    monkeypatch.setattr("api.eval.run_individual_grader", fake_run_individual_grader)
+
+    create_resp = client.post(
+        f"/api/eval/tasks/{project.id}",
+        json={
+            "name": "日文 locale 透传任务",
+            "trial_configs": [
+                {
+                    "name": "体験評価",
+                    "form_type": "experience",
+                    "grader_ids": [grader.id],
+                    "repeat_count": 1,
+                    "target_block_ids": [content_block.id],
+                    "probe": "費用対効果を確認したい",
+                    "form_config": {"persona_id": "p_exp"},
+                },
+                {
+                    "name": "視角審査",
+                    "form_type": "review",
+                    "grader_ids": [grader.id],
+                    "repeat_count": 1,
+                    "target_block_ids": [content_block.id],
+                    "probe": "導入条件を確認したい",
+                    "form_config": {"persona_id": "p_rev", "simulator_type": "editor"},
+                },
+                {
+                    "name": "シナリオ評価",
+                    "form_type": "scenario",
+                    "grader_ids": [grader.id],
+                    "repeat_count": 1,
+                    "target_block_ids": [content_block.id],
+                    "probe": "比較条件を確認したい",
+                    "form_config": {
+                        "role_a_persona_id": "p_role_a",
+                        "role_b_persona_id": "p_role_b",
+                        "max_turns": 2,
+                    },
+                },
+            ],
+        },
+    )
+    assert create_resp.status_code == 200
+    task_id = create_resp.json()["id"]
+
+    run_resp = client.post(f"/api/eval/task/{task_id}/execute")
+    assert run_resp.status_code == 200
+    payload = run_resp.json()
+
+    assert captured["experience"][0]["locale"] == "ja-JP"
+    assert all(call["grader_cfg"]["locale"] == "ja-JP" for call in captured["graders"])
+    assert all(call["simulator_config"]["locale"] == "ja-JP" for call in captured["tasks"])
+    assert all(call["grader_config"]["locale"] == "ja-JP" for call in captured["tasks"])
+    review_call = next(call for call in captured["tasks"] if call["interaction_mode"] == "review")
+    scenario_call = next(call for call in captured["tasks"] if call["interaction_mode"] == "scenario")
+    assert "【今回の焦点】" in review_call["simulator_config"]["system_prompt"]
+    assert "【今回の焦点】" in scenario_call["simulator_config"]["system_prompt"]
+    assert any("このトライアルの総合スコア" in (trial.get("overall_comment") or "") for trial in payload["trials"])
+    assert any("追加の根拠を補ってください" in " ".join(trial.get("improvement_suggestions") or []) for trial in payload["trials"])
 
 
 @pytest.mark.asyncio
@@ -351,7 +491,7 @@ async def test_eval_v2_generate_persona_endpoint(client_and_session, monkeypatch
 
     captured = {"existing_names": []}
 
-    async def fake_generate_persona_with_llm(project_name, project_intent, existing_names):
+    async def fake_generate_persona_with_llm(project_name, project_intent, existing_names, locale=None):
         captured["existing_names"] = existing_names
         return {"name": "AI画像A", "prompt": "你是AI画像A，关注ROI和实操。"}
 

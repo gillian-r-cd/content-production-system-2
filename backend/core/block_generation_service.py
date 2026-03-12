@@ -24,15 +24,8 @@ from core.llm_compat import normalize_content, resolve_model
 from core.models import ContentBlock, GenerationLog, Project, generate_uuid
 from core.pre_question_utils import iter_answered_pre_question_items, list_missing_required_pre_questions
 from core.prompt_engine import GoldenContext
-
-
-MARKDOWN_FORMAT_INSTRUCTIONS = """# 输出格式（必须遵守）
-使用 Markdown 格式输出。
-- 标题使用 # ## ### 格式
-- 列表使用 - 或 1. 格式
-- 重点内容使用 **粗体** 或 *斜体*
-- 表格必须包含表头分隔行（如 | --- | --- |），且每行列数与表头一致
-- 若一个单元格需要多条内容，用 <br> 换行，不要增加 | 列分隔符"""
+from core.locale_text import markdown_instructions, rt
+from core.localization import DEFAULT_LOCALE, normalize_locale
 
 
 def update_parent_status(parent_id: str, db: Session):
@@ -66,7 +59,12 @@ def update_parent_status(parent_id: str, db: Session):
         update_parent_status(parent.parent_id, db)
 
 
-def resolve_dependencies(block: ContentBlock, db: Session) -> tuple[list[ContentBlock], str, Optional[str]]:
+def resolve_dependencies(
+    block: ContentBlock,
+    db: Session,
+    *,
+    locale: str = DEFAULT_LOCALE,
+) -> tuple[list[ContentBlock], str, Optional[str]]:
     """
     智能解析依赖关系并修复失效 depends_on。
     返回：(resolved_deps, dependency_content, error_msg)
@@ -108,7 +106,11 @@ def resolve_dependencies(block: ContentBlock, db: Session) -> tuple[list[Content
 
     incomplete = [dep for dep in resolved_deps if not dep.content or not dep.content.strip()]
     if incomplete:
-        return resolved_deps, "", f"依赖内容为空: {', '.join(dep.name for dep in incomplete)}"
+        return resolved_deps, "", rt(
+            locale,
+            "block.dependencies_missing_content",
+            missing_labels="、".join(dep.name for dep in incomplete),
+        )
 
     dependency_content = "\n\n".join(
         f"## {dep.name}\n{dep.content}"
@@ -125,11 +127,12 @@ def build_generation_system_prompt(
     dependency_content: str,
 ) -> str:
     """构建内容块生成 prompt。"""
+    locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
     creator_profile_text = ""
     if project.creator_profile:
-        creator_profile_text = project.creator_profile.to_prompt_context()
+        creator_profile_text = project.creator_profile.to_prompt_context(locale=locale)
 
-    gc = GoldenContext(creator_profile=creator_profile_text)
+    gc = GoldenContext(creator_profile=creator_profile_text, locale=locale)
 
     pre_answers_text = ""
     answers = [
@@ -140,30 +143,31 @@ def build_generation_system_prompt(
         )
     ]
     if answers:
-        pre_answers_text = "\n---\n# 用户补充信息（生成前提问的回答）\n" + "\n".join(answers)
+        pre_answers_text = rt(locale, "block.pre_answers_header", answers="\n".join(answers))
 
-    ai_prompt = block.ai_prompt or "请生成内容。"
+    ai_prompt = block.ai_prompt or rt(locale, "fallback.generate_content")
+    format_instructions = markdown_instructions(locale)
     has_placeholders = "{creator_profile}" in ai_prompt or "{dependencies}" in ai_prompt
     if has_placeholders:
         system_prompt = ai_prompt
-        system_prompt = system_prompt.replace("{creator_profile}", creator_profile_text or "（暂无创作者特质）")
-        system_prompt = system_prompt.replace("{dependencies}", dependency_content or "（无依赖内容）")
+        system_prompt = system_prompt.replace("{creator_profile}", creator_profile_text or rt(locale, "fallback.no_creator_profile"))
+        system_prompt = system_prompt.replace("{dependencies}", dependency_content or rt(locale, "fallback.no_dependencies"))
         system_prompt += pre_answers_text
-        system_prompt += f"\n\n---\n{MARKDOWN_FORMAT_INSTRUCTIONS}"
+        system_prompt += rt(locale, "block.markdown_tail", instructions=format_instructions)
         return system_prompt
 
     return f"""{gc.to_prompt()}
 
 ---
 
-# 当前任务
+{rt(locale, "block.task_header")}
 {ai_prompt}
 {pre_answers_text}
 
-{f'---{chr(10)}# 参考内容{chr(10)}{dependency_content}' if dependency_content else ''}
+{f'---{chr(10)}{rt(locale, "block.reference_header")}{chr(10)}{dependency_content}' if dependency_content else ''}
 
 ---
-{MARKDOWN_FORMAT_INSTRUCTIONS}
+{format_instructions}
 """
 
 
@@ -220,14 +224,18 @@ def list_ready_block_ids(
     return eligible_ids
 
 
-def ensure_required_pre_questions_answered(block: ContentBlock) -> None:
+def ensure_required_pre_questions_answered(block: ContentBlock, *, locale: str = DEFAULT_LOCALE) -> None:
     missing_items = list_missing_required_pre_questions(
         block.pre_questions or [],
         block.pre_answers or {},
     )
     if missing_items:
-        missing_labels = "、".join(item["question"] for item in missing_items)
-        raise HTTPException(status_code=400, detail=f"以下必答生成前提问尚未回答: {missing_labels}")
+        delimiter = "、" if normalize_locale(locale) == "ja-JP" else "、"
+        missing_labels = delimiter.join(item["question"] for item in missing_items)
+        raise HTTPException(
+            status_code=400,
+            detail=rt(locale, "pre_questions.missing_required", missing_labels=missing_labels),
+        )
 
 
 async def generate_block_content_sync(
@@ -253,10 +261,11 @@ async def generate_block_content_sync(
     project = db.query(Project).filter(Project.id == block.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
+    locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
 
-    ensure_required_pre_questions_answered(block)
+    ensure_required_pre_questions_answered(block, locale=locale)
 
-    _, dependency_content, dep_error = resolve_dependencies(block, db)
+    _, dependency_content, dep_error = resolve_dependencies(block, db, locale=locale)
     if dep_error:
         raise HTTPException(status_code=400, detail=dep_error)
 
@@ -278,7 +287,7 @@ async def generate_block_content_sync(
     try:
         response = await ainvoke_with_retry(chat_model, [
             SystemMessage(content=system_prompt),
-            HumanMessage(content=f"请生成「{block.name}」的内容。"),
+            HumanMessage(content=rt(locale, "block.generate.human", name=block.name)),
         ])
 
         generated_content = normalize_content(response.content)

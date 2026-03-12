@@ -30,8 +30,30 @@
     response = await llm_with_tools.ainvoke(messages)
 """
 
+from typing import Callable
+
 from langchain_core.language_models.chat_models import BaseChatModel
 from core.config import settings
+
+
+class LazyChatModel:
+    """按需初始化底层模型，避免纯 import 阶段触发 provider / SSL 依赖。"""
+
+    def __init__(self, factory: Callable[[], BaseChatModel]):
+        self._factory = factory
+        self._instance: BaseChatModel | None = None
+
+    def _get_instance(self) -> BaseChatModel:
+        if self._instance is None:
+            self._instance = self._factory()
+        return self._instance
+
+    def __getattr__(self, name: str):
+        return getattr(self._get_instance(), name)
+
+    def __repr__(self) -> str:
+        state = "initialized" if self._instance is not None else "pending"
+        return f"LazyChatModel({state})"
 
 
 def _infer_provider(model: str) -> str:
@@ -327,22 +349,24 @@ async def astream_with_retry(
 
 _provider = (settings.llm_provider or "openai").lower().strip()
 
-# 主模型：用于 Agent 决策、内容生成、修改等
-llm = get_chat_model()
-
-# 轻量模型：用于摘要、分类等简单任务（成本更低）
-if _provider == "anthropic":
-    llm_mini = get_chat_model(
-        model=settings.anthropic_mini_model or "claude-sonnet-4-6",
-        temperature=0.3,
-    )
-elif _provider == "google":
-    llm_mini = get_chat_model(
-        model=settings.google_mini_model or "gemini-3-flash-preview",
-        temperature=0.3,
-    )
-else:
-    llm_mini = get_chat_model(
+def _build_mini_model() -> BaseChatModel:
+    if _provider == "anthropic":
+        return get_chat_model(
+            model=settings.anthropic_mini_model or "claude-sonnet-4-6",
+            temperature=0.3,
+        )
+    if _provider == "google":
+        return get_chat_model(
+            model=settings.google_mini_model or "gemini-3-flash-preview",
+            temperature=0.3,
+        )
+    return get_chat_model(
         model=settings.openai_mini_model or "gpt-4o-mini",
         temperature=0.3,
     )
+
+# 主模型：用于 Agent 决策、内容生成、修改等
+llm = LazyChatModel(lambda: get_chat_model())
+
+# 轻量模型：用于摘要、分类等简单任务（成本更低）
+llm_mini = LazyChatModel(_build_mini_model)

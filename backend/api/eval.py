@@ -33,6 +33,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from core.database import get_db, get_session_maker
+from core.localization import DEFAULT_LOCALE, normalize_locale, resolve_eval_anchor_name
+from core.locale_text import rt
 from core.models import (
     Project,
     ContentBlock,
@@ -78,6 +80,93 @@ router = APIRouter(prefix="/api/eval", tags=["eval"])
 # 运行期状态（内存态，不落库）
 _TASK_RUNTIME_STATE = {}
 _TASK_RUNTIME_LOCK = threading.Lock()
+
+
+def _is_ja_locale(locale: str) -> bool:
+    return normalize_locale(locale) == "ja-JP"
+
+
+def _locale_text(locale: str, ja: str, zh: str) -> str:
+    return ja if _is_ja_locale(locale) else zh
+
+
+def _prompt_type_label(locale: str, prompt_type: str) -> str:
+    mapping = {
+        "persona": _locale_text(locale, "ペルソナ用プロンプト", "人物画像提示词"),
+        "consumer_prompt": _locale_text(locale, "消費者向けプロンプト", "消费者提示词"),
+        "representative_prompt": _locale_text(locale, "コンテンツ担当者プロンプト", "内容方提示词"),
+        "seller_prompt": _locale_text(locale, "売り手プロンプト", "卖方提示词"),
+        "buyer_prompt": _locale_text(locale, "買い手プロンプト", "买方提示词"),
+        "reviewer_prompt": _locale_text(locale, "レビュー役プロンプト", "审查角色提示词"),
+        "grader_prompt": _locale_text(locale, "評価器プロンプト", "评分器提示词"),
+    }
+    return mapping.get(prompt_type, prompt_type or _locale_text(locale, "共通プロンプト", "通用提示词"))
+
+
+def _form_type_label(locale: str, form_type: str) -> str:
+    mapping = {
+        "assessment": _locale_text(locale, "直接判定", "直接判定"),
+        "review": _locale_text(locale, "視点レビュー", "视角审查"),
+        "experience": _locale_text(locale, "体験評価", "消费体验"),
+        "scenario": _locale_text(locale, "シナリオ評価", "场景模拟"),
+    }
+    return mapping.get(form_type, form_type or _locale_text(locale, "汎用評価", "通用评估"))
+
+
+def _default_eval_persona(locale: str, project_name: str = "") -> dict:
+    background = (
+        f"{project_name} に関心を持つ想定ユーザー"
+        if project_name and _is_ja_locale(locale)
+        else f"对{project_name}感兴趣的目标用户"
+        if project_name
+        else _locale_text(locale, "想定読者", "目标读者")
+    )
+    return {
+        "name": _locale_text(locale, "典型ユーザー", "典型用户"),
+        "background": background,
+        "pain_points": [_locale_text(locale, "要確認", "待填写")],
+    }
+
+
+def _eval_role_name(locale: str, role: str) -> str:
+    mapping = {
+        "coach": _locale_text(locale, "コーチ", "教练"),
+        "editor": _locale_text(locale, "編集者", "编辑"),
+        "expert": _locale_text(locale, "専門家", "领域专家"),
+        "consumer": _locale_text(locale, "消費者", "消费者"),
+        "seller": _locale_text(locale, "営業担当", "内容销售"),
+        "reviewer": _locale_text(locale, "レビュー役", "审查角色"),
+        "role_b": _locale_text(locale, "ロールB", "角色B"),
+        "target_consumer": _locale_text(locale, "対象顧客", "目标消费者"),
+    }
+    return mapping.get(role, role)
+
+
+def _eval_default_dimensions(locale: str, dimensions: list[str]) -> list[str]:
+    if not _is_ja_locale(locale):
+        return dimensions
+    mapping = {
+        ("策略对齐度", "定位清晰度", "差异化程度", "完整性"): ["戦略整合性", "ポジショニング明確性", "差別化", "完全性"],
+        ("结构合理性", "语言质量", "风格一致性", "可读性"): ["構成妥当性", "言語品質", "文体一貫性", "可読性"],
+        ("事实准确性", "专业深度", "数据支撑", "行业相关性"): ["事実正確性", "専門性の深さ", "データ裏付け", "業界関連性"],
+        ("需求匹配度", "理解难度", "价值感知", "行动意愿"): ["ニーズ適合度", "理解しやすさ", "価値認知", "行動意欲"],
+        ("价值传达", "需求匹配", "异议处理", "转化结果"): ["価値伝達", "ニーズ適合", "異議対応", "成約結果"],
+    }
+    return mapping.get(tuple(dimensions or []), dimensions or [])
+
+
+def _project_locale(project_id: Optional[str], db: Session) -> str:
+    if not project_id:
+        return DEFAULT_LOCALE
+    project = db.query(Project).filter(Project.id == project_id).first()
+    return normalize_locale(getattr(project, "locale", DEFAULT_LOCALE)) if project else DEFAULT_LOCALE
+
+
+def _legacy_task_locale(task: Optional[EvalTask], db: Session) -> str:
+    if not task:
+        return DEFAULT_LOCALE
+    run = db.query(EvalRun).filter(EvalRun.id == task.eval_run_id).first()
+    return _project_locale(getattr(run, "project_id", None), db)
 
 
 # ============== Schemas ==============
@@ -266,6 +355,7 @@ async def generate_eval_persona(request: GeneratePersonaRequest, db: Session = D
         project_name=project.name,
         project_intent=intent,
         existing_names=avoid_names,
+        locale=normalize_locale(getattr(project, "locale", DEFAULT_LOCALE)),
     )
     return {"persona": generated}
 
@@ -273,9 +363,13 @@ async def generate_eval_persona(request: GeneratePersonaRequest, db: Session = D
 @router.post("/prompts/generate")
 async def generate_eval_prompt(request: GeneratePromptRequest):
     """统一 AI 生成提示词接口（仅生成，不做优化）。"""
+    locale = normalize_locale((request.context or {}).get("locale", DEFAULT_LOCALE))
     prompt_type = (request.prompt_type or "").strip()
     if not prompt_type:
-        raise HTTPException(status_code=400, detail="prompt_type 不能为空")
+        raise HTTPException(
+            status_code=400,
+            detail=_locale_text(locale, "prompt_type は必須です", "prompt_type 不能为空"),
+        )
 
     generated_prompt = await _generate_prompt_with_llm(prompt_type=prompt_type, context=request.context or {})
     return {"generated_prompt": generated_prompt}
@@ -326,6 +420,7 @@ def create_project_persona(project_id: str, request: CreatePersonaRequest, db: S
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    project_locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
 
     block = _get_or_create_eval_persona_block(project_id, db)
     personas = _read_personas_from_block(block)
@@ -336,7 +431,10 @@ def create_project_persona(project_id: str, request: CreatePersonaRequest, db: S
         "source": request.source or "manual",
     }
     if not new_persona["name"] or not new_persona["prompt"]:
-        raise HTTPException(status_code=400, detail="画像名称和提示词不能为空")
+        raise HTTPException(
+            status_code=400,
+            detail=_locale_text(project_locale, "ペルソナ名とプロンプトは必須です", "画像名称和提示词不能为空"),
+        )
 
     personas.append(new_persona)
     _write_personas_to_block(block, personas)
@@ -356,6 +454,7 @@ def update_project_persona(persona_id: str, request: UpdatePersonaRequest, db: S
         hit = next((p for p in personas if str(p.get("id", "")) == persona_id), None)
         if not hit:
             continue
+        project_locale = _project_locale(block.project_id, db)
 
         if request.name is not None:
             hit["name"] = request.name.strip()
@@ -364,7 +463,10 @@ def update_project_persona(persona_id: str, request: UpdatePersonaRequest, db: S
         if request.source is not None:
             hit["source"] = request.source
         if not hit.get("name") or not hit.get("prompt"):
-            raise HTTPException(status_code=400, detail="画像名称和提示词不能为空")
+            raise HTTPException(
+                status_code=400,
+                detail=_locale_text(project_locale, "ペルソナ名とプロンプトは必須です", "画像名称和提示词不能为空"),
+            )
 
         _write_personas_to_block(block, personas)
         db.commit()
@@ -386,7 +488,7 @@ def delete_project_persona(persona_id: str, db: Session = Depends(get_db)):
             continue
         _write_personas_to_block(block, filtered)
         db.commit()
-        return {"message": "已删除"}
+        return {"message": _locale_text(_project_locale(block.project_id, db), "削除しました", "已删除")}
     raise HTTPException(status_code=404, detail="Persona not found")
 
 
@@ -407,7 +509,11 @@ def list_eval_v2_tasks(project_id: str, db: Session = Depends(get_db)):
             # 运行态丢失（常见于服务重启/进程中断），避免界面长期假 running
             t.status = "failed"
             if not (t.last_error or "").strip():
-                t.last_error = "执行状态丢失（服务重启或任务中断），请重新执行。"
+                t.last_error = _locale_text(
+                    _project_locale(t.project_id, db),
+                    "実行状態が失われました（サービス再起動またはタスク中断）。再実行してください。",
+                    "执行状态丢失（服务重启或任务中断），请重新执行。",
+                )
             healed = True
     if healed:
         db.commit()
@@ -421,9 +527,13 @@ def create_eval_v2_task(project_id: str, request: CreateTaskV2Request, db: Sessi
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    project_locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
 
     if not request.trial_configs:
-        raise HTTPException(status_code=400, detail="创建 Task 时必须至少包含一个 Trial 配置")
+        raise HTTPException(
+            status_code=400,
+            detail=_locale_text(project_locale, "Task には少なくとも 1 つの Trial 設定が必要です", "创建 Task 时必须至少包含一个 Trial 配置"),
+        )
 
     task = EvalTaskV2(
         id=generate_uuid(),
@@ -446,6 +556,7 @@ def update_eval_v2_task(task_id: str, request: UpdateTaskV2Request, db: Session 
     task = db.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="EvalTask not found")
+    task_locale = _project_locale(task.project_id, db)
 
     if request.name is not None:
         task.name = request.name
@@ -456,7 +567,10 @@ def update_eval_v2_task(task_id: str, request: UpdateTaskV2Request, db: Session 
 
     if request.trial_configs is not None:
         if not request.trial_configs:
-            raise HTTPException(status_code=400, detail="Task 至少需要一个 Trial 配置")
+            raise HTTPException(
+                status_code=400,
+                detail=_locale_text(task_locale, "Task には少なくとも 1 つの Trial 設定が必要です", "Task 至少需要一个 Trial 配置"),
+            )
         _replace_trial_configs_v2(task.id, request.trial_configs, db)
 
     task.status = "pending"
@@ -467,6 +581,7 @@ def update_eval_v2_task(task_id: str, request: UpdateTaskV2Request, db: Session 
 
 @router.post("/tasks/{project_id}/execute-all")
 async def execute_eval_v2_all_tasks(project_id: str, db: Session = Depends(get_db)):
+    project_locale = _project_locale(project_id, db)
     tasks = (
         db.query(EvalTaskV2)
         .filter(EvalTaskV2.project_id == project_id)
@@ -474,7 +589,10 @@ async def execute_eval_v2_all_tasks(project_id: str, db: Session = Depends(get_d
         .all()
     )
     if not tasks:
-        raise HTTPException(status_code=400, detail="当前项目没有可执行的 Eval Task")
+        raise HTTPException(
+            status_code=400,
+            detail=_locale_text(project_locale, "このプロジェクトには実行可能な Eval Task がありません", "当前项目没有可执行的 Eval Task"),
+        )
 
     executed = []
     failed = []
@@ -595,7 +713,10 @@ def batch_delete_eval_v2_executions(
     批量删除执行记录（按 task_id + batch_id）。
     """
     if not request.items:
-        raise HTTPException(status_code=400, detail="items 不能为空")
+        raise HTTPException(
+            status_code=400,
+            detail=_locale_text(_project_locale(project_id, db), "items は必須です", "items 不能为空"),
+        )
 
     touched_task_ids = set()
     deleted_trials = 0
@@ -719,7 +840,8 @@ def get_eval_v2_task_trials(task_id: str, db: Session = Depends(get_db)):
         .order_by(EvalTrialResultV2.created_at.desc())
         .all()
     )
-    return {"trials": [_serialize_trial_result_v2(r) for r in rows]}
+    locale = _project_locale(task.project_id, db)
+    return {"trials": [_serialize_trial_result_v2(r, locale=locale) for r in rows]}
 
 
 @router.get("/task/{task_id}/latest")
@@ -750,10 +872,11 @@ def get_eval_v2_task_batch(task_id: str, batch_id: str, db: Session = Depends(ge
     )
     q = db.query(TaskAnalysisV2).filter(TaskAnalysisV2.task_id == task_id, TaskAnalysisV2.batch_id == batch_id)
     analysis = q.order_by(TaskAnalysisV2.created_at.desc()).first()
+    locale = _project_locale(task.project_id, db)
     return {
         "task": _serialize_task_v2(task),
         "batch_id": batch_id,
-        "trials": [_serialize_trial_result_v2(r) for r in rows],
+        "trials": [_serialize_trial_result_v2(r, locale=locale) for r in rows],
         "analysis": _serialize_task_analysis_v2(analysis) if analysis else None,
     }
 
@@ -834,11 +957,12 @@ def delete_eval_run(run_id: str, db: Session = Depends(get_db)):
     run = db.query(EvalRun).filter(EvalRun.id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="EvalRun not found")
+    run_locale = _project_locale(run.project_id, db)
     db.query(EvalTrial).filter(EvalTrial.eval_run_id == run_id).delete()
     db.query(EvalTask).filter(EvalTask.eval_run_id == run_id).delete()
     db.delete(run)
     db.commit()
-    return {"message": "已删除"}
+    return {"message": _locale_text(run_locale, "削除しました", "已删除")}
 
 
 # ============== EvalTask CRUD ==============
@@ -942,20 +1066,22 @@ def update_eval_task(task_id: str, request: UpdateEvalTaskRequest, db: Session =
 def delete_eval_task(task_id: str, db: Session = Depends(get_db)):
     task_v2 = db.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
     if task_v2:
+        task_locale = _project_locale(task_v2.project_id, db)
         db.query(EvalTrialResultV2).filter(EvalTrialResultV2.task_id == task_id).delete()
         db.query(EvalTrialConfigV2).filter(EvalTrialConfigV2.task_id == task_id).delete()
         db.query(TaskAnalysisV2).filter(TaskAnalysisV2.task_id == task_id).delete()
         db.delete(task_v2)
         db.commit()
-        return {"message": "已删除"}
+        return {"message": _locale_text(task_locale, "削除しました", "已删除")}
 
     task = db.query(EvalTask).filter(EvalTask.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="EvalTask not found")
+    task_locale = _legacy_task_locale(task, db)
     db.query(EvalTrial).filter(EvalTrial.eval_task_id == task_id).delete()
     db.delete(task)
     db.commit()
-    return {"message": "已删除"}
+    return {"message": _locale_text(task_locale, "削除しました", "已删除")}
 
 
 @router.post("/run/{run_id}/batch-tasks")
@@ -964,6 +1090,8 @@ def batch_create_tasks(request: BatchCreateTasksRequest, db: Session = Depends(g
     run = db.query(EvalRun).filter(EvalRun.id == request.eval_run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="EvalRun not found")
+    project = db.query(Project).filter(Project.id == request.project_id).first()
+    project_locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE)) if project else DEFAULT_LOCALE
     
     # 获取 personas
     personas = []
@@ -976,7 +1104,10 @@ def batch_create_tasks(request: BatchCreateTasksRequest, db: Session = Depends(g
     if not personas:
         personas = _get_project_personas_from_research(request.project_id, db)
     if not personas:
-        personas = [{"name": "典型用户", "background": "对该领域感兴趣的普通读者"}]
+        personas = [{
+            "name": _locale_text(project_locale, "典型ユーザー", "典型用户"),
+            "background": _locale_text(project_locale, "この分野に関心のある一般読者", "对该领域感兴趣的普通读者"),
+        }]
     
     tasks_to_create = []
     
@@ -986,36 +1117,59 @@ def batch_create_tasks(request: BatchCreateTasksRequest, db: Session = Depends(g
         for role in ["coach", "editor", "expert"]:
             type_info = SIMULATOR_TYPES.get(role, {})
             tasks_to_create.append({
-                "name": f"{type_info.get('name', role)}审查",
+                "name": (
+                    f"{_eval_role_name(project_locale, role)}レビュー"
+                    if _is_ja_locale(project_locale)
+                    else f"{type_info.get('name', role)}审查"
+                ),
                 "simulator_type": role,
                 "interaction_mode": "review",
-                "grader_config": {"type": "content", "dimensions": type_info.get("default_dimensions", [])},
+                "simulator_config": {"locale": project_locale},
+                "grader_config": {
+                    "type": "content",
+                    "dimensions": _eval_default_dimensions(project_locale, type_info.get("default_dimensions", [])),
+                    "locale": project_locale,
+                },
                 "order_index": order,
             })
             order += 1
         
         for persona in personas:
-            p_name = persona.get("name", "用户")
+            p_name = persona.get("name", _locale_text(project_locale, "ユーザー", "用户"))
             tasks_to_create.append({
-                "name": f"消费者对话-{p_name}",
+                "name": f"{_locale_text(project_locale, '顧客対話', '消费者对话')}-{p_name}",
                 "simulator_type": "consumer",
                 "interaction_mode": "dialogue",
                 "persona_config": persona,
-                "simulator_config": {"max_turns": 5, "feedback_mode": "structured"},
-                "grader_config": {"type": "combined", "dimensions": SIMULATOR_TYPES.get("consumer", {}).get("default_dimensions", [])},
+                "simulator_config": {"max_turns": 5, "feedback_mode": "structured", "locale": project_locale},
+                "grader_config": {
+                    "type": "combined",
+                    "dimensions": _eval_default_dimensions(
+                        project_locale,
+                        SIMULATOR_TYPES.get("consumer", {}).get("default_dimensions", []),
+                    ),
+                    "locale": project_locale,
+                },
                 "order_index": order,
             })
             order += 1
         
         for persona in personas:
-            p_name = persona.get("name", "用户")
+            p_name = persona.get("name", _locale_text(project_locale, "ユーザー", "用户"))
             tasks_to_create.append({
-                "name": f"销售测试-{p_name}",
+                "name": f"{_locale_text(project_locale, '販売テスト', '销售测试')}-{p_name}",
                 "simulator_type": "seller",
                 "interaction_mode": "dialogue",
                 "persona_config": persona,
-                "simulator_config": {"max_turns": 8, "feedback_mode": "structured"},
-                "grader_config": {"type": "combined", "dimensions": SIMULATOR_TYPES.get("seller", {}).get("default_dimensions", [])},
+                "simulator_config": {"max_turns": 8, "feedback_mode": "structured", "locale": project_locale},
+                "grader_config": {
+                    "type": "combined",
+                    "dimensions": _eval_default_dimensions(
+                        project_locale,
+                        SIMULATOR_TYPES.get("seller", {}).get("default_dimensions", []),
+                    ),
+                    "locale": project_locale,
+                },
                 "order_index": order,
             })
             order += 1
@@ -1024,23 +1178,33 @@ def batch_create_tasks(request: BatchCreateTasksRequest, db: Session = Depends(g
         for i, role in enumerate(["coach", "editor", "expert"]):
             type_info = SIMULATOR_TYPES.get(role, {})
             tasks_to_create.append({
-                "name": f"{type_info.get('name', role)}审查",
+                "name": (
+                    f"{_eval_role_name(project_locale, role)}レビュー"
+                    if _is_ja_locale(project_locale)
+                    else f"{type_info.get('name', role)}审查"
+                ),
                 "simulator_type": role,
                 "interaction_mode": "review",
-                "grader_config": {"type": "content", "dimensions": type_info.get("default_dimensions", [])},
+                "simulator_config": {"locale": project_locale},
+                "grader_config": {
+                    "type": "content",
+                    "dimensions": _eval_default_dimensions(project_locale, type_info.get("default_dimensions", [])),
+                    "locale": project_locale,
+                },
                 "order_index": i,
             })
     
     elif request.template == "dialogue_only":
         order = 0
         for persona in personas:
-            p_name = persona.get("name", "用户")
+            p_name = persona.get("name", _locale_text(project_locale, "ユーザー", "用户"))
             tasks_to_create.append({
-                "name": f"消费者对话-{p_name}",
+                "name": f"{_locale_text(project_locale, '顧客対話', '消费者对话')}-{p_name}",
                 "simulator_type": "consumer",
                 "interaction_mode": "dialogue",
                 "persona_config": persona,
-                "grader_config": {"type": "combined", "dimensions": []},
+                "simulator_config": {"locale": project_locale},
+                "grader_config": {"type": "combined", "dimensions": [], "locale": project_locale},
                 "order_index": order,
             })
             order += 1
@@ -1051,10 +1215,10 @@ def batch_create_tasks(request: BatchCreateTasksRequest, db: Session = Depends(g
                 "name": ct.name,
                 "simulator_type": ct.simulator_type,
                 "interaction_mode": ct.interaction_mode,
-                "simulator_config": ct.simulator_config or {},
+                "simulator_config": {**(ct.simulator_config or {}), "locale": project_locale},
                 "persona_config": ct.persona_config or {},
                 "target_block_ids": ct.target_block_ids or [],
-                "grader_config": ct.grader_config or {},
+                "grader_config": {**(ct.grader_config or {}), "locale": project_locale},
                 "order_index": ct.order_index or i,
             })
     
@@ -1064,7 +1228,7 @@ def batch_create_tasks(request: BatchCreateTasksRequest, db: Session = Depends(g
         task = EvalTask(
             id=generate_uuid(),
             eval_run_id=request.eval_run_id,
-            name=task_data.get("name", "未命名任务"),
+            name=task_data.get("name", _locale_text(project_locale, "無題タスク", "未命名任务")),
             simulator_type=task_data.get("simulator_type", "coach"),
             interaction_mode=task_data.get("interaction_mode", "review"),
             simulator_config=task_data.get("simulator_config", {"max_turns": 5}),
@@ -1078,7 +1242,11 @@ def batch_create_tasks(request: BatchCreateTasksRequest, db: Session = Depends(g
     
     db.commit()
     return {
-        "message": f"创建了 {len(created_tasks)} 个任务",
+        "message": _locale_text(
+            project_locale,
+            f"{len(created_tasks)} 件の Task を作成しました",
+            f"创建了 {len(created_tasks)} 个任务",
+        ),
         "tasks": [_to_task_response(t) for t in created_tasks],
     }
 
@@ -1094,6 +1262,7 @@ async def execute_eval_run(run_id: str, db: Session = Depends(get_db)):
     run = db.query(EvalRun).filter(EvalRun.id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="EvalRun not found")
+    run_locale = _project_locale(run.project_id, db)
     
     tasks = (
         db.query(EvalTask)
@@ -1103,16 +1272,23 @@ async def execute_eval_run(run_id: str, db: Session = Depends(get_db)):
     )
     
     if not tasks:
-        raise HTTPException(status_code=400, detail="没有待执行的 Task")
+        raise HTTPException(
+            status_code=400,
+            detail=_locale_text(run_locale, "実行待ちの Task がありません", "没有待执行的 Task"),
+        )
     
     project = db.query(Project).filter(Project.id == run.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    project_locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
     
     # 收集项目内容
     content, field_names = _collect_content(project.id, None, db, exclude_eval=True)
     if not content:
-        raise HTTPException(status_code=400, detail="项目中没有可评估的内容")
+        raise HTTPException(
+            status_code=400,
+            detail=_locale_text(project_locale, "プロジェクトに評価可能な内容がありません", "项目中没有可评估的内容"),
+        )
     
     creator_profile = _get_creator_profile(project, db)
     intent = _get_project_intent(project, db)
@@ -1135,7 +1311,7 @@ async def execute_eval_run(run_id: str, db: Session = Depends(get_db)):
                 )
             
             async_tasks.append(_execute_single_task(
-                task, task_content, creator_profile, intent, task_field_names
+                task, task_content, creator_profile, intent, task_field_names, getattr(project, "locale", DEFAULT_LOCALE)
             ))
         
         db.commit()  # commit status updates
@@ -1203,7 +1379,7 @@ async def execute_eval_run(run_id: str, db: Session = Depends(get_db)):
         # 运行诊断
         if all_trial_results:
             diagnosis, diag_call = await run_diagnoser(
-                all_trial_results, content[:500], intent
+                all_trial_results, content[:500], intent, locale=getattr(project, "locale", DEFAULT_LOCALE)
             )
             run.summary = diagnosis.get("summary", "")
             run.overall_score = diagnosis.get("overall_score", 0)
@@ -1216,15 +1392,22 @@ async def execute_eval_run(run_id: str, db: Session = Depends(get_db)):
         db.refresh(run)
         
         return {
-            "message": f"评估完成，执行了 {len(results)} 个 Task",
+            "message": _locale_text(
+                project_locale,
+                f"評価が完了し、{len(results)} 件の Task を実行しました",
+                f"评估完成，执行了 {len(results)} 个 Task",
+            ),
             "run": _to_run_response(run),
         }
         
     except Exception as e:
         run.status = "failed"
-        run.summary = f"评估失败: {str(e)}"
+        run.summary = _locale_text(project_locale, f"評価失敗: {str(e)}", f"评估失败: {str(e)}")
         db.commit()
-        raise HTTPException(status_code=500, detail=f"评估运行失败: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=_locale_text(project_locale, f"評価実行に失敗しました: {str(e)}", f"评估运行失败: {str(e)}"),
+        )
 
 
 @router.post("/task/{task_id}/execute")
@@ -1245,12 +1428,16 @@ async def execute_single_task(task_id: str, db: Session = Depends(get_db)):
     project = db.query(Project).filter(Project.id == run.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    project_locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
     
     content, field_names = _collect_content(
         project.id, task.target_block_ids or None, db, exclude_eval=True
     )
     if not content:
-        raise HTTPException(status_code=400, detail="没有可评估的内容")
+        raise HTTPException(
+            status_code=400,
+            detail=_locale_text(project_locale, "評価可能な内容がありません", "没有可评估的内容"),
+        )
     
     creator_profile = _get_creator_profile(project, db)
     intent = _get_project_intent(project, db)
@@ -1259,7 +1446,7 @@ async def execute_single_task(task_id: str, db: Session = Depends(get_db)):
     db.commit()
     
     try:
-        tr = await _execute_single_task(task, content, creator_profile, intent, field_names)
+        tr = await _execute_single_task(task, content, creator_profile, intent, field_names, getattr(project, "locale", DEFAULT_LOCALE))
         
         trial = EvalTrial(
             id=generate_uuid(),
@@ -1294,7 +1481,10 @@ async def execute_single_task(task_id: str, db: Session = Depends(get_db)):
         task.status = "failed"
         task.error = str(e)
         db.commit()
-        raise HTTPException(status_code=500, detail=f"Task 执行失败: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=_locale_text(project_locale, f"Task の実行に失敗しました: {str(e)}", f"Task 执行失败: {str(e)}"),
+        )
 
 
 @router.post("/task/{task_id}/start")
@@ -1305,11 +1495,19 @@ async def start_eval_v2_task(task_id: str, db: Session = Depends(get_db)):
     task = db.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="EvalTask not found")
+    task_locale = _project_locale(task.project_id, db)
     rt = _get_task_runtime(task_id)
     if rt.get("is_running"):
-        return {"message": "任务已在运行中", "task_id": task_id}
+        return {"message": _locale_text(task_locale, "タスクはすでに実行中です", "任务已在运行中"), "task_id": task_id}
     if task.status == "paused":
-        raise HTTPException(status_code=400, detail="任务已暂停，请使用 resume 继续，或先停止后重新开始")
+        raise HTTPException(
+            status_code=400,
+            detail=_locale_text(
+                task_locale,
+                "タスクは一時停止中です。resume で再開するか、停止後に再実行してください。",
+                "任务已暂停，请使用 resume 继续，或先停止后重新开始",
+            ),
+        )
 
     cfgs = (
         db.query(EvalTrialConfigV2)
@@ -1342,7 +1540,7 @@ async def start_eval_v2_task(task_id: str, db: Session = Depends(get_db)):
         },
     )
     asyncio.create_task(_execute_task_v2_background(task_id))
-    return {"message": "已开始执行", "task_id": task_id}
+    return {"message": _locale_text(task_locale, "実行を開始しました", "已开始执行"), "task_id": task_id}
 
 
 @router.post("/task/{task_id}/pause")
@@ -1353,9 +1551,10 @@ def pause_eval_v2_task(task_id: str, db: Session = Depends(get_db)):
     task = db.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="EvalTask not found")
+    task_locale = _project_locale(task.project_id, db)
     rt = _get_task_runtime(task_id)
     if not rt.get("is_running"):
-        return {"message": "任务当前未在运行", "task_id": task_id}
+        return {"message": _locale_text(task_locale, "タスクは現在実行中ではありません", "任务当前未在运行"), "task_id": task_id}
     # 保持 running，前端通过 pause_requested 展示 pausing；
     # 真正 paused 在 Trial 边界由执行循环落库。
     if task.status != "running":
@@ -1369,7 +1568,7 @@ def pause_eval_v2_task(task_id: str, db: Session = Depends(get_db)):
             "updated_at": datetime.now(timezone.utc).isoformat(),
         },
     )
-    return {"message": "已请求暂停", "task_id": task_id}
+    return {"message": _locale_text(task_locale, "一時停止をリクエストしました", "已请求暂停"), "task_id": task_id}
 
 
 @router.post("/task/{task_id}/resume")
@@ -1380,6 +1579,7 @@ async def resume_eval_v2_task(task_id: str, db: Session = Depends(get_db)):
     task = db.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="EvalTask not found")
+    task_locale = _project_locale(task.project_id, db)
     rt = _get_task_runtime(task_id)
     if rt.get("is_running"):
         # 若处于“请求暂停但尚未停稳”，记录恢复请求，等进入 paused 后自动续跑
@@ -1391,10 +1591,16 @@ async def resume_eval_v2_task(task_id: str, db: Session = Depends(get_db)):
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 },
             )
-            return {"message": "已排队恢复，暂停完成后会自动继续", "task_id": task_id}
-        return {"message": "任务已在运行中", "task_id": task_id}
+            return {
+                "message": _locale_text(task_locale, "再開をキューに入れました。一時停止完了後に自動再開します。", "已排队恢复，暂停完成后会自动继续"),
+                "task_id": task_id,
+            }
+        return {"message": _locale_text(task_locale, "タスクはすでに実行中です", "任务已在运行中"), "task_id": task_id}
     if task.status != "paused" or not task.latest_batch_id:
-        raise HTTPException(status_code=400, detail="当前任务不处于可恢复状态")
+        raise HTTPException(
+            status_code=400,
+            detail=_locale_text(task_locale, "現在のタスクは再開可能な状態ではありません", "当前任务不处于可恢复状态"),
+        )
 
     _set_task_runtime(
         task_id,
@@ -1413,7 +1619,11 @@ async def resume_eval_v2_task(task_id: str, db: Session = Depends(get_db)):
     task.status = "running"
     db.commit()
     asyncio.create_task(_execute_task_v2_background(task_id, resume_batch_id=task.latest_batch_id))
-    return {"message": "已恢复执行", "task_id": task_id, "batch_id": task.latest_batch_id}
+    return {
+        "message": _locale_text(task_locale, "実行を再開しました", "已恢复执行"),
+        "task_id": task_id,
+        "batch_id": task.latest_batch_id,
+    }
 
 
 @router.post("/task/{task_id}/stop")
@@ -1424,9 +1634,10 @@ def stop_eval_v2_task(task_id: str, db: Session = Depends(get_db)):
     task = db.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="EvalTask not found")
+    task_locale = _project_locale(task.project_id, db)
     rt = _get_task_runtime(task_id)
     if not rt.get("is_running"):
-        return {"message": "任务当前未在运行", "task_id": task_id}
+        return {"message": _locale_text(task_locale, "タスクは現在実行中ではありません", "任务当前未在运行"), "task_id": task_id}
     # 立即反映状态，便于用户及时看到“终止中/已终止”
     task.status = "stopped"
     db.commit()
@@ -1439,7 +1650,7 @@ def stop_eval_v2_task(task_id: str, db: Session = Depends(get_db)):
             "updated_at": datetime.now(timezone.utc).isoformat(),
         },
     )
-    return {"message": "已请求终止", "task_id": task_id}
+    return {"message": _locale_text(task_locale, "停止をリクエストしました", "已请求终止"), "task_id": task_id}
 
 
 async def _execute_single_task(
@@ -1448,8 +1659,13 @@ async def _execute_single_task(
     creator_profile: str,
     intent: str,
     field_names: list,
+    locale: str = DEFAULT_LOCALE,
 ) -> TrialResult:
     """内部：执行一个 Task"""
+    sim_cfg = dict(task.simulator_config or {})
+    sim_cfg["locale"] = normalize_locale(locale)
+    grader_cfg = dict(task.grader_config or {})
+    grader_cfg["locale"] = normalize_locale(locale)
     return await run_task_trial(
         simulator_type=task.simulator_type,
         interaction_mode=task.interaction_mode,
@@ -1457,8 +1673,8 @@ async def _execute_single_task(
                 creator_profile=creator_profile,
                 intent=intent,
         persona=task.persona_config if task.persona_config else None,
-        simulator_config=task.simulator_config,
-        grader_config=task.grader_config,
+        simulator_config=sim_cfg,
+        grader_config=grader_cfg,
                     content_field_names=field_names,
                 )
 
@@ -1492,6 +1708,7 @@ async def run_diagnosis(run_id: str, db: Session = Depends(get_db)):
     run = db.query(EvalRun).filter(EvalRun.id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="EvalRun not found")
+    run_locale = _project_locale(run.project_id, db)
     
     trials = (
         db.query(EvalTrial)
@@ -1500,7 +1717,10 @@ async def run_diagnosis(run_id: str, db: Session = Depends(get_db)):
     )
     
     if not trials:
-        raise HTTPException(status_code=400, detail="没有已完成的 Trial")
+        raise HTTPException(
+            status_code=400,
+            detail=_locale_text(run_locale, "完了済みの Trial がありません", "没有已完成的 Trial"),
+        )
     
     trial_results = []
     for t in trials:
@@ -1516,7 +1736,7 @@ async def run_diagnosis(run_id: str, db: Session = Depends(get_db)):
     intent = _get_project_intent(project, db) if project else ""
     
     diagnosis, diag_call = await run_diagnoser(
-        trial_results=trial_results, intent=intent,
+        trial_results=trial_results, intent=intent, locale=getattr(project, "locale", DEFAULT_LOCALE),
     )
     
     run.summary = diagnosis.get("summary", "")
@@ -1535,9 +1755,13 @@ async def run_task_diagnosis(task_id: str, batch_id: Optional[str] = None, db: S
     task = db.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="EvalTask not found")
+    task_locale = _project_locale(task.project_id, db)
     target_batch_id = batch_id or task.latest_batch_id
     if not target_batch_id:
-        raise HTTPException(status_code=400, detail="Task 尚未执行，无法分析")
+        raise HTTPException(
+            status_code=400,
+            detail=_locale_text(task_locale, "Task はまだ実行されておらず、分析できません", "Task 尚未执行，无法分析"),
+        )
 
     rows = (
         db.query(EvalTrialResultV2)
@@ -1549,9 +1773,12 @@ async def run_task_diagnosis(task_id: str, batch_id: Optional[str] = None, db: S
         .all()
     )
     if not rows:
-        raise HTTPException(status_code=400, detail="当前 batch 没有可分析的 Trial 结果")
+        raise HTTPException(
+            status_code=400,
+            detail=_locale_text(task_locale, "現在の batch に分析可能な Trial 結果がありません", "当前 batch 没有可分析的 Trial 结果"),
+        )
 
-    analysis = _build_task_analysis_from_trials(task, rows, target_batch_id)
+    analysis = _build_task_analysis_from_trials(task, rows, target_batch_id, locale=task_locale)
     db.query(TaskAnalysisV2).filter(
         TaskAnalysisV2.task_id == task_id,
         TaskAnalysisV2.batch_id == target_batch_id,
@@ -1570,16 +1797,23 @@ async def run_evaluation(request: RunEvalRequest, db: Session = Depends(get_db))
     project = db.query(Project).filter(Project.id == request.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    project_locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
     
     content, field_names = _collect_content(project.id, request.input_block_ids, db)
     if not content:
-        raise HTTPException(status_code=400, detail="项目中没有可评估的内容")
+        raise HTTPException(
+            status_code=400,
+            detail=_locale_text(project_locale, "プロジェクトに評価可能な内容がありません", "项目中没有可评估的内容"),
+        )
     
     creator_profile = _get_creator_profile(project, db)
     intent = _get_project_intent(project, db)
     personas = request.personas or _get_project_personas_from_research(project.id, db)
     if not personas:
-        personas = [{"name": "典型用户", "background": "对该领域感兴趣的普通读者"}]
+        personas = [{
+            "name": _locale_text(getattr(project, "locale", DEFAULT_LOCALE), "典型ユーザー", "典型用户"),
+            "background": _locale_text(getattr(project, "locale", DEFAULT_LOCALE), "この分野に関心のある一般読者", "对该领域感兴趣的普通读者"),
+        }]
     
     eval_run = EvalRun(
         id=generate_uuid(), project_id=project.id, name=request.name,
@@ -1595,6 +1829,7 @@ async def run_evaluation(request: RunEvalRequest, db: Session = Depends(get_db))
             creator_profile=creator_profile, intent=intent,
             personas=personas, max_turns=request.max_turns,
             content_field_names=field_names,
+            locale=project_locale,
         )
         
         role_scores = {}
@@ -1626,9 +1861,12 @@ async def run_evaluation(request: RunEvalRequest, db: Session = Depends(get_db))
         
     except Exception as e:
         eval_run.status = "failed"
-        eval_run.summary = f"评估失败: {str(e)}"
+        eval_run.summary = _locale_text(project_locale, f"評価失敗: {str(e)}", f"评估失败: {str(e)}")
         db.commit()
-        raise HTTPException(status_code=500, detail=f"评估运行失败: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=_locale_text(project_locale, f"評価実行に失敗しました: {str(e)}", f"评估运行失败: {str(e)}"),
+        )
 
 
 # ============== Generate for ContentBlock ==============
@@ -1644,10 +1882,14 @@ async def generate_eval_for_block(block_id: str, db: Session = Depends(get_db)):
     ).first()
     if not block:
         raise HTTPException(status_code=404, detail="Block not found")
+    block_locale = _project_locale(block.project_id, db)
     
     handler = block.special_handler
     if not handler or not handler.startswith("eval_"):
-        raise HTTPException(status_code=400, detail="此内容块不是评估字段")
+        raise HTTPException(
+            status_code=400,
+            detail=_locale_text(block_locale, "このコンテンツブロックは評価フィールドではありません", "此内容块不是评估字段"),
+        )
     
     project = db.query(Project).filter(Project.id == block.project_id).first()
     if not project:
@@ -1660,16 +1902,20 @@ async def generate_eval_for_block(block_id: str, db: Session = Depends(get_db)):
     elif handler == "eval_report":
         return await _handle_eval_report(block, project, db)
     else:
-        raise HTTPException(status_code=400, detail=f"未知的评估 handler: {handler}")
+        raise HTTPException(
+            status_code=400,
+            detail=_locale_text(block_locale, f"不明な評価 handler: {handler}", f"未知的评估 handler: {handler}"),
+        )
 
 
 async def _handle_persona_setup(block, project, db):
     """生成目标消费者画像（从消费者调研中提取）"""
+    project_locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
     personas = _get_project_personas_from_research(project.id, db)
     
     if not personas:
         block.content = json.dumps({
-            "personas": [{"name": "典型用户", "background": f"对{project.name}感兴趣的目标用户", "pain_points": ["待填写"]}],
+            "personas": [_default_eval_persona(project_locale, project.name)],
             "source": "default",
         }, ensure_ascii=False, indent=2)
     else:
@@ -1680,11 +1926,19 @@ async def _handle_persona_setup(block, project, db):
     
     block.status = "pending"  # 需要用户确认
     db.commit()
-    return {"message": f"加载了 {len(personas) if personas else 1} 个消费者画像", "content": block.content}
+    return {
+        "message": (
+            f"{len(personas) if personas else 1} 件のペルソナを読み込みました"
+            if _is_ja_locale(project_locale)
+            else f"加载了 {len(personas) if personas else 1} 个消费者画像"
+        ),
+        "content": block.content,
+    }
 
 
 async def _handle_task_config(block, project, db):
     """生成默认的任务配置"""
+    project_locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
     # 获取 personas
     persona_block = _find_sibling_by_handler(block, "eval_persona_setup", db)
     personas = []
@@ -1696,7 +1950,7 @@ async def _handle_task_config(block, project, db):
             pass
     
     if not personas:
-        personas = [{"name": "典型用户", "background": "目标读者"}]
+        personas = [_default_eval_persona(project_locale)]
     
     # 生成全回归任务配置
     tasks_config = []
@@ -1704,35 +1958,64 @@ async def _handle_task_config(block, project, db):
     for role in ["coach", "editor", "expert"]:
         type_info = SIMULATOR_TYPES.get(role, {})
         tasks_config.append({
-            "name": f"{type_info.get('name', role)}审查",
+            "name": (
+                f"{_eval_role_name(project_locale, role)}レビュー"
+                if _is_ja_locale(project_locale)
+                else f"{type_info.get('name', role)}审查"
+            ),
             "simulator_type": role,
             "interaction_mode": "review",
             "persona_config": {},
-            "grader_config": {"type": "content", "dimensions": type_info.get("default_dimensions", [])},
+            "simulator_config": {"locale": project_locale},
+            "grader_config": {
+                "type": "content",
+                    "dimensions": _eval_default_dimensions(project_locale, type_info.get("default_dimensions", [])),
+                "locale": project_locale,
+            },
             "order_index": order,
         })
         order += 1
     
     for persona in personas:
-        p_name = persona.get("name", "用户")
+        p_name = persona.get("name", _default_eval_persona(project_locale).get("name"))
         tasks_config.append({
-            "name": f"消费者对话-{p_name}",
+            "name": (
+                f"顧客対話-{p_name}" if _is_ja_locale(project_locale) else f"消费者对话-{p_name}"
+            ),
             "simulator_type": "consumer",
             "interaction_mode": "dialogue",
             "persona_config": persona,
-            "grader_config": {"type": "combined", "dimensions": SIMULATOR_TYPES.get("consumer", {}).get("default_dimensions", [])},
+            "simulator_config": {"locale": project_locale},
+            "grader_config": {
+                "type": "combined",
+                    "dimensions": _eval_default_dimensions(
+                        project_locale,
+                        SIMULATOR_TYPES.get("consumer", {}).get("default_dimensions", []),
+                    ),
+                "locale": project_locale,
+            },
             "order_index": order,
         })
         order += 1
     
     for persona in personas:
-        p_name = persona.get("name", "用户")
+        p_name = persona.get("name", _default_eval_persona(project_locale).get("name"))
         tasks_config.append({
-            "name": f"销售测试-{p_name}",
+            "name": (
+                f"販売テスト-{p_name}" if _is_ja_locale(project_locale) else f"销售测试-{p_name}"
+            ),
             "simulator_type": "seller",
             "interaction_mode": "dialogue",
             "persona_config": persona,
-            "grader_config": {"type": "combined", "dimensions": SIMULATOR_TYPES.get("seller", {}).get("default_dimensions", [])},
+            "simulator_config": {"locale": project_locale},
+            "grader_config": {
+                "type": "combined",
+                    "dimensions": _eval_default_dimensions(
+                        project_locale,
+                        SIMULATOR_TYPES.get("seller", {}).get("default_dimensions", []),
+                    ),
+                "locale": project_locale,
+            },
             "order_index": order,
         })
         order += 1
@@ -1745,7 +2028,14 @@ async def _handle_task_config(block, project, db):
     block.status = "pending"  # 需要用户确认
     db.commit()
     
-    return {"message": f"生成了 {len(tasks_config)} 个默认任务配置", "content": block.content}
+    return {
+        "message": (
+            f"{len(tasks_config)} 件の既定タスクを生成しました"
+            if _is_ja_locale(project_locale)
+            else f"生成了 {len(tasks_config)} 个默认任务配置"
+        ),
+        "content": block.content,
+    }
 
 
 async def _handle_eval_report(block, project, db):
@@ -1780,16 +2070,24 @@ async def _handle_eval_report(block, project, db):
             except Exception:
                 continue
 
+    project_locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
     if not all_trials_config:
         raise HTTPException(
             status_code=400,
-            detail="没有配置任何试验（请在「评估任务配置」中添加试验并保存）"
+            detail=_locale_text(
+                project_locale,
+                "Trial が 1 件も設定されていません（「評価タスク設定」で追加して保存してください）",
+                "没有配置任何试验（请在「评估任务配置」中添加试验并保存）",
+            ),
         )
 
     # 2. 收集项目全部内容（作为 fallback）+ 各试验按 target_block_ids 筛选
     all_content, all_field_names = _collect_content(project.id, None, db, exclude_eval=True)
     if not all_content:
-        raise HTTPException(status_code=400, detail="项目中没有可评估的内容")
+        raise HTTPException(
+            status_code=400,
+            detail=_locale_text(project_locale, "プロジェクトに評価可能な内容がありません", "项目中没有可评估的内容"),
+        )
     
     creator_profile = _get_creator_profile(project, db)
     intent = _get_project_intent(project, db)
@@ -1820,14 +2118,16 @@ async def _handle_eval_report(block, project, db):
                         "name": grader_obj.name,
                         "grader_type": grader_obj.grader_type,
                         "prompt_template": grader_obj.prompt_template or "",
-                        "dimensions": grader_obj.dimensions or ["综合评价"],
+                        "dimensions": grader_obj.dimensions or (["総合評価"] if normalize_locale(getattr(grader_obj, "locale", project_locale)) == "ja-JP" else ["综合评价"]),
+                        "locale": normalize_locale(getattr(grader_obj, "locale", project_locale)),
                     })
                     if grader_obj.dimensions:
                         dims_all.extend(grader_obj.dimensions)
             tc["grader_config"] = {
                 "type": "content",
-                "dimensions": list(dict.fromkeys(dims_all)) if dims_all else ["综合评价"],
+                "dimensions": list(dict.fromkeys(dims_all)) if dims_all else (["総合評価"] if project_locale == "ja-JP" else ["综合评价"]),
                 "grader_ids": grader_ids,
+                "locale": project_locale,
             }
         tc["_resolved_graders"] = resolved_graders
         
@@ -1847,6 +2147,7 @@ async def _handle_eval_report(block, project, db):
                 sim_config["grader_template"] = sim_obj.grader_template or ""
                 sim_config["interaction_type"] = sim_obj.interaction_type or ""  # 关键：传递交互类型
                 sim_config.setdefault("max_turns", sim_obj.max_turns or 5)
+                sim_config["locale"] = project_locale
                 tc["simulator_config"] = sim_config
                 
                 # 修正 interaction_mode：如果 trial 配置的 mode 与 simulator 的 type 不一致，以 type 为准
@@ -1863,7 +2164,7 @@ async def _handle_eval_report(block, project, db):
         # 4. 创建 EvalRun
         eval_run = EvalRun(
             id=generate_uuid(), project_id=project.id,
-            name=f"评估-{project.name}", status="running",
+            name=_locale_text(project_locale, f"評価-{project.name}", f"评估-{project.name}"), status="running",
         )
         db.add(eval_run)
         db.commit()
@@ -1887,6 +2188,10 @@ async def _handle_eval_report(block, project, db):
             # 存入 tc 供后续 grader 阶段使用（避免变量丢失）
             tc["_trial_content"] = trial_content
             tc["_trial_field_names"] = trial_field_names
+            sim_cfg = dict(tc.get("simulator_config") or {"max_turns": 5})
+            sim_cfg["locale"] = project_locale
+            grader_cfg = dict(tc.get("grader_config") or {"type": "content"})
+            grader_cfg["locale"] = project_locale
             
             async_tasks.append(run_task_trial(
                 simulator_type=tc.get("simulator_type", "coach"),
@@ -1895,8 +2200,8 @@ async def _handle_eval_report(block, project, db):
                 creator_profile=creator_profile,
                 intent=intent,
                 persona=tc.get("persona_config"),
-                simulator_config=tc.get("simulator_config", {"max_turns": 5}),
-                grader_config=tc.get("grader_config", {"type": "content"}),
+                simulator_config=sim_cfg,
+                grader_config=grader_cfg,
                 content_field_names=trial_field_names,
             ))
 
@@ -1909,7 +2214,7 @@ async def _handle_eval_report(block, project, db):
         for tc, result in zip(all_trials_config, results):
             if isinstance(result, Exception):
                 report_data["trials"].append({
-                    "task_name": tc.get("name", "未知"),
+                    "task_name": tc.get("name", _locale_text(project_locale, "不明", "未知")),
                     "status": "failed",
                     "error": str(result),
                     "simulator_type": tc.get("simulator_type"),
@@ -1959,6 +2264,7 @@ async def _handle_eval_report(block, project, db):
                         content=tc.get("_trial_content", all_content),
                         trial_result_data=tr.result,
                         process_transcript=process_transcript if rg["grader_type"] == "content_and_process" else "",
+                        grader_cfg={"locale": rg.get("locale", project_locale)},
                     ))
                 
                 grader_results_raw = await asyncio.gather(*grader_tasks, return_exceptions=True)
@@ -1975,7 +2281,7 @@ async def _handle_eval_report(block, project, db):
             # 兼容：如果没有 resolved_graders，使用引擎自带的 grader_outputs
             if not resolved_graders:
                 for go in (tr.grader_outputs or []):
-                    gname = go.get("grader_name", go.get("grader_type", "默认评分器"))
+                    gname = go.get("grader_name", go.get("grader_type", _locale_text(project_locale, "既定評価器", "默认评分器")))
                     gscore = go.get("overall", go.get("quality_score", go.get("process_score", go.get("score", None))))
                     grader_results.append({
                         "grader_name": gname,
@@ -2001,7 +2307,7 @@ async def _handle_eval_report(block, project, db):
 
             trial_entry = {
                 "trial_id": trial.id,
-                "task_name": tc.get("name", "未知"),
+                "task_name": tc.get("name", _locale_text(project_locale, "不明", "未知")),
                 "simulator_type": tc.get("simulator_type"),
                 "simulator_name": tr.role_display_name or tc.get("simulator_name", tc.get("simulator_type", "")),
                 "interaction_mode": tc.get("interaction_mode"),
@@ -2026,14 +2332,22 @@ async def _handle_eval_report(block, project, db):
         if trial_results_for_diagnosis:
             try:
                 diagnosis, diag_call = await run_diagnoser(
-                    trial_results=trial_results_for_diagnosis, intent=intent,
+                    trial_results=trial_results_for_diagnosis, intent=intent, locale=getattr(project, "locale", DEFAULT_LOCALE),
                 )
-                diagnosis_text = format_diagnosis_markdown(diagnosis)
+                diagnosis_text = format_diagnosis_markdown(diagnosis, locale=project_locale)
                 if diag_call:
-                    diagnosis_text += f"\n\n---\n_诊断 LLM 调用: Tokens {diag_call.tokens_in}↑ {diag_call.tokens_out}↓ | 费用 ¥{diag_call.cost:.4f}_"
+                    diagnosis_text += (
+                        f"\n\n---\n_{_locale_text(project_locale, '診断 LLM 呼び出し', '诊断 LLM 调用')}: "
+                        f"Tokens {diag_call.tokens_in}↑ {diag_call.tokens_out}↓ | "
+                        f"{_locale_text(project_locale, 'コスト', '费用')} ¥{diag_call.cost:.4f}_"
+                    )
                 report_data["diagnosis"] = diagnosis_text
             except Exception as diag_err:
-                report_data["diagnosis"] = f"诊断生成失败: {str(diag_err)}"
+                report_data["diagnosis"] = _locale_text(
+                    project_locale,
+                    f"診断生成失敗: {str(diag_err)}",
+                    f"诊断生成失败: {str(diag_err)}",
+                )
 
         eval_run.status = "completed"
         eval_run.trial_count = len(results)
@@ -2068,14 +2382,21 @@ async def _handle_eval_report(block, project, db):
 
         completed_count = sum(1 for t in report_data["trials"] if t.get("status") == "completed")
         return {
-            "message": f"评估完成: {completed_count}/{len(results)} 个试验成功",
+            "message": (
+                f"評価完了: {completed_count}/{len(results)} 件の試行が成功"
+                if _is_ja_locale(project_locale)
+                else f"评估完成: {completed_count}/{len(results)} 个试验成功"
+            ),
             "content": block.content,
         }
 
     except Exception as e:
         block.status = "failed"
         db.commit()
-        raise HTTPException(status_code=500, detail=f"评估执行失败: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=_locale_text(project_locale, f"評価実行に失敗しました: {str(e)}", f"评估执行失败: {str(e)}"),
+        )
 
 
 # ============== Helpers ==============
@@ -2111,13 +2432,19 @@ def _collect_content(project_id, block_ids, db, exclude_eval=False):
 
 
 def _get_creator_profile(project, db) -> str:
+    project_locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
     if project.creator_profile_id:
         profile = db.query(CreatorProfile).filter(
             CreatorProfile.id == project.creator_profile_id
         ).first()
         if profile:
             traits = profile.traits or {}
-            return f"**{profile.name}**\n语调: {traits.get('tone', '')}\n词汇: {traits.get('vocabulary', '')}\n性格: {traits.get('personality', '')}"
+            return (
+                f"**{profile.name}**\n"
+                f"{_locale_text(project_locale, 'トーン', '语调')}: {traits.get('tone', '')}\n"
+                f"{_locale_text(project_locale, '語彙', '词汇')}: {traits.get('vocabulary', '')}\n"
+                f"{_locale_text(project_locale, '人物像', '性格')}: {traits.get('personality', '')}"
+            )
     return ""
 
 
@@ -2126,7 +2453,7 @@ def _get_project_intent(project, db) -> str:
     # 按名称查找
     intent_block = db.query(ContentBlock).filter(
         ContentBlock.project_id == project.id,
-        ContentBlock.name.in_(["意图分析", "项目意图", "Intent"]),
+        ContentBlock.name.in_(["意图分析", "项目意图", "Intent", "意図分析", "プロジェクト意図"]),
         ContentBlock.deleted_at == None,  # noqa: E711
     ).first()
     
@@ -2178,7 +2505,7 @@ def _get_project_personas_from_research(project_id: str, db) -> list:
         ContentBlock.deleted_at == None,
     ).filter(
         (ContentBlock.special_handler == "research") |
-        (ContentBlock.name.in_(["消费者调研", "目标用户"]))
+        (ContentBlock.name.in_(["消费者调研", "目标用户", "消費者調査", "対象ユーザー"]))
     ).all()
     
     for rb in research_blocks:
@@ -2193,7 +2520,7 @@ def _get_project_personas_from_research(project_id: str, db) -> list:
     research_children = db.query(ContentBlock).filter(
         ContentBlock.project_id == project_id,
         ContentBlock.deleted_at == None,
-        ContentBlock.name.like("%画像%"),
+        (ContentBlock.name.like("%画像%") | ContentBlock.name.like("%ペルソナ%")),
         ContentBlock.special_handler != "eval_persona_setup",
     ).all()
     
@@ -2239,7 +2566,7 @@ def _get_or_create_eval_persona_block(project_id: str, db) -> ContentBlock:
         id=generate_uuid(),
         project_id=project_id,
         parent_id=None,
-        name="人物画像设置",
+        name=resolve_eval_anchor_name("eval_persona_setup", _project_locale(project_id, db)),
         block_type="field",
         content=json.dumps({"personas": []}, ensure_ascii=False, indent=2),
         special_handler="eval_persona_setup",
@@ -2328,7 +2655,7 @@ def _extract_personas_from_text(text: str) -> list:
             continue
         content = '\n'.join(lines[1:]).strip()
         if len(content) > 20:
-            pain_points = re.findall(r'[-*]\s*痛点[：:]\s*(.+)', content)
+            pain_points = re.findall(r'[-*]\s*(?:痛点|悩み|課題)[：:]\s*(.+)', content)
             personas.append({
                 "name": name,
                 "background": content[:300],
@@ -2339,23 +2666,18 @@ def _extract_personas_from_text(text: str) -> list:
     return personas
 
 
-async def _generate_persona_with_llm(project_name: str, project_intent: str, existing_names: List[str]) -> dict:
+async def _generate_persona_with_llm(project_name: str, project_intent: str, existing_names: List[str], locale: str = DEFAULT_LOCALE) -> dict:
     """调用 LLM 生成人物画像，失败时返回安全兜底。"""
-    names_text = ", ".join([n for n in existing_names if n]) or "（无）"
-    system_prompt = "你是一位人物画像设计专家，请严格输出 JSON，不要输出额外文字。"
-    user_prompt = f"""请为以下项目生成一个新的用户画像（避免与已有画像重复）：
-
-【项目名称】
-{project_name}
-
-【项目意图】
-{project_intent or "未提供"}
-
-【已有画像名称（避免重复）】
-{names_text}
-
-输出 JSON:
-{{"name":"画像名称","prompt":"完整画像提示词（包含身份、背景、核心需求、顾虑、决策标准）"}}"""
+    locale = normalize_locale(locale)
+    names_text = ", ".join([n for n in existing_names if n]) or _locale_text(locale, "なし", "（无）")
+    system_prompt = rt(locale, "eval.persona.system")
+    user_prompt = rt(
+        locale,
+        "eval.persona.user",
+        project_name=project_name,
+        project_intent=project_intent or ("未提供" if locale != "ja-JP" else "未設定"),
+        names_text=names_text,
+    )
     try:
         model = get_chat_model(temperature=0.8)
         response = await model.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
@@ -2364,50 +2686,35 @@ async def _generate_persona_with_llm(project_name: str, project_intent: str, exi
         name = str(parsed.get("name", "")).strip()
         prompt = str(parsed.get("prompt", "")).strip()
         if not name:
-            name = "新画像"
+            name = rt(locale, "eval.persona.fallback_name")
         if not prompt:
-            prompt = f"你是{name}，请基于项目目标给出真实消费者视角反馈。"
+            prompt = rt(locale, "eval.persona.fallback_prompt", name=name)
         return {"name": name, "prompt": prompt}
     except Exception:
         return {
-            "name": "新画像",
-            "prompt": "你是一个潜在消费者，关注内容是否真正解决你的核心问题、成本是否合理、执行是否可行。",
+            "name": rt(locale, "eval.persona.fallback_name"),
+            "prompt": rt(locale, "eval.persona.fallback_default"),
         }
 
 
 async def _generate_prompt_with_llm(prompt_type: str, context: dict) -> str:
-    prompt_type_name = {
-        "persona": "人物画像提示词",
-        "consumer_prompt": "消费者提示词",
-        "representative_prompt": "内容方提示词",
-        "seller_prompt": "卖方提示词",
-        "buyer_prompt": "买方提示词",
-        "reviewer_prompt": "审查角色提示词",
-        "grader_prompt": "评分器提示词",
-    }.get(prompt_type, prompt_type)
+    locale = normalize_locale(context.get("locale", DEFAULT_LOCALE))
+    prompt_type_name = _prompt_type_label(locale, prompt_type)
     required_placeholders = _required_placeholders_for_prompt_type(prompt_type)
-    form_type_name = str(context.get("form_type", "通用评估"))
+    form_type_name = _form_type_label(locale, str(context.get("form_type", "")).strip())
     description = str(context.get("description", "")).strip()
     project_context = str(context.get("project_context", "")).strip()
 
-    system_prompt = "你是一位提示词工程专家。请严格输出 JSON，不要输出额外文字。"
-    user_prompt = f"""请为以下评估场景生成提示词：
-
-【提示词类型】{prompt_type_name}
-【评估形态】{form_type_name}
-【角色/场景描述】{description or "未提供"}
-【项目背景】{project_context or "未提供"}
-【必须包含占位符】{", ".join(required_placeholders) if required_placeholders else "无"}
-
-要求：
-1) 角色定义清晰；
-2) 行为要求具体；
-3) 如果是评分场景，请包含评分锚点；
-4) 包含结构化 JSON 输出格式说明；
-5) 保留必须占位符。
-
-输出 JSON:
-{{"generated_prompt":"完整提示词"}}"""
+    system_prompt = rt(locale, "eval.prompt.system")
+    user_prompt = rt(
+        locale,
+        "eval.prompt.user",
+        prompt_type_name=prompt_type_name,
+        form_type_name=form_type_name,
+        description=description or ("未提供" if locale != "ja-JP" else "未設定"),
+        project_context=project_context or ("未提供" if locale != "ja-JP" else "未設定"),
+        required_placeholders=", ".join(required_placeholders) if required_placeholders else ("无" if locale != "ja-JP" else "なし"),
+    )
     try:
         model = get_chat_model(temperature=0.7)
         response = await model.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
@@ -2419,7 +2726,7 @@ async def _generate_prompt_with_llm(prompt_type: str, context: dict) -> str:
     except Exception:
         pass
 
-    fallback = "你是评估专家。请基于提供内容执行评估，并严格输出 JSON 结果。"
+    fallback = rt(locale, "eval.prompt.fallback")
     for ph in required_placeholders:
         if ph not in fallback:
             fallback += f"\n{ph}"
@@ -2582,10 +2889,11 @@ def _serialize_task_v2(task: EvalTaskV2) -> dict:
     }
 
 
-def _serialize_trial_result_v2(row: EvalTrialResultV2) -> dict:
+def _serialize_trial_result_v2(row: EvalTrialResultV2, locale: str = DEFAULT_LOCALE) -> dict:
+    locale = normalize_locale(locale)
     grader_results = row.grader_results or []
-    evidence = _build_score_evidence(grader_results)
-    suggestions = _extract_independent_suggestions(grader_results)
+    evidence = _build_score_evidence(grader_results, locale=locale)
+    suggestions = _extract_independent_suggestions(grader_results, locale=locale)
     return {
         "id": row.id,
         "task_id": row.task_id,
@@ -2599,7 +2907,7 @@ def _serialize_trial_result_v2(row: EvalTrialResultV2) -> dict:
         "grader_results": grader_results,
         "dimension_scores": row.dimension_scores or {},
         "overall_score": row.overall_score,
-        "overall_comment": _build_trial_overall_comment(row.form_type, row.overall_score, evidence),
+        "overall_comment": _build_trial_overall_comment(row.form_type, row.overall_score, evidence, locale=locale),
         "score_evidence": evidence,
         "improvement_suggestions": suggestions,
         "llm_calls": row.llm_calls or [],
@@ -2627,12 +2935,13 @@ def _serialize_task_analysis_v2(analysis: TaskAnalysisV2) -> dict:
     }
 
 
-def _build_score_evidence(grader_results: list) -> list[dict]:
+def _build_score_evidence(grader_results: list, locale: str = DEFAULT_LOCALE) -> list[dict]:
+    locale = normalize_locale(locale)
     evidence_rows = []
     for gr in grader_results:
         if not isinstance(gr, dict):
             continue
-        gname = str(gr.get("grader_name") or "评分器")
+        gname = str(gr.get("grader_name") or _locale_text(locale, "評価器", "评分器"))
         scores = gr.get("scores") or {}
         comments = gr.get("comments") or {}
         if not isinstance(scores, dict):
@@ -2643,7 +2952,7 @@ def _build_score_evidence(grader_results: list) -> list[dict]:
             if isinstance(comments, dict):
                 ev_text = str(comments.get(dim_name) or "").strip()
             if not ev_text:
-                ev_text = "未提供该维度评分依据。"
+                ev_text = _locale_text(locale, "この評価軸の根拠は未記入です。", "未提供该维度评分依据。")
             evidence_rows.append(
                 {
                     "grader_name": gname,
@@ -2655,29 +2964,53 @@ def _build_score_evidence(grader_results: list) -> list[dict]:
     return evidence_rows
 
 
-def _build_trial_overall_comment(form_type: str, overall_score: Optional[float], evidence_rows: list[dict]) -> str:
+def _build_trial_overall_comment(
+    form_type: str,
+    overall_score: Optional[float],
+    evidence_rows: list[dict],
+    locale: str = DEFAULT_LOCALE,
+) -> str:
+    locale = normalize_locale(locale)
     if overall_score is None:
-        return "本 Trial 尚无可用总评（可能执行失败或未产出可评分结果）。"
-    summary = f"本 Trial 总体得分 {float(overall_score):.2f}/10。"
+        return _locale_text(
+            locale,
+            "このトライアルにはまだ有効な総評がありません。実行失敗か、採点結果未生成の可能性があります。",
+            "本 Trial 尚无可用总评（可能执行失败或未产出可评分结果）。",
+        )
+    summary = (
+        f"このトライアルの総合スコアは {float(overall_score):.2f}/10 です。"
+        if _is_ja_locale(locale)
+        else f"本 Trial 总体得分 {float(overall_score):.2f}/10。"
+    )
     if evidence_rows:
         top = evidence_rows[0]
-        summary += f" 主要评分依据来自「{top.get('grader_name', '评分器')}」在「{top.get('dimension', '综合')}」维度的判断。"
+        summary += (
+            f" 主な根拠は「{top.get('grader_name', _locale_text(locale, '評価器', '评分器'))}」の"
+            f"「{top.get('dimension', _locale_text(locale, '総合', '综合'))}」評価です。"
+            if _is_ja_locale(locale)
+            else f" 主要评分依据来自「{top.get('grader_name', '评分器')}」在「{top.get('dimension', '综合')}」维度的判断。"
+        )
     mode_hint = {
-        "assessment": "该形态为直接判定，重点依据内容质量评分。",
-        "review": "该形态为视角审查，重点依据角色视角下的内容判断。",
-        "experience": "该形态为消费体验，结合探索过程与内容结果综合判断。",
-        "scenario": "该形态为场景模拟，结合对话过程与内容结果综合判断。",
+        "assessment": _locale_text(locale, "この形態は直接判定であり、主にコンテンツ品質評価を根拠にしています。", "该形态为直接判定，重点依据内容质量评分。"),
+        "review": _locale_text(locale, "この形態は視点レビューであり、役割視点での内容判断を主に参照しています。", "该形态为视角审查，重点依据角色视角下的内容判断。"),
+        "experience": _locale_text(locale, "この形態は消費体験であり、探索プロセスと内容結果を合わせて判断しています。", "该形态为消费体验，结合探索过程与内容结果综合判断。"),
+        "scenario": _locale_text(locale, "この形態はシナリオ評価であり、対話プロセスと内容結果を合わせて判断しています。", "该形态为场景模拟，结合对话过程与内容结果综合判断。"),
     }.get(form_type, "")
     if mode_hint:
         summary += f" {mode_hint}"
     return summary
 
 
-def _extract_independent_suggestions(grader_results: list) -> list[str]:
+def _extract_independent_suggestions(grader_results: list, locale: str = DEFAULT_LOCALE) -> list[str]:
     """
     从 grader feedback 中提取“独立建议句”，与 Trial 总评分离。
     """
-    keywords = ["建议", "应", "需要", "优化", "改", "补充", "删除", "避免", "修正", "调整", "简化", "明确"]
+    locale = normalize_locale(locale)
+    keywords = (
+        ["必要", "べき", "改善", "修正", "補足", "追加", "削除", "避け", "調整", "簡潔", "明確", "してください", "検討"]
+        if _is_ja_locale(locale)
+        else ["建议", "应", "需要", "优化", "改", "补充", "删除", "避免", "修正", "调整", "简化", "明确"]
+    )
     out = []
     for gr in grader_results:
         if not isinstance(gr, dict):
@@ -2799,10 +3132,12 @@ async def _run_selected_graders(
     process: list,
     fallback_grader_outputs: list,
     db: Session,
+    locale: str = DEFAULT_LOCALE,
 ) -> tuple[list, list]:
     """
     运行选定 Grader（返回 grader_results, llm_calls）。
     """
+    locale = normalize_locale(locale)
     if not grader_ids:
         # 兼容：无显式 grader_ids，回退引擎内建 grader 输出
         mapped = []
@@ -2811,14 +3146,14 @@ async def _run_selected_graders(
                 continue
             mapped.append({
                 "grader_id": go.get("grader_id", ""),
-                "grader_name": go.get("grader_name", go.get("grader_type", "默认评分器")),
+                "grader_name": go.get("grader_name", go.get("grader_type", _locale_text(locale, "既定評価器", "默认评分器"))),
                 "scores": go.get("scores", {}) or {},
                 "comments": go.get("comments", {}) or {},
                 "feedback": go.get("feedback", go.get("analysis", go.get("summary", ""))),
             })
         return mapped, []
 
-    process_transcript = _build_process_transcript(process)
+    process_transcript = _build_process_transcript(process, locale=locale)
 
     graders = db.query(Grader).filter(Grader.id.in_(grader_ids)).all()
     grader_map = {g.id: g for g in graders}
@@ -2828,15 +3163,17 @@ async def _run_selected_graders(
         g = grader_map.get(gid)
         if not g:
             continue
+        grader_locale = normalize_locale(getattr(g, "locale", locale))
         tasks.append(
             run_individual_grader(
                 grader_name=g.name,
                 grader_type=g.grader_type,
                 prompt_template=g.prompt_template or "",
-                dimensions=g.dimensions or ["综合评价"],
+                dimensions=g.dimensions or (["総合評価"] if grader_locale == "ja-JP" else ["综合评价"]),
                 content=content,
                 trial_result_data={},
                 process_transcript=process_transcript,
+                grader_cfg={"locale": grader_locale},
             )
         )
         task_order.append(gid)
@@ -2861,13 +3198,14 @@ async def _run_selected_graders(
     return grader_results, llm_calls
 
 
-def _build_process_transcript(process: list) -> str:
+def _build_process_transcript(process: list, locale: str = DEFAULT_LOCALE) -> str:
     """
     将 Trial 过程统一序列化为可读 transcript，供 content_and_process grader 使用。
     兼容两类结构：
     - 对话节点: {role, content, turn}
     - 体验探索: {type: plan|per_block|summary, data: {...}}
     """
+    locale = normalize_locale(locale)
     if not process:
         return ""
     lines = []
@@ -2880,38 +3218,60 @@ def _build_process_transcript(process: list) -> str:
         if role or content:
             turn = node.get("turn")
             turn_tag = f"#{turn}" if turn is not None else f"#{idx + 1}"
-            lines.append(f"[dialogue {turn_tag} {role or 'assistant'}] {content}")
+            lines.append(
+                f"[{_locale_text(locale, '対話', 'dialogue')} {turn_tag} {role or 'assistant'}] {content}"
+            )
             continue
 
         ntype = str(node.get("type") or "").strip()
         if ntype == "plan":
             data = node.get("data") or {}
             goal = str(data.get("overall_goal") or "").strip()
-            lines.append(f"[experience 阶段1-规划] 目标: {goal or '未提供'}")
+            lines.append(
+                f"[experience {_locale_text(locale, 'ステップ1-探索計画', '阶段1-规划')}] "
+                f"{_locale_text(locale, '目的', '目标')}: {goal or _locale_text(locale, '未設定', '未提供')}"
+            )
             for pidx, p in enumerate(data.get("plan") or []):
                 if not isinstance(p, dict):
                     continue
                 title = p.get("block_title") or p.get("block_id") or f"block_{pidx+1}"
                 reason = p.get("reason") or ""
                 expectation = p.get("expectation") or ""
-                lines.append(f"  - 先看 {title}; 原因: {reason}; 预期: {expectation}")
+                lines.append(
+                    (
+                        f"  - 先に確認: {title}; 理由: {reason}; 期待: {expectation}"
+                        if _is_ja_locale(locale)
+                        else f"  - 先看 {title}; 原因: {reason}; 预期: {expectation}"
+                    )
+                )
             continue
         if ntype == "per_block":
             data = node.get("data") or {}
-            title = node.get("block_title") or node.get("block_id") or "未命名内容块"
-            lines.append(f"[experience 阶段2-逐块探索] {title}")
+            title = node.get("block_title") or node.get("block_id") or _locale_text(locale, "未命名ブロック", "未命名内容块")
+            lines.append(f"[experience {_locale_text(locale, 'ステップ2-ブロック別探索', '阶段2-逐块探索')}] {title}")
             lines.append(
-                f"  discovery={data.get('discovery', '')}; doubt={data.get('doubt', '')}; "
-                f"missing={data.get('missing', '')}; feeling={data.get('feeling', '')}; score={data.get('score', '-')}"
+                (
+                    f"  発見={data.get('discovery', '')}; 疑問={data.get('doubt', '')}; "
+                    f"不足={data.get('missing', '')}; 感想={data.get('feeling', '')}; score={data.get('score', '-')}"
+                    if _is_ja_locale(locale)
+                    else f"  discovery={data.get('discovery', '')}; doubt={data.get('doubt', '')}; "
+                    f"missing={data.get('missing', '')}; feeling={data.get('feeling', '')}; score={data.get('score', '-')}"
+                )
             )
             continue
         if ntype == "summary":
             data = node.get("data") or {}
-            lines.append("[experience 阶段3-总结]")
+            lines.append(f"[experience {_locale_text(locale, 'ステップ3-全体総括', '阶段3-总结')}]")
             lines.append(
-                f"  overall_impression={data.get('overall_impression', '')}; "
-                f"addressed={data.get('concerns_addressed', [])}; "
-                f"unaddressed={data.get('concerns_unaddressed', [])}; summary={data.get('summary', '')}"
+                (
+                    f"  全体印象={data.get('overall_impression', '')}; "
+                    f"解消済み={data.get('concerns_addressed', [])}; "
+                    f"未解消={data.get('concerns_unaddressed', [])}; summary={data.get('summary', '')}"
+                    if _is_ja_locale(locale)
+                    else f"  overall_impression={data.get('overall_impression', '')}; "
+                    f"addressed={data.get('concerns_addressed', [])}; "
+                    f"unaddressed={data.get('concerns_unaddressed', [])}; summary={data.get('summary', '')}"
+                )
             )
             continue
 
@@ -2929,6 +3289,8 @@ async def _run_trial_config_once(
     persona_map: dict,
     db: Session,
 ) -> EvalTrialResultV2:
+    project = db.query(Project).filter(Project.id == task.project_id).first()
+    project_locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE)) if project else DEFAULT_LOCALE
     content_text, _, raw_contents = _collect_eval_texts_by_block_ids(
         task.project_id, trial_cfg.target_block_ids or [], db
     )
@@ -2943,11 +3305,10 @@ async def _run_trial_config_once(
             repeat_index=repeat_index,
             form_type=trial_cfg.form_type,
             status="failed",
-            error="没有可评估内容",
+            error=_locale_text(project_locale, "評価対象の内容がありません", "没有可评估内容"),
         )
 
     creator_profile = ""
-    project = db.query(Project).filter(Project.id == task.project_id).first()
     if project:
         creator_profile = _get_creator_profile(project, db)
     intent = _get_project_intent(project, db) if project else ""
@@ -2976,6 +3337,7 @@ async def _run_trial_config_once(
                 [],
                 [],
                 db,
+                locale=project_locale,
             )
             llm_calls.extend(g_calls)
             overall_score, dimension_scores = compute_weighted_grader_score(
@@ -2986,13 +3348,14 @@ async def _run_trial_config_once(
             # Experience: 三步分块探索（规划 -> 逐块 -> 总结）
             persona_id = form_config.get("persona_id")
             p = persona_map.get(persona_id, {}) if persona_id else {}
-            persona_name = p.get("name", form_config.get("persona_name", "消费者"))
-            persona_prompt = p.get("prompt", form_config.get("persona_prompt", "你是一个真实消费者。"))
+            persona_name = p.get("name", form_config.get("persona_name", _eval_role_name(project_locale, "consumer")))
+            persona_prompt = p.get("prompt", form_config.get("persona_prompt", rt(project_locale, "eval.experience.default_persona_prompt")))
             exp_result = await run_experience_trial(
                 persona_name=persona_name,
                 persona_prompt=persona_prompt,
                 probe=probe_text,
                 blocks=content_blocks,
+                locale=project_locale,
             )
             process = exp_result.process or []
             llm_calls.extend(exp_result.llm_calls or [])
@@ -3006,6 +3369,7 @@ async def _run_trial_config_once(
                 process,
                 [],
                 db,
+                locale=project_locale,
             )
             grader_results = selected_graders
             llm_calls.extend(g_calls)
@@ -3016,13 +3380,13 @@ async def _run_trial_config_once(
                 # 无 Grader 时回退到分块探索均值
                 overall_score = exp_result.exploration_score
                 if overall_score is not None:
-                    dimension_scores = {"体验探索分": overall_score}
+                    dimension_scores = {_locale_text(project_locale, "体験探索スコア", "体验探索分"): overall_score}
 
         else:
             # review / scenario 借助现有 run_task_trial
             simulator_type = "coach"
             interaction_mode = "review"
-            simulator_config = {}
+            simulator_config = {"locale": project_locale}
             persona = None
 
             if form == "review":
@@ -3030,10 +3394,11 @@ async def _run_trial_config_once(
                 persona_id = form_config.get("persona_id")
                 reviewer = persona_map.get(persona_id, {}) if persona_id else {}
                 simulator_type = form_config.get("simulator_type", "editor")
-                persona = reviewer if reviewer else {"name": "审查角色", "prompt": form_config.get("system_prompt", "")}
+                persona = reviewer if reviewer else {"name": _eval_role_name(project_locale, "reviewer"), "prompt": form_config.get("system_prompt", "")}
                 simulator_config = {
                     "system_prompt": form_config.get("system_prompt", reviewer.get("prompt", "")),
                     "max_turns": 1,
+                    "locale": project_locale,
                 }
             elif form == "scenario":
                 interaction_mode = "scenario"
@@ -3042,16 +3407,17 @@ async def _run_trial_config_once(
                 role_b_id = form_config.get("role_b_persona_id")
                 role_a = persona_map.get(role_a_id, {}) if role_a_id else {}
                 role_b = persona_map.get(role_b_id, {}) if role_b_id else {}
-                persona = role_b if role_b else {"name": "角色B", "prompt": form_config.get("role_b_prompt", "")}
+                persona = role_b if role_b else {"name": _eval_role_name(project_locale, "role_b"), "prompt": form_config.get("role_b_prompt", "")}
                 simulator_config = {
                     "system_prompt": form_config.get("role_a_prompt", role_a.get("prompt", "")),
                     "secondary_prompt": form_config.get("role_b_prompt", role_b.get("prompt", "")),
                     "max_turns": int(form_config.get("max_turns", 5) or 5),
+                    "locale": project_locale,
                 }
 
             if probe_text:
                 origin = simulator_config.get("system_prompt", "")
-                simulator_config["system_prompt"] = (origin + f"\n\n【本次焦点】\n{probe_text}").strip()
+                simulator_config["system_prompt"] = (origin + f"\n\n{rt(project_locale, 'eval.prompt.focus_header', probe=probe_text)}").strip()
 
             fallback_note = None
             try:
@@ -3063,15 +3429,19 @@ async def _run_trial_config_once(
                     intent=intent,
                     persona=persona,
                     simulator_config=simulator_config,
-                    grader_config={"type": "content", "dimensions": []},
+                    grader_config={"type": "content", "dimensions": [], "locale": project_locale},
                 )
             except Exception as trial_err:
                 # 场景模拟兜底：若 seller 路径异常，回退到 consumer 对话，避免整条 Trial 直接失败。
                 if form == "scenario":
-                    fallback_persona = persona or {"name": "目标消费者", "background": "默认画像"}
+                    fallback_persona = persona or {
+                        "name": _eval_role_name(project_locale, "target_consumer"),
+                        "background": _locale_text(project_locale, "既定ペルソナ", "默认画像"),
+                    }
                     fallback_cfg = {
                         "system_prompt": form_config.get("role_b_prompt", ""),
                         "max_turns": int(form_config.get("max_turns", 5) or 5),
+                        "locale": project_locale,
                     }
                     trial = await run_task_trial(
                         simulator_type="consumer",
@@ -3081,12 +3451,16 @@ async def _run_trial_config_once(
                         intent=intent,
                         persona=fallback_persona,
                         simulator_config=fallback_cfg,
-                        grader_config={"type": "content", "dimensions": []},
+                        grader_config={"type": "content", "dimensions": [], "locale": project_locale},
                     )
                     fallback_note = {
                         "type": "system_note",
-                        "stage": "兜底策略",
-                        "content": f"scenario 模式主路径失败，已回退到 dialogue 兜底执行: {str(trial_err)}",
+                        "stage": _locale_text(project_locale, "フォールバック戦略", "兜底策略"),
+                        "content": _locale_text(
+                            project_locale,
+                            f"scenario 主経路が失敗したため、dialogue フォールバックで継続しました: {str(trial_err)}",
+                            f"scenario 模式主路径失败，已回退到 dialogue 兜底执行: {str(trial_err)}",
+                        ),
                     }
                 else:
                     raise
@@ -3100,7 +3474,7 @@ async def _run_trial_config_once(
             cost += float(trial.cost or 0.0)
             if not trial.success:
                 status = "failed"
-                error = trial.error or "trial 执行失败"
+                error = trial.error or _locale_text(project_locale, "trial 実行失敗", "trial 执行失败")
 
             selected_graders, g_calls = await _run_selected_graders(
                 trial_cfg.grader_ids or [],
@@ -3108,6 +3482,7 @@ async def _run_trial_config_once(
                 process,
                 trial.grader_outputs or [],
                 db,
+                locale=project_locale,
             )
             grader_results = selected_graders
             llm_calls.extend(g_calls)
@@ -3193,6 +3568,7 @@ async def _run_trial_plan_item_isolated(
         task = wdb.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
         cfg = wdb.query(EvalTrialConfigV2).filter(EvalTrialConfigV2.id == trial_config_id).first()
         if not task or not cfg:
+            locale = _project_locale(task.project_id if task else None, wdb)
             return {
                 "id": generate_uuid(),
                 "task_id": task_id,
@@ -3202,9 +3578,10 @@ async def _run_trial_plan_item_isolated(
                 "repeat_index": repeat_index,
                 "form_type": cfg.form_type if cfg else "assessment",
                 "status": "failed",
-                "error": "任务或试验配置不存在",
+                "error": _locale_text(locale, "Task または Trial 設定が存在しません", "任务或试验配置不存在"),
             }
         persona_map = _get_persona_map(task.project_id, wdb)
+        locale = _project_locale(task.project_id, wdb)
         try:
             row = await asyncio.wait_for(
                 _run_trial_config_once(task, cfg, repeat_index, batch_id, persona_map, wdb),
@@ -3220,7 +3597,7 @@ async def _run_trial_plan_item_isolated(
                 repeat_index=repeat_index,
                 form_type=cfg.form_type,
                 status="failed",
-                error="单次 Trial 执行超时（300s）",
+                error=_locale_text(locale, "単一 Trial の実行がタイムアウトしました（300s）", "单次 Trial 执行超时（300s）"),
             )
         return _row_to_payload(row)
     finally:
@@ -3243,6 +3620,7 @@ async def _execute_task_v2(task_id: str, db: Session, resume_batch_id: Optional[
     task = db.query(EvalTaskV2).filter(EvalTaskV2.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="EvalTask not found")
+    task_locale = _project_locale(task.project_id, db)
 
     configs = (
         db.query(EvalTrialConfigV2)
@@ -3251,7 +3629,10 @@ async def _execute_task_v2(task_id: str, db: Session, resume_batch_id: Optional[
         .all()
     )
     if not configs:
-        raise HTTPException(status_code=400, detail="Task 没有 Trial 配置")
+        raise HTTPException(
+            status_code=400,
+            detail=_locale_text(task_locale, "Task に Trial 設定がありません", "Task 没有 Trial 配置"),
+        )
 
     plan = _build_trial_plan(configs)
     total_runs = len(plan)
@@ -3399,7 +3780,7 @@ async def _execute_task_v2(task_id: str, db: Session, resume_batch_id: Optional[
         "task": _serialize_task_v2(task),
         "batch_id": batch_id,
         "overall": task.latest_overall,
-        "trials": [_serialize_trial_result_v2(r) for r in all_rows],
+        "trials": [_serialize_trial_result_v2(r, locale=task_locale) for r in all_rows],
     }
 
 
@@ -3432,11 +3813,18 @@ async def _execute_task_v2_background(task_id: str, resume_batch_id: Optional[st
         db.close()
 
 
-def _build_task_analysis_from_trials(task: EvalTaskV2, rows: List[EvalTrialResultV2], batch_id: str) -> TaskAnalysisV2:
+def _build_task_analysis_from_trials(
+    task: EvalTaskV2,
+    rows: List[EvalTrialResultV2],
+    batch_id: str,
+    locale: str = DEFAULT_LOCALE,
+) -> TaskAnalysisV2:
     # 规则化分析（避免额外 LLM 成本，先提供可靠可解释的结果）
+    locale = normalize_locale(locale)
     dim_low_count = {}
     feedback_lines = []
     strengths = []
+    strength_keywords = ("優れて", "明確", "正確", "良い", "的確") if _is_ja_locale(locale) else ("优点", "清晰", "准确")
     for r in rows:
         dims = r.dimension_scores or {}
         for dim, score in dims.items():
@@ -3448,7 +3836,7 @@ def _build_task_analysis_from_trials(task: EvalTaskV2, rows: List[EvalTrialResul
                 feedback_lines.append(str(fb))
             comments = (gr or {}).get("comments", {}) or {}
             for k, v in comments.items():
-                if isinstance(v, str) and ("优点" in v or "清晰" in v or "准确" in v):
+                if isinstance(v, str) and any(keyword in v for keyword in strength_keywords):
                     strengths.append(f"{k}: {v[:80]}")
 
     patterns = []
@@ -3456,34 +3844,48 @@ def _build_task_analysis_from_trials(task: EvalTaskV2, rows: List[EvalTrialResul
     total = max(1, len(rows))
     for dim, cnt in sorted(dim_low_count.items(), key=lambda x: x[1], reverse=True):
         severity = "high" if cnt / total >= 0.6 else "medium"
+        pattern_title = _locale_text(locale, f"{dim} は複数の Trial で低スコアです", f"{dim} 在多个 Trial 中偏低")
         patterns.append({
-            "title": f"{dim} 在多个 Trial 中偏低",
+            "title": pattern_title,
             "frequency": f"{cnt}/{total}",
-            "evidence": [f"{cnt} 次结果低于 7 分"],
+            "evidence": [_locale_text(locale, f"{cnt} 件の結果が 7 点未満でした", f"{cnt} 次结果低于 7 分")],
             "severity": severity,
         })
         suggestions.append({
-            "title": f"优先提升「{dim}」",
+            "title": _locale_text(locale, f"「{dim}」を優先改善", f"优先提升「{dim}」"),
             "severity": severity,
-            "detail": f"针对 {dim} 增加更具体的论据、结构化表达和可执行示例。",
-            "related_patterns": [f"{dim} 在多个 Trial 中偏低"],
+            "detail": _locale_text(
+                locale,
+                f"{dim} について、より具体的な根拠、構造化した表現、実行例を補ってください。",
+                f"针对 {dim} 增加更具体的论据、结构化表达和可执行示例。",
+            ),
+            "related_patterns": [pattern_title],
         })
 
     if not patterns and feedback_lines:
+        fallback_pattern_title = _locale_text(locale, "フィードバックが少数の改善点に集中しています", "反馈聚焦在少数改进点")
         patterns.append({
-            "title": "反馈聚焦在少数改进点",
+            "title": fallback_pattern_title,
             "frequency": f"{len(feedback_lines)}/{total}",
             "evidence": feedback_lines[:3],
             "severity": "medium",
         })
         suggestions.append({
-            "title": "基于反馈逐条改写关键段落",
+            "title": _locale_text(locale, "フィードバックに沿って重要段落を順に改稿する", "基于反馈逐条改写关键段落"),
             "severity": "medium",
-            "detail": "优先处理重复出现的负向反馈，逐条验证改写后分数变化。",
-            "related_patterns": ["反馈聚焦在少数改进点"],
+            "detail": _locale_text(
+                locale,
+                "繰り返し出るネガティブフィードバックを優先し、改稿後のスコア変化を順に検証してください。",
+                "优先处理重复出现的负向反馈，逐条验证改写后分数变化。",
+            ),
+            "related_patterns": [fallback_pattern_title],
         })
 
-    summary = f"任务「{task.name}」共分析 {len(rows)} 条 Trial，识别到 {len(patterns)} 个共性模式。"
+    summary = _locale_text(
+        locale,
+        f"タスク「{task.name}」について {len(rows)} 件の Trial を分析し、{len(patterns)} 個の共通パターンを特定しました。",
+        f"任务「{task.name}」共分析 {len(rows)} 条 Trial，识别到 {len(patterns)} 个共性模式。",
+    )
 
     return TaskAnalysisV2(
         id=generate_uuid(),

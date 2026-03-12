@@ -9,6 +9,8 @@ from typing import Iterable
 
 from sqlalchemy.orm import Session
 
+from core.locale_text import rt
+from core.localization import DEFAULT_LOCALE, normalize_locale
 from core.models.content_block import ContentBlock
 
 
@@ -78,6 +80,8 @@ def find_block_by_identifier(
     db: Session,
     project_id: str,
     identifier: str,
+    *,
+    locale: str = DEFAULT_LOCALE,
 ) -> ContentBlock | None:
     normalized = (identifier or "").strip()
     if not normalized:
@@ -100,7 +104,12 @@ def find_block_by_identifier(
             for block in name_matches[:5]
         )
         raise DuplicateBlockReferenceError(
-            f"内容块名称「{normalized}」命中多个结果，请改用 id:块ID 指定。候选：{candidates}"
+            rt(
+                normalize_locale(locale),
+                "agent.references.duplicate_name",
+                name=normalized,
+                candidates=candidates,
+            )
         )
     if name_matches:
         return name_matches[0]

@@ -11,8 +11,8 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "内容生产系统",
-  description: "AI Agent 驱动的商业内容生产平台",
+  title: "Content Production System",
+  description: "AI agent workspace for commercial content production",
   icons: {
     icon: "/icon.svg",
   },

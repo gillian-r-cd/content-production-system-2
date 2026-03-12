@@ -61,3 +61,40 @@ async def test_run_experience_trial_three_steps(monkeypatch):
     assert "score 必须是 1-10 的整数" in result.llm_calls[1]["input"]["user_message"]
     assert "每一项，都必须能在逐块结果中找到依据" in result.llm_calls[3]["input"]["user_message"]
 
+
+@pytest.mark.asyncio
+async def test_run_experience_trial_uses_ja_locale_for_llm_calls(monkeypatch):
+    outputs = [
+        '{"plan":[{"block_id":"b1","block_title":"導入","reason":"最初に全体像を確認したい","expectation":"価値提案を把握したい"}],"overall_goal":"購入判断に必要な情報が揃うか確認する"}',
+        '{"concern_match":"概ね一致","discovery":"導入価値は理解できた","doubt":"費用対効果の根拠が弱い","missing":"導入後の定量成果","feeling":"判断材料は増えたがまだ慎重","score":7}',
+        '{"overall_impression":"一定の価値は感じる","concerns_addressed":["導入価値"],"concerns_unaddressed":["費用対効果の根拠"],"would_recommend":false,"summary":"追加の定量根拠があれば前向きに検討できる"}',
+    ]
+
+    class FakeResp:
+        def __init__(self, text):
+            self.content = text
+            self.usage_metadata = {"input_tokens": 8, "output_tokens": 4}
+
+    class FakeModel:
+        async def ainvoke(self, messages):
+            return FakeResp(outputs.pop(0))
+
+    monkeypatch.setattr("core.tools.eval_v2_executor.get_chat_model", lambda **kwargs: FakeModel())
+
+    result = await run_experience_trial(
+        persona_name="佐藤",
+        persona_prompt="あなたは佐藤です。導入価値と再現性を重視します。",
+        probe="費用対効果が説明されているか確認したい",
+        blocks=[{"id": "b1", "title": "導入", "content": "導入メリットを説明する本文"}],
+        locale="ja-JP",
+    )
+
+    assert result.error == ""
+    assert any(p.get("stage") == "ステップ1-探索計画" for p in result.process)
+    assert any(p.get("stage") == "ステップ2-ブロック別探索" for p in result.process)
+    assert any(p.get("stage") == "ステップ3-全体総括" for p in result.process)
+    assert "あなたは実在の消費者です" in result.llm_calls[0]["input"]["system_prompt"]
+    assert "必ず次の JSON を出力してください" in result.llm_calls[0]["input"]["user_message"]
+    assert "厳守事項" in result.llm_calls[1]["input"]["user_message"]
+    assert "你面前有以下内容块" not in result.llm_calls[0]["input"]["user_message"]
+    assert "请严格输出 JSON" not in result.llm_calls[2]["input"]["user_message"]

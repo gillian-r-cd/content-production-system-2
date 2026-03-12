@@ -1,6 +1,6 @@
 # backend/core/database.py
 # 功能: 数据库连接管理与轻量兼容迁移
-# 主要函数: get_engine(), get_session_maker(), init_db()
+# 主要函数: get_engine(), get_session_maker(), init_db(), ensure_compat_schema()
 # 数据结构: Base (SQLAlchemy declarative base)
 
 """
@@ -8,7 +8,10 @@
 使用 SQLAlchemy 2.0 异步模式
 """
 
+from pathlib import Path
+
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from sqlalchemy.pool import StaticPool
 
@@ -20,6 +23,23 @@ class Base(DeclarativeBase):
     pass
 
 
+def _ensure_sqlite_parent_dir(database_url: str) -> None:
+    """为文件型 SQLite URL 预先创建父目录，避免隔离工作目录下首次启动直接失败。"""
+    try:
+        url = make_url(database_url)
+    except Exception:
+        return
+
+    if not url.drivername.startswith("sqlite"):
+        return
+
+    database = url.database or ""
+    if not database or database == ":memory:" or database.startswith("file:"):
+        return
+
+    Path(database).expanduser().parent.mkdir(parents=True, exist_ok=True)
+
+
 def get_engine():
     """
     获取数据库引擎
@@ -27,6 +47,7 @@ def get_engine():
     """
     # SQLite特殊配置
     connect_args = {"check_same_thread": False}
+    _ensure_sqlite_parent_dir(settings.database_url)
 
     engine = create_engine(
         settings.database_url,
@@ -49,12 +70,21 @@ def init_db():
     # 导入所有模型以确保它们被注册
     from core.models import base  # noqa
     Base.metadata.create_all(bind=engine)
+    ensure_compat_schema(engine)
+
+
+def ensure_compat_schema(engine) -> None:
+    """统一执行启动期/初始化脚本共用的轻量兼容迁移。"""
     _ensure_conversation_schema(engine)
     _ensure_agent_mode_schema(engine)
     _ensure_memory_schema(engine)
+    _ensure_project_columns(engine)
     _ensure_content_block_columns(engine)
     _ensure_agent_settings_columns(engine)
     _ensure_field_template_columns(engine)
+    _ensure_phase_template_columns(engine)
+    _ensure_localized_asset_columns(engine)
+    _backfill_compat_defaults(engine)
 
 
 def _ensure_conversation_schema(engine) -> None:
@@ -165,6 +195,23 @@ def _ensure_content_block_columns(engine) -> None:
     _add_missing_columns(engine, "content_blocks", new_columns)
 
 
+def _ensure_project_columns(engine) -> None:
+    """兼容旧库：为 projects 补齐 locale/版本族谱/废弃兼容字段。"""
+    from core.localization import DEFAULT_LOCALE
+
+    new_columns = {
+        "locale": f"VARCHAR(20) DEFAULT '{DEFAULT_LOCALE}'",
+        "version": "INTEGER DEFAULT 1",
+        "version_note": "TEXT DEFAULT ''",
+        "parent_version_id": "VARCHAR(36)",
+        "agent_autonomy": "JSON",
+        "golden_context": "JSON",
+        "use_deep_research": "BOOLEAN DEFAULT 1",
+        "use_flexible_architecture": "BOOLEAN DEFAULT 1",
+    }
+    _add_missing_columns(engine, "projects", new_columns)
+
+
 def _ensure_agent_settings_columns(engine) -> None:
     """兼容旧库：为 agent_settings 补齐模型选择列。"""
     new_columns = {
@@ -176,11 +223,153 @@ def _ensure_agent_settings_columns(engine) -> None:
 
 def _ensure_field_template_columns(engine) -> None:
     """兼容旧库：为 field_templates 补齐树模板列。"""
+    from core.localization import DEFAULT_LOCALE
+
     new_columns = {
         "schema_version": "INTEGER DEFAULT 1",
         "root_nodes": "JSON",
+        "stable_key": "VARCHAR(100) DEFAULT ''",
+        "locale": f"VARCHAR(20) DEFAULT '{DEFAULT_LOCALE}'",
     }
     _add_missing_columns(engine, "field_templates", new_columns)
+
+
+def _ensure_phase_template_columns(engine) -> None:
+    """兼容旧库：为 phase_templates 补齐 locale 资产列。"""
+    from core.localization import DEFAULT_LOCALE
+
+    new_columns = {
+        "stable_key": "VARCHAR(100) DEFAULT ''",
+        "locale": f"VARCHAR(20) DEFAULT '{DEFAULT_LOCALE}'",
+    }
+    _add_missing_columns(engine, "phase_templates", new_columns)
+
+
+def _ensure_localized_asset_columns(engine) -> None:
+    """兼容旧库：为 locale 资产表补齐 stable_key / locale 列。"""
+    from core.localization import DEFAULT_LOCALE
+
+    locale_columns = {
+        "stable_key": "VARCHAR(100) DEFAULT ''",
+        "locale": f"VARCHAR(20) DEFAULT '{DEFAULT_LOCALE}'",
+    }
+    for table in (
+        "creator_profiles",
+        "system_prompts",
+        "channels",
+        "simulators",
+        "graders",
+        "agent_modes",
+    ):
+        _add_missing_columns(engine, table, locale_columns)
+
+
+def _backfill_compat_defaults(engine) -> None:
+    """为新增兼容列回填安全默认值，并清理已知可空坏引用。"""
+    from core.localization import DEFAULT_LOCALE
+
+    statements = [
+        (
+            "UPDATE projects SET locale = :default_locale "
+            "WHERE locale IS NULL OR locale = ''",
+            {"default_locale": DEFAULT_LOCALE},
+        ),
+        (
+            "UPDATE creator_profiles SET locale = :default_locale "
+            "WHERE locale IS NULL OR locale = ''",
+            {"default_locale": DEFAULT_LOCALE},
+        ),
+        (
+            "UPDATE field_templates SET locale = :default_locale "
+            "WHERE locale IS NULL OR locale = ''",
+            {"default_locale": DEFAULT_LOCALE},
+        ),
+        (
+            "UPDATE phase_templates SET locale = :default_locale "
+            "WHERE locale IS NULL OR locale = ''",
+            {"default_locale": DEFAULT_LOCALE},
+        ),
+        (
+            "UPDATE channels SET locale = :default_locale "
+            "WHERE locale IS NULL OR locale = ''",
+            {"default_locale": DEFAULT_LOCALE},
+        ),
+        (
+            "UPDATE simulators SET locale = :default_locale "
+            "WHERE locale IS NULL OR locale = ''",
+            {"default_locale": DEFAULT_LOCALE},
+        ),
+        (
+            "UPDATE graders SET locale = :default_locale "
+            "WHERE locale IS NULL OR locale = ''",
+            {"default_locale": DEFAULT_LOCALE},
+        ),
+        (
+            "UPDATE system_prompts SET locale = :default_locale "
+            "WHERE locale IS NULL OR locale = ''",
+            {"default_locale": DEFAULT_LOCALE},
+        ),
+        (
+            "UPDATE agent_modes SET locale = :default_locale "
+            "WHERE locale IS NULL OR locale = ''",
+            {"default_locale": DEFAULT_LOCALE},
+        ),
+        (
+            "UPDATE creator_profiles SET stable_key = name "
+            "WHERE stable_key IS NULL OR stable_key = ''",
+            {},
+        ),
+        (
+            "UPDATE field_templates SET stable_key = name "
+            "WHERE stable_key IS NULL OR stable_key = ''",
+            {},
+        ),
+        (
+            "UPDATE phase_templates SET stable_key = name "
+            "WHERE stable_key IS NULL OR stable_key = ''",
+            {},
+        ),
+        (
+            "UPDATE channels SET stable_key = name "
+            "WHERE stable_key IS NULL OR stable_key = ''",
+            {},
+        ),
+        (
+            "UPDATE simulators SET stable_key = name "
+            "WHERE stable_key IS NULL OR stable_key = ''",
+            {},
+        ),
+        (
+            "UPDATE graders SET stable_key = name "
+            "WHERE stable_key IS NULL OR stable_key = ''",
+            {},
+        ),
+        (
+            "UPDATE system_prompts SET stable_key = phase "
+            "WHERE stable_key IS NULL OR stable_key = ''",
+            {},
+        ),
+        (
+            "UPDATE agent_modes SET stable_key = name "
+            "WHERE stable_key IS NULL OR stable_key = ''",
+            {},
+        ),
+        (
+            "UPDATE projects SET creator_profile_id = NULL "
+            "WHERE creator_profile_id IS NOT NULL "
+            "AND creator_profile_id NOT IN (SELECT id FROM creator_profiles)",
+            {},
+        ),
+        (
+            "UPDATE project_fields SET template_id = NULL "
+            "WHERE template_id IS NOT NULL "
+            "AND template_id NOT IN (SELECT id FROM field_templates)",
+            {},
+        ),
+    ]
+    with engine.begin() as conn:
+        for sql, params in statements:
+            conn.execute(text(sql), params)
 
 
 def _add_missing_columns(engine, table: str, columns: dict[str, str]) -> None:

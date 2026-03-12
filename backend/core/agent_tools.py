@@ -34,6 +34,8 @@ from typing import Optional, List, Annotated
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool, InjectedToolArg
 from langchain_core.runnables import RunnableConfig
+from core.localization import DEFAULT_LOCALE, normalize_locale
+from core.locale_text import rt
 from core.llm_compat import normalize_content, get_stop_reason, resolve_model
 
 logger = logging.getLogger("agent_tools")
@@ -375,23 +377,35 @@ async def _rewrite_field_impl(
         if not current_content.strip():
             return _json_err(f"内容块「{target_label}」为空，请使用 generate_field_content 生成内容")
 
+        locale = normalize_locale(getattr(entity, "locale", None) or getattr(entity, "project", None) and getattr(entity.project, "locale", None) or DEFAULT_LOCALE)
+
         # 读取参考内容
         ref_ctx = ""
         for ref_name in reference_fields:
             ref_entity = _find_block(db, project_id, ref_name)
             if ref_entity and ref_entity.content:
-                ref_ctx += f"\n\n### 参考内容块「{_entity_label(ref_entity, ref_name)}」\n{ref_entity.content[:2000]}"
+                ref_ctx += (
+                    "\n\n"
+                    + rt(
+                        locale,
+                        "agent.reference_block_header",
+                        label=_entity_label(ref_entity, ref_name),
+                    )
+                    + f"\n{ref_entity.content[:2000]}"
+                )
 
-        system_prompt = f"""你是一个专业的内容修改助手。请根据指令修改以下内容块，保持原有风格和结构。
-
-## 当前内容块：{target_label}
-{current_content}
-{f"## 参考内容{ref_ctx}" if ref_ctx else ""}
-
-## 修改要求
-{instruction}
-
-请直接输出修改后的完整内容，不要添加任何解释或前缀。"""
+        reference_section = (
+            f"{rt(locale, 'agent.reference_section_header')}{ref_ctx}"
+            if ref_ctx else ""
+        )
+        system_prompt = rt(
+            locale,
+            "agent.rewrite.system",
+            target_label=target_label,
+            current_content=current_content,
+            reference_section=reference_section,
+            instruction=instruction,
+        )
 
         # ⚠️ 传 config 给 LLM 调用，确保 astream_events 能捕获工具内 LLM 的流式 token
         from core.llm import ainvoke_with_retry
@@ -399,7 +413,7 @@ async def _rewrite_field_impl(
         chat_model = get_chat_model(model=effective_model)
         response = await ainvoke_with_retry(chat_model, [
             SystemMessage(content=system_prompt),
-            HumanMessage(content=f"请按要求修改「{target_label}」的内容。"),
+            HumanMessage(content=rt(locale, "agent.rewrite.human", target_label=target_label)),
         ], config=config)
 
         new_content = normalize_content(response.content)
@@ -529,9 +543,10 @@ async def _generate_field_impl(
             )
 
         project = db.query(Project).filter(Project.id == project_id).first()
+        locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE) if project else DEFAULT_LOCALE)
         creator_ctx = ""
         if project and project.creator_profile:
-            creator_ctx = project.creator_profile.to_prompt_context()
+            creator_ctx = project.creator_profile.to_prompt_context(locale=locale)
 
         ai_prompt = getattr(entity, "ai_prompt", "") or ""
 
@@ -548,16 +563,16 @@ async def _generate_field_impl(
                 if dep_block and dep_block.content:
                     deps_ctx += f"\n### {dep_block.name}\n{dep_block.content[:2000]}"
 
-        sections = [f"你是一个专业的内容创作助手。请为「{target_label}」生成高质量的内容。"]
+        sections = [rt(locale, "agent.generate.intro", target_label=target_label)]
         if creator_ctx:
-            sections.append(f"## 创作者信息\n{creator_ctx}")
+            sections.append(rt(locale, "agent.generate.creator", creator_ctx=creator_ctx))
         if ai_prompt:
-            sections.append(f"## 内容块要求\n{ai_prompt}")
+            sections.append(rt(locale, "agent.generate.requirement", ai_prompt=ai_prompt))
         if deps_ctx:
-            sections.append(f"## 依赖内容（作为参考）{deps_ctx}")
+            sections.append(rt(locale, "agent.generate.dependencies", deps_ctx=deps_ctx))
         if instruction:
-            sections.append(f"## 额外指令\n{instruction}")
-        sections.append("请直接输出内容，不要添加前缀或解释。")
+            sections.append(rt(locale, "agent.generate.instruction", instruction=instruction))
+        sections.append(rt(locale, "agent.generate.output_only"))
         system_prompt = "\n\n".join(sections)
 
         # ⚠️ 传 config 给 LLM 调用，确保 astream_events 能捕获工具内 LLM 的流式 token
@@ -566,7 +581,7 @@ async def _generate_field_impl(
         chat_model = get_chat_model(model=effective_model)
         response = await ainvoke_with_retry(chat_model, [
             SystemMessage(content=system_prompt),
-            HumanMessage(content=f"请生成「{target_label}」的内容。"),
+            HumanMessage(content=rt(locale, "agent.generate.human", target_label=target_label)),
         ], config=config)
 
         new_content = normalize_content(response.content)
@@ -644,8 +659,9 @@ async def _query_field_impl(field_name: str, question: str, config: RunnableConf
         chat_model = get_chat_model(model=effective_model)
         # ⚠️ 传 config 给 LLM 调用
         from core.llm import ainvoke_with_retry
+        locale = normalize_locale(getattr(entity, "locale", None) or DEFAULT_LOCALE)
         response = await ainvoke_with_retry(chat_model, [
-            SystemMessage(content=f"你是内容分析助手。以下是内容块「{target_label}」的内容：\n\n{content[:4000]}"),
+            SystemMessage(content=rt(locale, "agent.query.system", target_label=target_label, content=content[:4000])),
             HumanMessage(content=question),
         ], config=config)
         return normalize_content(response.content)
@@ -1237,13 +1253,14 @@ async def _run_evaluation_impl(
         project = db.query(Project).filter(Project.id == project_id).first()
         if not project:
             return "项目不存在。"
+        locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
 
         # 获取上下文
         deps = get_intent_and_research(project_id)
         intent = deps.get("intent", "")
         creator_profile = ""
         if project.creator_profile:
-            creator_profile = project.creator_profile.to_prompt_context()
+            creator_profile = project.creator_profile.to_prompt_context(locale=locale)
 
         # 收集内容
         blocks = db.query(ContentBlock).filter(
@@ -1269,6 +1286,7 @@ async def _run_evaluation_impl(
             creator_profile=creator_profile,
             intent=intent,
             content_field_names=field_names,
+            locale=locale,
         )
 
         # 返回摘要

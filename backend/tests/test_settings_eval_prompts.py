@@ -37,15 +37,22 @@ def test_eval_prompt_presets_seed_and_update(client):
     listed = client.get("/api/settings/eval-prompts")
     assert listed.status_code == 200
     rows = listed.json()
-    assert len(rows) >= 6
+    assert len(rows) >= 12
     phases = {r["phase"] for r in rows}
     assert "eval_experience_plan" in phases
     assert "eval_scenario_role_a" in phases
-    by_phase = {r["phase"]: r for r in rows}
-    assert "plan 至少 3 步" in by_phase["eval_experience_plan"]["content"]
-    assert "score 必须是 1-10 的整数" in by_phase["eval_experience_per_block"]["content"]
-    assert "是否推荐 + 条件/原因" in by_phase["eval_experience_summary"]["content"]
-    assert "内容未覆盖" in by_phase["eval_scenario_role_a"]["content"]
+    locales = {r["locale"] for r in rows}
+    assert locales == {"zh-CN", "ja-JP"}
+    assert all(r["stable_key"] for r in rows)
+    by_phase_locale = {(r["phase"], r["locale"]): r for r in rows}
+    assert "plan 至少 3 步" in by_phase_locale[("eval_experience_plan", "zh-CN")]["content"]
+    assert "score 必须是 1-10 的整数" in by_phase_locale[("eval_experience_per_block", "zh-CN")]["content"]
+    assert "是否推荐 + 条件/原因" in by_phase_locale[("eval_experience_summary", "zh-CN")]["content"]
+    assert "内容未覆盖" in by_phase_locale[("eval_scenario_role_a", "zh-CN")]["content"]
+    assert "3ステップ以上" in by_phase_locale[("eval_experience_plan", "ja-JP")]["content"]
+    assert "1-10 の整数" in by_phase_locale[("eval_experience_per_block", "ja-JP")]["content"]
+    assert "推薦するか" in by_phase_locale[("eval_experience_summary", "ja-JP")]["content"]
+    assert "コンテンツには含まれていません" in by_phase_locale[("eval_scenario_role_a", "ja-JP")]["content"]
 
     target = rows[0]
     updated = client.put(
@@ -74,8 +81,12 @@ def test_eval_presets_sync_is_idempotent(client):
     assert sims1.status_code == 200
     preset_graders_count_1 = len([g for g in graders1.json() if g.get("is_preset")])
     preset_sims_count_1 = len([s for s in sims1.json() if s.get("is_preset")])
-    assert preset_graders_count_1 >= 4
-    assert preset_sims_count_1 >= 4
+    assert {g.get("locale") for g in graders1.json() if g.get("is_preset")} == {"zh-CN", "ja-JP"}
+    assert all(g.get("stable_key") for g in graders1.json() if g.get("is_preset"))
+    assert {s.get("locale") for s in sims1.json() if s.get("is_preset")} == {"zh-CN", "ja-JP"}
+    assert all(s.get("stable_key") for s in sims1.json() if s.get("is_preset"))
+    assert preset_graders_count_1 >= 8
+    assert preset_sims_count_1 >= 8
 
     second = client.post("/api/settings/eval-presets/sync")
     assert second.status_code == 200

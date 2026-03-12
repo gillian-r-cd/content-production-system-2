@@ -16,7 +16,9 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 from core.llm import get_chat_model
 from core.llm_compat import normalize_content, resolve_model
+from core.locale_text import rt
 from core.prompt_engine import prompt_engine, PromptContext
+from core.localization import DEFAULT_LOCALE, normalize_locale
 # 鸭子类型 — 函数接受任何有 .id/.name/.content/.ai_prompt 的对象（实际只传 ContentBlock）
 
 
@@ -50,10 +52,11 @@ async def generate_field(
     try:
         # 构建完整提示词
         system_prompt = prompt_engine.get_field_generation_prompt(field, context)
+        locale = normalize_locale(getattr(context.golden_context, "locale", DEFAULT_LOCALE))
         
         messages = [
             SystemMessage(content=system_prompt),
-            HumanMessage(content=f"请生成「{field.name}」的内容。"),
+            HumanMessage(content=rt(locale, "block.generate.human", name=field.name)),
         ]
         
         # 按覆盖链解析模型
@@ -96,10 +99,11 @@ async def generate_field_stream(
         内容片段
     """
     system_prompt = prompt_engine.get_field_generation_prompt(field, context)
+    locale = normalize_locale(getattr(context.golden_context, "locale", DEFAULT_LOCALE))
     
     messages = [
         SystemMessage(content=system_prompt),
-        HumanMessage(content=f"请生成「{field.name}」的内容。"),
+        HumanMessage(content=rt(locale, "block.generate.human", name=field.name)),
     ]
     
     from core.llm import astream_with_retry

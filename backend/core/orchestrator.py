@@ -29,6 +29,8 @@ LangGraph Agent 核心编排器
 import logging
 import operator
 from datetime import datetime
+from core.localization import DEFAULT_LOCALE, normalize_locale
+from core.locale_text import rt
 from typing import TypedDict, Annotated, Optional, List, Dict
 
 from langgraph.graph import StateGraph, END
@@ -99,13 +101,15 @@ def build_system_prompt(state: AgentState) -> str:
     creator_profile = state.get("creator_profile", "")
     current_handler = state.get("current_handler", state.get("current_phase", "general"))
     project_id = state.get("project_id", "")
+    project_locale = normalize_locale(state.get("project_locale", DEFAULT_LOCALE))
     mode_prompt = state.get("mode_prompt", "")
     memory_context = state.get("memory_context", "")
     now = datetime.now().astimezone()
-    current_time_context = (
-        f"当前系统时间: {now.strftime('%Y-%m-%d %H:%M:%S %Z%z')}\n"
-        f"今天是: {now.strftime('%A')}\n"
-        "时间解释规则: 用户提到“以来”“最近”“截至今天”时，以上述系统时间为准。"
+    current_time_context = rt(
+        project_locale,
+        "orchestrator.time_context",
+        timestamp=now.strftime('%Y-%m-%d %H:%M:%S %Z%z'),
+        weekday=now.strftime('%A'),
     )
 
     # ---- 动态段落 1: 内容块索引（简化前缀，6.8 节） ----
@@ -123,35 +127,22 @@ def build_system_prompt(state: AgentState) -> str:
             logger.warning(f"build_field_index failed: {e}")
 
     # ---- 动态段落 2: 运行时上下文 ----
-    runtime_context = f"当前能力上下文: {current_handler}"
+    runtime_context = (
+        f"現在の能力コンテキスト: {current_handler}"
+        if project_locale == "ja-JP" else
+        f"当前能力上下文: {current_handler}"
+    )
 
     # ---- 动态段落 3: 意图分析阶段专用指南 ----
     intent_guide = ""
     if current_handler == "intent":
-        intent_guide = """
-## 🎯 意图分析流程（当前组 = intent）
-你当前正在帮助创作者明确内容目标。请通过 3 轮对话收集以下信息：
-
-1. **做什么**（主题和目的）— 问法举例：「你这次想做什么内容？请简单描述主题或方向。」
-2. **给谁看**（目标受众）— 根据上一个回答个性化提问
-3. **期望行动**（看完后希望受众做什么）— 根据之前的回答个性化提问
-
-### 流程规则
-- 每次只问一个问题，用编号标记（如【问题 1/3】）
-- 用户回答后，先简要确认你的理解，再追问下一个
-- 3 个问题都回答后：
-  1. 输出结构化的意图分析摘要
-  2. 调用 update_field(field_name="意图分析", content=摘要内容) 保存
-  3. 告诉用户「✅ 已生成意图分析，请在工作台查看。输入"继续"进入下一组」
-- **如果用户在此阶段问其他问题（如"你能做什么"），正常回答，不影响问答流程**
-- **如果用户说"继续"/"下一步"且意图分析已保存，提示其在工作台选择下一步要处理的节点**
-"""
+        intent_guide = rt(project_locale, "orchestrator.intent_guide")
 
     # ---- 身份段：来自模式配置 ----
     if mode_prompt:
         identity = mode_prompt
     else:
-        identity = "你是一个智能内容生产 Agent，帮助创作者完成从意图分析到内容发布的全流程。"
+        identity = rt(project_locale, "orchestrator.default_identity")
 
     # ---- 动态段落 4: 活跃建议卡片（Layer 3, M1.5: 按 mode 过滤） ----
     active_suggestions_section = ""
@@ -171,14 +162,39 @@ def build_system_prompt(state: AgentState) -> str:
                 summary = card.get("summary", "")
                 items.append(f"  - #{sid[:8]}: 目标字段「{target}」，摘要: {summary}")
             if items:
-                active_suggestions_section = "<active_suggestions>\n当前有未决的修改建议卡片（用户尚未操作）:\n" + "\n".join(items) + "\n注意: 用户可能会追问这些建议的细节或要求调整。\n</active_suggestions>"
+                if project_locale == "ja-JP":
+                    ja_items = []
+                    for sid, card in PENDING_SUGGESTIONS.items():
+                        if card.get("source_mode", "assistant") != current_mode:
+                            continue
+                        if card.get("status", "pending") != "pending":
+                            continue
+                        target = card.get("target_field", "?")
+                        summary = card.get("summary", "")
+                        ja_items.append(f"  - #{sid[:8]}: 対象フィールド「{target}」、概要: {summary}")
+                    if ja_items:
+                        active_suggestions_section = "<active_suggestions>\n現在、未処理の修正提案カードがあります（ユーザー未対応）:\n" + "\n".join(ja_items) + "\n注意: ユーザーが詳細確認や修正依頼を続ける可能性があります。\n</active_suggestions>"
+                else:
+                    active_suggestions_section = "<active_suggestions>\n当前有未决的修改建议卡片（用户尚未操作）:\n" + "\n".join(items) + "\n注意: 用户可能会追问这些建议的细节或要求调整。\n</active_suggestions>"
     except Exception as e:
         logger.warning(f"build active_suggestions failed: {e}")
 
     # ---- 记忆段：全量注入（M2 启用后生效） ----
     memory_section = ""
     if memory_context:
-        memory_section = f"""<memory>
+        memory_section = (
+            f"""<memory>
+## プロジェクト記憶
+以下はモードや段階をまたいで蓄積された重要情報です。
+
+使用ルール:
+- 内容修正時は、記憶上の嗜好や制約と矛盾しないか確認する。
+- NEVER: 返信本文で記憶内容をそのまま復唱しない。
+- 記憶が古い可能性もある。現在のユーザー指示と矛盾する場合は現在の指示を優先する。
+{memory_context}
+</memory>"""
+            if project_locale == "ja-JP" else
+            f"""<memory>
 ## 项目记忆
 以下是跨模式、跨阶段积累的关键信息。
 
@@ -188,6 +204,100 @@ def build_system_prompt(state: AgentState) -> str:
 - 记忆可能过时。如果用户当前指令与记忆矛盾，以当前指令为准。
 {memory_context}
 </memory>"""
+        )
+
+    if project_locale == "ja-JP":
+        return f"""<identity>
+{identity}
+</identity>
+
+<current_time_anchor>
+## 現在時刻アンカー
+{current_time_context}
+</current_time_anchor>
+
+<output_rules>
+ALWAYS:
+- 標準的なビジネス日本語で回答する。
+- Markdown は必要に応じて使ってよい。
+- 長文は段落を分けて読みやすくする。
+
+NEVER:
+- 中国語で回答しない。
+- 本文中に `<del>` / `<ins>` や diff 形式を出さない。
+- 本文中に完成稿・全文改稿・差し替え候補をそのまま貼らない。
+
+CRITICAL:
+- 具体的な編集案や差し替え案を提示できる段階になったら、本文に書かず `propose_edit` を使う。
+- 全文を書き直す必要がある場合のみ `rewrite_field` を使う。
+</output_rules>
+
+<action_guide>
+## 行動ガイド
+
+### 既存内容を修正したい
+- 「直して」「少し調整して」「XX を YY に」 -> `propose_edit`
+- 「全文を書き直して」「ゼロから書き直して」「全体のトーンを変えて」 -> `rewrite_field`
+- 内容ブロックが空 -> `generate_field_content`
+- ユーザーが完成版テキストを直接渡した -> `update_field`
+
+### 内容を確認したい
+- 「XX を見せて」「XX を読んで」 -> `read_field`
+- 「XX を分析して」「XX はどう？」 -> `query_field`
+
+### 構造を変えたい
+- 内容ブロックの追加・削除・移動・グループ操作 -> `manage_architecture`
+
+### 調査したい
+- 消費者調査 -> `run_research(research_type="consumer")`
+- 一般的な市場/競合調査 -> `run_research(research_type="generic")`
+
+### Eval V2 を実行したい
+- 明確に評価対象の内容ブロック名を指定した場合のみ `run_evaluation`
+- 単なるレビュー・品質確認は `read_field` / `query_field` で対応し、安易に `run_evaluation` を呼ばない
+
+### ツール不要
+- 挨拶、能力説明、方針相談、意図整理中の回答 -> 直接返信
+</action_guide>
+
+<modification_rules>
+## 編集ルール
+ALWAYS:
+- 修正前に `read_field` で現行内容を確認する（直前に確認済みなら不要）。
+- 複数フィールドを直す場合は、フィールドごとに別々の `propose_edit` を使う。
+- 同じフィールドでも独立した提案は複数カードに分ける。
+
+NEVER:
+- 複数の独立提案を 1 枚の SuggestionCard にまとめない。
+- 局所修正を全文改稿扱いしない。
+- 意図整理フロー中の回答を操作命令と誤認しない。
+</modification_rules>
+
+<disambiguation>
+## 重要な消歧ルール
+- 「続ける」「次へ」だけでは自動で段階遷移しない。どのノードを処理するか確認する。
+- 構造変更は `manage_architecture`、局所修文は `propose_edit`、全文改稿は `rewrite_field`。
+- 内容ブロック名が曖昧な場合は推測せず、先に索引や `read_field` で確認する。
+</disambiguation>
+
+<project_context>
+## クリエイター情報
+{creator_profile or '（クリエイター情報なし）'}
+
+## 現在のプロジェクト文脈
+{runtime_context}
+
+<field_index>
+ALWAYS: 以下は要約索引です。完全な内容が必要なら `read_field` を使う。
+{field_index_section}
+</field_index>
+
+{memory_section}
+</project_context>
+
+{active_suggestions_section}
+
+{intent_guide}"""
 
     return f"""<identity>
 {identity}

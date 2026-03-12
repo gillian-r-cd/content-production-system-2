@@ -5,7 +5,13 @@
 
 import { expect, test } from "@playwright/test";
 
-const BACKEND_BASE = process.env.PLAYWRIGHT_BACKEND_URL || "http://127.0.0.1:8002";
+import { resolveBackendBaseUrl } from "../lib/backend-url";
+
+const BACKEND_BASE = resolveBackendBaseUrl({
+  NEXT_PUBLIC_BACKEND_URL:
+    process.env.PLAYWRIGHT_BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL,
+  BACKEND_URL: process.env.BACKEND_URL,
+});
 
 test("auto split modal supports split validate apply and start-all-ready", async ({ page, request }) => {
   const suffix = Date.now().toString();
@@ -79,7 +85,8 @@ test("auto split modal supports split validate apply and start-all-ready", async
 
   const runResponsePromise = page.waitForResponse((response) =>
     response.url().includes(`/api/blocks/project/${project.id}/run`) &&
-    response.request().method() === "POST",
+    response.request().method() === "POST" &&
+    (response.request().postData() || "").includes('"mode":"start_all_ready"'),
   );
   await page.getByRole("button", { name: "开始所有已就绪内容块" }).click();
   const runResponse = await runResponsePromise;

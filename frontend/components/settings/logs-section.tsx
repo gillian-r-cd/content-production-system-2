@@ -9,15 +9,18 @@
 
 import { useState, useMemo, useCallback } from "react";
 import { settingsAPI } from "@/lib/api";
+import { useSettingsUiIsJa } from "./shared";
 
 // ---- 角色配色与标签 ----
-const ROLE_CONFIG: Record<string, { label: string; color: string; bg: string }> = {
-  system: { label: "System Prompt", color: "text-violet-300", bg: "bg-violet-500/10 border-violet-500/30" },
-  human: { label: "用户消息", color: "text-green-300", bg: "bg-green-500/10 border-green-500/30" },
-  ai: { label: "AI 回复", color: "text-amber-300", bg: "bg-amber-500/10 border-amber-500/30" },
-  tool: { label: "工具结果", color: "text-cyan-300", bg: "bg-cyan-500/10 border-cyan-500/30" },
-  unknown: { label: "未知", color: "text-zinc-400", bg: "bg-zinc-500/10 border-zinc-500/30" },
-};
+function getRoleConfig(isJa: boolean): Record<string, { label: string; color: string; bg: string }> {
+  return {
+    system: { label: isJa ? "システムプロンプト" : "System Prompt", color: "text-violet-300", bg: "bg-violet-500/10 border-violet-500/30" },
+    human: { label: isJa ? "ユーザーメッセージ" : "用户消息", color: "text-green-300", bg: "bg-green-500/10 border-green-500/30" },
+    ai: { label: isJa ? "AI 応答" : "AI 回复", color: "text-amber-300", bg: "bg-amber-500/10 border-amber-500/30" },
+    tool: { label: isJa ? "ツール結果" : "工具结果", color: "text-cyan-300", bg: "bg-cyan-500/10 border-cyan-500/30" },
+    unknown: { label: isJa ? "不明" : "未知", color: "text-zinc-400", bg: "bg-zinc-500/10 border-zinc-500/30" },
+  };
+}
 
 interface LogToolCall {
   name?: string;
@@ -47,10 +50,11 @@ interface LogItem {
 }
 
 // ---- 单条 Message 展示块 ----
-function MessageBlock({ msg, index, defaultOpen }: { msg: PromptMessage; index: number; defaultOpen: boolean }) {
+function MessageBlock({ msg, index, defaultOpen, isJa }: { msg: PromptMessage; index: number; defaultOpen: boolean; isJa: boolean }) {
   const [open, setOpen] = useState(defaultOpen);
   const role = msg.role || "unknown";
-  const config = ROLE_CONFIG[role] || ROLE_CONFIG.unknown;
+  const roleConfig = getRoleConfig(isJa);
+  const config = roleConfig[role] || roleConfig.unknown;
   const content = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content, null, 2);
   const charCount = content.length;
 
@@ -74,7 +78,7 @@ function MessageBlock({ msg, index, defaultOpen }: { msg: PromptMessage; index: 
           )}
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-xs text-zinc-600">{charCount.toLocaleString()} 字符</span>
+          <span className="text-xs text-zinc-600">{charCount.toLocaleString()} {isJa ? "文字" : "字符"}</span>
           <span className="text-zinc-500 text-xs">{open ? "▼" : "▶"}</span>
         </div>
       </button>
@@ -98,8 +102,8 @@ function MessageBlock({ msg, index, defaultOpen }: { msg: PromptMessage; index: 
 }
 
 // ---- 解析 prompt_input ----
-function parsePromptInput(raw: string): { parsed: PromptMessage[] | null; rawText: string } {
-  if (!raw) return { parsed: null, rawText: "无" };
+function parsePromptInput(raw: string, isJa: boolean): { parsed: PromptMessage[] | null; rawText: string } {
+  if (!raw) return { parsed: null, rawText: isJa ? "なし" : "无" };
   try {
     const arr: unknown = JSON.parse(raw);
     if (Array.isArray(arr) && arr.length > 0 && typeof (arr[0] as PromptMessage)?.role === "string") {
@@ -112,8 +116,8 @@ function parsePromptInput(raw: string): { parsed: PromptMessage[] | null; rawTex
 }
 
 // ---- 日志详情弹窗 ----
-function LogDetailModal({ log, onClose }: { log: LogItem; onClose: () => void }) {
-  const { parsed: messages, rawText } = useMemo(() => parsePromptInput(log.prompt_input || ""), [log.prompt_input]);
+function LogDetailModal({ log, onClose, isJa }: { log: LogItem; onClose: () => void; isJa: boolean }) {
+  const { parsed: messages, rawText } = useMemo(() => parsePromptInput(log.prompt_input || "", isJa), [isJa, log.prompt_input]);
   const [showRawInput, setShowRawInput] = useState(false);
 
   return (
@@ -123,7 +127,7 @@ function LogDetailModal({ log, onClose }: { log: LogItem; onClose: () => void })
         {/* 头部 */}
         <div className="flex-shrink-0 flex justify-between items-center px-6 py-4 border-b border-surface-3">
           <div>
-            <h3 className="text-lg font-medium text-zinc-100">日志详情</h3>
+            <h3 className="text-lg font-medium text-zinc-100">{isJa ? "ログ詳細" : "日志详情"}</h3>
             <div className="flex gap-4 mt-1 text-xs text-zinc-500">
               <span>{log.operation}</span>
               <span>{log.model}</span>
@@ -141,14 +145,14 @@ function LogDetailModal({ log, onClose }: { log: LogItem; onClose: () => void })
           <div>
             <div className="flex items-center justify-between mb-3">
               <h4 className="text-sm font-medium text-zinc-400">
-                输入 (Messages) — 大模型实际收到的全部信息
+                {isJa ? "入力 (Messages) — LLM が実際に受け取った全情報" : "输入 (Messages) — 大模型实际收到的全部信息"}
               </h4>
               {messages && (
                 <button
                   onClick={() => setShowRawInput(!showRawInput)}
                   className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors"
                 >
-                  {showRawInput ? "分层展示" : "原始 JSON"}
+                  {showRawInput ? (isJa ? "構造表示" : "分层展示") : (isJa ? "生 JSON" : "原始 JSON")}
                 </button>
               )}
             </div>
@@ -167,6 +171,7 @@ function LogDetailModal({ log, onClose }: { log: LogItem; onClose: () => void })
                     msg={msg}
                     index={idx}
                     defaultOpen={msg.role === "human" || messages.length <= 3}
+                    isJa={isJa}
                   />
                 ))}
               </div>
@@ -175,16 +180,16 @@ function LogDetailModal({ log, onClose }: { log: LogItem; onClose: () => void })
 
           {/* 输出 (Response) */}
           <div>
-            <h4 className="text-sm font-medium text-zinc-400 mb-3">输出 (Response)</h4>
+            <h4 className="text-sm font-medium text-zinc-400 mb-3">{isJa ? "出力 (Response)" : "输出 (Response)"}</h4>
             <pre className="p-4 bg-surface-2 rounded-lg text-sm text-zinc-300 whitespace-pre-wrap overflow-auto max-h-[60vh] leading-relaxed">
-              {log.prompt_output || "无"}
+              {log.prompt_output || (isJa ? "なし" : "无")}
             </pre>
           </div>
 
           {/* 错误信息（如果有） */}
           {log.error_message && (
             <div>
-              <h4 className="text-sm font-medium text-red-400 mb-3">错误信息</h4>
+              <h4 className="text-sm font-medium text-red-400 mb-3">{isJa ? "エラー情報" : "错误信息"}</h4>
               <pre className="p-4 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-300 whitespace-pre-wrap overflow-auto">
                 {log.error_message}
               </pre>
@@ -241,6 +246,7 @@ function downloadJSON(data: unknown, filename: string) {
 
 // ---- 主组件 ----
 export function LogsSection({ logs, onRefresh }: { logs: LogItem[]; onRefresh?: () => void }) {
+  const isJa = useSettingsUiIsJa();
   const [selectedLog, setSelectedLog] = useState<LogItem | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -276,16 +282,16 @@ export function LogsSection({ logs, onRefresh }: { logs: LogItem[]; onRefresh?: 
     setIsRefreshing(false);
   };
 
-  const handleExport = async (format: "json" | "csv") => {
+  const handleExport = useCallback(async (format: "json" | "csv") => {
     try {
       const data = await settingsAPI.exportLogs();
       if (format === "json") {
         downloadJSON(data, `logs_${new Date().toISOString().split("T")[0]}.json`);
       }
     } catch {
-      alert("导出失败");
+      alert(isJa ? "エクスポートに失敗しました" : "导出失败");
     }
-  };
+  }, [isJa]);
 
   // 单项下载
   const handleDownloadSingle = useCallback((log: LogItem) => {
@@ -306,15 +312,15 @@ export function LogsSection({ logs, onRefresh }: { logs: LogItem[]; onRefresh?: 
       total_tokens: selectedLogs.reduce((sum, l) => sum + (l.tokens_in || 0) + (l.tokens_out || 0), 0),
       logs: selectedLogs.map(formatLogForDownload),
     };
-    downloadJSON(data, `logs_batch_${selectedLogs.length}条_${new Date().toISOString().split("T")[0]}.json`);
-  }, [logs, selectedIds]);
+    downloadJSON(data, `logs_batch_${selectedLogs.length}${isJa ? "items" : "条"}_${new Date().toISOString().split("T")[0]}.json`);
+  }, [isJa, logs, selectedIds]);
 
   return (
     <div>
       <div className="flex justify-between items-center mb-6">
         <div>
-          <h2 className="text-xl font-semibold text-zinc-100">调试日志</h2>
-          <p className="text-sm text-zinc-500 mt-1">查看每次 AI 调用的详细信息</p>
+          <h2 className="text-xl font-semibold text-zinc-100">{isJa ? "デバッグログ" : "调试日志"}</h2>
+          <p className="text-sm text-zinc-500 mt-1">{isJa ? "各 AI 呼び出しの詳細情報を確認できます" : "查看每次 AI 调用的详细信息"}</p>
         </div>
         <div className="flex gap-2 items-center">
           {/* 批量下载按钮 — 仅选中时显示 */}
@@ -323,7 +329,7 @@ export function LogsSection({ logs, onRefresh }: { logs: LogItem[]; onRefresh?: 
               onClick={handleDownloadSelected}
               className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 rounded-lg text-white transition-colors text-sm"
             >
-              ⬇ 下载选中 ({selectedIds.size})
+              {isJa ? `⬇ 選択項目をダウンロード (${selectedIds.size})` : `⬇ 下载选中 (${selectedIds.size})`}
             </button>
           )}
           <button
@@ -331,10 +337,10 @@ export function LogsSection({ logs, onRefresh }: { logs: LogItem[]; onRefresh?: 
             disabled={isRefreshing}
             className="px-4 py-2 bg-brand-600 hover:bg-brand-700 disabled:bg-zinc-600 rounded-lg text-white transition-colors"
           >
-            {isRefreshing ? "⏳ 刷新中..." : "🔄 刷新"}
+            {isRefreshing ? (isJa ? "⏳ 更新中..." : "⏳ 刷新中...") : (isJa ? "🔄 更新" : "🔄 刷新")}
           </button>
           <button onClick={() => handleExport("json")} className="px-4 py-2 bg-surface-3 hover:bg-surface-4 rounded-lg">
-            导出 JSON
+            {isJa ? "JSON をエクスポート" : "导出 JSON"}
           </button>
         </div>
       </div>
@@ -352,20 +358,20 @@ export function LogsSection({ logs, onRefresh }: { logs: LogItem[]; onRefresh?: 
                   className="rounded border-zinc-600 bg-surface-2 text-brand-500 focus:ring-brand-500 cursor-pointer"
                 />
               </th>
-              <th className="text-left py-3 px-3 text-zinc-500">时间</th>
-              <th className="text-left py-3 px-3 text-zinc-500">组</th>
-              <th className="text-left py-3 px-3 text-zinc-500">操作</th>
-              <th className="text-left py-3 px-3 text-zinc-500">模型</th>
+              <th className="text-left py-3 px-3 text-zinc-500">{isJa ? "時間" : "时间"}</th>
+              <th className="text-left py-3 px-3 text-zinc-500">{isJa ? "段階" : "组"}</th>
+              <th className="text-left py-3 px-3 text-zinc-500">{isJa ? "操作" : "操作"}</th>
+              <th className="text-left py-3 px-3 text-zinc-500">{isJa ? "モデル" : "模型"}</th>
               <th className="text-right py-3 px-3 text-zinc-500">Tokens</th>
-              <th className="text-right py-3 px-3 text-zinc-500">耗时</th>
-              <th className="text-right py-3 px-3 text-zinc-500">成本</th>
+              <th className="text-right py-3 px-3 text-zinc-500">{isJa ? "所要時間" : "耗时"}</th>
+              <th className="text-right py-3 px-3 text-zinc-500">{isJa ? "コスト" : "成本"}</th>
               <th className="py-3 px-3"></th>
             </tr>
           </thead>
           <tbody>
             {logs.length === 0 ? (
               <tr>
-                <td colSpan={9} className="py-12 text-center text-zinc-500">暂无日志记录</td>
+                <td colSpan={9} className="py-12 text-center text-zinc-500">{isJa ? "ログ記録はまだありません" : "暂无日志记录"}</td>
               </tr>
             ) : (
               logs.map((log) => (
@@ -389,12 +395,12 @@ export function LogsSection({ logs, onRefresh }: { logs: LogItem[]; onRefresh?: 
                     <button
                       onClick={() => handleDownloadSingle(log)}
                       className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
-                      title="下载此条日志"
+                      title={isJa ? "このログをダウンロード" : "下载此条日志"}
                     >
                       ⬇
                     </button>
                     <button onClick={() => setSelectedLog(log)} className="text-xs text-brand-400 hover:text-brand-300">
-                      详情
+                      {isJa ? "詳細" : "详情"}
                     </button>
                   </td>
                 </tr>
@@ -406,7 +412,7 @@ export function LogsSection({ logs, onRefresh }: { logs: LogItem[]; onRefresh?: 
 
       {/* 日志详情弹窗 */}
       {selectedLog && (
-        <LogDetailModal log={selectedLog} onClose={() => setSelectedLog(null)} />
+        <LogDetailModal log={selectedLog} onClose={() => setSelectedLog(null)} isJa={isJa} />
       )}
     </div>
   );

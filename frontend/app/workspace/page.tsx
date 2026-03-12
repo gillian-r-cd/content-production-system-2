@@ -6,7 +6,7 @@
 
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { WorkspaceLayout } from "@/components/layout/workspace-layout";
 import { ProgressPanel } from "@/components/progress-panel";
 import { ContentPanel } from "@/components/content-panel";
@@ -15,6 +15,7 @@ import { CreateProjectModal } from "@/components/create-project-modal";
 import { GlobalSearchModal } from "@/components/global-search-modal";
 import { ProjectAutoSplitModal } from "@/components/project-auto-split-modal";
 import { projectAPI, startAllReadyBlocks } from "@/lib/api";
+import { formatProjectText, normalizeProjectLocale, persistClientLocale, projectUiText, resolveClientLocale } from "@/lib/project-locale";
 import { requestNotificationPermission } from "@/lib/utils";
 import type { Project, ContentBlock, AgentSelectionRef } from "@/lib/api";
 import { Copy, Trash2, ChevronDown, ChevronRight, CheckSquare, Square, X, Download, Upload, Search, Plus, History } from "lucide-react";
@@ -94,6 +95,7 @@ function groupProjectsByFamily(projects: Project[]): ProjectFamily[] {
 }
 
 export default function WorkspacePage() {
+  const [browserLocale, setBrowserLocale] = useState<"zh-CN" | "ja-JP" | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
   // P0-1: fields state 已移除，统一使用 allBlocks (ContentBlock)
@@ -129,6 +131,9 @@ export default function WorkspacePage() {
 
   // B: 选中文字→Agent Panel 引用上下文
   const [pendingAgentSelection, setPendingAgentSelection] = useState<AgentSelectionRef | null>(null);
+  // Workspace UI 必须优先跟随当前项目语言；只有未进入项目时才回退到客户端记住的 locale。
+  const uiLocale = normalizeProjectLocale(currentProject?.locale || browserLocale || "zh-CN");
+  const t = projectUiText(uiLocale);
 
   // 点击外部关闭下拉菜单
   useEffect(() => {
@@ -140,6 +145,19 @@ export default function WorkspacePage() {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  useEffect(() => {
+    setBrowserLocale(resolveClientLocale());
+  }, []);
+
+  useEffect(() => {
+    if (!currentProject?.locale && !browserLocale) return;
+    const persistedLocale = persistClientLocale(uiLocale);
+    if (browserLocale !== persistedLocale) {
+      setBrowserLocale(persistedLocale);
+    }
+    document.title = t.systemName;
+  }, [browserLocale, currentProject?.locale, t.systemName, uiLocale]);
 
   // 全局搜索快捷键 Cmd/Ctrl+Shift+F
   useEffect(() => {
@@ -188,23 +206,35 @@ export default function WorkspacePage() {
     return () => window.clearInterval(intervalId);
   }, [isStartAllReadyRunning, currentProject?.id]);
 
-  const loadProjects = async () => {
+  const syncProjectList = useCallback((nextProjects: Project[], preferredCurrentProjectId?: string | null) => {
+    setProjects(nextProjects);
+    setCurrentProject(() => {
+      if (nextProjects.length === 0) {
+        return null;
+      }
+
+      if (preferredCurrentProjectId !== undefined) {
+        if (!preferredCurrentProjectId) {
+          return nextProjects[0];
+        }
+        return nextProjects.find((project) => project.id === preferredCurrentProjectId) || nextProjects[0];
+      }
+
+      const savedId = localStorage.getItem("lastProjectId");
+      return (savedId ? nextProjects.find((project) => project.id === savedId) : null) || nextProjects[0];
+    });
+  }, []);
+
+  const loadProjects = useCallback(async () => {
     try {
       const data = await projectAPI.list();
-      setProjects(data);
-      
-      // 恢复上次选中的项目，或自动选择第一个
-      if (data.length > 0 && !currentProject) {
-        const savedId = localStorage.getItem("lastProjectId");
-        const saved = savedId ? data.find((p: Project) => p.id === savedId) : null;
-        setCurrentProject(saved || data[0]);
-      }
+      syncProjectList(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "加载项目失败");
+      setError(err instanceof Error ? err.message : t.loadingProjectsFailed);
     } finally {
       setLoading(false);
     }
-  };
+  }, [syncProjectList, t.loadingProjectsFailed]);
 
   const handleBlockSelect = (block: ContentBlock) => {
     setSelectedBlock(block);
@@ -252,27 +282,25 @@ export default function WorkspacePage() {
       setShowProjectMenu(false);
     } catch (err) {
       console.error("复制项目失败:", err);
-      setError("复制项目失败");
+      setError(t.duplicateProjectFailed);
     }
   };
 
-  const handleDeleteProject = async (projectId: string, e: React.MouseEvent) => {
+  const handleDeleteProject = useCallback(async (projectId: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!confirm("确定删除此项目？此操作将删除项目的所有数据，包括内容块和对话记录。")) return;
+    if (!confirm(t.deleteProjectConfirm)) return;
     
     try {
       await projectAPI.delete(projectId);
-      const newProjects = projects.filter(p => p.id !== projectId);
-      setProjects(newProjects);
-      if (currentProject?.id === projectId) {
-        setCurrentProject(newProjects[0] || null);
-      }
+      const updatedProjects = await projectAPI.list();
+      const nextCurrentProjectId = currentProject?.id === projectId ? null : currentProject?.id || null;
+      syncProjectList(updatedProjects, nextCurrentProjectId);
       setShowProjectMenu(false);
     } catch (err) {
       console.error("删除项目失败:", err);
-      setError("删除项目失败");
+      setError(t.deleteProjectFailed);
     }
-  };
+  }, [currentProject?.id, syncProjectList, t.deleteProjectConfirm, t.deleteProjectFailed]);
 
   // 批量选择相关函数
   const toggleProjectSelection = (projectId: string, e: React.MouseEvent) => {
@@ -303,34 +331,23 @@ export default function WorkspacePage() {
     if (selectedProjectIds.size === 0) return;
     
     const count = selectedProjectIds.size;
-    if (!confirm(`确定删除选中的 ${count} 个项目？此操作将删除所有选中项目的数据，包括内容块和对话记录。`)) return;
+    if (!confirm(formatProjectText(t.batchDeleteConfirm, { count }))) return;
     
     setIsDeleting(true);
     try {
-      // 逐个删除
-      const deletePromises = Array.from(selectedProjectIds).map(id => 
-        projectAPI.delete(id).catch(err => {
-          console.error(`删除项目 ${id} 失败:`, err);
-          return null; // 失败的返回 null
-        })
-      );
-      
-      await Promise.all(deletePromises);
-      
-      // 更新项目列表
-      const newProjects = projects.filter(p => !selectedProjectIds.has(p.id));
-      setProjects(newProjects);
-      
-      // 如果当前项目被删除，切换到第一个项目
-      if (currentProject && selectedProjectIds.has(currentProject.id)) {
-        setCurrentProject(newProjects[0] || null);
-      }
-      
-      // 退出批量模式
+      const targetIds = Array.from(selectedProjectIds);
+      const result = await projectAPI.batchDelete(targetIds);
+      const deletedIdSet = new Set(result.deleted_ids);
+      const updatedProjects = await projectAPI.list();
+      const nextCurrentProjectId = currentProject && !deletedIdSet.has(currentProject.id)
+        ? currentProject.id
+        : null;
+      syncProjectList(updatedProjects, nextCurrentProjectId);
       exitBatchMode();
+      setShowProjectMenu(false);
     } catch (err) {
       console.error("批量删除失败:", err);
-      setError("批量删除失败");
+      setError(err instanceof Error ? `${t.batchDeleteFailed}: ${err.message}` : t.batchDeleteFailed);
     } finally {
       setIsDeleting(false);
     }
@@ -338,7 +355,9 @@ export default function WorkspacePage() {
 
   // ============== 创建项目新版本 ==============
   const handleCreateVersion = async (projectId: string) => {
-    const note = versionNote.trim() || `版本快照 ${new Date().toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}`;
+    const localeTag = normalizeProjectLocale(uiLocale);
+    const timeText = new Date().toLocaleString(localeTag, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    const note = versionNote.trim() || formatProjectText(t.snapshotNote, { time: timeText });
     try {
       const newVersion = await projectAPI.createVersion(projectId, note);
       // 新版本加入列表并切换过去
@@ -348,7 +367,7 @@ export default function WorkspacePage() {
       setVersionNote("");
     } catch (err) {
       console.error("创建版本失败:", err);
-      setError("创建版本失败: " + (err instanceof Error ? err.message : "未知错误"));
+      setError(`${t.createVersionFailed}: ${err instanceof Error ? err.message : t.unknownError}`);
     }
   };
 
@@ -383,7 +402,7 @@ export default function WorkspacePage() {
       setShowProjectMenu(false);
     } catch (err) {
       console.error("导出项目失败:", err);
-      setError("导出项目失败");
+      setError(t.exportProjectFailed);
     }
   };
 
@@ -397,7 +416,7 @@ export default function WorkspacePage() {
       const data = JSON.parse(text);
 
       if (!data.project) {
-        setError("无效的项目导出文件：缺少 project 数据");
+        setError(t.invalidImportFile);
         return;
       }
 
@@ -409,10 +428,12 @@ export default function WorkspacePage() {
         setCurrentProject(result.project);
       }
       setShowProjectMenu(false);
-      alert(`✅ ${result.message}\n\n导入统计:\n• 内容块: ${result.stats.content_blocks}\n• 内容块: ${result.stats.project_fields}\n• 对话记录: ${result.stats.chat_messages}\n• 版本历史: ${result.stats.content_versions}\n• 模拟记录: ${result.stats.simulation_records}\n• 评估运行: ${result.stats.eval_runs}\n• 生成日志: ${result.stats.generation_logs}`);
+      alert(
+        `✅ ${result.message}\n\n${t.importSummaryTitle}:\n• ${t.importContentBlocks}: ${result.stats.content_blocks}\n• ${t.importProjectFields}: ${result.stats.project_fields}\n• ${t.importChatMessages}: ${result.stats.chat_messages}\n• ${t.importContentVersions}: ${result.stats.content_versions}\n• ${t.importSimulationRecords}: ${result.stats.simulation_records}\n• ${t.importEvalRuns}: ${result.stats.eval_runs}\n• ${t.importGenerationLogs}: ${result.stats.generation_logs}`,
+      );
     } catch (err) {
       console.error("导入项目失败:", err);
-      setError(err instanceof Error ? `导入失败: ${err.message}` : "导入项目失败");
+      setError(err instanceof Error ? `${t.importProjectFailed}: ${err.message}` : t.importProjectFailed);
     } finally {
       // 重置文件输入
       if (importFileRef.current) {
@@ -424,7 +445,7 @@ export default function WorkspacePage() {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-screen bg-surface-0">
-        <div className="text-zinc-400">加载中...</div>
+        <div className="text-zinc-400">{t.loading}</div>
       </div>
     );
   }
@@ -435,17 +456,23 @@ export default function WorkspacePage() {
       <header className="h-14 flex-shrink-0 border-b border-surface-3 bg-surface-1 flex items-center justify-between px-4">
         <div className="flex items-center gap-4">
           <h1 className="text-lg font-semibold bg-gradient-to-r from-brand-400 to-brand-600 bg-clip-text text-transparent">
-            内容生产系统
+            {t.systemName}
           </h1>
           
           {/* 项目选择器（带复制/删除功能） */}
           <div className="relative" ref={projectMenuRef}>
             <button
-              onClick={() => setShowProjectMenu(!showProjectMenu)}
+              onClick={() => {
+                const next = !showProjectMenu;
+                setShowProjectMenu(next);
+                if (next) {
+                  loadProjects().catch(console.error);
+                }
+              }}
               className="flex items-center gap-2 px-3 py-1.5 bg-surface-2 border border-surface-3 rounded-lg text-sm text-zinc-200 hover:border-surface-4 min-w-[200px] justify-between"
             >
               <span className="truncate">
-                {currentProject ? `${currentProject.name} (v${currentProject.version})` : "选择项目"}
+                {currentProject ? `${currentProject.name} (v${currentProject.version})` : t.selectProject}
               </span>
               <ChevronDown className="w-4 h-4 text-zinc-400" />
             </button>
@@ -466,10 +493,10 @@ export default function WorkspacePage() {
                           ) : (
                             <Square className="w-4 h-4" />
                           )}
-                          全选
+                          {t.selectAll}
                         </button>
                         <span className="text-xs text-zinc-500">
-                          已选 {selectedProjectIds.size} / {projects.length}
+                          {formatProjectText(t.selectedCount, { selected: selectedProjectIds.size, total: projects.length })}
                         </span>
                       </div>
                       <div className="flex items-center gap-2">
@@ -479,12 +506,12 @@ export default function WorkspacePage() {
                           className="flex items-center gap-1 px-2 py-1 text-xs bg-red-600/20 text-red-400 hover:bg-red-600/30 rounded disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
-                          {isDeleting ? "删除中..." : "批量删除"}
+                          {isDeleting ? t.deleting : t.batchDelete}
                         </button>
                         <button
                           onClick={exitBatchMode}
                           className="p-1 text-zinc-400 hover:text-zinc-200 hover:bg-surface-3 rounded"
-                          title="退出批量模式"
+                          title={t.exitBatchMode}
                         >
                           <X className="w-4 h-4" />
                         </button>
@@ -492,13 +519,13 @@ export default function WorkspacePage() {
                     </>
                   ) : (
                     <>
-                      <span className="text-xs text-zinc-500">{groupProjectsByFamily(projects).length} 个项目</span>
+                      <span className="text-xs text-zinc-500">{formatProjectText(t.projectCount, { count: groupProjectsByFamily(projects).length })}</span>
                       <button
                         onClick={() => setIsBatchMode(true)}
                         className="text-xs text-zinc-400 hover:text-zinc-200"
                         disabled={projects.length === 0}
                       >
-                        批量管理
+                        {t.batchManage}
                       </button>
                     </>
                   )}
@@ -507,7 +534,7 @@ export default function WorkspacePage() {
                 {/* 项目列表 */}
                 <div className="max-h-80 overflow-y-auto py-1">
                   {projects.length === 0 ? (
-                    <div className="px-3 py-4 text-sm text-zinc-500 text-center">暂无项目</div>
+                    <div className="px-3 py-4 text-sm text-zinc-500 text-center">{t.noProjects}</div>
                   ) : isBatchMode ? (
                     /* 批量模式：扁平渲染所有项目（含版本） */
                     projects.map((p) => (
@@ -571,7 +598,7 @@ export default function WorkspacePage() {
                               <div className="text-xs text-zinc-500">
                                 v{family.latest.version}
                                 {hasMultipleVersions && !isExpanded && (
-                                  <span className="ml-1.5 text-zinc-600">({family.versions.length} 个版本)</span>
+                                  <span className="ml-1.5 text-zinc-600">{formatProjectText(t.versionsCount, { count: family.versions.length })}</span>
                                 )}
                               </div>
                             </div>
@@ -581,21 +608,21 @@ export default function WorkspacePage() {
                               <button
                                 onClick={(e) => handleExportProject(family.latest.id, family.name, e)}
                                 className="p-1.5 hover:bg-surface-3 rounded text-zinc-400 hover:text-green-400"
-                                title="导出项目"
+                                title={t.exportProjectTitle}
                               >
                                 <Download className="w-4 h-4" />
                               </button>
                               <button
                                 onClick={(e) => handleDuplicateProject(family.latest.id, e)}
                                 className="p-1.5 hover:bg-surface-3 rounded text-zinc-400 hover:text-brand-400"
-                                title="复制项目"
+                                title={t.duplicateProjectTitle}
                               >
                                 <Copy className="w-4 h-4" />
                               </button>
                               <button
                                 onClick={(e) => handleDeleteProject(family.latest.id, e)}
                                 className="p-1.5 hover:bg-surface-3 rounded text-zinc-400 hover:text-red-400"
-                                title="删除项目"
+                                title={t.deleteProjectTitle}
                               >
                                 <Trash2 className="w-4 h-4" />
                               </button>
@@ -624,21 +651,21 @@ export default function WorkspacePage() {
                                     )}
                                   </div>
                                   {currentProject?.id === v.id && (
-                                    <span className="text-[10px] text-brand-400 flex-shrink-0">当前</span>
+                                    <span className="text-[10px] text-brand-400 flex-shrink-0">{t.current}</span>
                                   )}
                                   {/* 版本行操作 */}
                                   <div className="flex items-center gap-1 opacity-0 group-hover/ver:opacity-100 transition-opacity">
                                     <button
                                       onClick={(e) => handleExportProject(v.id, `${family.name}_v${v.version}`, e)}
                                       className="p-1 hover:bg-surface-3 rounded text-zinc-500 hover:text-green-400"
-                                      title="导出此版本"
+                                      title={t.exportVersionTitle}
                                     >
                                       <Download className="w-3.5 h-3.5" />
                                     </button>
                                     <button
                                       onClick={(e) => handleDeleteProject(v.id, e)}
                                       className="p-1 hover:bg-surface-3 rounded text-zinc-500 hover:text-red-400"
-                                      title="删除此版本"
+                                      title={t.deleteVersionTitle}
                                     >
                                       <Trash2 className="w-3.5 h-3.5" />
                                     </button>
@@ -652,7 +679,7 @@ export default function WorkspacePage() {
                                     type="text"
                                     value={versionNote}
                                     onChange={(e) => setVersionNote(e.target.value)}
-                                    placeholder="版本备注（可选）"
+                                    placeholder={t.versionNotePlaceholder}
                                     className="flex-1 px-2 py-1 text-xs bg-surface-2 border border-surface-3 rounded text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-brand-500"
                                     autoFocus
                                     onKeyDown={(e) => {
@@ -664,7 +691,7 @@ export default function WorkspacePage() {
                                     onClick={() => handleCreateVersion(family.latest.id)}
                                     className="px-2 py-1 text-xs bg-brand-600 hover:bg-brand-700 text-white rounded"
                                   >
-                                    确定
+                                    {t.confirm}
                                   </button>
                                   <button
                                     onClick={() => { setCreatingVersionForId(null); setVersionNote(""); }}
@@ -683,7 +710,7 @@ export default function WorkspacePage() {
                                   className="w-full pl-9 pr-3 py-1.5 text-xs text-zinc-500 hover:text-zinc-300 hover:bg-surface-2 text-left flex items-center gap-1.5"
                                 >
                                   <Plus className="w-3 h-3" />
-                                  创建新版本
+                                  {t.createVersion}
                                 </button>
                               )}
                             </div>
@@ -701,15 +728,15 @@ export default function WorkspacePage() {
             onClick={handleCreateProject}
             className="px-3 py-1.5 text-sm bg-brand-600 hover:bg-brand-700 rounded-lg transition-colors"
           >
-            + 新建项目
+            {t.newProject}
           </button>
           <button
             onClick={() => importFileRef.current?.click()}
             className="px-3 py-1.5 text-sm bg-surface-2 hover:bg-surface-3 border border-surface-3 rounded-lg transition-colors flex items-center gap-1.5 text-zinc-300"
-            title="从JSON文件导入项目"
+            title={t.importProjectTitle}
           >
             <Upload className="w-3.5 h-3.5" />
-            导入项目
+            {t.importProject}
           </button>
           <input
             ref={importFileRef}
@@ -725,17 +752,17 @@ export default function WorkspacePage() {
             <button
               onClick={() => setShowSearch(true)}
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-zinc-400 hover:text-zinc-200 hover:bg-surface-3 rounded-lg transition-colors"
-              title="全局搜索替换 (⌘⇧F)"
+              title={t.searchTitle}
             >
               <Search className="w-3.5 h-3.5" />
-              搜索
+              {t.search}
             </button>
           )}
           <a
             href="/settings"
             className="text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
           >
-            后台设置
+            {t.settings}
           </a>
         </div>
       </header>
@@ -743,6 +770,7 @@ export default function WorkspacePage() {
       {/* 三栏布局 */}
       <div className="flex-1 overflow-hidden">
         <WorkspaceLayout
+          locale={uiLocale}
           leftPanel={
             <ProgressPanel
               project={currentProject}
@@ -772,6 +800,7 @@ export default function WorkspacePage() {
           centerPanel={
             <ContentPanel
               projectId={currentProject?.id || null}
+              projectLocale={currentProject?.locale}
               selectedBlock={selectedBlock}
               allBlocks={allBlocks}
               onFieldsChange={() => {
@@ -794,6 +823,7 @@ export default function WorkspacePage() {
             <AgentPanel
               key={`${currentProject?.id || "none"}-${refreshKey}`}  // 项目切换时销毁重建，refreshKey 保留阶段推进刷新
               projectId={currentProject?.id || null}
+              projectLocale={currentProject?.locale}
               allBlocks={allBlocks}
               onContentUpdate={async () => {
                 // Agent生成内容后，刷新内容块和项目状态
@@ -835,6 +865,7 @@ export default function WorkspacePage() {
       <ProjectAutoSplitModal
         open={showAutoSplitModal}
         projectId={currentProject?.id || null}
+        projectLocale={currentProject?.locale}
         onClose={() => setShowAutoSplitModal(false)}
         onApplied={() => {
           setBlocksRefreshKey(prev => prev + 1);
@@ -845,6 +876,7 @@ export default function WorkspacePage() {
       {currentProject && (
         <GlobalSearchModal
           projectId={currentProject.id}
+          projectLocale={currentProject.locale}
           open={showSearch}
           onClose={() => setShowSearch(false)}
           onNavigateToField={(fieldId) => {

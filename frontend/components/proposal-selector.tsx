@@ -10,6 +10,8 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { blockAPI, settingsAPI } from "@/lib/api";
 import type { ContentBlock } from "@/lib/api";
+import { isJaProjectLocale } from "@/lib/project-locale";
+import { useUiIsJa } from "@/lib/ui-locale";
 import type { PreQuestion } from "@/lib/preQuestions";
 import {
   Check, Send, ChevronDown, ChevronUp, FileText, ArrowRight,
@@ -62,6 +64,7 @@ interface FieldTemplateItem {
 
 interface ProposalSelectorProps {
   projectId: string;
+  projectLocale?: string | null;
   fieldId: string;
   content: string;
   onConfirm: () => void;
@@ -86,6 +89,7 @@ function cloneProposals(data: ProposalsData): ProposalsData {
 function FieldEditor({
   field,
   allFields,
+  isJa,
   onUpdate,
   onDelete,
   onMoveUp,
@@ -96,6 +100,7 @@ function FieldEditor({
 }: {
   field: ProposalField;
   allFields: ProposalField[];
+  isJa: boolean;
   onUpdate: (updated: ProposalField) => void;
   onDelete: () => void;
   onMoveUp: () => void;
@@ -113,10 +118,10 @@ function FieldEditor({
         {/* 拖拽把手 + 上下移动 */}
         {!readOnly && (
           <div className="flex flex-col gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-            <button onClick={onMoveUp} disabled={isFirst} className="text-zinc-600 hover:text-zinc-300 disabled:opacity-20" title="上移">
+            <button onClick={onMoveUp} disabled={isFirst} className="text-zinc-600 hover:text-zinc-300 disabled:opacity-20" title={isJa ? "上へ移動" : "上移"}>
               <ArrowUp className="w-3 h-3" />
             </button>
-            <button onClick={onMoveDown} disabled={isLast} className="text-zinc-600 hover:text-zinc-300 disabled:opacity-20" title="下移">
+            <button onClick={onMoveDown} disabled={isLast} className="text-zinc-600 hover:text-zinc-300 disabled:opacity-20" title={isJa ? "下へ移動" : "下移"}>
               <ArrowDown className="w-3 h-3" />
             </button>
           </div>
@@ -133,22 +138,22 @@ function FieldEditor({
               onChange={e => onUpdate({ ...field, name: e.target.value })}
               className="text-sm font-medium text-zinc-300 bg-transparent border-none outline-none flex-1 min-w-0 
                          focus:ring-1 focus:ring-brand-500/30 rounded px-1 -mx-1"
-              placeholder="内容块名称"
+              placeholder={isJa ? "内容ブロック名" : "内容块名称"}
             />
           )}
           {field.need_review && (
-            <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/10 text-amber-400 rounded shrink-0 flex items-center gap-0.5"><ShieldCheck className="w-3 h-3" />需确认</span>
+            <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/10 text-amber-400 rounded shrink-0 flex items-center gap-0.5"><ShieldCheck className="w-3 h-3" />{isJa ? "確認必要" : "需确认"}</span>
           )}
           <span className="text-[10px] text-zinc-600 shrink-0">{field.field_type}</span>
         </div>
 
         {/* 操作按钮 */}
         <div className="flex items-center gap-1 shrink-0">
-          <button onClick={() => setExpanded(!expanded)} className="p-1 text-zinc-500 hover:text-zinc-300 rounded" title="展开编辑">
+          <button onClick={() => setExpanded(!expanded)} className="p-1 text-zinc-500 hover:text-zinc-300 rounded" title={isJa ? "編集を展開" : "展开编辑"}>
             {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <Settings2 className="w-3.5 h-3.5" />}
           </button>
           {!readOnly && (
-            <button onClick={onDelete} className="p-1 text-zinc-600 hover:text-red-400 rounded opacity-0 group-hover:opacity-100 transition-opacity" title="删除内容块">
+            <button onClick={onDelete} className="p-1 text-zinc-600 hover:text-red-400 rounded opacity-0 group-hover:opacity-100 transition-opacity" title={isJa ? "内容ブロックを削除" : "删除内容块"}>
               <Trash2 className="w-3.5 h-3.5" />
             </button>
           )}
@@ -160,7 +165,7 @@ function FieldEditor({
         <div className="border-t border-surface-3 px-3 py-3 space-y-3">
           {/* AI 提示词 */}
           <div>
-            <label className="text-xs text-zinc-500 mb-1 block">AI 提示词</label>
+            <label className="text-xs text-zinc-500 mb-1 block">{isJa ? "AI プロンプト" : "AI 提示词"}</label>
             <textarea
               value={field.ai_prompt || ""}
               onChange={e => onUpdate({ ...field, ai_prompt: e.target.value })}
@@ -168,14 +173,14 @@ function FieldEditor({
               rows={3}
               className="w-full text-sm text-zinc-300 bg-surface-1 border border-surface-3 rounded-lg p-2 resize-y
                          focus:outline-none focus:ring-1 focus:ring-brand-500/30 read-only:opacity-60"
-              placeholder="描述这个内容块的生成要求..."
+              placeholder={isJa ? "この内容ブロックの生成要件を説明..." : "描述这个内容块的生成要求..."}
             />
           </div>
 
           {/* 字段类型 + 是否需要确认 */}
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">
-              <label className="text-xs text-zinc-500">类型</label>
+              <label className="text-xs text-zinc-500">{isJa ? "タイプ" : "类型"}</label>
               <select
                 value={field.field_type}
                 onChange={e => onUpdate({ ...field, field_type: e.target.value })}
@@ -183,10 +188,10 @@ function FieldEditor({
                 className="text-xs bg-surface-1 border border-surface-3 rounded px-2 py-1 text-zinc-300
                            focus:outline-none focus:ring-1 focus:ring-brand-500/30 disabled:opacity-60"
               >
-                <option value="text">文本</option>
-                <option value="richtext">富文本</option>
-                <option value="list">列表</option>
-                <option value="structured">结构化</option>
+                <option value="text">{isJa ? "テキスト" : "文本"}</option>
+                <option value="richtext">{isJa ? "リッチテキスト" : "富文本"}</option>
+                <option value="list">{isJa ? "リスト" : "列表"}</option>
+                <option value="structured">{isJa ? "構造化" : "结构化"}</option>
               </select>
             </div>
             <label className="flex items-center gap-1.5 text-xs text-zinc-500 cursor-pointer">
@@ -197,13 +202,13 @@ function FieldEditor({
                 disabled={readOnly}
                 className="rounded border-zinc-600 bg-surface-1 text-brand-500 focus:ring-brand-500/30"
               />
-              需人工确认
+              {isJa ? "手動確認が必要" : "需人工确认"}
             </label>
           </div>
 
           {/* 依赖内容块 */}
           <div>
-            <label className="text-xs text-zinc-500 mb-1 block">依赖内容块（可多选）</label>
+            <label className="text-xs text-zinc-500 mb-1 block">{isJa ? "依存内容ブロック（複数選択可）" : "依赖内容块（可多选）"}</label>
             <div className="flex flex-wrap gap-1.5">
               {allFields.filter(f => f.id !== field.id).map(other => {
                 // 依赖可能存的是 id 或 name，两种都兼容
@@ -237,7 +242,7 @@ function FieldEditor({
                 );
               })}
               {allFields.filter(f => f.id !== field.id).length === 0 && (
-                <span className="text-xs text-zinc-600 italic">无其他内容块可引用</span>
+                <span className="text-xs text-zinc-600 italic">{isJa ? "参照できる他の内容ブロックはありません" : "无其他内容块可引用"}</span>
               )}
             </div>
           </div>
@@ -246,7 +251,7 @@ function FieldEditor({
           {field.depends_on && field.depends_on.length > 0 && (
             <div className="flex items-center gap-1 text-[10px] text-zinc-600">
               <ArrowRight className="w-3 h-3" />
-              <span>当前依赖: {field.depends_on.map(d => {
+              <span>{isJa ? "現在の依存" : "当前依赖"}: {field.depends_on.map(d => {
                 const resolved = allFields.find(f => f.id === d || f.name === d);
                 return resolved?.name || d;
               }).join(", ")}</span>
@@ -260,12 +265,15 @@ function FieldEditor({
 
 /** 从模板导入内容块的下拉面板 */
 function TemplateImporter({
+  projectLocale,
   onImportFields,
   onClose,
 }: {
+  projectLocale?: string | null;
   onImportFields: (fields: ProposalField[], templateName: string) => void;
   onClose: () => void;
 }) {
+  const isJa = useUiIsJa(projectLocale);
   const [templates, setTemplates] = useState<FieldTemplateItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
@@ -305,18 +313,18 @@ function TemplateImporter({
   };
 
   if (loading) {
-    return <div className="p-4 text-sm text-zinc-500">加载模板中...</div>;
+    return <div className="p-4 text-sm text-zinc-500">{isJa ? "テンプレートを読み込み中..." : "加载模板中..."}</div>;
   }
 
   return (
     <div className="bg-surface-1 border border-surface-3 rounded-xl p-4 space-y-3 shadow-xl">
       <div className="flex items-center justify-between">
-        <h4 className="text-sm font-semibold text-zinc-200">从内容块模板导入</h4>
+        <h4 className="text-sm font-semibold text-zinc-200">{isJa ? "内容ブロックテンプレートからインポート" : "从内容块模板导入"}</h4>
         <button onClick={onClose} className="text-zinc-500 hover:text-zinc-300"><X className="w-4 h-4" /></button>
       </div>
 
       {templates.length === 0 ? (
-        <p className="text-sm text-zinc-500">暂无可用模板</p>
+        <p className="text-sm text-zinc-500">{isJa ? "利用できるテンプレートはありません" : "暂无可用模板"}</p>
       ) : (
         <>
           {/* 模板选择 */}
@@ -329,9 +337,9 @@ function TemplateImporter({
             className="w-full text-sm bg-surface-2 border border-surface-3 rounded-lg px-3 py-2 text-zinc-300
                        focus:outline-none focus:ring-1 focus:ring-brand-500/30"
           >
-            <option value="">选择模板...</option>
+            <option value="">{isJa ? "テンプレートを選択..." : "选择模板..."}</option>
             {templates.map(t => (
-              <option key={t.id} value={t.id}>{t.name} ({t.fields.length} 个内容块)</option>
+              <option key={t.id} value={t.id}>{t.name} ({t.fields.length} {isJa ? "件の内容ブロック" : "个内容块"})</option>
             ))}
           </select>
 
@@ -339,7 +347,7 @@ function TemplateImporter({
           {selectedTemplate && (
             <div className="space-y-1 max-h-48 overflow-y-auto">
               <div className="flex items-center justify-between mb-1">
-                <span className="text-xs text-zinc-500">选择要导入的内容块</span>
+                <span className="text-xs text-zinc-500">{isJa ? "インポートする内容ブロックを選択" : "选择要导入的内容块"}</span>
                 <button
                   onClick={() => {
                     if (selectedFieldNames.size === selectedTemplate.fields.length) {
@@ -350,7 +358,7 @@ function TemplateImporter({
                   }}
                   className="text-xs text-brand-400 hover:text-brand-300"
                 >
-                  {selectedFieldNames.size === selectedTemplate.fields.length ? "取消全选" : "全选"}
+                  {selectedFieldNames.size === selectedTemplate.fields.length ? (isJa ? "全選択を解除" : "取消全选") : (isJa ? "すべて選択" : "全选")}
                 </button>
               </div>
               {selectedTemplate.fields.map(f => (
@@ -378,7 +386,7 @@ function TemplateImporter({
             className="w-full py-2 bg-brand-600 hover:bg-brand-700 rounded-lg text-sm font-medium 
                        disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            导入 {selectedFieldNames.size} 个内容块
+            {isJa ? `${selectedFieldNames.size} 件の内容ブロックをインポート` : `导入 ${selectedFieldNames.size} 个内容块`}
           </button>
         </>
       )}
@@ -390,12 +398,15 @@ function TemplateImporter({
 
 export function ProposalSelector({
   projectId,
+  projectLocale,
   fieldId,
   content,
   onConfirm,
   onFieldsCreated,
   onSave,
 }: ProposalSelectorProps) {
+  const isJa = useUiIsJa(projectLocale);
+  const isProjectJa = isJaProjectLocale(projectLocale);
   // 解析初始数据，确保每个 proposal / field 都有唯一 id
   const initialData = useMemo<ProposalsData>(() => {
     try {
@@ -406,7 +417,7 @@ export function ProposalSelector({
       } else if (Array.isArray(raw)) {
         proposals = raw;
       } else {
-        return { proposals: [], error: "未找到方案数据" };
+        return { proposals: [], error: isJa ? "プランデータが見つかりません" : "未找到方案数据" };
       }
 
       // 补全缺失的 id，避免 React key 冲突
@@ -423,9 +434,9 @@ export function ProposalSelector({
 
       return { ...raw, proposals: ensured };
     } catch {
-      return { proposals: [], error: "JSON 解析失败" };
+      return { proposals: [], error: isJa ? "JSON の解析に失敗しました" : "JSON 解析失败" };
     }
-  }, [content]);
+  }, [content, isJa]);
 
   const [data, setData] = useState<ProposalsData>(initialData);
   const [selectedProposalId, setSelectedProposalId] = useState<string | null>(null);
@@ -480,7 +491,7 @@ export function ProposalSelector({
       onSave?.();
     } catch (e) {
       console.error("保存失败:", e);
-      alert("保存失败");
+      alert(isJa ? "保存に失敗しました" : "保存失败");
     } finally {
       setIsSaving(false);
     }
@@ -496,8 +507,8 @@ export function ProposalSelector({
         ...prev.proposals,
         {
           id: genId("proposal"),
-          name: `自定义方案 ${prev.proposals.length + 1}`,
-          description: "用户自定义的内容生产方案",
+          name: isProjectJa ? `カスタムプラン ${prev.proposals.length + 1}` : `自定义方案 ${prev.proposals.length + 1}`,
+          description: isProjectJa ? "ユーザー定義のコンテンツ制作プラン" : "用户自定义的内容生产方案",
           fields: [],
         },
       ],
@@ -513,7 +524,7 @@ export function ProposalSelector({
         {
           id: genId("proposal"),
           name: templateName,
-          description: `基于「${templateName}」模板创建`,
+          description: isProjectJa ? `「${templateName}」テンプレートをもとに作成` : `基于「${templateName}」模板创建`,
           fields: templateFields.map((f, i) => ({ ...f, order: i + 1 })),
         },
       ],
@@ -523,7 +534,7 @@ export function ProposalSelector({
 
   // 删除方案
   const deleteProposal = (proposalId: string) => {
-    if (!confirm("确定删除此方案？")) return;
+    if (!confirm(isJa ? "このプランを削除しますか？" : "确定删除此方案？")) return;
     updateData(prev => ({
       ...prev,
       proposals: prev.proposals.filter(p => p.id !== proposalId),
@@ -540,7 +551,7 @@ export function ProposalSelector({
       const copy: Proposal = {
         ...JSON.parse(JSON.stringify(src)),
         id: genId("proposal"),
-        name: src.name + " (副本)",
+        name: src.name + (isProjectJa ? "（コピー）" : " (副本)"),
       };
       copy.fields = copy.fields.map((f: ProposalField) => ({ ...f, id: genId("field") }));
       return { ...prev, proposals: [...prev.proposals, copy] };
@@ -595,7 +606,7 @@ export function ProposalSelector({
                 ...p.fields,
                 {
                   id: genId("field"),
-                  name: "新内容块",
+                  name: isProjectJa ? "新しい内容ブロック" : "新内容块",
       field_type: "richtext",
                   ai_prompt: "",
       depends_on: [],
@@ -666,7 +677,7 @@ export function ProposalSelector({
   const handleConfirm = async () => {
     const proposal = data.proposals.find(p => p.id === selectedProposalId);
     if (!proposal) {
-      alert("请先选择一个方案");
+      alert(isJa ? "先にプランを選択してください" : "请先选择一个方案");
       return;
     }
 
@@ -726,7 +737,7 @@ export function ProposalSelector({
       onConfirm();
     } catch (err) {
       console.error("创建内容块失败:", err);
-      alert("创建内容块失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "内容ブロックの作成に失敗しました: " : "创建内容块失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     } finally {
       setIsCreatingFields(false);
     }
@@ -735,7 +746,7 @@ export function ProposalSelector({
   // ============== 重新选择方案 ==============
 
   const handleResetConfirm = async () => {
-    if (!confirm("重新选择方案将删除当前内涵生产组的所有内容块，确定继续？")) return;
+    if (!confirm(isJa ? "プランを選び直すと、現在の内包制作グループ内の内容ブロックがすべて削除されます。続行しますか？" : "重新选择方案将删除当前内涵生产组的所有内容块，确定继续？")) return;
 
     setIsResetting(true);
     try {
@@ -770,7 +781,7 @@ export function ProposalSelector({
       onFieldsCreated?.(); // 通知父组件刷新内容块列表
     } catch (err) {
       console.error("重置方案失败:", err);
-      alert("重置失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "リセットに失敗しました: " : "重置失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     } finally {
       setIsResetting(false);
     }
@@ -787,22 +798,22 @@ export function ProposalSelector({
       {/* 顶部栏 */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold text-zinc-200">内涵设计方案</h2>
+          <h2 className="text-lg font-semibold text-zinc-200">{isJa ? "内包設計プラン" : "内涵设计方案"}</h2>
           <p className="text-sm text-zinc-500 mt-0.5">
             {readOnly
-              ? `已确认方案「${data.proposals.find(p => p.id === data.selected_proposal_id)?.name || ""}」`
-              : `${data.proposals.length} 个方案 · 编辑后自动保存 · 选择一个确认后进入内涵生产`}
+              ? (isJa ? `確認済みプラン「${data.proposals.find(p => p.id === data.selected_proposal_id)?.name || ""}」` : `已确认方案「${data.proposals.find(p => p.id === data.selected_proposal_id)?.name || ""}」`)
+              : (isJa ? `${data.proposals.length} 件のプラン · 編集後は自動保存 · 1つ選んで確認すると内包制作へ進みます` : `${data.proposals.length} 个方案 · 编辑后自动保存 · 选择一个确认后进入内涵生产`)}
           </p>
                 </div>
         <div className="flex items-center gap-2">
           {dirty && !readOnly && (
-            <span className="text-xs text-amber-400 animate-pulse">未保存</span>
+            <span className="text-xs text-amber-400 animate-pulse">{isJa ? "未保存" : "未保存"}</span>
           )}
           {isSaving && (
-            <span className="text-xs text-zinc-500">保存中...</span>
+            <span className="text-xs text-zinc-500">{isJa ? "保存中..." : "保存中..."}</span>
           )}
           {!readOnly && (
-            <button onClick={handleManualSave} className="p-1.5 text-zinc-400 hover:text-zinc-200 rounded-lg hover:bg-surface-2" title="立即保存">
+            <button onClick={handleManualSave} className="p-1.5 text-zinc-400 hover:text-zinc-200 rounded-lg hover:bg-surface-2" title={isJa ? "今すぐ保存" : "立即保存"}>
               <Save className="w-4 h-4" />
             </button>
           )}
@@ -813,9 +824,9 @@ export function ProposalSelector({
       <div className="space-y-4">
         {data.proposals.length === 0 && (
           <div className="text-center py-8 text-zinc-500">
-            <p className="text-sm">暂无方案。</p>
+            <p className="text-sm">{isJa ? "プランはまだありません。" : "暂无方案。"}</p>
             <p className="text-xs mt-1 text-zinc-600">
-              在右侧对话框输入&quot;开始&quot;生成 AI 方案，或点击下方按钮手动添加。
+              {isJa ? "右側の対話欄で「開始」と入力して AI プランを生成するか、下のボタンから手動追加してください。" : "在右侧对话框输入\"开始\"生成 AI 方案，或点击下方按钮手动添加。"}
             </p>
                 </div>
               )}
@@ -849,7 +860,7 @@ export function ProposalSelector({
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
                     <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-600/20 text-purple-400 font-medium shrink-0">
-                      方案 {pIndex + 1}
+                      {isJa ? `プラン ${pIndex + 1}` : `方案 ${pIndex + 1}`}
                         </span>
                     {readOnly ? (
                       <h3 className="font-semibold text-zinc-200 truncate">{proposal.name}</h3>
@@ -859,7 +870,7 @@ export function ProposalSelector({
                         onChange={e => updateProposalMeta(proposal.id, "name", e.target.value)}
                         className="font-semibold text-zinc-200 bg-transparent border-none outline-none flex-1 min-w-0
                                    focus:ring-1 focus:ring-brand-500/30 rounded px-1 -mx-1"
-                        placeholder="方案名称"
+                        placeholder={isJa ? "プラン名" : "方案名称"}
                       />
                         )}
                       </div>
@@ -871,12 +882,12 @@ export function ProposalSelector({
                       onChange={e => updateProposalMeta(proposal.id, "description", e.target.value)}
                       className="text-sm text-zinc-400 bg-transparent border-none outline-none w-full
                                  focus:ring-1 focus:ring-brand-500/30 rounded px-1 -mx-1"
-                      placeholder="方案描述..."
+                      placeholder={isJa ? "プラン説明..." : "方案描述..."}
                     />
                   )}
                   <div className="flex items-center gap-2 mt-1.5 text-xs text-zinc-500">
                     <FileText className="w-3 h-3" />
-                    <span>{sortedFields.length} 个内容块</span>
+                    <span>{isJa ? `${sortedFields.length} 件の内容ブロック` : `${sortedFields.length} 个内容块`}</span>
                     {!isExpanded && sortedFields.length > 0 && (
                       <span className="text-zinc-600 truncate">· {sortedFields.map(f => f.name).join(" → ")}</span>
                     )}
@@ -887,19 +898,19 @@ export function ProposalSelector({
                 <div className="flex items-center gap-1 shrink-0">
                   <button onClick={() => setExpandedProposalId(isExpanded ? null : proposal.id)}
                     className="p-1.5 text-zinc-500 hover:text-zinc-300 rounded-lg hover:bg-surface-3"
-                    title={isExpanded ? "收起" : "展开编辑"}>
+                    title={isExpanded ? (isJa ? "折りたたむ" : "收起") : (isJa ? "編集を展開" : "展开编辑")}>
                     {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                       </button>
                   {!readOnly && (
                     <>
                       <button onClick={() => duplicateProposal(proposal.id)}
                         className="p-1.5 text-zinc-600 hover:text-zinc-300 rounded-lg hover:bg-surface-3"
-                        title="复制方案">
+                        title={isJa ? "プランを複製" : "复制方案"}>
                         <Copy className="w-3.5 h-3.5" />
                         </button>
                       <button onClick={() => deleteProposal(proposal.id)}
                         className="p-1.5 text-zinc-600 hover:text-red-400 rounded-lg hover:bg-surface-3"
-                        title="删除方案">
+                        title={isJa ? "プランを削除" : "删除方案"}>
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </>
@@ -913,13 +924,14 @@ export function ProposalSelector({
                   {/* 内容块列表 */}
                   <div className="p-3 space-y-2">
                     {sortedFields.length === 0 && (
-                      <p className="text-sm text-zinc-600 italic text-center py-4">暂无内容块，请添加</p>
+                      <p className="text-sm text-zinc-600 italic text-center py-4">{isJa ? "内容ブロックがありません。追加してください" : "暂无内容块，请添加"}</p>
                     )}
                     {sortedFields.map((field, fi) => (
                       <FieldEditor
                         key={field.id}
             field={field}
                         allFields={sortedFields}
+                        isJa={isJa}
                         onUpdate={updated => updateField(proposal.id, field.id, updated)}
                         onDelete={() => deleteField(proposal.id, field.id)}
                         onMoveUp={() => moveField(proposal.id, field.id, "up")}
@@ -940,7 +952,7 @@ export function ProposalSelector({
                                    bg-surface-1 hover:bg-surface-3 rounded-lg border border-surface-3 transition-colors"
           >
                         <Plus className="w-3.5 h-3.5" />
-                        添加内容块
+                        {isJa ? "内容ブロックを追加" : "添加内容块"}
           </button>
           <button
                         onClick={() => setShowTemplateImporter(showTemplateImporter === proposal.id ? null : proposal.id)}
@@ -948,7 +960,7 @@ export function ProposalSelector({
                                    bg-surface-1 hover:bg-surface-3 rounded-lg border border-surface-3 transition-colors"
           >
                         <BookTemplate className="w-3.5 h-3.5" />
-                        从模板导入
+                        {isJa ? "テンプレートからインポート" : "从模板导入"}
           </button>
         </div>
                   )}
@@ -957,6 +969,7 @@ export function ProposalSelector({
                   {showTemplateImporter === proposal.id && (
                     <div className="px-3 pb-3">
                       <TemplateImporter
+                        projectLocale={projectLocale}
                         onImportFields={(fields) => importFieldsToProposal(proposal.id, fields)}
                         onClose={() => setShowTemplateImporter(null)}
                       />
@@ -978,7 +991,7 @@ export function ProposalSelector({
                        bg-surface-2 hover:bg-surface-3 rounded-lg border border-dashed border-surface-4 transition-colors"
           >
             <Plus className="w-4 h-4" />
-            添加自定义方案
+            {isJa ? "カスタムプランを追加" : "添加自定义方案"}
               </button>
           <button
             onClick={() => setShowNewProposalTemplate(!showNewProposalTemplate)}
@@ -986,7 +999,7 @@ export function ProposalSelector({
                        bg-surface-2 hover:bg-surface-3 rounded-lg border border-dashed border-surface-4 transition-colors"
           >
             <PackagePlus className="w-4 h-4" />
-            从模板创建方案
+            {isJa ? "テンプレートからプラン作成" : "从模板创建方案"}
           </button>
         </div>
       )}
@@ -995,8 +1008,9 @@ export function ProposalSelector({
       {showNewProposalTemplate && !readOnly && (
         <div className="mt-2">
           <TemplateImporter
+            projectLocale={projectLocale}
             onImportFields={(fields, templateName) => {
-              addProposalFromTemplate(fields, templateName || "模板方案");
+              addProposalFromTemplate(fields, templateName || (isJa ? "テンプレートプラン" : "模板方案"));
             }}
             onClose={() => setShowNewProposalTemplate(false)}
             />
@@ -1009,7 +1023,7 @@ export function ProposalSelector({
           <div className="flex items-center gap-2">
             <div className="flex items-center gap-2 text-green-400">
               <Check className="w-5 h-5" />
-              <span>已确认方案，内容块已导入内涵生产组</span>
+              <span>{isJa ? "プラン確認済み。内容ブロックは内包制作グループへ導入されました" : "已确认方案，内容块已导入内涵生产组"}</span>
             </div>
             <button
               onClick={handleResetConfirm}
@@ -1018,17 +1032,19 @@ export function ProposalSelector({
                          bg-surface-2 hover:bg-surface-3 rounded-lg border border-surface-3 transition-colors
                          disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {isResetting ? "重置中..." : "重新选择方案"}
+              {isResetting ? (isJa ? "リセット中..." : "重置中...") : (isJa ? "プランを選び直す" : "重新选择方案")}
             </button>
           </div>
         ) : (
           <>
             <p className="text-sm text-zinc-500">
               {selectedProposalId
-                ? `已选择「${data.proposals.find(p => p.id === selectedProposalId)?.name}」（${
+                ? (isJa ? `「${data.proposals.find(p => p.id === selectedProposalId)?.name}」を選択中（${
                     data.proposals.find(p => p.id === selectedProposalId)?.fields.length || 0
-                  } 个内容块）`
-                : "点击方案左侧圆圈选中，然后点击确认"}
+                  } 件の内容ブロック）` : `已选择「${data.proposals.find(p => p.id === selectedProposalId)?.name}」（${
+                    data.proposals.find(p => p.id === selectedProposalId)?.fields.length || 0
+                  } 个内容块）`)
+                : (isJa ? "左側の丸をクリックしてプランを選択し、その後確認してください" : "点击方案左侧圆圈选中，然后点击确认")}
             </p>
           <button
               onClick={handleConfirm}
@@ -1036,8 +1052,8 @@ export function ProposalSelector({
               className="px-5 py-2 bg-brand-600 hover:bg-brand-700 rounded-lg text-sm font-medium
                          flex items-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {isCreatingFields ? "创建中..." : (
-                <><Send className="w-4 h-4" />确认并进入内涵生产</>
+              {isCreatingFields ? (isJa ? "作成中..." : "创建中...") : (
+                <><Send className="w-4 h-4" />{isJa ? "確認して内包制作へ進む" : "确认并进入内涵生产"}</>
               )}
           </button>
           </>

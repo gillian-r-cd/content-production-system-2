@@ -3,15 +3,17 @@
 // 主要函数: fetchAPI, streamAPI
 // 数据结构: Project, Field, ChatMessage
 
+import { resolveBackendBaseUrl } from "@/lib/backend-url";
 import type { PreQuestion } from "@/lib/preQuestions";
 
-export const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+export const API_BASE = resolveBackendBaseUrl();
 
 // ============== Types ==============
 
 export interface Project {
   id: string;
   name: string;
+  locale: string;
   version: number;
   version_note: string;
   parent_version_id: string | null;  // 父版本 ID，用于版本族谱分组
@@ -58,6 +60,8 @@ export interface Field {
 export interface CreatorProfile {
   id: string;
   name: string;
+  stable_key?: string;
+  locale?: string;
   description: string;
   traits: Record<string, any>;
   created_at: string;
@@ -123,6 +127,46 @@ export interface PersonaFromResearch {
   story: string;
 }
 
+export interface SystemPromptInfo {
+  id: string;
+  name: string;
+  stable_key?: string;
+  locale?: string;
+  phase: string;
+  description?: string;
+  content?: string;
+}
+
+export interface ChannelInfo {
+  id: string;
+  name: string;
+  stable_key?: string;
+  locale?: string;
+  description?: string;
+  platform?: string;
+  prompt_template?: string;
+  constraints?: Record<string, unknown>;
+}
+
+export interface SimulatorInfo {
+  id: string;
+  name: string;
+  stable_key?: string;
+  locale?: string;
+  description?: string;
+  simulator_type?: string;
+  interaction_type?: string;
+  interaction_mode?: string;
+  prompt_template?: string;
+  secondary_prompt?: string;
+  grader_template?: string;
+  evaluation_dimensions?: string[];
+  feedback_mode?: string;
+  max_turns?: number;
+  is_preset?: boolean;
+  created_at?: string;
+}
+
 // ============== API Functions ==============
 
 async function fetchAPI<T>(
@@ -159,13 +203,14 @@ async function fetchAPI<T>(
 // ============== Project API ==============
 
 export const projectAPI = {
-  list: () => fetchAPI<Project[]>("/api/projects/"),
+  list: () => fetchAPI<Project[]>("/api/projects/", { cache: "no-store" }),
   
   get: (id: string) => fetchAPI<Project>(`/api/projects/${id}`),
   
   create: (data: { 
     name: string; 
     creator_profile_id?: string; 
+    locale?: string;
     use_deep_research?: boolean;
     use_flexible_architecture?: boolean;
   }) =>
@@ -182,6 +227,12 @@ export const projectAPI = {
   
   delete: (id: string) =>
     fetchAPI<{ message: string }>(`/api/projects/${id}`, { method: "DELETE" }),
+
+  batchDelete: (projectIds: string[]) =>
+    fetchAPI<{ ok: boolean; deleted_ids: string[]; deleted_count: number }>("/api/projects/batch-delete", {
+      method: "POST",
+      body: JSON.stringify({ project_ids: projectIds }),
+    }),
   
   createVersion: (id: string, version_note: string) =>
     fetchAPI<Project>(`/api/projects/${id}/versions`, {
@@ -425,7 +476,7 @@ export const agentAPI = {
 export const settingsAPI = {
   // System Prompts
   listSystemPrompts: () =>
-    fetchAPI<any[]>("/api/settings/system-prompts"),
+    fetchAPI<SystemPromptInfo[]>("/api/settings/system-prompts"),
   
   updateSystemPrompt: (id: string, data: any) =>
     fetchAPI<any>(`/api/settings/system-prompts/${id}`, {
@@ -473,7 +524,7 @@ export const settingsAPI = {
   
   // Channels
   listChannels: () =>
-    fetchAPI<any[]>("/api/settings/channels"),
+    fetchAPI<ChannelInfo[]>("/api/settings/channels"),
   
   createChannel: (data: any) =>
     fetchAPI<any>("/api/settings/channels", {
@@ -492,7 +543,7 @@ export const settingsAPI = {
   
   // Simulators
   listSimulators: () =>
-    fetchAPI<any[]>("/api/settings/simulators"),
+    fetchAPI<SimulatorInfo[]>("/api/settings/simulators"),
   
   createSimulator: (data: any) =>
     fetchAPI<any>("/api/settings/simulators", {
@@ -675,6 +726,8 @@ export interface AgentSelectionRef {
 export interface PhaseTemplate {
   id: string;
   name: string;
+  stable_key: string;
+  locale: string;
   description: string;
   schema_version: number;
   phases: Array<{
@@ -706,6 +759,8 @@ export interface PhaseTemplate {
 export interface FieldTemplate {
   id: string;
   name: string;
+  stable_key?: string;
+  locale?: string;
   description: string;
   category: string;
   schema_version: number;
@@ -987,6 +1042,8 @@ export const phaseTemplateAPI = {
   // 创建模板（优先使用 root_nodes 树结构，phases 仅兼容旧调用）
   create: (data: {
     name: string;
+    stable_key?: string;
+    locale?: string;
     description?: string;
     root_nodes?: TemplateNode[];
     phases?: PhaseTemplate["phases"];
@@ -999,6 +1056,8 @@ export const phaseTemplateAPI = {
   // 更新模板（优先使用 root_nodes 树结构，phases 仅兼容旧调用）
   update: (templateId: string, data: Partial<{
     name: string;
+    stable_key: string;
+    locale: string;
     description: string;
     root_nodes: TemplateNode[];
     phases: PhaseTemplate["phases"];
@@ -1078,6 +1137,8 @@ export const projectStructureDraftAPI = {
 export interface GraderData {
   id: string;
   name: string;
+  stable_key?: string;
+  locale?: string;
   grader_type: string;
   prompt_template: string;
   dimensions: any[];
@@ -1346,6 +1407,8 @@ export const memoriesAPI = {
 export interface AgentModeInfo {
   id: string;
   name: string;
+  stable_key?: string;
+  locale?: string;
   project_id: string | null;
   display_name: string;
   description: string;

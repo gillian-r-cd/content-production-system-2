@@ -24,6 +24,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from core.config import settings
+from core.localization import DEFAULT_LOCALE, normalize_locale, resolve_eval_anchor_name
 
 
 # ===== 日志配置 =====
@@ -99,7 +100,8 @@ def _sync_eval_template_on_startup():
         SessionLocal = get_session_maker()
         db = SessionLocal()
         existing = db.query(FieldTemplate).filter(
-            FieldTemplate.name == EVAL_TEMPLATE_V2_NAME
+            FieldTemplate.stable_key == "eval_template_v2",
+            FieldTemplate.locale == DEFAULT_LOCALE,
         ).first()
 
         # 兼容历史脏数据：某些环境中模板名可能异常，但 special_handler 组合仍可识别
@@ -109,6 +111,8 @@ def _sync_eval_template_on_startup():
             )
             all_templates = db.query(FieldTemplate).all()
             for t in all_templates:
+                if normalize_locale(getattr(t, "locale", DEFAULT_LOCALE)) == "ja-JP":
+                    continue
                 handlers = sorted(
                     f.get("special_handler", "") for f in (t.fields or [])
                 )
@@ -129,12 +133,16 @@ def _sync_eval_template_on_startup():
                 or existing.description != EVAL_TEMPLATE_V2_DESCRIPTION
                 or existing.category != EVAL_TEMPLATE_V2_CATEGORY
                 or existing.name != EVAL_TEMPLATE_V2_NAME
+                or getattr(existing, "stable_key", "") != "eval_template_v2"
+                or normalize_locale(getattr(existing, "locale", DEFAULT_LOCALE)) != DEFAULT_LOCALE
             )
             if needs_update:
                 existing.fields = EVAL_TEMPLATE_V2_FIELDS
                 existing.description = EVAL_TEMPLATE_V2_DESCRIPTION
                 existing.category = EVAL_TEMPLATE_V2_CATEGORY
                 existing.name = EVAL_TEMPLATE_V2_NAME
+                existing.stable_key = "eval_template_v2"
+                existing.locale = DEFAULT_LOCALE
                 db.commit()
                 logging.getLogger("startup").info(
                     "综合评估模板已自动更新为最新 V2 版本"
@@ -144,6 +152,8 @@ def _sync_eval_template_on_startup():
             db.add(
                 FieldTemplate(
                     name=EVAL_TEMPLATE_V2_NAME,
+                    stable_key="eval_template_v2",
+                    locale=DEFAULT_LOCALE,
                     description=EVAL_TEMPLATE_V2_DESCRIPTION,
                     category=EVAL_TEMPLATE_V2_CATEGORY,
                     fields=EVAL_TEMPLATE_V2_FIELDS,
@@ -157,6 +167,41 @@ def _sync_eval_template_on_startup():
         logging.getLogger("startup").warning(
             f"启动时同步评估模板失败（不影响运行）: {e}"
         )
+
+
+def _sync_eval_presets_on_startup():
+    """启动时同步 Eval 预置评分器与模拟器，避免 live 服务缺失 locale 资产。"""
+    from core.database import get_session_maker
+    from api.settings import _sync_preset_graders, _sync_preset_simulators
+
+    db = None
+    try:
+        SessionLocal = get_session_maker()
+        db = SessionLocal()
+        imported_graders, updated_graders = _sync_preset_graders(db)
+        imported_simulators, updated_simulators = _sync_preset_simulators(db)
+        db.commit()
+        logging.getLogger("startup").info(
+            "已同步 Eval 预置: "
+            f"graders imported={imported_graders} updated={updated_graders}, "
+            f"simulators imported={imported_simulators} updated={updated_simulators}"
+        )
+        db.close()
+    except Exception as e:
+        logging.getLogger("startup").warning(
+            f"启动时同步 Eval 预置失败（不影响运行）: {e}"
+        )
+        if db is not None:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
 
 
 def _cleanup_legacy_eval_templates_on_startup():
@@ -180,7 +225,8 @@ def _cleanup_legacy_eval_templates_on_startup():
                 for h in handlers
             )
             name_hit = "评估" in (t.name or "")
-            if (has_eval_handler or name_hit) and t.name != EVAL_TEMPLATE_V2_NAME:
+            is_localized_eval_template = getattr(t, "stable_key", "") == "eval_template_v2"
+            if (has_eval_handler or name_hit) and not is_localized_eval_template:
                 db.delete(t)
                 removed += 1
 
@@ -202,14 +248,9 @@ def _dedupe_eval_anchor_blocks_on_startup():
     避免历史重复块导致前端随机命中旧块/乱码块。
     """
     from core.database import get_session_maker
-    from core.models import ContentBlock
+    from core.models import ContentBlock, Project
 
     target_handlers = ["eval_persona_setup", "eval_task_config", "eval_report"]
-    canonical_names = {
-        "eval_persona_setup": "人物画像设置",
-        "eval_task_config": "评估任务配置",
-        "eval_report": "评估报告",
-    }
 
     try:
         SessionLocal = get_session_maker()
@@ -217,6 +258,10 @@ def _dedupe_eval_anchor_blocks_on_startup():
         blocks = db.query(ContentBlock).filter(
             ContentBlock.special_handler.in_(target_handlers)
         ).all()
+        project_locale_map = {
+            project.id: normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
+            for project in db.query(Project).all()
+        }
 
         grouped: dict[tuple[str, str], list[ContentBlock]] = {}
         for b in blocks:
@@ -239,7 +284,7 @@ def _dedupe_eval_anchor_blocks_on_startup():
                 reverse=True,
             )
             keep = items_sorted[0]
-            expected_name = canonical_names.get(handler, keep.name)
+            expected_name = resolve_eval_anchor_name(handler, project_locale_map.get(_pid, DEFAULT_LOCALE))
             if keep.name != expected_name:
                 keep.name = expected_name
                 renamed += 1
@@ -305,6 +350,7 @@ def create_app() -> FastAPI:
             "http://localhost:3000",
             "http://127.0.0.1:3000",
             "http://localhost:3001",  # 备用端口
+            "http://127.0.0.1:3001",  # 备用端口（127.0.0.1）
         ],
         allow_credentials=True,
         allow_methods=["*"],
@@ -361,6 +407,7 @@ def create_app() -> FastAPI:
         _ensure_db_schema_on_startup()
         _seed_default_data_on_startup()
         _sync_eval_template_on_startup()
+        _sync_eval_presets_on_startup()
         _cleanup_legacy_eval_templates_on_startup()
         _dedupe_eval_anchor_blocks_on_startup()
         # ===== 启动时校验 LLM 配置，提前暴露 .env 问题 =====

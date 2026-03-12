@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from core.database import get_db
+from core.localization import DEFAULT_LOCALE, locale_fallback_chain, normalize_locale
 from core.llm_compat import normalize_content, resolve_model
 from datetime import datetime
 
@@ -32,6 +33,7 @@ from core.models import (
     BLOCK_STATUS,
 )
 from core.prompt_engine import PromptEngine, GoldenContext
+from core.locale_text import rt
 from core.template_schema import instantiate_template_nodes, normalize_field_template_payload
 from core.block_generation_service import (
     build_generation_system_prompt,
@@ -60,18 +62,6 @@ def _save_content_version(block: ContentBlock, source: str, db: Session, source_
     save_content_version(db, block.id, block.content, source, source_detail)
 
 router = APIRouter(prefix="/api/blocks", tags=["content-blocks"])
-
-
-# 所有内容块生成时注入的 Markdown 格式指令（系统级约束，非用户配置）
-# 前端统一使用 ReactMarkdown 渲染，因此输出格式固定为 Markdown。
-MARKDOWN_FORMAT_INSTRUCTIONS = """# 输出格式（必须遵守）
-使用 Markdown 格式输出。
-- 标题使用 # ## ### 格式
-- 列表使用 - 或 1. 格式
-- 重点内容使用 **粗体** 或 *斜体*
-- 表格必须包含表头分隔行（如 | --- | --- |），且每行列数与表头一致
-- 若一个单元格需要多条内容，用 <br> 换行，不要增加 | 列分隔符"""
-
 
 # ========== Pydantic 模型 ==========
 
@@ -1048,18 +1038,18 @@ async def generate_block_content_stream(
     project = db.query(Project).filter(Project.id == block.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
+    project_locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
 
-    ensure_required_pre_questions_answered(block)
+    ensure_required_pre_questions_answered(block, locale=project_locale)
     
     # 智能解析依赖（自动修复过期 ID、按名称查找替代）
-    resolved_deps, dependency_content, dep_error = resolve_dependencies(block, db)
+    resolved_deps, dependency_content, dep_error = resolve_dependencies(
+        block,
+        db,
+        locale=project_locale,
+    )
     if dep_error:
         raise HTTPException(status_code=400, detail=dep_error)
-    
-    # 获取创作者特质
-    creator_profile_text = ""
-    if project.creator_profile:
-        creator_profile_text = project.creator_profile.to_prompt_context()
     
     system_prompt = build_generation_system_prompt(
         block=block,
@@ -1088,7 +1078,7 @@ async def generate_block_content_stream(
         try:
             messages = [
                 SystemMessage(content=system_prompt),
-                HumanMessage(content=f"请生成「{block.name}」的内容。"),
+                HumanMessage(content=rt(project_locale, "block.generate.human", name=block.name)),
             ]
             
             from core.llm import astream_with_retry
@@ -1249,16 +1239,33 @@ def apply_template_to_project(
         base_depth = parent_block.depth + 1
 
     start_order_index = _get_next_order_index(project_id, parent_id, db)
+    project_locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
 
     template = db.query(PhaseTemplate).filter(PhaseTemplate.id == template_id).first()
     template_name = ""
     if template:
+        template_locale = normalize_locale(getattr(template, "locale", DEFAULT_LOCALE))
+        if template_locale != project_locale and getattr(template, "stable_key", ""):
+            localized_template = db.query(PhaseTemplate).filter(
+                PhaseTemplate.stable_key == template.stable_key,
+                PhaseTemplate.locale == project_locale,
+            ).first()
+            if localized_template:
+                template = localized_template
         root_nodes = template.to_template_nodes()
         template_name = template.name
     else:
         field_template = db.query(FieldTemplate).filter(FieldTemplate.id == template_id).first()
         if not field_template:
             raise HTTPException(status_code=404, detail="模板不存在")
+        template_locale = normalize_locale(getattr(field_template, "locale", DEFAULT_LOCALE))
+        if template_locale != project_locale and getattr(field_template, "stable_key", ""):
+            localized_template = db.query(FieldTemplate).filter(
+                FieldTemplate.stable_key == field_template.stable_key,
+                FieldTemplate.locale == project_locale,
+            ).first()
+            if localized_template:
+                field_template = localized_template
         normalized, errors = normalize_field_template_payload(
             template_name=field_template.name,
             fields=field_template.fields or [],
@@ -1283,7 +1290,7 @@ def apply_template_to_project(
     db.commit()
     
     return {
-        "message": f"已应用模板「{template_name}」",
+        "message": rt(project_locale, "phase_template.apply.success", name=template_name),
         "blocks_created": len(blocks_to_create),
     }
 
@@ -1567,38 +1574,39 @@ async def generate_ai_prompt(
     effective_model = resolve_model(use_mini=True)
     chat_model = get_chat_model(model=effective_model)
     
+    locale = DEFAULT_LOCALE
+    project = None
+    if request.project_id:
+        project = db.query(Project).filter(Project.id == request.project_id).first()
+        if project:
+            locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
+
     # 1. 从后台获取「AI生成提示词」的系统提示词
-    prompt_template = db.query(SystemPrompt).filter(
-        SystemPrompt.phase == "utility",
-        SystemPrompt.name == "AI生成提示词",
-    ).first()
+    prompt_template = None
+    for candidate in locale_fallback_chain(locale):
+        prompt_template = db.query(SystemPrompt).filter(
+            SystemPrompt.phase == "utility",
+            SystemPrompt.locale == candidate,
+        ).first()
+        if prompt_template:
+            break
     
     if prompt_template:
         system_content = prompt_template.content
     else:
         # 降级：使用默认提示词
-        system_content = """你是一个专业的提示词工程师。用户会告诉你某个字段的目的和需求，你需要为该字段生成一段高质量的 AI 提示词。
-
-生成的提示词应该：
-1. 明确指出 AI 的角色定位
-2. 清晰描述要生成的内容是什么
-3. 给出具体的输出要求（格式、结构、风格等）
-4. 如果有依赖上下文，提醒 AI 参考这些信息
-5. 包含质量约束
-
-直接输出提示词内容，不需要任何解释或前缀。"""
+        system_content = rt(locale, "blocks.generate_prompt.fallback_system")
     
     # 2. 构建用户消息
-    user_msg = f"请为以下字段生成 AI 提示词：\n\n"
-    if request.field_name:
-        user_msg += f"字段名称: {request.field_name}\n"
-    user_msg += f"字段目的: {request.purpose}"
-    
-    # 如果有项目上下文，加入
-    if request.project_id:
-        project = db.query(Project).filter(Project.id == request.project_id).first()
-        if project:
-            user_msg += f"\n项目名称: {project.name}"
+    field_line = f"字段名称: {request.field_name}\n" if request.field_name else ""
+    project_line = f"\n项目名称: {project.name}" if project else ""
+    user_msg = rt(
+        locale,
+        "blocks.generate_prompt.user",
+        field_line=field_line,
+        purpose=request.purpose,
+        project_line=project_line,
+    )
     
     # 3. 调用 LLM
     messages = [

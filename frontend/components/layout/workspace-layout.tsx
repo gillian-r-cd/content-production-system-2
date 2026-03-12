@@ -9,6 +9,7 @@
 
 import { ReactNode, useState, useRef, useCallback, useEffect } from "react";
 import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen } from "lucide-react";
+import { useUiIsJa } from "@/lib/ui-locale";
 
 // ── 常量 ──────────────────────────────────────────
 const LS_KEY = "workspace-layout";
@@ -50,16 +51,19 @@ function saveState(s: LayoutState) {
 
 // ── 组件 ──────────────────────────────────────────
 interface WorkspaceLayoutProps {
+  locale?: string | null;
   leftPanel: ReactNode;
   centerPanel: ReactNode;
   rightPanel: ReactNode;
 }
 
 export function WorkspaceLayout({
+  locale,
   leftPanel,
   centerPanel,
   rightPanel,
 }: WorkspaceLayoutProps) {
+  const isJa = useUiIsJa(locale);
   // --- 状态 ---
   const [leftWidth, setLeftWidth] = useState(() => loadState().lw);
   const [rightWidth, setRightWidth] = useState(() => loadState().rw);
@@ -147,7 +151,7 @@ export function WorkspaceLayout({
         <button
           onClick={toggleLeft}
           className="collapse-btn collapse-btn-left"
-          title={leftCollapsed ? "展开左栏" : "收起左栏"}
+          title={leftCollapsed ? (isJa ? "左パネルを展開" : "展开左栏") : (isJa ? "左パネルを折りたたむ" : "收起左栏")}
         >
           {leftCollapsed ? (
             <PanelLeftOpen className="w-3.5 h-3.5" />
@@ -173,7 +177,7 @@ export function WorkspaceLayout({
         <button
           onClick={toggleRight}
           className="collapse-btn collapse-btn-right"
-          title={rightCollapsed ? "展开右栏" : "收起右栏"}
+          title={rightCollapsed ? (isJa ? "右パネルを展開" : "展开右栏") : (isJa ? "右パネルを折りたたむ" : "收起右栏")}
         >
           {rightCollapsed ? (
             <PanelRightOpen className="w-3.5 h-3.5" />

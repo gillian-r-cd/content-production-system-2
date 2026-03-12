@@ -14,6 +14,7 @@ from typing import Optional, List, Dict, TYPE_CHECKING
 from sqlalchemy import String, Text, Integer, JSON, ForeignKey, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from core.localization import DEFAULT_LOCALE
 from core.models.base import BaseModel
 from core.phase_config import PHASE_ORDER, PHASE_STATUS_LABELS
 
@@ -57,6 +58,7 @@ class Project(BaseModel):
         String(36), ForeignKey("creator_profiles.id"), nullable=True
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
+    locale: Mapped[str] = mapped_column(String(20), default=DEFAULT_LOCALE, nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=1)
     version_note: Mapped[str] = mapped_column(Text, default="")
     parent_version_id: Mapped[Optional[str]] = mapped_column(

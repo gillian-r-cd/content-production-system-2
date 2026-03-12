@@ -25,6 +25,8 @@ from core.tools import generate_field, generate_field_stream, resolve_field_orde
 from core.pre_question_utils import normalize_pre_answers, normalize_pre_questions
 from core.prompt_engine import prompt_engine, PromptContext, GoldenContext
 from core.llm_compat import get_model_name
+from core.locale_text import rt
+from core.localization import DEFAULT_LOCALE, normalize_locale
 from datetime import datetime
 import logging
 
@@ -316,19 +318,20 @@ async def generate_field_content(
     field.status = "generating"
     db.commit()
     
+    project_locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
+
     # 构建上下文
-    # 核心原则：produce_inner 阶段只通过依赖传递上下文，不在 Golden Context 中重复注入
-    # 设计阶段（design_inner, design_outer）需要全局上下文来生成方案
-    is_design_phase = field.phase in ["design_inner", "design_outer", "intent", "research"]
-    
+    # 核心原则：Golden Context 只包含创作者特质，其余阶段性信息通过依赖字段传递。
     # 获取创作者特质（从关系获取，转换为提示词格式）
     creator_profile_text = ""
     if project.creator_profile:
-        creator_profile_text = project.creator_profile.to_prompt_context()
+        creator_profile_text = project.creator_profile.to_prompt_context(
+            locale=project_locale,
+        )
     
     gc = GoldenContext(
         creator_profile=creator_profile_text,
-        # 意图和消费者画像不再放在 golden_context 中，通过字段依赖传递
+        locale=project_locale,
     )
     
     # 获取依赖字段内容
@@ -373,6 +376,7 @@ async def generate_field_stream_api(
     project = db.query(Project).filter(Project.id == field.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    project_locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
     
     # ===== 流式生成前保存旧版本 =====
     _save_field_version(field, "ai_regenerate", db, source_detail="重新生成前的版本")
@@ -387,10 +391,13 @@ async def generate_field_stream_api(
     # intent 和 consumer_personas 应该通过字段依赖传递
     creator_profile_text = ""
     if project.creator_profile:
-        creator_profile_text = project.creator_profile.to_prompt_context()
+        creator_profile_text = project.creator_profile.to_prompt_context(
+            locale=project_locale,
+        )
     
     gc = GoldenContext(
         creator_profile=creator_profile_text,
+        locale=project_locale,
     )
     
     depends_on = field.dependencies.get("depends_on", [])
@@ -408,7 +415,7 @@ async def generate_field_stream_api(
     
     # 构建系统提示词用于日志记录
     system_prompt = prompt_engine.get_field_generation_prompt(field, context)
-    full_prompt = f"[System]\n{system_prompt}\n\n[User]\n请生成「{field.name}」的内容。"
+    full_prompt = f"[System]\n{system_prompt}\n\n[User]\n{rt(project_locale, 'block.generate.human', name=field.name)}"
     start_time = datetime.utcnow()
     
     async def stream_generator():
@@ -520,6 +527,7 @@ async def batch_generate_fields(
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    project_locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
     
     # 获取待生成的字段
     query = db.query(ProjectField).filter(
@@ -549,10 +557,13 @@ async def batch_generate_fields(
     # 核心原则：Golden Context 只包含创作者特质
     creator_profile_text = ""
     if project.creator_profile:
-        creator_profile_text = project.creator_profile.to_prompt_context()
+        creator_profile_text = project.creator_profile.to_prompt_context(
+            locale=project_locale,
+        )
     
     gc = GoldenContext(
         creator_profile=creator_profile_text,
+        locale=project_locale,
     )
     
     generated_ids = []
@@ -573,13 +584,9 @@ async def batch_generate_fields(
             depends_on = field.dependencies.get("depends_on", []) if field.dependencies else []
             dep_fields = [fields_by_id[dep_id] for dep_id in depends_on if dep_id in fields_by_id]
             
-            # 根据阶段决定是否使用完整上下文
-            is_design_phase = field.phase in ["design_inner", "design_outer", "intent", "research"]
             field_gc = GoldenContext(
                 creator_profile=gc.creator_profile,
-                intent=gc.intent,
-                consumer_personas=gc.consumer_personas,
-                include_all_context=is_design_phase,
+                locale=project_locale,
             )
             
             context = prompt_engine.build_prompt_context(
@@ -606,7 +613,7 @@ async def batch_generate_fields(
                 
                 # 记录日志 - 使用正确的字段名
                 system_prompt = prompt_engine.get_field_generation_prompt(field, context)
-                full_prompt = f"[System]\n{system_prompt}\n\n[User]\n请生成「{field.name}」的内容。"
+                full_prompt = f"[System]\n{system_prompt}\n\n[User]\n{rt(project_locale, 'block.generate.human', name=field.name)}"
                 gen_log = GenerationLog(
                     id=generate_uuid(),
                     project_id=field.project_id,

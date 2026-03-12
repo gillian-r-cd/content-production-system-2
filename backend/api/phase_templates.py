@@ -8,12 +8,15 @@
 管理预设的流程模板，支持用户选择或创建自定义模板
 """
 
+import json
 from typing import Optional, List, Dict
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from core.database import get_db
+from core.localization import DEFAULT_LOCALE, normalize_locale
+from core.locale_text import rt
 from core.models import PhaseTemplate, generate_uuid
 from core.template_schema import (
     TEMPLATE_SCHEMA_VERSION,
@@ -23,6 +26,28 @@ from core.template_schema import (
 
 
 router = APIRouter(prefix="/api/phase-templates", tags=["phase-templates"])
+
+
+def _stable_key(value: Optional[str], fallback: str) -> str:
+    resolved = (value or "").strip()
+    return resolved or fallback.strip()
+
+
+def _to_template_response(template: PhaseTemplate) -> "TemplateResponse":
+    return TemplateResponse(
+        id=template.id,
+        name=template.name,
+        stable_key=getattr(template, "stable_key", "") or template.name,
+        locale=normalize_locale(getattr(template, "locale", DEFAULT_LOCALE)),
+        description=template.description or "",
+        schema_version=TEMPLATE_SCHEMA_VERSION,
+        phases=template.phases or [],
+        root_nodes=phase_template_to_root_nodes(template.phases or [])[0],
+        is_default=template.is_default,
+        is_system=template.is_system,
+        created_at=template.created_at.isoformat() if template.created_at else None,
+        updated_at=template.updated_at.isoformat() if template.updated_at else None,
+    )
 
 
 # ========== Pydantic 模型 ==========
@@ -39,6 +64,8 @@ class PhaseDefinition(BaseModel):
 class TemplateCreate(BaseModel):
     """创建模板请求"""
     name: str
+    stable_key: str = ""
+    locale: str = DEFAULT_LOCALE
     description: str = ""
     phases: List[PhaseDefinition] = Field(default_factory=list)
     root_nodes: List[Dict] = Field(default_factory=list)
@@ -47,6 +74,8 @@ class TemplateCreate(BaseModel):
 class TemplateUpdate(BaseModel):
     """更新模板请求"""
     name: Optional[str] = None
+    stable_key: Optional[str] = None
+    locale: Optional[str] = None
     description: Optional[str] = None
     phases: Optional[List[PhaseDefinition]] = None
     root_nodes: Optional[List[Dict]] = None
@@ -56,6 +85,8 @@ class TemplateResponse(BaseModel):
     """模板响应"""
     id: str
     name: str
+    stable_key: str
+    locale: str
     description: str
     schema_version: int
     phases: List[Dict]
@@ -65,8 +96,7 @@ class TemplateResponse(BaseModel):
     created_at: Optional[str]
     updated_at: Optional[str]
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 # ========== API 路由 ==========
@@ -81,21 +111,7 @@ def list_templates(
         PhaseTemplate.created_at,
     ).all()
     
-    return [
-        TemplateResponse(
-            id=t.id,
-            name=t.name,
-            description=t.description or "",
-            schema_version=TEMPLATE_SCHEMA_VERSION,
-            phases=t.phases or [],
-            root_nodes=phase_template_to_root_nodes(t.phases or [])[0],
-            is_default=t.is_default,
-            is_system=t.is_system,
-            created_at=t.created_at.isoformat() if t.created_at else None,
-            updated_at=t.updated_at.isoformat() if t.updated_at else None,
-        )
-        for t in templates
-    ]
+    return [_to_template_response(t) for t in templates]
 
 
 @router.get("/{template_id}", response_model=TemplateResponse)
@@ -107,19 +123,8 @@ def get_template(
     template = db.query(PhaseTemplate).filter(PhaseTemplate.id == template_id).first()
     if not template:
         raise HTTPException(status_code=404, detail="模板不存在")
-    
-    return TemplateResponse(
-        id=template.id,
-        name=template.name,
-        description=template.description or "",
-        schema_version=TEMPLATE_SCHEMA_VERSION,
-        phases=template.phases or [],
-        root_nodes=phase_template_to_root_nodes(template.phases or [])[0],
-        is_default=template.is_default,
-        is_system=template.is_system,
-        created_at=template.created_at.isoformat() if template.created_at else None,
-        updated_at=template.updated_at.isoformat() if template.updated_at else None,
-    )
+
+    return _to_template_response(template)
 
 
 @router.post("/", response_model=TemplateResponse)
@@ -131,11 +136,13 @@ def create_template(
     template = PhaseTemplate(
         id=generate_uuid(),
         name=data.name,
+        stable_key=_stable_key(data.stable_key, data.name),
+        locale=normalize_locale(data.locale),
         description=data.description,
         phases=(
             root_nodes_to_phase_template_phases(data.root_nodes)
             if data.root_nodes
-            else [p.dict() for p in data.phases]
+            else [p.model_dump() for p in data.phases]
         ),
         is_default=False,
         is_system=False,
@@ -144,19 +151,8 @@ def create_template(
     db.add(template)
     db.commit()
     db.refresh(template)
-    
-    return TemplateResponse(
-        id=template.id,
-        name=template.name,
-        description=template.description or "",
-        schema_version=TEMPLATE_SCHEMA_VERSION,
-        phases=template.phases or [],
-        root_nodes=phase_template_to_root_nodes(template.phases or [])[0],
-        is_default=template.is_default,
-        is_system=template.is_system,
-        created_at=template.created_at.isoformat() if template.created_at else None,
-        updated_at=template.updated_at.isoformat() if template.updated_at else None,
-    )
+
+    return _to_template_response(template)
 
 
 @router.put("/{template_id}", response_model=TemplateResponse)
@@ -175,28 +171,21 @@ def update_template(
     
     if data.name is not None:
         template.name = data.name
+    if data.locale is not None:
+        template.locale = normalize_locale(data.locale)
+    if data.stable_key is not None:
+        template.stable_key = _stable_key(data.stable_key, data.name or template.name)
     if data.description is not None:
         template.description = data.description
     if data.root_nodes is not None:
         template.phases = root_nodes_to_phase_template_phases(data.root_nodes)
     elif data.phases is not None:
-        template.phases = [p.dict() for p in data.phases]
+        template.phases = [p.model_dump() for p in data.phases]
     
     db.commit()
     db.refresh(template)
-    
-    return TemplateResponse(
-        id=template.id,
-        name=template.name,
-        description=template.description or "",
-        schema_version=TEMPLATE_SCHEMA_VERSION,
-        phases=template.phases or [],
-        root_nodes=phase_template_to_root_nodes(template.phases or [])[0],
-        is_default=template.is_default,
-        is_system=template.is_system,
-        created_at=template.created_at.isoformat() if template.created_at else None,
-        updated_at=template.updated_at.isoformat() if template.updated_at else None,
-    )
+
+    return _to_template_response(template)
 
 
 @router.delete("/{template_id}")
@@ -228,12 +217,15 @@ def duplicate_template(
     template = db.query(PhaseTemplate).filter(PhaseTemplate.id == template_id).first()
     if not template:
         raise HTTPException(status_code=404, detail="模板不存在")
-    
+    duplicate_locale = normalize_locale(getattr(template, "locale", DEFAULT_LOCALE))
+    duplicate_name = (new_name or "").strip() or rt(duplicate_locale, "phase_template.duplicate.name", name=template.name)
     new_template = PhaseTemplate(
         id=generate_uuid(),
-        name=new_name or f"{template.name} (副本)",
+        name=duplicate_name,
+        stable_key=_stable_key("", duplicate_name),
+        locale=duplicate_locale,
         description=template.description,
-        phases=template.phases.copy() if template.phases else [],
+        phases=json.loads(json.dumps(template.phases or [])),
         is_default=False,
         is_system=False,
     )
@@ -241,16 +233,5 @@ def duplicate_template(
     db.add(new_template)
     db.commit()
     db.refresh(new_template)
-    
-    return TemplateResponse(
-        id=new_template.id,
-        name=new_template.name,
-        description=new_template.description or "",
-        schema_version=TEMPLATE_SCHEMA_VERSION,
-        phases=new_template.phases or [],
-        root_nodes=phase_template_to_root_nodes(new_template.phases or [])[0],
-        is_default=new_template.is_default,
-        is_system=new_template.is_system,
-        created_at=new_template.created_at.isoformat() if new_template.created_at else None,
-        updated_at=new_template.updated_at.isoformat() if new_template.updated_at else None,
-    )
+
+    return _to_template_response(new_template)

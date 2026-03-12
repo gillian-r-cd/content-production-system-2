@@ -54,4 +54,19 @@ describe("ContentTreeActionItems", () => {
     expect(submenu).not.toBeNull();
     expect(submenu?.className).toContain("fixed");
   });
+
+  it("renders japanese action labels when project locale is ja-JP", () => {
+    render(
+      <div>
+        <ContentTreeActionItems
+          scope={{ type: "block", blockId: "block-1", label: "テストブロック" }}
+          projectLocale="ja-JP"
+        />
+      </div>,
+    );
+
+    expect(screen.getByRole("button", { name: "Markdown としてコピー" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "ダウンロード" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "内容ブロックテンプレートとして保存" })).toBeInTheDocument();
+  });
 });

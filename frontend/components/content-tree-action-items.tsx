@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import { ChevronRight, Download, FileText, Package } from "lucide-react";
 
 import { blockAPI, projectAPI } from "@/lib/api";
+import { useUiIsJa } from "@/lib/ui-locale";
 import { sendNotification } from "@/lib/utils";
 
 type ContentTreeActionScope =
@@ -25,6 +26,7 @@ type ContentTreeActionScope =
 
 interface ContentTreeActionItemsProps {
   scope: ContentTreeActionScope;
+  projectLocale?: string | null;
   closeMenu?: () => void;
   onRequestSaveTemplate?: (scope: ContentTreeActionScope) => void;
 }
@@ -52,7 +54,8 @@ function downloadJson(data: unknown, filename: string) {
   downloadText(JSON.stringify(data, null, 2), filename, "application/json");
 }
 
-export function ContentTreeActionItems({ scope, closeMenu, onRequestSaveTemplate }: ContentTreeActionItemsProps) {
+export function ContentTreeActionItems({ scope, projectLocale, closeMenu, onRequestSaveTemplate }: ContentTreeActionItemsProps) {
+  const isJa = useUiIsJa(projectLocale);
   const [showDownloadSubmenu, setShowDownloadSubmenu] = useState(false);
   const [submenuPosition, setSubmenuPosition] = useState<FixedSubmenuPosition>({ top: 0, left: 0 });
   const downloadButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -80,11 +83,11 @@ export function ContentTreeActionItems({ scope, closeMenu, onRequestSaveTemplate
     try {
       const result = await fetchMarkdown();
       await navigator.clipboard.writeText(result.markdown);
-      sendNotification("已复制 Markdown", `「${scope.label}」已复制到剪贴板`);
+      sendNotification(isJa ? "Markdown をコピーしました" : "已复制 Markdown", isJa ? `「${scope.label}」をクリップボードにコピーしました` : `「${scope.label}」已复制到剪贴板`);
       closeAllMenus();
     } catch (error) {
       console.error("复制 Markdown 失败:", error);
-      sendNotification("复制失败", error instanceof Error ? error.message : "未知错误");
+      sendNotification(isJa ? "コピーに失敗しました" : "复制失败", error instanceof Error ? error.message : (isJa ? "不明なエラー" : "未知错误"));
     }
   };
 
@@ -92,11 +95,11 @@ export function ContentTreeActionItems({ scope, closeMenu, onRequestSaveTemplate
     try {
       const result = await fetchMarkdown();
       downloadText(result.markdown, result.filename || `${scope.label}.md`, "text/markdown;charset=utf-8");
-      sendNotification("已开始下载", `Markdown 文件「${scope.label}」已准备好`);
+      sendNotification(isJa ? "ダウンロードを開始しました" : "已开始下载", isJa ? `Markdown ファイル「${scope.label}」の準備ができました` : `Markdown 文件「${scope.label}」已准备好`);
       closeAllMenus();
     } catch (error) {
       console.error("下载 Markdown 失败:", error);
-      sendNotification("下载失败", error instanceof Error ? error.message : "未知错误");
+      sendNotification(isJa ? "ダウンロードに失敗しました" : "下载失败", error instanceof Error ? error.message : (isJa ? "不明なエラー" : "未知错误"));
     }
   };
 
@@ -104,11 +107,11 @@ export function ContentTreeActionItems({ scope, closeMenu, onRequestSaveTemplate
     try {
       const result = await fetchJson();
       downloadJson(result, `${scope.label}.json`);
-      sendNotification("已开始下载", `JSON 文件「${scope.label}」已准备好`);
+      sendNotification(isJa ? "ダウンロードを開始しました" : "已开始下载", isJa ? `JSON ファイル「${scope.label}」の準備ができました` : `JSON 文件「${scope.label}」已准备好`);
       closeAllMenus();
     } catch (error) {
       console.error("下载 JSON 失败:", error);
-      sendNotification("下载失败", error instanceof Error ? error.message : "未知错误");
+      sendNotification(isJa ? "ダウンロードに失敗しました" : "下载失败", error instanceof Error ? error.message : (isJa ? "不明なエラー" : "未知错误"));
     }
   };
 
@@ -156,7 +159,7 @@ export function ContentTreeActionItems({ scope, closeMenu, onRequestSaveTemplate
     <>
       <button onClick={handleCopyMarkdown} className={itemClassName}>
         <FileText className="w-4 h-4" />
-        复制为 Markdown 格式
+        {isJa ? "Markdown としてコピー" : "复制为 Markdown 格式"}
       </button>
 
       <div className="relative">
@@ -167,7 +170,7 @@ export function ContentTreeActionItems({ scope, closeMenu, onRequestSaveTemplate
         >
           <span className="flex items-center gap-2">
             <Download className="w-4 h-4" />
-            下载
+            {isJa ? "ダウンロード" : "下载"}
           </span>
           <ChevronRight className="w-4 h-4" />
         </button>
@@ -192,7 +195,7 @@ export function ContentTreeActionItems({ scope, closeMenu, onRequestSaveTemplate
 
       <button onClick={handleRequestSaveTemplate} className={itemClassName}>
         <Package className="w-4 h-4" />
-        保存为内容块模板
+        {isJa ? "内容ブロックテンプレートとして保存" : "保存为内容块模板"}
       </button>
     </>
   );

@@ -7,32 +7,48 @@ import { useState, useEffect } from "react";
 import { versionAPI } from "@/lib/api";
 import type { VersionItem } from "@/lib/api";
 import { History, RotateCcw, X, ChevronDown, ChevronUp, Eye } from "lucide-react";
+import { useUiIsJa } from "@/lib/ui-locale";
 
-const SOURCE_LABELS: Record<string, string> = {
-  user_edit: "手动编辑",
-  ai_generate: "AI 生成",
-  ai_regenerate: "AI 重新生成",
-  ai_regenerate_stream: "AI 流式重新生成",
-  ai_generate_stream_interrupted: "AI 生成(中断)",
-  agent_modify: "Agent 修改",
-  agent_produce: "Agent 生成",
-  rollback_snapshot: "回滚前快照",
-  manual: "手动保存",
-};
+function getSourceLabels(isJa: boolean): Record<string, string> {
+  return isJa ? {
+    user_edit: "手動編集",
+    ai_generate: "AI 生成",
+    ai_regenerate: "AI 再生成",
+    ai_regenerate_stream: "AI ストリーム再生成",
+    ai_generate_stream_interrupted: "AI 生成（中断）",
+    agent_modify: "Agent 修正",
+    agent_produce: "Agent 生成",
+    rollback_snapshot: "ロールバック前スナップショット",
+    manual: "手動保存",
+  } : {
+    user_edit: "手动编辑",
+    ai_generate: "AI 生成",
+    ai_regenerate: "AI 重新生成",
+    ai_regenerate_stream: "AI 流式重新生成",
+    ai_generate_stream_interrupted: "AI 生成(中断)",
+    agent_modify: "Agent 修改",
+    agent_produce: "Agent 生成",
+    rollback_snapshot: "回滚前快照",
+    manual: "手动保存",
+  };
+}
 
 interface VersionHistoryProps {
   entityId: string;
   entityName: string;
+  projectLocale?: string | null;
   onRollback?: () => void;  // 回滚成功后刷新
   onClose: () => void;
 }
 
-export function VersionHistoryPanel({ entityId, entityName, onRollback, onClose }: VersionHistoryProps) {
+export function VersionHistoryPanel({ entityId, entityName, projectLocale, onRollback, onClose }: VersionHistoryProps) {
   const [versions, setVersions] = useState<VersionItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedVersion, setExpandedVersion] = useState<string | null>(null);
   const [rollingBack, setRollingBack] = useState<string | null>(null);
+  const isJa = useUiIsJa(projectLocale);
+  const sourceLabels = getSourceLabels(isJa);
 
   // Escape 键关闭
   useEffect(() => {
@@ -53,14 +69,14 @@ export function VersionHistoryPanel({ entityId, entityName, onRollback, onClose 
       const data = await versionAPI.list(entityId);
       setVersions(data.versions);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "加载版本历史失败");
+      setError(err instanceof Error ? err.message : (isJa ? "バージョン履歴の読み込みに失敗しました" : "加载版本历史失败"));
     } finally {
       setLoading(false);
     }
   };
 
   const handleRollback = async (versionId: string, versionNumber: number) => {
-    if (!confirm(`确定要回滚到版本 v${versionNumber} 吗？当前内容会被保存为新版本后覆盖。`)) return;
+    if (!confirm(isJa ? `バージョン v${versionNumber} にロールバックしますか？現在の内容は新しいバージョンとして保存されたうえで上書きされます。` : `确定要回滚到版本 v${versionNumber} 吗？当前内容会被保存为新版本后覆盖。`)) return;
     
     setRollingBack(versionId);
     try {
@@ -68,7 +84,7 @@ export function VersionHistoryPanel({ entityId, entityName, onRollback, onClose 
       onRollback?.();
       onClose();
     } catch (err) {
-      alert("回滚失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "ロールバックに失敗しました: " : "回滚失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     } finally {
       setRollingBack(null);
     }
@@ -80,11 +96,11 @@ export function VersionHistoryPanel({ entityId, entityName, onRollback, onClose 
     const now = new Date();
     const diff = now.getTime() - d.getTime();
     
-    if (diff < 60000) return "刚刚";
-    if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟前`;
-    if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`;
+    if (diff < 60000) return isJa ? "たった今" : "刚刚";
+    if (diff < 3600000) return isJa ? `${Math.floor(diff / 60000)} 分前` : `${Math.floor(diff / 60000)} 分钟前`;
+    if (diff < 86400000) return isJa ? `${Math.floor(diff / 3600000)} 時間前` : `${Math.floor(diff / 3600000)} 小时前`;
     
-    return d.toLocaleString("zh-CN", {
+    return d.toLocaleString(isJa ? "ja-JP" : "zh-CN", {
       month: "numeric",
       day: "numeric",
       hour: "2-digit",
@@ -103,7 +119,7 @@ export function VersionHistoryPanel({ entityId, entityName, onRollback, onClose 
           <div className="flex items-center gap-2">
             <History className="w-5 h-5 text-brand-400" />
             <h3 className="text-lg font-medium text-zinc-100">
-              版本历史 - {entityName}
+              {isJa ? "バージョン履歴" : "版本历史"} - {entityName}
             </h3>
           </div>
           <button
@@ -118,13 +134,13 @@ export function VersionHistoryPanel({ entityId, entityName, onRollback, onClose 
         <div className="flex-1 overflow-y-auto p-5">
           {loading ? (
             <div className="flex items-center justify-center py-12">
-              <span className="text-zinc-400 animate-pulse">加载版本历史...</span>
+              <span className="text-zinc-400 animate-pulse">{isJa ? "バージョン履歴を読み込み中..." : "加载版本历史..."}</span>
             </div>
           ) : error ? (
             <div className="text-center py-8 text-red-400">{error}</div>
           ) : versions.length === 0 ? (
             <div className="text-center py-12 text-zinc-500">
-              暂无版本历史记录
+              {isJa ? "バージョン履歴はまだありません" : "暂无版本历史记录"}
             </div>
           ) : (
             <div className="space-y-2">
@@ -140,7 +156,7 @@ export function VersionHistoryPanel({ entityId, entityName, onRollback, onClose 
                         v{v.version_number}
                       </span>
                       <span className="text-xs px-2 py-0.5 rounded-full bg-surface-3 text-zinc-400">
-                        {SOURCE_LABELS[v.source] || v.source}
+                        {sourceLabels[v.source] || v.source}
                       </span>
                       <span className="text-xs text-zinc-500">
                         {formatTime(v.created_at)}
@@ -151,7 +167,7 @@ export function VersionHistoryPanel({ entityId, entityName, onRollback, onClose 
                       <button
                         onClick={() => setExpandedVersion(expandedVersion === v.id ? null : v.id)}
                         className="flex items-center gap-1 px-2 py-1 text-xs text-zinc-400 hover:text-zinc-200 hover:bg-surface-3 rounded transition-colors"
-                        title="预览内容"
+                        title={isJa ? "内容をプレビュー" : "预览内容"}
                       >
                         <Eye className="w-3.5 h-3.5" />
                         {expandedVersion === v.id ? (
@@ -165,10 +181,10 @@ export function VersionHistoryPanel({ entityId, entityName, onRollback, onClose 
                         onClick={() => handleRollback(v.id, v.version_number)}
                         disabled={rollingBack === v.id}
                         className="flex items-center gap-1 px-2.5 py-1 text-xs bg-amber-600/20 hover:bg-amber-600/30 text-amber-400 border border-amber-500/30 rounded transition-colors disabled:opacity-50"
-                        title={`回滚到版本 v${v.version_number}`}
+                        title={isJa ? `バージョン v${v.version_number} にロールバック` : `回滚到版本 v${v.version_number}`}
                       >
                         <RotateCcw className="w-3.5 h-3.5" />
-                        {rollingBack === v.id ? "回滚中..." : "回滚"}
+                        {rollingBack === v.id ? (isJa ? "ロールバック中..." : "回滚中...") : (isJa ? "ロールバック" : "回滚")}
                       </button>
                     </div>
                   </div>
@@ -178,7 +194,7 @@ export function VersionHistoryPanel({ entityId, entityName, onRollback, onClose 
                     <div className="px-4 py-3 border-t border-surface-3 bg-surface-0">
                       <pre className="text-xs text-zinc-300 whitespace-pre-wrap max-h-64 overflow-y-auto font-mono leading-relaxed">
                         {v.content.length > 2000
-                          ? v.content.slice(0, 2000) + "\n\n... (内容过长已截断)"
+                          ? v.content.slice(0, 2000) + (isJa ? "\n\n...（内容が長いため途中で省略しました）" : "\n\n... (内容过长已截断)")
                           : v.content}
                       </pre>
                     </div>
@@ -191,7 +207,7 @@ export function VersionHistoryPanel({ entityId, entityName, onRollback, onClose 
 
         {/* Footer */}
         <div className="px-5 py-3 border-t border-surface-3 text-xs text-zinc-500">
-          共 {versions.length} 个历史版本 · 回滚会自动保存当前内容为新版本
+          {isJa ? `合計 ${versions.length} 件の履歴バージョン · ロールバック時は現在内容を新しいバージョンとして自動保存します` : `共 ${versions.length} 个历史版本 · 回滚会自动保存当前内容为新版本`}
         </div>
       </div>
     </div>
@@ -204,27 +220,30 @@ export function VersionHistoryPanel({ entityId, entityName, onRollback, onClose 
 interface VersionHistoryButtonProps {
   entityId: string;
   entityName: string;
+  projectLocale?: string | null;
   onRollback?: () => void;
 }
 
-export function VersionHistoryButton({ entityId, entityName, onRollback }: VersionHistoryButtonProps) {
+export function VersionHistoryButton({ entityId, entityName, projectLocale, onRollback }: VersionHistoryButtonProps) {
   const [showPanel, setShowPanel] = useState(false);
+  const isJa = useUiIsJa(projectLocale);
 
   return (
     <>
       <button
         onClick={() => setShowPanel(true)}
         className="flex items-center gap-1 px-2.5 py-1 text-xs text-zinc-400 hover:text-zinc-200 hover:bg-surface-3 border border-surface-3 rounded-lg transition-colors"
-        title="查看版本历史"
+        title={isJa ? "バージョン履歴を見る" : "查看版本历史"}
       >
         <History className="w-3.5 h-3.5" />
-        版本
+        {isJa ? "履歴" : "版本"}
       </button>
 
       {showPanel && (
         <VersionHistoryPanel
           entityId={entityId}
           entityName={entityName}
+          projectLocale={projectLocale}
           onRollback={onRollback}
           onClose={() => setShowPanel(false)}
         />

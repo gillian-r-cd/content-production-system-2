@@ -21,6 +21,8 @@ from dataclasses import dataclass, field, asdict
 from sqlalchemy.orm import Session
 
 from core.database import get_db
+from core.localization import DEFAULT_LOCALE, normalize_locale
+from core.locale_text import rt
 from core.models import Project
 from core.models.content_block import ContentBlock
 from core.phase_config import PHASE_DISPLAY_NAMES
@@ -160,9 +162,10 @@ async def generate_outline(
     intent_research = get_intent_and_research(project_id, db)
     intent = intent_research.get("intent", "")
     research = intent_research.get("research", "")
+    locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
     creator_profile = ""
     if project.creator_profile:
-        creator_profile = project.creator_profile.to_prompt_context()
+        creator_profile = project.creator_profile.to_prompt_context(locale=locale)
     
     # 自动推断内容类型（如果未指定）
     if not content_type:
@@ -174,56 +177,20 @@ async def generate_outline(
     default_hint = type_template.get("structure_hint", "")
     
     # 构建提示词
-    system_prompt = f"""你是一个专业的内容架构师。请根据项目信息生成结构化的内容大纲。
-
-## 项目信息
-- 内容类型: {content_type}
-- 创作者特质: {creator_profile}
-- 项目意图: {intent}
-- 目标用户: {research if research else '待定义'}
-
-## 大纲要求
-{structure_hint or default_hint}
-
-典型板块参考（可调整）: {', '.join(typical_sections) if typical_sections else '自由设计'}
-
-## 输出格式
-请以 JSON 格式输出大纲，结构如下：
-```json
-{{
-    "title": "大纲标题",
-    "summary": "大纲概述（1-2句话）",
-    "nodes": [
-        {{
-            "name": "板块名称",
-            "description": "板块描述",
-            "ai_prompt": "生成该板块内容时的AI提示词",
-            "depends_on": ["依赖的其他板块名称"],
-            "children": [
-                {{
-                    "name": "子板块名称",
-                    "description": "子板块描述",
-                    "ai_prompt": "AI提示词",
-                    "depends_on": []
-                }}
-            ]
-        }}
-    ]
-}}
-```
-
-规则：
-1. 大纲应该逻辑清晰、层次分明
-2. ai_prompt 要具体明确，能指导AI生成内容
-3. depends_on 列出该板块需要依赖的前置板块
-4. children 用于嵌套子板块（如章节下的小节）
-5. 根据项目特点决定是否需要嵌套
-
-只输出JSON，不要其他解释。"""
+    system_prompt = rt(
+        locale,
+        "outline.system",
+        content_type=content_type,
+        creator_profile=creator_profile,
+        intent=intent,
+        research=research if research else ("未定義" if locale == "ja-JP" else "待定义"),
+        structure_hint=structure_hint or default_hint,
+        typical_sections=", ".join(typical_sections) if typical_sections else ("自由设计" if locale != "ja-JP" else "自由設計"),
+    )
 
     messages = [
         SystemMessage(content=system_prompt),
-        HumanMessage(content="请生成内容大纲"),
+        HumanMessage(content=rt(locale, "outline.human")),
     ]
     
     response = await llm.ainvoke(messages)

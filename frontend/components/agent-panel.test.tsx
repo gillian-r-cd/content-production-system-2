@@ -136,4 +136,13 @@ describe("AgentPanel", () => {
     expect(await screen.findByText("角色名称和提示词由当前项目维护，简介为可选项")).toBeInTheDocument();
     expect(await screen.findByText("当前项目还没有角色")).toBeInTheDocument();
   });
+
+  it("renders japanese empty state when project locale is ja-JP", async () => {
+    apiMocks.listModes.mockResolvedValue([]);
+
+    render(<AgentPanel projectId="project-1" projectLocale="ja-JP" allBlocks={[]} />);
+
+    expect(await screen.findByText("このプロジェクトにはまだ Agent 役割がありません")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "役割を設定" })).toBeInTheDocument();
+  });
 });

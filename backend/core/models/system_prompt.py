@@ -11,6 +11,7 @@
 from sqlalchemy import String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
+from core.localization import DEFAULT_LOCALE
 from core.models.base import BaseModel
 
 
@@ -27,6 +28,8 @@ class SystemPrompt(BaseModel):
     __tablename__ = "system_prompts"
 
     name: Mapped[str] = mapped_column(String(100), nullable=False)
+    stable_key: Mapped[str] = mapped_column(String(100), default="", nullable=False)
+    locale: Mapped[str] = mapped_column(String(20), default=DEFAULT_LOCALE, nullable=False)
     phase: Mapped[str] = mapped_column(String(50), nullable=False)
     content: Mapped[str] = mapped_column(Text, default="")
     description: Mapped[str] = mapped_column(Text, default="")

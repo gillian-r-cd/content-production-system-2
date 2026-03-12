@@ -8,7 +8,7 @@
 import { useEffect, useState } from "react";
 import { phaseTemplateAPI, modelsAPI } from "@/lib/api";
 import type { PhaseTemplate, ModelInfo, TemplateNode } from "@/lib/api";
-import { FormField } from "./shared";
+import { FormField, LOCALE_OPTIONS, LocaleBadge, useSettingsUiIsJa, useSettingsUiLocale } from "./shared";
 import { TemplateTreeEditor } from "./template-tree-editor";
 import { Sparkles } from "lucide-react";
 
@@ -18,13 +18,16 @@ function flattenTemplateNodes(nodes: TemplateNode[] = []): TemplateNode[] {
 
 interface PhaseTemplateEditForm {
   name: string;
+  locale: string;
   description: string;
   root_nodes: TemplateNode[];
 }
 
 export function PhaseTemplatesSection({ templates, onRefresh }: { templates: PhaseTemplate[]; onRefresh: () => void }) {
+  const uiLocale = useSettingsUiLocale();
+  const isJa = useSettingsUiIsJa();
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState<PhaseTemplateEditForm>({ name: "", description: "", root_nodes: [] });
+  const [editForm, setEditForm] = useState<PhaseTemplateEditForm>({ name: "", locale: uiLocale, description: "", root_nodes: [] });
   const [isCreating, setIsCreating] = useState(false);
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
 
@@ -39,6 +42,7 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
     setIsCreating(true);
     setEditForm({
       name: "",
+      locale: uiLocale,
       description: "",
       root_nodes: [],
     });
@@ -48,6 +52,7 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
     setEditingId(template.id);
     setEditForm({
       name: template.name,
+      locale: template.locale || uiLocale,
       description: template.description,
       root_nodes: JSON.parse(JSON.stringify(template.root_nodes || [])),
     });
@@ -64,17 +69,17 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
       setIsCreating(false);
       onRefresh();
     } catch (err) {
-      alert("保存失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "保存に失敗しました: " : "保存失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm("确定删除此模板？")) return;
+    if (!confirm(isJa ? "このテンプレートを削除しますか？" : "确定删除此模板？")) return;
     try {
       await phaseTemplateAPI.delete(id);
       onRefresh();
     } catch (err) {
-      alert("删除失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "削除に失敗しました: " : "删除失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     }
   };
 
@@ -82,21 +87,32 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
     <div className="p-5 bg-surface-2 border border-brand-500/50 rounded-xl mb-4">
       <div className="space-y-4">
         {/* 基础信息 */}
-        <div className="grid grid-cols-2 gap-4">
-          <FormField label="模板名称">
+        <div className="grid grid-cols-3 gap-4">
+          <FormField label={isJa ? "テンプレート名" : "模板名称"}>
             <input
               value={editForm.name || ""}
               onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
               className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 text-sm"
-              placeholder="如：UMU 课程模板"
+              placeholder={isJa ? "例: UMU コーステンプレート" : "如：UMU 课程模板"}
             />
           </FormField>
-          <FormField label="描述">
+          <FormField label={isJa ? "言語" : "语言"}>
+            <select
+              value={editForm.locale}
+              onChange={(e) => setEditForm({ ...editForm, locale: e.target.value })}
+              className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 text-sm"
+            >
+              {LOCALE_OPTIONS.map((item) => (
+                <option key={item.value} value={item.value}>{item.label}</option>
+              ))}
+            </select>
+          </FormField>
+          <FormField label={isJa ? "説明" : "描述"}>
             <input
               value={editForm.description || ""}
               onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
               className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 text-sm"
-              placeholder="模板的用途说明"
+              placeholder={isJa ? "テンプレート用途の説明" : "模板的用途说明"}
             />
           </FormField>
         </div>
@@ -105,13 +121,13 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
           nodes={editForm.root_nodes}
           onChange={(root_nodes) => setEditForm({ ...editForm, root_nodes })}
           availableModels={availableModels}
-          topLevelLabel="流程模板结构"
-          emptyText="还没有添加内容，先添加顶层分组或内容块。"
+          topLevelLabel={isJa ? "フローテンプレート構造" : "流程模板结构"}
+          emptyText={isJa ? "内容はまだありません。先に最上位のグループまたは内容ブロックを追加してください。" : "还没有添加内容，先添加顶层分组或内容块。"}
         />
 
         <div className="flex gap-2 pt-2">
-          <button onClick={handleSave} className="px-4 py-2 bg-brand-600 hover:bg-brand-700 rounded-lg text-sm">保存</button>
-          <button onClick={() => { setEditingId(null); setIsCreating(false); }} className="px-4 py-2 bg-surface-3 hover:bg-surface-4 rounded-lg text-sm">取消</button>
+          <button onClick={handleSave} className="px-4 py-2 bg-brand-600 hover:bg-brand-700 rounded-lg text-sm">{isJa ? "保存" : "保存"}</button>
+          <button onClick={() => { setEditingId(null); setIsCreating(false); }} className="px-4 py-2 bg-surface-3 hover:bg-surface-4 rounded-lg text-sm">{isJa ? "キャンセル" : "取消"}</button>
         </div>
       </div>
     </div>
@@ -121,13 +137,13 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
     <div>
       <div className="flex justify-between items-center mb-6">
         <div>
-          <h2 className="text-xl font-bold text-zinc-100">流程模板</h2>
+          <h2 className="text-xl font-bold text-zinc-100">{isJa ? "フローテンプレート" : "流程模板"}</h2>
           <p className="text-sm text-zinc-500 mt-1">
-            创建项目时使用的模板。包含组结构和内容块定义（含预置内容、提示词等）。
+            {isJa ? "プロジェクト作成時に使うテンプレートです。グループ構造と内容ブロック定義（初期内容、プロンプトなど）を含みます。" : "创建项目时使用的模板。包含组结构和内容块定义（含预置内容、提示词等）。"}
           </p>
         </div>
         <button onClick={handleCreate} className="px-4 py-2 bg-brand-600 hover:bg-brand-700 rounded-lg text-sm font-medium">
-          + 新建模板
+          {isJa ? "+ 新規テンプレート" : "+ 新建模板"}
         </button>
       </div>
 
@@ -140,11 +156,12 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
               <div>
                 <div className="flex items-center gap-2">
                   <h3 className="text-base font-medium text-zinc-200">{template.name}</h3>
+                  <LocaleBadge locale={template.locale} />
                   {template.is_default && (
-                    <span className="px-1.5 py-0.5 text-xs bg-brand-500/20 text-brand-400 rounded">默认</span>
+                    <span className="px-1.5 py-0.5 text-xs bg-brand-500/20 text-brand-400 rounded">{isJa ? "既定" : "默认"}</span>
                   )}
                   {template.is_system && (
-                    <span className="px-1.5 py-0.5 text-xs bg-zinc-500/20 text-zinc-400 rounded">系统</span>
+                    <span className="px-1.5 py-0.5 text-xs bg-zinc-500/20 text-zinc-400 rounded">{isJa ? "システム" : "系统"}</span>
                   )}
                   <span className="px-1.5 py-0.5 text-xs bg-brand-600/10 text-brand-400 rounded">v{template.schema_version}</span>
                 </div>
@@ -156,11 +173,13 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
                   const contentCount = flatNodes.filter((node) => !!node.content).length;
                   return (
                     <div className="flex gap-3 mt-2 text-xs text-zinc-400">
-                      <span>{containerCount || template.phases.length} 个分组</span>
-                      <span>{fieldCount || template.phases.reduce((sum: number, p) => sum + (p.default_fields || []).length, 0)} 个内容块</span>
-                      <span>{contentCount || template.phases.reduce((sum: number, p) =>
+                      <span>{isJa ? `${containerCount || template.phases.length} 個のグループ` : `${containerCount || template.phases.length} 个分组`}</span>
+                      <span>{isJa ? `${fieldCount || template.phases.reduce((sum: number, p) => sum + (p.default_fields || []).length, 0)} 個の内容ブロック` : `${fieldCount || template.phases.reduce((sum: number, p) => sum + (p.default_fields || []).length, 0)} 个内容块`}</span>
+                      <span>{isJa ? `${contentCount || template.phases.reduce((sum: number, p) =>
                         sum + (p.default_fields || []).filter((f) => f.content).length, 0
-                      )} 个有预置内容</span>
+                      )} 件の初期内容あり` : `${contentCount || template.phases.reduce((sum: number, p) =>
+                        sum + (p.default_fields || []).filter((f) => f.content).length, 0
+                      )} 个有预置内容`}</span>
                     </div>
                   );
                 })()}
@@ -172,13 +191,13 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
                       onClick={() => handleEdit(template)}
                       className="px-3 py-1.5 text-xs text-brand-400 hover:text-brand-300 bg-brand-500/10 hover:bg-brand-500/20 rounded-lg"
                     >
-                      编辑
+                      {isJa ? "編集" : "编辑"}
                     </button>
                     <button
                       onClick={() => handleDelete(template.id)}
                       className="px-3 py-1.5 text-xs text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 rounded-lg"
                     >
-                      删除
+                      {isJa ? "削除" : "删除"}
                     </button>
                   </>
                 )}
@@ -204,7 +223,7 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
                           <span>{f.name}</span>
                           {f.ai_prompt && <span className="text-brand-400/60">✨</span>}
                           {f.content && <span className="text-emerald-400/60">📝</span>}
-                          {f.auto_generate && <span className="text-blue-400/60" title="自动生成"><Sparkles className="w-3 h-3 inline" /></span>}
+                          {f.auto_generate && <span className="text-blue-400/60" title={isJa ? "自動生成" : "自动生成"}><Sparkles className="w-3 h-3 inline" /></span>}
                           {f.model_override && <span className="text-amber-400/60" title={`模型: ${f.model_override}`}>[{String(f.model_override)}]</span>}
                         </div>
                       ))}
@@ -218,8 +237,8 @@ export function PhaseTemplatesSection({ templates, onRefresh }: { templates: Pha
 
         {templates.length === 0 && !isCreating && (
           <div className="text-center py-12 text-zinc-500">
-            <p>还没有流程模板</p>
-            <p className="text-xs mt-1">点击&quot;新建模板&quot;创建第一个</p>
+            <p>{isJa ? "フローテンプレートはまだありません" : "还没有流程模板"}</p>
+            <p className="text-xs mt-1">{isJa ? "「新規テンプレート」をクリックして最初のテンプレートを作成してください" : "点击\"新建模板\"创建第一个"}</p>
           </div>
         )}
       </div>

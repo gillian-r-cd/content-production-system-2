@@ -13,7 +13,9 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from core.database import Base
+from core.localization import DEFAULT_LOCALE
 from core.models import (
+    AgentMode,
     CreatorProfile,
     Project,
     FieldTemplate,
@@ -70,6 +72,19 @@ class TestCreatorProfile:
         assert "严谨" in context
         assert "夸大" in context
 
+    def test_locale_and_stable_key_fields(self, db_session):
+        profile = CreatorProfile(
+            name="日本語クリエイター",
+            stable_key="creator.ja.default",
+            locale="ja-JP",
+            traits={"tone": "丁寧"},
+        )
+        db_session.add(profile)
+        db_session.commit()
+
+        assert profile.locale == "ja-JP"
+        assert profile.stable_key == "creator.ja.default"
+
 
 class TestProject:
     """测试项目模型"""
@@ -102,6 +117,22 @@ class TestProject:
         
         project.current_phase = "evaluate"
         assert project.get_next_phase() is None
+
+    def test_locale_defaults_to_zh_cn(self, db_session):
+        project = Project(name="默认语言项目")
+        db_session.add(project)
+        db_session.commit()
+        db_session.refresh(project)
+
+        assert project.locale == DEFAULT_LOCALE
+
+    def test_locale_can_be_set_to_ja_jp(self, db_session):
+        project = Project(name="日本語项目", locale="ja-JP")
+        db_session.add(project)
+        db_session.commit()
+        db_session.refresh(project)
+
+        assert project.locale == "ja-JP"
     
 
 
@@ -137,6 +168,19 @@ class TestFieldTemplate:
         errors = template.validate_dependencies()
         assert len(errors) > 0
         assert "不存在" in errors[0]
+
+    def test_locale_and_stable_key_fields(self, db_session):
+        template = FieldTemplate(
+            name="日本語模板",
+            stable_key="field_template.jp.default",
+            locale="ja-JP",
+            fields=[{"name": "目的", "type": "text"}],
+        )
+        db_session.add(template)
+        db_session.commit()
+
+        assert template.locale == "ja-JP"
+        assert template.stable_key == "field_template.jp.default"
 
 
 class TestProjectField:
@@ -195,6 +239,23 @@ class TestSimulator:
         template = Simulator.get_default_template("dialogue")
         assert "{persona}" in template
         assert "对话" in template
+
+
+class TestAgentMode:
+    """测试 AgentMode locale/stable_key 字段"""
+
+    def test_locale_and_stable_key_fields(self, db_session):
+        mode = AgentMode(
+            name="日本語モード",
+            stable_key="agent_mode.jp.default",
+            locale="ja-JP",
+            system_prompt="日本語で応答してください",
+        )
+        db_session.add(mode)
+        db_session.commit()
+
+        assert mode.locale == "ja-JP"
+        assert mode.stable_key == "agent_mode.jp.default"
 
 
 class TestGenerationLog:

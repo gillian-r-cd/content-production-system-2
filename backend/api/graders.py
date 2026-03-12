@@ -21,17 +21,25 @@ from pydantic import BaseModel as PydanticBase
 from sqlalchemy.orm import Session
 
 from core.database import get_db
-from core.models.grader import Grader, GRADER_TYPE_CHOICES, PRESET_GRADERS
+from core.localization import DEFAULT_LOCALE, normalize_locale
+from core.models.grader import Grader, GRADER_TYPE_CHOICES
 from core.models.base import generate_uuid
 
 
 router = APIRouter(prefix="/api/graders", tags=["graders"])
 
 
+def _stable_key(value: Optional[str], fallback: str) -> str:
+    resolved = (value or "").strip()
+    return resolved or fallback.strip()
+
+
 # ============== Schemas ==============
 
 class GraderCreate(PydanticBase):
     name: str
+    stable_key: str = ""
+    locale: str = DEFAULT_LOCALE
     grader_type: str = "content_only"
     prompt_template: str = ""
     dimensions: list = []
@@ -41,6 +49,8 @@ class GraderCreate(PydanticBase):
 
 class GraderUpdate(PydanticBase):
     name: Optional[str] = None
+    stable_key: Optional[str] = None
+    locale: Optional[str] = None
     grader_type: Optional[str] = None
     prompt_template: Optional[str] = None
     dimensions: Optional[list] = None
@@ -50,6 +60,8 @@ class GraderUpdate(PydanticBase):
 class GraderResponse(PydanticBase):
     id: str
     name: str
+    stable_key: str
+    locale: str
     grader_type: str
     prompt_template: str
     dimensions: list
@@ -64,6 +76,8 @@ def _grader_to_response(g: Grader) -> dict:
     return {
         "id": g.id,
         "name": g.name,
+        "stable_key": getattr(g, "stable_key", "") or g.name,
+        "locale": normalize_locale(getattr(g, "locale", DEFAULT_LOCALE)),
         "grader_type": g.grader_type,
         "prompt_template": g.prompt_template or "",
         "dimensions": g.dimensions or [],
@@ -86,7 +100,12 @@ def get_grader_types():
 @router.get("", response_model=List[GraderResponse])
 def list_graders(db: Session = Depends(get_db)):
     """列出所有评分器（预置 + 全部项目自定义）"""
-    graders = db.query(Grader).order_by(Grader.is_preset.desc(), Grader.created_at).all()
+    graders = db.query(Grader).order_by(
+        Grader.is_preset.desc(),
+        Grader.stable_key,
+        Grader.locale,
+        Grader.created_at,
+    ).all()
     return [_grader_to_response(g) for g in graders]
 
 
@@ -97,7 +116,12 @@ def list_project_graders(project_id: str, db: Session = Depends(get_db)):
         (Grader.is_preset == True)
         | (Grader.project_id == project_id)
         | (Grader.project_id == None)  # noqa: E711  全局自定义评分器
-    ).order_by(Grader.is_preset.desc(), Grader.created_at).all()
+    ).order_by(
+        Grader.is_preset.desc(),
+        Grader.stable_key,
+        Grader.locale,
+        Grader.created_at,
+    ).all()
     return [_grader_to_response(g) for g in graders]
 
 
@@ -116,6 +140,8 @@ def create_grader(data: GraderCreate, db: Session = Depends(get_db)):
     g = Grader(
         id=generate_uuid(),
         name=data.name,
+        stable_key=_stable_key(data.stable_key, data.name),
+        locale=normalize_locale(data.locale),
         grader_type=data.grader_type,
         prompt_template=data.prompt_template,
         dimensions=data.dimensions,
@@ -138,6 +164,10 @@ def update_grader(grader_id: str, data: GraderUpdate, db: Session = Depends(get_
     
     if data.name is not None:
         g.name = data.name
+    if data.stable_key is not None:
+        g.stable_key = _stable_key(data.stable_key, data.name or g.name)
+    if data.locale is not None:
+        g.locale = normalize_locale(data.locale)
     if data.grader_type is not None:
         g.grader_type = data.grader_type
     if data.prompt_template is not None:
@@ -196,6 +226,8 @@ def export_graders(
     for g in graders:
         export_data.append({
             "name": g.name,
+            "stable_key": getattr(g, "stable_key", "") or g.name,
+            "locale": normalize_locale(getattr(g, "locale", DEFAULT_LOCALE)),
             "grader_type": g.grader_type or "content_only",
             "prompt_template": g.prompt_template or "",
             "dimensions": g.dimensions or [],
@@ -222,11 +254,17 @@ def import_graders(
         name = item.get("name", "")
         if not name:
             continue
-        
-        # 检查同名
-        existing = db.query(Grader).filter(Grader.name == name).first()
+        stable_key = _stable_key(item.get("stable_key"), name)
+        locale = normalize_locale(item.get("locale", DEFAULT_LOCALE))
+        existing = db.query(Grader).filter(
+            Grader.stable_key == stable_key,
+            Grader.locale == locale,
+        ).first()
         if existing:
             # 更新
+            existing.name = name
+            existing.stable_key = stable_key
+            existing.locale = locale
             existing.grader_type = item.get("grader_type", existing.grader_type)
             existing.prompt_template = item.get("prompt_template", existing.prompt_template)
             existing.dimensions = item.get("dimensions", existing.dimensions)
@@ -238,6 +276,8 @@ def import_graders(
             g = Grader(
                 id=generate_uuid(),
                 name=name,
+                stable_key=stable_key,
+                locale=locale,
                 grader_type=item.get("grader_type", "content_only"),
                 prompt_template=item.get("prompt_template", ""),
                 dimensions=item.get("dimensions", []),

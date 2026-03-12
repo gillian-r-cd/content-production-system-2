@@ -6,7 +6,7 @@
 "use client";
 
 import type { DraftDependencyOption, DraftDependencyRef } from "@/lib/api";
-import { FormField } from "./settings/shared";
+import { FormField, useSettingsUiIsJa } from "./settings/shared";
 
 interface ProjectDraftDependencySelectorProps {
   value: DraftDependencyRef[];
@@ -23,16 +23,20 @@ function refKey(ref: DraftDependencyRef): string {
 export function ProjectDraftDependencySelector({
   value,
   options,
-  label = "外部依赖",
-  hint = "依赖当前方案外的草稿节点或项目已有内容块",
+  label,
+  hint,
   onChange,
 }: ProjectDraftDependencySelectorProps) {
+  const isJa = useSettingsUiIsJa();
+  const resolvedLabel = label || (isJa ? "外部依存" : "外部依赖");
+  const resolvedHint = hint || (isJa ? "現在のプラン外にある草稿ノードや既存のプロジェクト内容ブロックへの依存を選択します" : "依赖当前方案外的草稿节点或项目已有内容块");
+
   if (!options.length) return null;
 
   const selectedKeys = new Set((value || []).map(refKey));
 
   return (
-    <FormField label={label} hint={hint}>
+    <FormField label={resolvedLabel} hint={resolvedHint}>
       <div className="flex flex-wrap gap-2">
         {options.map((option) => {
           const key = refKey(option.ref);

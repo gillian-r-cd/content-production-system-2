@@ -46,6 +46,38 @@ export function requestNotificationPermission() {
 // ===== 应用内 Toast 通知队列 =====
 let _toastContainer: HTMLDivElement | null = null;
 
+export type NotificationTone = "info" | "success" | "warning" | "error";
+
+const NOTIFICATION_TONES: NotificationTone[] = ["info", "success", "warning", "error"];
+
+function isNotificationTone(value: unknown): value is NotificationTone {
+  return typeof value === "string" && NOTIFICATION_TONES.includes(value as NotificationTone);
+}
+
+export function resolveNotificationArgs(
+  bodyOrTone?: string | NotificationTone,
+  toneOrOnClick?: NotificationTone | (() => void),
+  onClick?: () => void,
+): { body: string; tone: NotificationTone; onClick?: () => void } {
+  let body = "";
+  let tone: NotificationTone = "info";
+  let clickHandler = onClick;
+
+  if (typeof toneOrOnClick === "function") {
+    clickHandler = toneOrOnClick;
+  } else if (isNotificationTone(toneOrOnClick)) {
+    tone = toneOrOnClick;
+  }
+
+  if (isNotificationTone(bodyOrTone)) {
+    tone = bodyOrTone;
+  } else if (typeof bodyOrTone === "string") {
+    body = bodyOrTone;
+  }
+
+  return { body, tone, onClick: clickHandler };
+}
+
 function getToastContainer(): HTMLDivElement {
   if (_toastContainer && document.body.contains(_toastContainer)) return _toastContainer;
   _toastContainer = document.createElement("div");
@@ -59,20 +91,30 @@ function getToastContainer(): HTMLDivElement {
   return _toastContainer;
 }
 
-function showToast(title: string, body: string) {
+function showToast(title: string, body: string, tone: NotificationTone) {
   if (typeof window === "undefined") return;
   const container = getToastContainer();
   const toast = document.createElement("div");
+  const toneStyle = {
+    info: { border: "#7c3aed", title: "#a78bfa" },
+    success: { border: "#16a34a", title: "#4ade80" },
+    warning: { border: "#d97706", title: "#fbbf24" },
+    error: { border: "#dc2626", title: "#f87171" },
+  }[tone];
   toast.style.cssText = `
-    background: #1a1a2e; border: 1px solid #7c3aed; border-radius: 12px;
+    background: #1a1a2e; border: 1px solid ${toneStyle.border}; border-radius: 12px;
     padding: 12px 16px; max-width: 320px; color: #e4e4e7;
     box-shadow: 0 8px 24px rgba(0,0,0,0.4); pointer-events: auto;
     animation: toast-slide-in 0.3s ease-out;
     font-family: system-ui, -apple-system, sans-serif;
   `;
+  const bodyHtml = body
+    ? `<div style="font-size:12px;color:#a1a1aa">${body}</div>`
+    : "";
+  const titleMargin = body ? "4px" : "0";
   toast.innerHTML = `
-    <div style="font-weight:600;font-size:13px;color:#a78bfa;margin-bottom:4px">${title}</div>
-    <div style="font-size:12px;color:#a1a1aa">${body}</div>
+    <div style="font-weight:600;font-size:13px;color:${toneStyle.title};margin-bottom:${titleMargin}">${title}</div>
+    ${bodyHtml}
   `;
 
   // CSS animation
@@ -102,14 +144,22 @@ function showToast(title: string, body: string) {
  * - 同时始终在应用内显示 Toast 提示
  * 
  * @param title 通知标题
- * @param body 通知正文
+ * @param bodyOrTone 通知正文，或兼容旧调用方式的通知类型
+ * @param toneOrOnClick 通知类型，或点击通知后的回调
  * @param onClick 点击通知后的回调（可选，默认聚焦窗口）
  */
-export function sendNotification(title: string, body: string, onClick?: () => void) {
+export function sendNotification(
+  title: string,
+  bodyOrTone?: string | NotificationTone,
+  toneOrOnClick?: NotificationTone | (() => void),
+  onClick?: () => void,
+) {
   if (typeof window === "undefined") return;
+  const resolved = resolveNotificationArgs(bodyOrTone, toneOrOnClick, onClick);
+  const body = resolved.body;
 
   // 1. 始终显示应用内 Toast（即使在前台也能看到）
-  showToast(title, body);
+  showToast(title, body, resolved.tone);
 
   // 2. 如果页面不在前台，尝试发送系统级浏览器通知
   if (document.visibilityState !== "visible") {
@@ -123,7 +173,7 @@ export function sendNotification(title: string, body: string, onClick?: () => vo
     if (Notification.permission === "granted") {
       try {
         const notification = new Notification(title, {
-          body,
+          body: body || title,
           icon: "/icon.svg",
           tag: `gen-${Date.now()}`,
           silent: false,
@@ -132,7 +182,7 @@ export function sendNotification(title: string, body: string, onClick?: () => vo
         notification.onclick = () => {
           window.focus();
           notification.close();
-          onClick?.();
+          resolved.onClick?.();
         };
         
         setTimeout(() => notification.close(), 10000);

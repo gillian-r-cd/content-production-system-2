@@ -6,17 +6,30 @@
 import { useState } from "react";
 import { graderAPI } from "@/lib/api";
 import type { GraderData } from "@/lib/api";
-import { FormField, ImportExportButtons, SingleExportButton, downloadJSON } from "./shared";
+import { FormField, ImportExportButtons, SingleExportButton, downloadJSON, LOCALE_OPTIONS, LocaleBadge, useSettingsUiIsJa, useSettingsUiLocale } from "./shared";
 
-const GRADER_TYPE_LABELS: Record<string, { label: string; desc: string; color: string }> = {
-  content_only: { label: "仅评内容", desc: "直接评价内容质量，不传互动过程", color: "text-blue-400 bg-blue-500/15 border-blue-500/30" },
-  content_and_process: { label: "评内容+互动", desc: "同时评价内容和互动过程", color: "text-purple-400 bg-purple-500/15 border-purple-500/30" },
-};
+function getGraderTypeLabels(isJa: boolean): Record<string, { label: string; desc: string; color: string }> {
+  return {
+    content_only: {
+      label: isJa ? "内容のみ評価" : "仅评内容",
+      desc: isJa ? "内容品質のみを評価し、対話プロセスは渡しません" : "直接评价内容质量，不传互动过程",
+      color: "text-blue-400 bg-blue-500/15 border-blue-500/30",
+    },
+    content_and_process: {
+      label: isJa ? "内容+対話を評価" : "评内容+互动",
+      desc: isJa ? "内容と対話プロセスの両方を評価します" : "同时评价内容和互动过程",
+      color: "text-purple-400 bg-purple-500/15 border-purple-500/30",
+    },
+  };
+}
 
 export function GradersSection({ graders, onRefresh }: { graders: GraderData[]; onRefresh: () => void }) {
+  const uiLocale = useSettingsUiLocale();
+  const isJa = useSettingsUiIsJa();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [editForm, setEditForm] = useState<Partial<GraderData>>({});
+  const graderTypeLabels = getGraderTypeLabels(isJa);
 
   // ---- 导入导出 ----
   const handleExportAll = async () => {
@@ -24,7 +37,7 @@ export function GradersSection({ graders, onRefresh }: { graders: GraderData[]; 
       const result = await graderAPI.exportAll();
       downloadJSON(result, `graders_${new Date().toISOString().split("T")[0]}.json`);
     } catch {
-      alert("导出失败");
+      alert(isJa ? "エクスポートに失敗しました" : "导出失败");
     }
   };
 
@@ -34,7 +47,7 @@ export function GradersSection({ graders, onRefresh }: { graders: GraderData[]; 
       const grader = graders.find(g => g.id === id);
       downloadJSON(result, `grader_${grader?.name || id}.json`);
     } catch {
-      alert("导出失败");
+      alert(isJa ? "エクスポートに失敗しました" : "导出失败");
     }
   };
 
@@ -46,8 +59,20 @@ export function GradersSection({ graders, onRefresh }: { graders: GraderData[]; 
   const startCreate = () => {
     setEditForm({
       name: "",
+      locale: uiLocale,
       grader_type: "content_only",
-      prompt_template: `你是一位内容评审专家。请对以下内容进行客观、严谨的评分。
+      prompt_template: isJa ? `あなたは内容レビューの専門家です。以下の内容を客観的かつ厳密に評価してください。
+
+【評価対象内容】
+{content}
+
+【評価軸】
+1. 評価軸1 (1-10): 説明
+2. 評価軸2 (1-10): 説明
+
+以下の JSON 形式のみを厳密に出力し、他の内容は出力しないでください:
+{{"scores": {{"評価軸1": 点数, "評価軸2": 点数}}, "comments": {{"評価軸1": "講評", "評価軸2": "講評"}}, "feedback": "総合評価と改善提案（100-200字）"}}`
+      : `你是一位内容评审专家。请对以下内容进行客观、严谨的评分。
 
 【被评估内容】
 {content}
@@ -87,17 +112,17 @@ export function GradersSection({ graders, onRefresh }: { graders: GraderData[]; 
       cancelEdit();
       onRefresh();
     } catch (err: unknown) {
-      alert("保存失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "保存に失敗しました: " : "保存失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm("确认删除此评分器？")) return;
+    if (!confirm(isJa ? "この評価器を削除しますか？" : "确认删除此评分器？")) return;
     try {
       await graderAPI.delete(id);
       onRefresh();
     } catch (err: unknown) {
-      alert("删除失败: " + (err instanceof Error ? err.message : "预置评分器不可删除"));
+      alert((isJa ? "削除に失敗しました: " : "删除失败: ") + (err instanceof Error ? err.message : (isJa ? "既定評価器は削除できません" : "预置评分器不可删除")));
     }
   };
 
@@ -120,39 +145,51 @@ export function GradersSection({ graders, onRefresh }: { graders: GraderData[]; 
 
   const renderForm = () => (
     <div className="p-5 bg-surface-2 border border-surface-3 rounded-xl space-y-4">
-      <FormField label="评分器名称">
+      <FormField label={isJa ? "評価器名" : "评分器名称"}>
         <input
           type="text"
           value={editForm.name || ""}
           onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
           className="w-full bg-surface-1 border border-surface-3 rounded-lg px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-brand-500"
-          placeholder="如：策略对齐评分器"
+          placeholder={isJa ? "例: 戦略整合評価器" : "如：策略对齐评分器"}
         />
       </FormField>
 
-      <FormField label="评分器类型" hint="content_only = 仅传内容给 LLM 评分；content_and_process = 传内容+互动过程">
+      <FormField label={isJa ? "言語" : "语言"}>
+        <select
+          value={editForm.locale || uiLocale}
+          onChange={(e) => setEditForm({ ...editForm, locale: e.target.value })}
+          className="w-full bg-surface-1 border border-surface-3 rounded-lg px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-brand-500"
+        >
+          {LOCALE_OPTIONS.map((item) => (
+            <option key={item.value} value={item.value}>{item.label}</option>
+          ))}
+        </select>
+      </FormField>
+
+      <FormField label={isJa ? "評価器タイプ" : "评分器类型"} hint={isJa ? "content_only = 内容のみを LLM に渡して評価; content_and_process = 内容と対話プロセスを渡して評価" : "content_only = 仅传内容给 LLM 评分；content_and_process = 传内容+互动过程"}>
         <select
           value={editForm.grader_type || "content_only"}
           onChange={(e) => setEditForm({ ...editForm, grader_type: e.target.value })}
           className="w-full bg-surface-1 border border-surface-3 rounded-lg px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-brand-500"
         >
-          {Object.entries(GRADER_TYPE_LABELS).map(([k, v]) => (
+          {Object.entries(graderTypeLabels).map(([k, v]) => (
             <option key={k} value={k}>{v.label} — {v.desc}</option>
           ))}
         </select>
       </FormField>
 
-      <FormField label="评分提示词（完整版）" hint="此提示词将完整发送给 LLM。占位符：{content} = 被评内容，{process} = 互动过程。模板即所见即所得。">
+      <FormField label={isJa ? "評価プロンプト（完全版）" : "评分提示词（完整版）"} hint={isJa ? "このプロンプトはそのまま LLM に送信されます。{content} = 評価対象内容、{process} = 対話プロセス。テンプレートは WYSIWYG です。" : "此提示词将完整发送给 LLM。占位符：{content} = 被评内容，{process} = 互动过程。模板即所见即所得。"}>
         <textarea
           value={editForm.prompt_template || ""}
           onChange={(e) => setEditForm({ ...editForm, prompt_template: e.target.value })}
           rows={12}
           className="w-full bg-surface-1 border border-surface-3 rounded-lg px-3 py-2.5 text-sm text-zinc-200 font-mono focus:outline-none focus:ring-2 focus:ring-brand-500 resize-y"
-          placeholder="请评估以下内容：&#10;&#10;【评估内容】&#10;{{content}}&#10;..."
+          placeholder={isJa ? "以下の内容を評価してください:&#10;&#10;【評価内容】&#10;{{content}}&#10;..." : "请评估以下内容：&#10;&#10;【评估内容】&#10;{{content}}&#10;..."}
         />
       </FormField>
 
-      <FormField label="评分维度">
+      <FormField label={isJa ? "評価軸" : "评分维度"}>
         <div className="space-y-2">
           {(editForm.dimensions || []).map((dim, idx) => (
             <div key={idx} className="flex items-center gap-2">
@@ -161,7 +198,7 @@ export function GradersSection({ graders, onRefresh }: { graders: GraderData[]; 
                 value={dim}
                 onChange={(e) => updateDimension(idx, e.target.value)}
                 className="flex-1 bg-surface-1 border border-surface-3 rounded-lg px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-brand-500"
-                placeholder={`维度 ${idx + 1}`}
+                placeholder={isJa ? `評価軸 ${idx + 1}` : `维度 ${idx + 1}`}
               />
               <button
                 onClick={() => removeDimension(idx)}
@@ -172,18 +209,18 @@ export function GradersSection({ graders, onRefresh }: { graders: GraderData[]; 
           <button
             onClick={addDimension}
             className="px-3 py-1.5 text-sm bg-surface-3 hover:bg-surface-4 rounded-lg text-zinc-400 hover:text-zinc-200 transition-colors"
-          >+ 添加维度</button>
+          >{isJa ? "+ 評価軸を追加" : "+ 添加维度"}</button>
         </div>
       </FormField>
 
       <div className="flex gap-2 pt-2">
         <button onClick={handleSave}
           className="px-4 py-2 bg-brand-600 text-white rounded-lg text-sm hover:bg-brand-700 transition-colors">
-          {isCreating ? "创建" : "保存修改"}
+          {isCreating ? (isJa ? "作成" : "创建") : (isJa ? "変更を保存" : "保存修改")}
         </button>
         <button onClick={cancelEdit}
           className="px-4 py-2 bg-surface-3 text-zinc-300 rounded-lg text-sm hover:bg-surface-4 transition-colors">
-          取消
+          {isJa ? "キャンセル" : "取消"}
         </button>
       </div>
     </div>
@@ -193,18 +230,18 @@ export function GradersSection({ graders, onRefresh }: { graders: GraderData[]; 
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-semibold text-zinc-100">评分器管理</h2>
-          <p className="text-sm text-zinc-500 mt-1">管理 Eval 评估使用的评分器。提示词所见即所得：你在这里配的内容就是 LLM 收到的完整提示词。</p>
+          <h2 className="text-xl font-semibold text-zinc-100">{isJa ? "評価器管理" : "评分器管理"}</h2>
+          <p className="text-sm text-zinc-500 mt-1">{isJa ? "Eval 評価で使う評価器を管理します。ここで設定したプロンプトがそのまま LLM に送信されます。" : "管理 Eval 评估使用的评分器。提示词所见即所得：你在这里配的内容就是 LLM 收到的完整提示词。"}</p>
         </div>
         <div className="flex items-center gap-3">
           <ImportExportButtons
-            typeName="评分器"
+            typeName={isJa ? "評価器" : "评分器"}
             onExportAll={handleExportAll}
             onImport={handleImport}
           />
           <button onClick={startCreate}
             className="px-4 py-2 bg-brand-600 text-white rounded-lg text-sm hover:bg-brand-700 transition-colors flex items-center gap-2">
-            + 新建评分器
+            {isJa ? "+ 新規評価器" : "+ 新建评分器"}
           </button>
         </div>
       </div>
@@ -220,13 +257,14 @@ export function GradersSection({ graders, onRefresh }: { graders: GraderData[]; 
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-3">
                       <h3 className="text-base font-semibold text-zinc-100">{g.name}</h3>
+                      <LocaleBadge locale={g.locale} />
                       {g.is_preset && (
                         <span className="text-xs px-2 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30">
-                          预置
+                          {isJa ? "既定" : "预置"}
                         </span>
                       )}
-                      <span className={`text-xs px-2 py-0.5 rounded border ${GRADER_TYPE_LABELS[g.grader_type]?.color || "text-zinc-400"}`}>
-                        {GRADER_TYPE_LABELS[g.grader_type]?.label || g.grader_type}
+                      <span className={`text-xs px-2 py-0.5 rounded border ${graderTypeLabels[g.grader_type]?.color || "text-zinc-400"}`}>
+                        {graderTypeLabels[g.grader_type]?.label || g.grader_type}
                       </span>
                     </div>
                     {g.dimensions.length > 0 && (
@@ -249,7 +287,7 @@ export function GradersSection({ graders, onRefresh }: { graders: GraderData[]; 
                               {g.prompt_template.includes("{process}") ? "✓" : "✗"} {"{process}"}
                             </span>
                           )}
-                          <span className="text-xs text-zinc-600">← 所见即所得：此提示词完整发送给 LLM</span>
+                          <span className="text-xs text-zinc-600">{isJa ? "← このプロンプトがそのまま LLM に送信されます" : "← 所见即所得：此提示词完整发送给 LLM"}</span>
                         </div>
                         <pre className="mt-2 text-xs text-zinc-500 bg-surface-1 border border-surface-3 rounded-lg p-3 max-h-24 overflow-auto whitespace-pre-wrap font-mono">
                           {g.prompt_template.slice(0, 200)}{g.prompt_template.length > 200 ? "..." : ""}
@@ -258,15 +296,15 @@ export function GradersSection({ graders, onRefresh }: { graders: GraderData[]; 
                     )}
                   </div>
                   <div className="flex items-center gap-2 ml-4 flex-shrink-0">
-                    <SingleExportButton onExport={() => handleExportSingle(g.id)} title="导出此评分器" />
+                    <SingleExportButton onExport={() => handleExportSingle(g.id)} title={isJa ? "この評価器をエクスポート" : "导出此评分器"} />
                     <button onClick={() => startEdit(g)}
                       className="px-3 py-1.5 text-sm bg-surface-3 hover:bg-surface-4 rounded-lg text-zinc-400 hover:text-zinc-200 transition-colors">
-                      编辑
+                      {isJa ? "編集" : "编辑"}
                     </button>
                     {!g.is_preset && (
                       <button onClick={() => handleDelete(g.id)}
                         className="px-3 py-1.5 text-sm bg-surface-3 hover:bg-red-500/20 rounded-lg text-zinc-400 hover:text-red-400 transition-colors">
-                        删除
+                        {isJa ? "削除" : "删除"}
                       </button>
                     )}
                   </div>
@@ -277,7 +315,7 @@ export function GradersSection({ graders, onRefresh }: { graders: GraderData[]; 
         ))}
         {graders.length === 0 && !isCreating && (
           <div className="text-center py-12 text-zinc-500">
-            暂无评分器，点击「新建评分器」开始
+            {isJa ? "評価器はまだありません。「新規評価器」をクリックして開始してください" : "暂无评分器，点击「新建评分器」开始"}
           </div>
         )}
       </div>

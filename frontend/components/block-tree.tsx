@@ -28,6 +28,7 @@ import {
   X,
 } from "lucide-react";
 import { ContentBlock, blockAPI, settingsAPI, TemplateNode, FieldTemplate } from "@/lib/api";
+import { useUiIsJa } from "@/lib/ui-locale";
 import { ContentTreeActionItems } from "./content-tree-action-items";
 import { ProjectContentTreeImportModal } from "./project-content-tree-import-modal";
 import { ContentTreeTemplateSaveModal } from "./content-tree-template-save-modal";
@@ -45,6 +46,7 @@ interface UndoHistoryItem {
 interface BlockTreeProps {
   blocks: ContentBlock[];
   projectId: string;
+  projectLocale?: string | null;
   selectedBlockId?: string | null;
   onSelectBlock?: (block: ContentBlock) => void;
   onBlocksChange?: () => void;
@@ -53,6 +55,7 @@ interface BlockTreeProps {
 
 interface BlockNodeProps {
   block: ContentBlock;
+  projectLocale?: string | null;
   level: number;
   selectedBlockId?: string | null;
   onSelectBlock?: (block: ContentBlock) => void;
@@ -66,6 +69,7 @@ interface BlockNodeProps {
 }
 
 interface ProjectQuickActionsProps {
+  projectLocale?: string | null;
   editable?: boolean;
   variant: "empty" | "list";
   onAddGroup: () => void;
@@ -97,6 +101,7 @@ const blockTypeIcons: Record<string, React.ReactNode> = {
 };
 
 function ProjectQuickActions({
+  projectLocale,
   editable = true,
   variant,
   onAddGroup,
@@ -104,6 +109,7 @@ function ProjectQuickActions({
   onAddFromTemplate,
   onImportJson,
 }: ProjectQuickActionsProps) {
+  const isJa = useUiIsJa(projectLocale);
   if (!editable) {
     return null;
   }
@@ -112,7 +118,7 @@ function ProjectQuickActions({
   const actions = [
     {
       key: "add-group",
-      label: "添加组",
+      label: isJa ? "グループを追加" : "添加组",
       icon: <Plus className="w-4 h-4" />,
       onClick: onAddGroup,
       className: isEmptyVariant
@@ -121,7 +127,7 @@ function ProjectQuickActions({
     },
     {
       key: "add-field",
-      label: "添加内容块",
+      label: isJa ? "内容ブロックを追加" : "添加内容块",
       icon: <FileText className="w-4 h-4" />,
       onClick: onAddField,
       className: isEmptyVariant
@@ -130,7 +136,7 @@ function ProjectQuickActions({
     },
     {
       key: "add-template",
-      label: "从模板添加",
+      label: isJa ? "テンプレートから追加" : "从模板添加",
       icon: <Package className="w-4 h-4" />,
       onClick: onAddFromTemplate,
       className: isEmptyVariant
@@ -139,7 +145,7 @@ function ProjectQuickActions({
     },
     {
       key: "import-json",
-      label: "从 JSON 导入",
+      label: isJa ? "JSON から取り込む" : "从 JSON 导入",
       icon: <Upload className="w-4 h-4" />,
       onClick: onImportJson,
       className: isEmptyVariant
@@ -162,6 +168,7 @@ function ProjectQuickActions({
 
 function BlockNode({
   block,
+  projectLocale,
   level,
   selectedBlockId,
   onSelectBlock,
@@ -173,6 +180,7 @@ function BlockNode({
   dragTarget,
   onDeleteSuccess,
 }: BlockNodeProps) {
+  const isJa = useUiIsJa(projectLocale);
   // 默认展开（is_collapsed 默认为 false）
   const [isCollapsed, setIsCollapsed] = useState(block.is_collapsed ?? false);
   const [showMenu, setShowMenu] = useState(false);
@@ -237,7 +245,7 @@ function BlockNode({
       setShowTemplateModal(false);
     } catch (err) {
       console.error("从模板添加失败:", err);
-      alert("添加失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "追加に失敗しました: " : "添加失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     } finally {
       setIsLoading(false);
     }
@@ -296,7 +304,7 @@ function BlockNode({
 
   // 处理删除（软删除，可撤回）
   const handleDelete = async () => {
-    if (!confirm(`确定删除「${block.name}」${hasChildren ? "及其所有子内容" : ""}？删除后可撤回。`)) {
+    if (!confirm(isJa ? `「${block.name}」${hasChildren ? " と配下の内容も含めて" : ""}削除しますか？削除後に元へ戻せます。` : `确定删除「${block.name}」${hasChildren ? "及其所有子内容" : ""}？删除后可撤回。`)) {
       return;
     }
 
@@ -314,7 +322,7 @@ function BlockNode({
       onBlocksChange?.();
     } catch (err) {
       console.error("删除失败:", err);
-      alert("删除失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "削除に失敗しました: " : "删除失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     } finally {
       setIsLoading(false);
     }
@@ -329,7 +337,7 @@ function BlockNode({
       onBlocksChange?.();
     } catch (err) {
       console.error("复制失败:", err);
-      alert("复制失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "複製に失敗しました: " : "复制失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     } finally {
       setIsLoading(false);
     }
@@ -339,21 +347,21 @@ function BlockNode({
   const handleAddChild = async (blockType: string) => {
     setIsLoading(true);
     const nameMap: Record<string, string> = {
-      field: "新内容块",
-      group: "新子组",
+      field: isJa ? "新しい内容ブロック" : "新内容块",
+      group: isJa ? "新しい子グループ" : "新子组",
     };
     try {
       await blockAPI.create({
         project_id: block.project_id,
         parent_id: block.id,
-        name: nameMap[blockType] || "新内容块",
+        name: nameMap[blockType] || (isJa ? "新しい内容ブロック" : "新内容块"),
         block_type: blockType,
       });
       setIsCollapsed(false);
       onBlocksChange?.();
     } catch (err) {
       console.error("添加子块失败:", err);
-      alert("添加失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "追加に失敗しました: " : "添加失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     } finally {
       setIsLoading(false);
       setShowMenu(false);
@@ -369,7 +377,7 @@ function BlockNode({
       console.log("生成结果:", result);
     } catch (err) {
       console.error("生成失败:", err);
-      alert("生成失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "生成に失敗しました: " : "生成失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     } finally {
       setIsLoading(false);
       setShowMenu(false);
@@ -477,7 +485,7 @@ function BlockNode({
                 setShowMenu(!showMenu);
               }}
               className="p-1 rounded hover:bg-surface-3 opacity-0 group-hover:opacity-100"
-              aria-label={`${block.name} 操作菜单`}
+              aria-label={`${block.name}${isJa ? " の操作メニュー" : " 操作菜单"}`}
             >
               <MoreHorizontal className="w-4 h-4 text-zinc-500" />
             </button>
@@ -496,7 +504,7 @@ function BlockNode({
                   className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-surface-2"
                 >
                   <Pencil className="w-4 h-4" />
-                  重命名
+                  {isJa ? "名前を変更" : "重命名"}
                 </button>
 
                 {block.block_type !== "field" && (
@@ -506,21 +514,21 @@ function BlockNode({
                       className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-surface-2"
                     >
                       <Plus className="w-4 h-4" />
-                      添加空白内容块
+                      {isJa ? "空の内容ブロックを追加" : "添加空白内容块"}
                     </button>
                     <button
                       onClick={openTemplateModal}
                       className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-surface-2"
                     >
                       <Package className="w-4 h-4" />
-                      从模板添加
+                      {isJa ? "テンプレートから追加" : "从模板添加"}
                     </button>
                     <button
                       onClick={() => handleAddChild("group")}
                       className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-surface-2"
                     >
                       <Folder className="w-4 h-4" />
-                      添加子组
+                      {isJa ? "子グループを追加" : "添加子组"}
                     </button>
                   </>
                 )}
@@ -531,7 +539,7 @@ function BlockNode({
                     className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-surface-2"
                   >
                     <ArrowRight className="w-4 h-4" />
-                    生成内容
+                    {isJa ? "内容を生成" : "生成内容"}
                   </button>
                 )}
 
@@ -540,11 +548,12 @@ function BlockNode({
                   className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-surface-2"
                 >
                   <Copy className="w-4 h-4" />
-                  {block.block_type === "field" ? "复制" : "复制（含子项）"}
+                  {block.block_type === "field" ? (isJa ? "複製" : "复制") : (isJa ? "複製（子項目を含む）" : "复制（含子项）")}
                 </button>
 
                 <ContentTreeActionItems
                   scope={{ type: "block", blockId: block.id, label: block.name }}
+                  projectLocale={projectLocale}
                   closeMenu={() => setShowMenu(false)}
                   onRequestSaveTemplate={() => setShowTemplateSaveModal(true)}
                 />
@@ -556,7 +565,7 @@ function BlockNode({
                   className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-400 hover:bg-surface-2"
                 >
                   <Trash2 className="w-4 h-4" />
-                  删除
+                  {isJa ? "削除" : "删除"}
                 </button>
               </div>
             )}
@@ -577,6 +586,7 @@ function BlockNode({
             <BlockNode
               key={child.id}
               block={child}
+              projectLocale={projectLocale}
               level={level + 1}
               selectedBlockId={selectedBlockId}
               onSelectBlock={onSelectBlock}
@@ -615,9 +625,9 @@ function BlockNode({
             {/* 弹窗头部 */}
             <div className="px-5 py-4 border-b border-surface-3 flex items-center justify-between">
               <div>
-                <h3 className="font-semibold text-zinc-100">从模板添加内容块</h3>
+                <h3 className="font-semibold text-zinc-100">{isJa ? "テンプレートから内容ブロックを追加" : "从模板添加内容块"}</h3>
                 <p className="text-xs text-zinc-500 mt-1">
-                  选择一个模板，将其中的内容块添加到「{block.name}」下
+                  {isJa ? `テンプレートを選択し、「${block.name}」の下に内容ブロックを追加します` : `选择一个模板，将其中的内容块添加到「${block.name}」下`}
                 </p>
               </div>
               <button
@@ -632,13 +642,13 @@ function BlockNode({
             <div className="p-4 max-h-[60vh] overflow-y-auto">
               {templatesLoading ? (
                 <div className="flex items-center justify-center py-8 text-zinc-500">
-                  <span className="animate-pulse">加载中...</span>
+                  <span className="animate-pulse">{isJa ? "読み込み中..." : "加载中..."}</span>
                 </div>
               ) : templates.length === 0 ? (
                 <div className="text-center py-8 text-zinc-500">
                   <Package className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                  <p>暂无内容块模板</p>
-                  <p className="text-xs mt-1">请在后台设置中创建内容块模板</p>
+                  <p>{isJa ? "内容ブロックテンプレートがありません" : "暂无内容块模板"}</p>
+                  <p className="text-xs mt-1">{isJa ? "設定画面で内容ブロックテンプレートを作成してください" : "请在后台设置中创建内容块模板"}</p>
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -662,7 +672,7 @@ function BlockNode({
                             <span>
                               {template.root_nodes?.length
                                 ? flattenTemplateNodes(template.root_nodes).filter((node) => node.block_type === "field").length
-                                : (template.fields?.length || 0)} 个内容块
+                                : (template.fields?.length || 0)} {isJa ? "件の内容ブロック" : "个内容块"}
                             </span>
                             {(template.root_nodes?.length
                               ? flattenTemplateNodes(template.root_nodes)
@@ -705,6 +715,7 @@ function BlockNode({
       <ContentTreeTemplateSaveModal
         open={showTemplateSaveModal}
         scope={{ type: "block", blockId: block.id, label: block.name }}
+        projectLocale={projectLocale}
         onClose={() => setShowTemplateSaveModal(false)}
         onSaved={onBlocksChange}
       />
@@ -715,11 +726,13 @@ function BlockNode({
 export default function BlockTree({
   blocks,
   projectId,
+  projectLocale,
   selectedBlockId,
   onSelectBlock,
   onBlocksChange,
   editable = true,
 }: BlockTreeProps) {
+  const isJa = useUiIsJa(projectLocale);
   const [dragSource, setDragSource] = useState<ContentBlock | null>(null);
   const [dragTarget, setDragTarget] = useState<{
     blockId: string;
@@ -753,7 +766,7 @@ export default function BlockTree({
       onBlocksChange?.();
     } catch (err) {
       console.error("撤回失败:", err);
-      alert("撤回失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "元に戻す操作に失敗しました: " : "撤回失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     } finally {
       setIsUndoing(false);
     }
@@ -812,7 +825,7 @@ export default function BlockTree({
       onBlocksChange?.();
     } catch (err) {
       console.error("移动失败:", err);
-      alert("移动失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "移動に失敗しました: " : "移动失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     } finally {
       setDragSource(null);
       setDragTarget(null);
@@ -844,7 +857,7 @@ export default function BlockTree({
       onBlocksChange?.();
     } catch (err) {
       console.error("从模板添加失败:", err);
-      alert("添加失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "追加に失敗しました: " : "添加失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     } finally {
       setIsApplyingTemplate(false);
     }
@@ -854,7 +867,7 @@ export default function BlockTree({
   const handleAddGroup = async () => {
     try {
       const groupCount = blocks.filter(b => b.block_type === "group").length;
-      const groupName = `新组 ${groupCount + 1}`;
+      const groupName = isJa ? `新しいグループ ${groupCount + 1}` : `新组 ${groupCount + 1}`;
       
       await blockAPI.create({
         project_id: projectId,
@@ -864,7 +877,7 @@ export default function BlockTree({
       onBlocksChange?.();
     } catch (err) {
       console.error("添加组失败:", err);
-      alert("添加失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "追加に失敗しました: " : "添加失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     }
   };
 
@@ -872,18 +885,19 @@ export default function BlockTree({
     try {
       await blockAPI.create({
         project_id: projectId,
-        name: "新内容块",
+        name: isJa ? "新しい内容ブロック" : "新内容块",
         block_type: "field",
       });
       onBlocksChange?.();
     } catch (err) {
       console.error("添加内容块失败:", err);
-      alert("添加失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "追加に失敗しました: " : "添加失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     }
   };
 
   const projectQuickActions = (
     <ProjectQuickActions
+      projectLocale={projectLocale}
       editable={editable}
       variant={blocks.length === 0 ? "empty" : "list"}
       onAddGroup={handleAddGroup}
@@ -904,12 +918,12 @@ export default function BlockTree({
       >
         <div className="px-5 py-4 border-b border-surface-3 flex items-center justify-between">
           <div>
-            <h3 className="font-semibold text-zinc-100">从模板添加内容块</h3>
-            <p className="text-xs text-zinc-500 mt-1">选择一个模板，将内容块添加到当前项目</p>
+            <h3 className="font-semibold text-zinc-100">{isJa ? "テンプレートから内容ブロックを追加" : "从模板添加内容块"}</h3>
+            <p className="text-xs text-zinc-500 mt-1">{isJa ? "テンプレートを選択し、内容ブロックを現在のプロジェクトへ追加します" : "选择一个模板，将内容块添加到当前项目"}</p>
           </div>
           <button
             onClick={() => setShowTemplateModal(false)}
-            aria-label="关闭从模板添加弹窗"
+            aria-label={isJa ? "テンプレート追加ダイアログを閉じる" : "关闭从模板添加弹窗"}
             className="p-1 hover:bg-surface-3 rounded"
           >
             <X className="w-5 h-5 text-zinc-400" />
@@ -918,12 +932,12 @@ export default function BlockTree({
         <div className="p-4 max-h-[60vh] overflow-y-auto">
           {templatesLoading ? (
             <div className="flex items-center justify-center py-8 text-zinc-500">
-              <span className="animate-pulse">加载中...</span>
+              <span className="animate-pulse">{isJa ? "読み込み中..." : "加载中..."}</span>
             </div>
           ) : templates.length === 0 ? (
             <div className="text-center py-8 text-zinc-500">
               <Package className="w-12 h-12 mx-auto mb-3 opacity-50" />
-              <p>暂无内容块模板</p>
+              <p>{isJa ? "内容ブロックテンプレートがありません" : "暂无内容块模板"}</p>
             </div>
           ) : (
             <div className="space-y-3">
@@ -961,7 +975,7 @@ export default function BlockTree({
     blocks.length === 0 ? (
       <div className="flex flex-col items-center justify-center py-12 text-zinc-500">
         <Folder className="w-12 h-12 mb-4 opacity-50" />
-        <p className="text-sm mb-4">暂无内容块</p>
+        <p className="text-sm mb-4">{isJa ? "内容ブロックがありません" : "暂无内容块"}</p>
         {projectQuickActions}
       </div>
     ) : (
@@ -971,16 +985,16 @@ export default function BlockTree({
           <div className="flex items-center gap-2 px-2 py-2 mb-2 bg-amber-500/10 border border-amber-500/30 rounded-lg">
             <Undo2 className="w-4 h-4 text-amber-400" />
             <span className="flex-1 text-sm text-amber-300">
-              已删除「{undoStack[undoStack.length - 1].block_name}」
+              {isJa ? `「${undoStack[undoStack.length - 1].block_name}」を削除しました` : `已删除「${undoStack[undoStack.length - 1].block_name}」`}
               {undoStack[undoStack.length - 1].children_count > 0 &&
-                `（含 ${undoStack[undoStack.length - 1].children_count} 个子项）`}
+                (isJa ? `（子項目 ${undoStack[undoStack.length - 1].children_count} 件を含む）` : `（含 ${undoStack[undoStack.length - 1].children_count} 个子项）`)}
             </span>
             <button
               onClick={handleUndo}
               disabled={isUndoing}
               className="px-3 py-1 text-sm bg-amber-600 hover:bg-amber-700 text-white rounded transition-colors disabled:opacity-50"
             >
-              {isUndoing ? "撤回中..." : "撤回"}
+              {isUndoing ? (isJa ? "復元中..." : "撤回中...") : (isJa ? "元に戻す" : "撤回")}
             </button>
           </div>
         )}
@@ -989,6 +1003,7 @@ export default function BlockTree({
           <BlockNode
             key={block.id}
             block={block}
+              projectLocale={projectLocale}
             level={0}
             selectedBlockId={selectedBlockId}
             onSelectBlock={onSelectBlock}
@@ -1013,6 +1028,7 @@ export default function BlockTree({
       <ProjectContentTreeImportModal
         open={showImportModal}
         projectId={projectId}
+        projectLocale={projectLocale}
         onClose={() => setShowImportModal(false)}
         onImported={onBlocksChange}
       />

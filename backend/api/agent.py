@@ -33,6 +33,8 @@ from core.content_block_reference import (
     list_active_project_blocks,
 )
 from core.database import get_db
+from core.locale_text import rt
+from core.localization import DEFAULT_LOCALE, normalize_locale
 from core.models import (
     Project, ChatMessage, Conversation,
     ContentVersion, AgentMode, generate_uuid,
@@ -82,7 +84,11 @@ def _save_version_before_overwrite(
 
 
 def _resolve_references(
-    db: Session, project_id: str, references: list[str],
+    db: Session,
+    project_id: str,
+    references: list[str],
+    *,
+    locale: str = DEFAULT_LOCALE,
 ) -> dict[str, str]:
     """统一的 @ 引用解析：ContentBlock → 方案JSON
 
@@ -103,12 +109,16 @@ def _resolve_references(
         if ref in result:
             continue
         try:
-            block = find_block_by_identifier(db, project_id, ref)
+            block = find_block_by_identifier(db, project_id, ref, locale=locale)
         except ValueError as exc:
             result[ref] = str(exc)
             continue
         if block:
-            result[ref] = _build_ref_context(block, blocks_by_id=blocks_by_id)
+            result[ref] = _build_ref_context(
+                block,
+                blocks_by_id=blocks_by_id,
+                locale=locale,
+            )
 
     # 2. 方案引用（从 design_inner 阶段块中解析 JSON proposals）
     import re
@@ -144,7 +154,12 @@ def _resolve_references(
     return result
 
 
-def _build_ref_context(entity, *, blocks_by_id: dict[str, ContentBlock] | None = None) -> str:
+def _build_ref_context(
+    entity,
+    *,
+    blocks_by_id: dict[str, ContentBlock] | None = None,
+    locale: str = DEFAULT_LOCALE,
+) -> str:
     """将内容块/字段构建为 Agent 可理解的完整上下文。
 
     包含内容正文、AI 提示词和状态信息，确保即使内容为空时
@@ -156,19 +171,19 @@ def _build_ref_context(entity, *, blocks_by_id: dict[str, ContentBlock] | None =
     status = getattr(entity, "status", "") or ""
     reference_label = build_block_reference_label(entity, blocks_by_id=blocks_by_id)
 
-    parts.append(f"[引用目标] {reference_label}")
+    parts.append(rt(locale, "agent.reference_context.target", label=reference_label))
 
     if content.strip():
         parts.append(content)
     else:
-        parts.append("（此内容块尚无正文内容）")
+        parts.append(rt(locale, "agent.reference_context.empty_content"))
 
     if ai_prompt.strip():
         # 截取 AI 提示词的前 1000 字，避免过长
-        parts.append(f"\n[该内容块的 AI 提示词配置]\n{ai_prompt[:1000]}")
+        parts.append(f"\n{rt(locale, 'agent.reference_context.ai_prompt')}\n{ai_prompt[:1000]}")
 
     if status:
-        parts.append(f"\n[状态: {status}]")
+        parts.append(f"\n{rt(locale, 'agent.reference_context.status', status=status)}")
 
     return "\n".join(parts)
 
@@ -223,6 +238,7 @@ def _resolve_project_mode(
     project_id: str,
     mode_id: Optional[str] = None,
     mode_name: Optional[str] = None,
+    locale: str = DEFAULT_LOCALE,
 ) -> AgentMode:
     """解析当前项目的运行时角色。运行时只接受项目角色，不直接消费模板。"""
     mode: Optional[AgentMode] = None
@@ -253,15 +269,15 @@ def _resolve_project_mode(
     if not mode:
         raise HTTPException(
             status_code=400,
-            detail="当前项目尚未配置 Agent 角色，请先在右侧面板创建角色或导入模板。",
+            detail=rt(locale, "agent.mode.missing"),
         )
     return mode
 
 
-def _derive_conversation_title(message: str) -> str:
+def _derive_conversation_title(message: str, *, locale: str = DEFAULT_LOCALE) -> str:
     title = (message or "").strip()
     if not title:
-        return "新会话"
+        return rt(locale, "agent.conversation.default_title")
     return title[:40]
 
 
@@ -302,6 +318,7 @@ def _get_or_create_conversation(
     mode_label: str,
     conversation_id: Optional[str] = None,
     seed_message: str = "",
+    locale: str = DEFAULT_LOCALE,
 ) -> Conversation:
     """
     解析会话 ID，不存在时回退最近活跃会话或创建新会话。
@@ -333,7 +350,7 @@ def _get_or_create_conversation(
         project_id=project_id,
         mode_id=mode_id,
         mode=mode_label,
-        title=_derive_conversation_title(seed_message),
+        title=_derive_conversation_title(seed_message, locale=locale),
         status="active",
         bootstrap_policy="memory_only",
         last_message_at=datetime.now(),
@@ -472,13 +489,23 @@ def create_conversation(
     request: CreateConversationRequest,
     db: Session = Depends(get_db),
 ):
-    resolved_mode = _resolve_project_mode(db, request.project_id, request.mode_id, request.mode)
+    project = db.query(Project).filter(Project.id == request.project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    project_locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
+    resolved_mode = _resolve_project_mode(
+        db,
+        request.project_id,
+        request.mode_id,
+        request.mode,
+        locale=project_locale,
+    )
     conv = Conversation(
         id=generate_uuid(),
         project_id=request.project_id,
         mode_id=resolved_mode.id,
         mode=resolved_mode.display_name,
-        title=(request.title or "").strip() or "新会话",
+        title=(request.title or "").strip() or rt(project_locale, "agent.conversation.default_title"),
         status="active",
         bootstrap_policy=request.bootstrap_policy or "memory_only",
         last_message_at=None,
@@ -604,9 +631,16 @@ async def chat(
     project = db.query(Project).filter(Project.id == request.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    project_locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
 
     current_phase = request.current_phase or RUNTIME_SCOPE
-    resolved_mode = _resolve_project_mode(db, request.project_id, request.mode_id, request.mode)
+    resolved_mode = _resolve_project_mode(
+        db,
+        request.project_id,
+        request.mode_id,
+        request.mode,
+        locale=project_locale,
+    )
     mode_id = resolved_mode.id
     mode_label = resolved_mode.display_name
     mode_prompt = resolved_mode.system_prompt
@@ -617,6 +651,7 @@ async def chat(
         mode_label=mode_label,
         conversation_id=request.conversation_id,
         seed_message=request.message,
+        locale=project_locale,
     )
 
     # 保存用户消息
@@ -640,7 +675,7 @@ async def chat(
 
     creator_profile_str = ""
     if project.creator_profile:
-        creator_profile_str = project.creator_profile.to_prompt_context()
+        creator_profile_str = project.creator_profile.to_prompt_context(locale=project_locale)
 
     try:
         # M2+M3: 加载项目记忆
@@ -656,6 +691,7 @@ async def chat(
         state = {
             "messages": [HumanMessage(content=request.message)],
             "project_id": request.project_id,
+            "project_locale": project_locale,
             "current_handler": current_phase,
             "creator_profile": creator_profile_str,
             "mode": mode_id,
@@ -678,16 +714,17 @@ async def chat(
     except asyncio.TimeoutError:
         error_msg = ChatMessage(
             id=generate_uuid(), project_id=request.project_id,
-            role="assistant", content="⚠️ 处理超时，请稍后重试。",
+            role="assistant", content=rt(project_locale, "agent.error.timeout_message"),
             message_metadata={"phase": current_phase, "mode": mode_id, "mode_id": mode_id, "mode_label": mode_label, "error": "timeout"},
         )
         db.add(error_msg)
         db.commit()
-        return JSONResponse(status_code=504, content={"detail": "Agent 处理超时"})
+        return JSONResponse(status_code=504, content={"detail": rt(project_locale, "agent.error.timeout_detail")})
     except Exception as agent_err:
         error_msg = ChatMessage(
             id=generate_uuid(), project_id=request.project_id,
-            role="assistant", content=f"⚠️ 处理失败: {str(agent_err)[:200]}",
+            role="assistant",
+            content=rt(project_locale, "agent.error.failed_prefix", message=str(agent_err)[:200]),
             message_metadata={"phase": current_phase, "mode": mode_id, "mode_id": mode_id, "mode_label": mode_label, "error": str(agent_err)[:200]},
         )
         db.add(error_msg)
@@ -770,10 +807,11 @@ async def retry_message(
     project = db.query(Project).filter(Project.id == user_msg.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    project_locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
 
     creator_profile_str = ""
     if project.creator_profile:
-        creator_profile_str = project.creator_profile.to_prompt_context()
+        creator_profile_str = project.creator_profile.to_prompt_context(locale=project_locale)
 
     current_phase = (
         user_msg.message_metadata.get("phase", RUNTIME_SCOPE)
@@ -791,7 +829,13 @@ async def retry_message(
         or (msg.message_metadata or {}).get("mode")
         or (user_msg.message_metadata or {}).get("mode")
     )
-    resolved_mode = _resolve_project_mode(db, user_msg.project_id, mode_id, legacy_mode)
+    resolved_mode = _resolve_project_mode(
+        db,
+        user_msg.project_id,
+        mode_id,
+        legacy_mode,
+        locale=project_locale,
+    )
     mode_id = resolved_mode.id
     mode_label = resolved_mode.display_name
     conversation = _get_or_create_conversation(
@@ -801,6 +845,7 @@ async def retry_message(
         mode_label=mode_label,
         conversation_id=msg.conversation_id or user_msg.conversation_id,
         seed_message=user_msg.content,
+        locale=project_locale,
     )
 
     mode_prompt = resolved_mode.system_prompt
@@ -820,6 +865,7 @@ async def retry_message(
     state = {
         "messages": [HumanMessage(content=user_msg.content)],
         "project_id": user_msg.project_id,
+        "project_locale": project_locale,
         "current_handler": current_phase,
         "creator_profile": creator_profile_str,
         "mode": mode_id,
@@ -881,22 +927,30 @@ async def call_tool(
     project = db.query(Project).filter(Project.id == request.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    resolved_mode = _resolve_project_mode(db, request.project_id)
+    project_locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
+    resolved_mode = _resolve_project_mode(db, request.project_id, locale=project_locale)
     conversation = _get_or_create_conversation(
         db=db,
         project_id=request.project_id,
         mode_id=resolved_mode.id,
         mode_label=resolved_mode.display_name,
-        seed_message=f"调用工具: {request.tool_name}",
+        seed_message=rt(project_locale, "agent.tool.seed_message", tool_name=request.tool_name),
+        locale=project_locale,
     )
 
     # 查找工具
     tool_map = {t.name: t for t in AGENT_TOOLS}
     tool_fn = tool_map.get(request.tool_name)
     if not tool_fn:
+        available_tools = ", ".join(tool_map.keys())
         raise HTTPException(
             status_code=400,
-            detail=f"Unknown tool: {request.tool_name}. Available: {list(tool_map.keys())}",
+            detail=rt(
+                project_locale,
+                "agent.tool.unknown",
+                tool_name=request.tool_name,
+                available=available_tools,
+            ),
         )
 
     user_msg = ChatMessage(
@@ -904,7 +958,7 @@ async def call_tool(
         project_id=request.project_id,
         conversation_id=conversation.id,
         role="user",
-        content=f"调用工具: {request.tool_name}",
+        content=rt(project_locale, "agent.tool.seed_message", tool_name=request.tool_name),
         message_metadata={
             "phase": RUNTIME_SCOPE,
             "mode": resolved_mode.id,
@@ -932,7 +986,7 @@ async def call_tool(
     except Exception as e:
         import traceback
         traceback.print_exc()
-        output = f"工具执行失败: {str(e)}"
+        output = rt(project_locale, "agent.tool.failed", message=str(e))
 
     agent_msg = ChatMessage(
         id=generate_uuid(),
@@ -994,11 +1048,18 @@ async def stream_chat(
     project = db.query(Project).filter(Project.id == request.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    project_locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
 
     current_phase = request.current_phase or RUNTIME_SCOPE
 
     # ---- 解析当前项目角色（运行时只接受项目角色实例） ----
-    resolved_mode = _resolve_project_mode(db, request.project_id, request.mode_id, request.mode)
+    resolved_mode = _resolve_project_mode(
+        db,
+        request.project_id,
+        request.mode_id,
+        request.mode,
+        locale=project_locale,
+    )
     mode_id = resolved_mode.id
     mode_label = resolved_mode.display_name
     mode_prompt = resolved_mode.system_prompt
@@ -1009,6 +1070,7 @@ async def stream_chat(
         mode_label=mode_label,
         conversation_id=request.conversation_id,
         seed_message=request.message,
+        locale=project_locale,
     )
 
     # ---- 保存用户消息 ----
@@ -1044,13 +1106,19 @@ async def stream_chat(
     # 处理 @ 引用：将引用内容追加到用户消息
     augmented_message = request.message
     if request.references:
-        ref_contents = _resolve_references(db, request.project_id, request.references)
+        ref_contents = _resolve_references(
+            db,
+            request.project_id,
+            request.references,
+            locale=project_locale,
+        )
         if ref_contents:
             ref_text = "\n".join(
-                f"【{name}】\n{content[:2000]}" for name, content in ref_contents.items()
+                f"{rt(project_locale, 'agent.references.block_item', name=name)}\n{content[:2000]}"
+                for name, content in ref_contents.items()
             )
             augmented_message = (
-                f"{request.message}\n\n---\n以下是用户引用的内容块：\n{ref_text}"
+                f"{request.message}\n\n---\n{rt(project_locale, 'agent.references.user_header')}\n{ref_text}"
             )
 
     # B: 选中文字引用上下文 — 叠加到 augmented_message，不替换已有上下文
@@ -1062,12 +1130,12 @@ async def stream_chat(
         if block and block.content:
             block_full_content = block.content[:3000]  # 防止超长
         selection_section = (
-            f"\n\n---\n[引用上下文]\n"
-            f"用户在内容块「{sc.block_name}」中选中了以下内容：\n"
+            f"\n\n---\n{rt(project_locale, 'agent.references.selection_header')}\n"
+            f"{rt(project_locale, 'agent.references.selected_text', block_name=sc.block_name)}\n"
             f"---\n{sc.selected_text}\n---\n"
         )
         if block_full_content:
-            selection_section += f"该内容块完整内容：\n{block_full_content}\n"
+            selection_section += f"{rt(project_locale, 'agent.references.full_block')}\n{block_full_content}\n"
         augmented_message += selection_section
 
     # Checkpointer 配置 + LLM 日志回调
@@ -1100,7 +1168,7 @@ async def stream_chat(
     # 构建 AgentState
     creator_profile_str = ""
     if project.creator_profile:
-        creator_profile_str = project.creator_profile.to_prompt_context()
+        creator_profile_str = project.creator_profile.to_prompt_context(locale=project_locale)
 
     # M2+M3: 加载项目记忆（超阈值时 LLM 预筛选）
     from core.memory_service import load_memory_context_async
@@ -1117,6 +1185,7 @@ async def stream_chat(
     input_state = {
         "messages": input_messages,
         "project_id": request.project_id,
+        "project_locale": project_locale,
         "current_handler": current_phase,
         "creator_profile": creator_profile_str,
         "mode": mode_id,
@@ -1971,49 +2040,55 @@ async def inline_edit(
     from core.edit_engine import generate_revision_markdown
     from langchain_core.messages import SystemMessage, HumanMessage
 
+    locale = DEFAULT_LOCALE
+    project = None
+    if request.project_id:
+        project = db.query(Project).filter(Project.id == request.project_id).first()
+        if project:
+            locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
+
     if not request.text.strip():
-        raise HTTPException(status_code=400, detail="未选中任何文本")
+        raise HTTPException(status_code=400, detail=rt(locale, "inline_edit.empty_text"))
 
     # 根据操作类型构建 prompt
     operation_prompts = {
-        "rewrite": "改写以下文本，使其更清晰、更专业，保持原意不变。",
-        "expand": "扩展以下文本，增加更多细节和论证，使其更加丰富和有说服力。",
-        "condense": "精简以下文本，保留核心信息，去除冗余，使其更加简洁有力。",
+        "rewrite": rt(locale, "inline_edit.operation.rewrite"),
+        "expand": rt(locale, "inline_edit.operation.expand"),
+        "condense": rt(locale, "inline_edit.operation.condense"),
     }
 
     if request.operation == "custom":
         if not request.custom_instruction.strip():
-            raise HTTPException(status_code=400, detail="自定义修改指令不能为空")
+            raise HTTPException(status_code=400, detail=rt(locale, "inline_edit.empty_instruction"))
         instruction = request.custom_instruction.strip()
     else:
         instruction = operation_prompts.get(request.operation)
         if not instruction:
             raise HTTPException(
                 status_code=400,
-                detail=f"不支持的操作: {request.operation}。可选: rewrite, expand, condense, custom",
+                detail=rt(locale, "inline_edit.unsupported_operation", operation=request.operation),
             )
 
     # 可选: 加载 creator_profile 增强风格一致性
     creator_context = ""
-    if request.project_id:
-        project = db.query(Project).filter(Project.id == request.project_id).first()
-        if project and project.creator_profile:
-            creator_context = f"\n\n创作者风格参考：\n{project.creator_profile.to_prompt_context()}"
+    if project and project.creator_profile:
+        creator_context = rt(
+            locale,
+            "inline_edit.creator_context",
+            creator_profile=project.creator_profile.to_prompt_context(locale=locale),
+        )
 
-    system = (
-        f"你是一个专业的中文内容编辑。请{instruction}\n\n"
-        "规则：\n"
-        "- 只输出修改后的文本，不要添加任何解释、标注或注释\n"
-        "- 保持原文的格式（Markdown 标题级别、列表样式等）\n"
-        "- 如果提供了上下文，参考上下文保持风格和术语一致性\n"
-        "- 不要输出引号包裹结果"
-        f"{creator_context}"
+    system = rt(
+        locale,
+        "inline_edit.system",
+        instruction=instruction,
+        creator_context=creator_context,
     )
 
     if request.context:
-        user_content = f"上下文（仅供参考，不要修改）：\n{request.context}\n\n---\n需要修改的文本：\n{request.text}"
+        user_content = rt(locale, "inline_edit.user_with_context", context=request.context, text=request.text)
     else:
-        user_content = f"需要修改的文本：\n{request.text}"
+        user_content = rt(locale, "inline_edit.user_without_context", text=request.text)
 
     try:
         response = await llm_mini.ainvoke([
@@ -2023,7 +2098,10 @@ async def inline_edit(
         replacement = normalize_content(response.content).strip()
     except Exception as e:
         logger.error("[inline-edit] LLM 调用失败: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"AI 处理失败: {str(e)[:200]}")
+        raise HTTPException(
+            status_code=500,
+            detail=rt(locale, "inline_edit.failed", message=str(e)[:200]),
+        )
 
     diff_preview = generate_revision_markdown(request.text, replacement)
 

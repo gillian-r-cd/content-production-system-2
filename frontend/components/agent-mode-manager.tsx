@@ -8,11 +8,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { modesAPI } from "@/lib/api";
 import type { AgentModeInfo } from "@/lib/api";
+import { useUiIsJa } from "@/lib/ui-locale";
 import { sendNotification } from "@/lib/utils";
 import { ArrowDown, ArrowUp, Pencil, Plus, Trash2, X } from "lucide-react";
 
 interface AgentModeManagerProps {
   projectId: string;
+  projectLocale?: string | null;
   activeModeId: string | null;
   onSelectMode: (modeId: string) => void;
   onClose: () => void;
@@ -35,11 +37,13 @@ const EMPTY_DRAFT: ModeDraft = {
 
 export function AgentModeManager({
   projectId,
+  projectLocale,
   activeModeId,
   onSelectMode,
   onClose,
   onChanged,
 }: AgentModeManagerProps) {
+  const isJa = useUiIsJa(projectLocale);
   const [modes, setModes] = useState<AgentModeInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -61,7 +65,7 @@ export function AgentModeManager({
       onChangedRef.current?.(modeRows);
     } catch (err) {
       console.error("Failed to load agent modes:", err);
-      sendNotification("加载角色列表失败", "error");
+      sendNotification(isJa ? "役割一覧の読み込みに失敗しました" : "加载角色列表失败", "error");
     } finally {
       setLoading(false);
     }
@@ -112,11 +116,11 @@ export function AgentModeManager({
 
   const handleSave = async () => {
     if (!draft.display_name.trim()) {
-      sendNotification("角色名称不能为空", "error");
+      sendNotification(isJa ? "役割名は必須です" : "角色名称不能为空", "error");
       return;
     }
     if (!draft.system_prompt.trim()) {
-      sendNotification("角色提示词不能为空", "error");
+      sendNotification(isJa ? "役割プロンプトは必須です" : "角色提示词不能为空", "error");
       return;
     }
 
@@ -129,7 +133,7 @@ export function AgentModeManager({
           icon: draft.icon.trim() || "🤖",
           system_prompt: draft.system_prompt.trim(),
         });
-        sendNotification("角色已更新", "success");
+        sendNotification(isJa ? "役割を更新しました" : "角色已更新", "success");
         await reloadAndSelect(editingModeId);
       } else {
         const created = await modesAPI.create({
@@ -139,24 +143,24 @@ export function AgentModeManager({
           icon: draft.icon.trim() || "🤖",
           system_prompt: draft.system_prompt.trim(),
         });
-        sendNotification("角色已创建", "success");
+        sendNotification(isJa ? "役割を作成しました" : "角色已创建", "success");
         await reloadAndSelect(created.id);
       }
       resetDraft();
     } catch (err) {
       console.error("Failed to save agent mode:", err);
-      sendNotification("保存角色失败", "error");
+      sendNotification(isJa ? "役割の保存に失敗しました" : "保存角色失败", "error");
     } finally {
       setSaving(false);
     }
   };
 
   const handleDelete = async (mode: AgentModeInfo) => {
-    if (!confirm(`确定删除角色「${mode.display_name}」？`)) return;
+    if (!confirm(isJa ? `役割「${mode.display_name}」を削除しますか？` : `确定删除角色「${mode.display_name}」？`)) return;
     try {
       setSaving(true);
       await modesAPI.delete(mode.id);
-      sendNotification("角色已删除", "success");
+      sendNotification(isJa ? "役割を削除しました" : "角色已删除", "success");
       const fallbackId = activeModeId === mode.id ? null : activeModeId;
       await reloadAndSelect(fallbackId);
       if (editingModeId === mode.id) {
@@ -164,7 +168,7 @@ export function AgentModeManager({
       }
     } catch (err) {
       console.error("Failed to delete agent mode:", err);
-      sendNotification("删除角色失败", "error");
+      sendNotification(isJa ? "役割の削除に失敗しました" : "删除角色失败", "error");
     } finally {
       setSaving(false);
     }
@@ -186,7 +190,7 @@ export function AgentModeManager({
       await reloadAndSelect(activeModeId);
     } catch (err) {
       console.error("Failed to reorder agent modes:", err);
-      sendNotification("调整角色顺序失败", "error");
+      sendNotification(isJa ? "役割順の調整に失敗しました" : "调整角色顺序失败", "error");
     } finally {
       setSaving(false);
     }
@@ -198,9 +202,9 @@ export function AgentModeManager({
       const result = await modesAPI.importTemplates(projectId);
       const importedCount = result.imported?.length || 0;
       if (importedCount === 0) {
-        sendNotification("没有可导入的新模板", "success");
+        sendNotification(isJa ? "新たに取り込めるテンプレートはありません" : "没有可导入的新模板", "success");
       } else {
-        sendNotification(`已导入 ${importedCount} 个默认角色`, "success");
+        sendNotification(isJa ? `${importedCount} 件の既定役割を取り込みました` : `已导入 ${importedCount} 个默认角色`, "success");
       }
       const refreshed = await reloadAndSelect(activeModeId);
       if (!editingModeId && refreshed.length > 0) {
@@ -210,9 +214,9 @@ export function AgentModeManager({
       console.error("Failed to import templates:", err);
       const message = err instanceof Error ? err.message : "";
       if (message.includes("No templates found")) {
-        sendNotification("当前没有可导入的默认模板", "error");
+        sendNotification(isJa ? "取り込める既定テンプレートがありません" : "当前没有可导入的默认模板", "error");
       } else {
-        sendNotification("导入模板失败", "error");
+        sendNotification(isJa ? "テンプレートの取り込みに失敗しました" : "导入模板失败", "error");
       }
     } finally {
       setSaving(false);
@@ -231,9 +235,9 @@ export function AgentModeManager({
       >
       <div className="border-b border-surface-3 px-5 py-4 flex items-center justify-between">
         <div>
-          <h2 className="font-semibold text-zinc-100">Agent 角色</h2>
+          <h2 className="font-semibold text-zinc-100">{isJa ? "Agent 役割" : "Agent 角色"}</h2>
           <p className="text-xs text-zinc-500 mt-0.5">
-            角色名称和提示词由当前项目维护，简介为可选项
+            {isJa ? "役割名とプロンプトはこのプロジェクトで管理します。説明は任意です。" : "角色名称和提示词由当前项目维护，简介为可选项"}
           </p>
         </div>
         <button
@@ -251,17 +255,17 @@ export function AgentModeManager({
           className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand-600 text-white text-sm hover:bg-brand-500 disabled:opacity-50 transition"
         >
           <Plus size={14} />
-          <span>新建角色</span>
+          <span>{isJa ? "役割を新規作成" : "新建角色"}</span>
         </button>
         <button
           onClick={handleImportTemplates}
           disabled={saving || loading}
           className="px-3 py-1.5 rounded-lg border border-surface-3 text-sm text-zinc-300 hover:bg-surface-2 disabled:opacity-50 transition"
         >
-          导入默认模板
+          {isJa ? "既定テンプレートを取り込む" : "导入默认模板"}
         </button>
         {loading && (
-          <span className="text-xs text-zinc-500">正在加载角色配置...</span>
+          <span className="text-xs text-zinc-500">{isJa ? "役割設定を読み込み中..." : "正在加载角色配置..."}</span>
         )}
       </div>
 
@@ -269,12 +273,12 @@ export function AgentModeManager({
         <div className="border-r border-surface-3 overflow-y-auto p-3 space-y-2">
           {loading ? (
             <div className="h-full flex items-center justify-center text-sm text-zinc-500">
-              加载中...
+              {isJa ? "読み込み中..." : "加载中..."}
             </div>
           ) : !hasModes ? (
             <div className="h-full flex flex-col items-center justify-center text-center text-zinc-500 px-4">
-              <p className="text-sm text-zinc-300">当前项目还没有角色</p>
-              <p className="text-xs mt-1">可以新建角色，或先导入默认模板后再修改。</p>
+              <p className="text-sm text-zinc-300">{isJa ? "このプロジェクトにはまだ役割がありません" : "当前项目还没有角色"}</p>
+              <p className="text-xs mt-1">{isJa ? "役割を新規作成するか、既定テンプレートを取り込んでから編集できます。" : "可以新建角色，或先导入默认模板后再修改。"}</p>
             </div>
           ) : (
             modes.map((mode, index) => (
@@ -304,7 +308,7 @@ export function AgentModeManager({
                       onClick={() => moveMode(mode.id, -1)}
                       disabled={saving || index === 0}
                       className="p-1 rounded text-zinc-500 hover:text-zinc-300 hover:bg-surface-1 disabled:opacity-40 transition"
-                      title="上移"
+                      title={isJa ? "上へ移動" : "上移"}
                     >
                       <ArrowUp size={14} />
                     </button>
@@ -312,14 +316,14 @@ export function AgentModeManager({
                       onClick={() => moveMode(mode.id, 1)}
                       disabled={saving || index === modes.length - 1}
                       className="p-1 rounded text-zinc-500 hover:text-zinc-300 hover:bg-surface-1 disabled:opacity-40 transition"
-                      title="下移"
+                      title={isJa ? "下へ移動" : "下移"}
                     >
                       <ArrowDown size={14} />
                     </button>
                     <button
                       onClick={() => startEdit(mode)}
                       className="p-1 rounded text-zinc-500 hover:text-zinc-300 hover:bg-surface-1 transition"
-                      title="编辑"
+                      title={isJa ? "編集" : "编辑"}
                     >
                       <Pencil size={14} />
                     </button>
@@ -327,7 +331,7 @@ export function AgentModeManager({
                       onClick={() => handleDelete(mode)}
                       disabled={saving}
                       className="p-1 rounded text-zinc-500 hover:text-red-400 hover:bg-surface-1 disabled:opacity-40 transition"
-                      title="删除"
+                      title={isJa ? "削除" : "删除"}
                     >
                       <Trash2 size={14} />
                     </button>
@@ -342,36 +346,36 @@ export function AgentModeManager({
           <div className="max-w-3xl space-y-4">
             <div>
               <h3 className="text-sm font-medium text-zinc-100">
-                {editingMode ? `编辑角色：${editingMode.display_name}` : "新建角色"}
+                {editingMode ? (isJa ? `役割を編集: ${editingMode.display_name}` : `编辑角色：${editingMode.display_name}`) : (isJa ? "役割を新規作成" : "新建角色")}
               </h3>
               <p className="text-xs text-zinc-500 mt-1">
-                必填：角色名称、角色提示词。可选：角色简介、图标。
+                {isJa ? "必須: 役割名、役割プロンプト。任意: 役割説明、アイコン。" : "必填：角色名称、角色提示词。可选：角色简介、图标。"}
               </p>
             </div>
 
             <div className="grid gap-4">
               <label className="block">
-                <span className="block text-xs text-zinc-400 mb-1.5">角色名称</span>
+                <span className="block text-xs text-zinc-400 mb-1.5">{isJa ? "役割名" : "角色名称"}</span>
                 <input
                   value={draft.display_name}
                   onChange={(e) => setDraft((prev) => ({ ...prev, display_name: e.target.value }))}
                   className="w-full px-3 py-2 bg-surface-2 border border-surface-3 rounded-lg text-zinc-100 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
-                  placeholder="例如：增长教练"
+                  placeholder={isJa ? "例: グロースコーチ" : "例如：增长教练"}
                 />
               </label>
 
               <label className="block">
-                <span className="block text-xs text-zinc-400 mb-1.5">角色简介（可选）</span>
+                <span className="block text-xs text-zinc-400 mb-1.5">{isJa ? "役割説明（任意）" : "角色简介（可选）"}</span>
                 <input
                   value={draft.description}
                   onChange={(e) => setDraft((prev) => ({ ...prev, description: e.target.value }))}
                   className="w-full px-3 py-2 bg-surface-2 border border-surface-3 rounded-lg text-zinc-100 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
-                  placeholder="一句话说明这个角色的用途"
+                  placeholder={isJa ? "この役割の用途を一言で説明" : "一句话说明这个角色的用途"}
                 />
               </label>
 
               <label className="block">
-                <span className="block text-xs text-zinc-400 mb-1.5">图标（可选）</span>
+                <span className="block text-xs text-zinc-400 mb-1.5">{isJa ? "アイコン（任意）" : "图标（可选）"}</span>
                 <input
                   value={draft.icon}
                   onChange={(e) => setDraft((prev) => ({ ...prev, icon: e.target.value }))}
@@ -381,13 +385,13 @@ export function AgentModeManager({
               </label>
 
               <label className="block">
-                <span className="block text-xs text-zinc-400 mb-1.5">角色提示词</span>
+                <span className="block text-xs text-zinc-400 mb-1.5">{isJa ? "役割プロンプト" : "角色提示词"}</span>
                 <textarea
                   value={draft.system_prompt}
                   onChange={(e) => setDraft((prev) => ({ ...prev, system_prompt: e.target.value }))}
                   rows={14}
                   className="w-full px-3 py-2 bg-surface-2 border border-surface-3 rounded-lg text-zinc-100 text-sm resize-y focus:outline-none focus:ring-2 focus:ring-brand-500"
-                  placeholder="定义这个角色如何理解任务、如何说话、应该优先关注什么。"
+                  placeholder={isJa ? "この役割がタスクをどう理解し、どう話し、何を優先するかを定義してください。" : "定义这个角色如何理解任务、如何说话、应该优先关注什么。"}
                 />
               </label>
             </div>
@@ -398,14 +402,14 @@ export function AgentModeManager({
                 disabled={saving}
                 className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm hover:bg-brand-500 disabled:opacity-50 transition"
               >
-                {saving ? "保存中..." : editingMode ? "保存修改" : "创建角色"}
+                {saving ? (isJa ? "保存中..." : "保存中...") : editingMode ? (isJa ? "変更を保存" : "保存修改") : (isJa ? "役割を作成" : "创建角色")}
               </button>
               <button
                 onClick={resetDraft}
                 disabled={saving}
                 className="px-4 py-2 rounded-lg border border-surface-3 text-sm text-zinc-300 hover:bg-surface-2 disabled:opacity-50 transition"
               >
-                重置
+                {isJa ? "リセット" : "重置"}
               </button>
             </div>
           </div>

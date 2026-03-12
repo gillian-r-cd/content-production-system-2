@@ -15,7 +15,8 @@ from pathlib import Path
 # 确保可以导入core模块
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.database import Base, get_engine, get_session_maker
+from core.database import Base, ensure_compat_schema, get_engine, get_session_maker
+from core.localization import DEFAULT_LOCALE, normalize_locale
 from core.models import (
     CreatorProfile,
     FieldTemplate,
@@ -35,59 +36,39 @@ from core.models.field_template import (
     EVAL_TEMPLATE_V2_CATEGORY,
     EVAL_TEMPLATE_V2_FIELDS,
 )
+from core.template_schema import normalize_field_template_payload
+
+
+def _stable_key(value: str) -> str:
+    return (value or "").strip()
+
+
+def _template_mode_name(stable_key: str, locale: str) -> str:
+    normalized_locale = normalize_locale(locale).lower().replace("-", "_")
+    return f"{_stable_key(stable_key) or 'agent_mode'}__{normalized_locale}"
+
+
+def _upsert_locale_asset(db, model, *, stable_key: str, locale: str, create_kwargs: dict):
+    row = db.query(model).filter(
+        model.stable_key == stable_key,
+        model.locale == locale,
+    ).first()
+    if row:
+        for key, value in create_kwargs.items():
+            if key in {"id", "created_at", "updated_at"}:
+                continue
+            setattr(row, key, value)
+        return False
+    db.add(model(**create_kwargs))
+    return True
 
 
 def _migrate_add_columns():
     """
-    增量迁移：为已有表添加新列（M5 模型选择功能）。
-    使用 ALTER TABLE ... ADD COLUMN，SQLite 不支持 IF NOT EXISTS，
-    所以通过 try/except 忽略 "duplicate column name" 错误。
+    增量迁移：复用启动入口同一套兼容迁移，避免脚本和运行时分叉。
     """
-    from sqlalchemy import text
-
     engine = get_engine()
-    migrations = [
-        # M5: AgentSettings 新增 default_model / default_mini_model
-        ("agent_settings", "default_model", "VARCHAR(100)"),
-        ("agent_settings", "default_mini_model", "VARCHAR(100)"),
-        # M5: ContentBlock 新增 model_override
-        ("content_blocks", "model_override", "VARCHAR(100)"),
-        # auto_generate: 是否自动生成（依赖就绪时自动触发 AI 生成，默认 False）
-        ("content_blocks", "auto_generate", "BOOLEAN DEFAULT 0"),
-        ("content_blocks", "guidance_input", "TEXT DEFAULT ''"),
-        ("content_blocks", "guidance_output", "TEXT DEFAULT ''"),
-        ("field_templates", "schema_version", "INTEGER DEFAULT 1"),
-        ("field_templates", "root_nodes", "JSON"),
-        ("agent_modes", "project_id", "VARCHAR(36)"),
-        ("agent_modes", "is_template", "BOOLEAN DEFAULT 0"),
-        ("conversations", "mode_id", "VARCHAR(36)"),
-        ("memory_items", "source_mode_id", "VARCHAR(36)"),
-    ]
-
-    with engine.connect() as conn:
-        for table, column, col_type in migrations:
-            try:
-                conn.execute(text(
-                    f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"
-                ))
-                conn.commit()
-                print(f"  - 迁移: {table}.{column} 已添加")
-            except Exception as e:
-                # SQLite: "duplicate column name" 表示列已存在，跳过
-                if "duplicate column" in str(e).lower():
-                    pass
-                else:
-                    print(f"  - 迁移警告 {table}.{column}: {e}")
-        try:
-            conn.execute(text(
-                "UPDATE agent_modes "
-                "SET is_template = 1 "
-                "WHERE project_id IS NULL AND is_system = 1 AND (is_template IS NULL OR is_template = 0)"
-            ))
-            conn.commit()
-            print("  - 迁移: 旧系统角色已回填为模板")
-        except Exception as e:
-            print(f"  - 迁移警告 agent_modes legacy templates: {e}")
+    ensure_compat_schema(engine)
 
 
 def init_database():
@@ -116,6 +97,8 @@ def seed_default_data():
             profiles = [
                 CreatorProfile(
                     name="专业严谨型",
+                    stable_key="professional_rigorous",
+                    locale=DEFAULT_LOCALE,
                     description="适合B2B、技术类、专业培训内容",
                     traits={
                         "tone": "专业、权威、严谨",
@@ -126,6 +109,8 @@ def seed_default_data():
                 ),
                 CreatorProfile(
                     name="亲和幽默型",
+                    stable_key="warm_humorous",
+                    locale=DEFAULT_LOCALE,
                     description="适合C端、生活类、轻松话题内容",
                     traits={
                         "tone": "轻松、幽默、接地气",
@@ -136,6 +121,8 @@ def seed_default_data():
                 ),
                 CreatorProfile(
                     name="故事驱动型",
+                    stable_key="story_driven",
+                    locale=DEFAULT_LOCALE,
                     description="适合品牌叙事、案例分享、情感营销",
                     traits={
                         "tone": "叙事性强、画面感丰富",
@@ -154,6 +141,8 @@ def seed_default_data():
                 SystemPrompt(
                     id=generate_uuid(),
                     name="意图分析提示词",
+                    stable_key="intent",
+                    locale=DEFAULT_LOCALE,
                     phase="intent",
                     content="""你是一个专业的内容策略顾问。你的任务是帮助用户澄清内容生产的核心意图。
 
@@ -168,6 +157,8 @@ def seed_default_data():
                 SystemPrompt(
                     id=generate_uuid(),
                     name="消费者调研提示词",
+                    stable_key="research",
+                    locale=DEFAULT_LOCALE,
                     phase="research",
                     content="""你是一个专业的用户研究专家。基于项目意图，你需要：
 
@@ -181,6 +172,8 @@ def seed_default_data():
                 SystemPrompt(
                     id=generate_uuid(),
                     name="内涵设计提示词",
+                    stable_key="design_inner",
+                    locale=DEFAULT_LOCALE,
                     phase="design_inner",
                     content="""你是一个资深的内容架构师。基于意图分析和消费者调研结果，你需要：
 
@@ -195,6 +188,8 @@ def seed_default_data():
                 SystemPrompt(
                     id=generate_uuid(),
                     name="内涵生产提示词",
+                    stable_key="produce_inner",
+                    locale=DEFAULT_LOCALE,
                     phase="produce_inner",
                     content="""你是一个专业的内容创作者。基于内涵设计的方案和大纲，你需要：
 
@@ -209,6 +204,8 @@ def seed_default_data():
                 SystemPrompt(
                     id=generate_uuid(),
                     name="外延设计提示词",
+                    stable_key="design_outer",
+                    locale=DEFAULT_LOCALE,
                     phase="design_outer",
                     content="""你是一个全渠道营销策略专家。基于已生产的核心内容，你需要：
 
@@ -223,6 +220,8 @@ def seed_default_data():
                 SystemPrompt(
                     id=generate_uuid(),
                     name="外延生产提示词",
+                    stable_key="produce_outer",
+                    locale=DEFAULT_LOCALE,
                     phase="produce_outer",
                     content="""你是一个多平台内容运营专家。基于外延设计方案，你需要：
 
@@ -237,6 +236,8 @@ def seed_default_data():
                 SystemPrompt(
                     id=generate_uuid(),
                     name="评估提示词",
+                    stable_key="evaluate",
+                    locale=DEFAULT_LOCALE,
                     phase="evaluate",
                     content="""你是一个内容质量评估专家。基于评估模板，你需要：
 
@@ -251,6 +252,8 @@ def seed_default_data():
                 SystemPrompt(
                     id=generate_uuid(),
                     name="AI生成提示词",
+                    stable_key="utility",
+                    locale=DEFAULT_LOCALE,
                     phase="utility",
                     content="""你是一个专业的提示词工程师。用户会告诉你某个字段的目的和需求，你需要为该字段生成一段高质量的 AI 提示词。
 
@@ -301,6 +304,8 @@ def seed_default_data():
             channels = [
                 Channel(
                     name="小红书",
+                    stable_key="xiaohongshu",
+                    locale=DEFAULT_LOCALE,
                     description="年轻女性为主的种草社区",
                     platform="social",
                     constraints={
@@ -311,6 +316,8 @@ def seed_default_data():
                 ),
                 Channel(
                     name="微信公众号",
+                    stable_key="wechat_official_account",
+                    locale=DEFAULT_LOCALE,
                     description="深度内容传播平台",
                     platform="social",
                     constraints={
@@ -321,6 +328,8 @@ def seed_default_data():
                 ),
                 Channel(
                     name="销售PPT",
+                    stable_key="sales_ppt",
+                    locale=DEFAULT_LOCALE,
                     description="B2B销售演示文稿",
                     platform="doc",
                     constraints={
@@ -331,6 +340,8 @@ def seed_default_data():
                 ),
                 Channel(
                     name="产品落地页",
+                    stable_key="landing_page",
+                    locale=DEFAULT_LOCALE,
                     description="产品/服务介绍页面",
                     platform="web",
                     constraints={
@@ -351,6 +362,8 @@ def seed_default_data():
             for type_id, type_info in INTERACTION_TYPES.items():
                 simulator = Simulator(
                     name=f"默认{type_info['name']}模拟器",
+                    stable_key=f"default_{type_id}",
+                    locale=DEFAULT_LOCALE,
                     description=type_info["description"],
                     interaction_type=type_id,
                     interaction_mode=_TYPE_TO_MODE.get(type_id, "review"),
@@ -367,6 +380,8 @@ def seed_default_data():
             templates = [
                 FieldTemplate(
                     name="课程设计模板",
+                    stable_key="course_design",
+                    locale=DEFAULT_LOCALE,
                     description="适用于在线课程、培训内容设计",
                     category="课程",
                     fields=[
@@ -398,6 +413,8 @@ def seed_default_data():
                 ),
                 FieldTemplate(
                     name="文章写作模板",
+                    stable_key="article_writing",
+                    locale=DEFAULT_LOCALE,
                     description="适用于公众号、博客等长文内容",
                     category="文章",
                     fields=[
@@ -437,6 +454,8 @@ def seed_default_data():
                 grader = Grader(
                     id=generate_uuid(),
                     name=preset["name"],
+                    stable_key=preset.get("stable_key", preset["name"]),
+                    locale=preset.get("locale", DEFAULT_LOCALE),
                     grader_type=preset["grader_type"],
                     prompt_template=preset["prompt_template"],
                     dimensions=preset.get("dimensions", []),
@@ -452,7 +471,9 @@ def seed_default_data():
                 AgentMode(
                     id=generate_uuid(),
                     project_id=None,
-                    name="assistant",
+                    name=_template_mode_name("assistant", DEFAULT_LOCALE),
+                    stable_key="assistant",
+                    locale=DEFAULT_LOCALE,
                     display_name="助手",
                     description="高效执行指令、推进项目、回答问题",
                     icon="🛠️",
@@ -476,7 +497,9 @@ def seed_default_data():
                 AgentMode(
                     id=generate_uuid(),
                     project_id=None,
-                    name="strategist",
+                    name=_template_mode_name("strategist", DEFAULT_LOCALE),
+                    stable_key="strategist",
+                    locale=DEFAULT_LOCALE,
                     display_name="策略顾问",
                     description="帮助想清楚方向、定位、受众、目标",
                     icon="🧭",
@@ -501,7 +524,9 @@ def seed_default_data():
                 AgentMode(
                     id=generate_uuid(),
                     project_id=None,
-                    name="critic",
+                    name=_template_mode_name("critic", DEFAULT_LOCALE),
+                    stable_key="critic",
+                    locale=DEFAULT_LOCALE,
                     display_name="审稿人",
                     description="严格把关内容质量，发现问题并给出改进建议",
                     icon="🔍",
@@ -533,7 +558,9 @@ def seed_default_data():
                 AgentMode(
                     id=generate_uuid(),
                     project_id=None,
-                    name="reader",
+                    name=_template_mode_name("reader", DEFAULT_LOCALE),
+                    stable_key="reader",
+                    locale=DEFAULT_LOCALE,
                     display_name="目标读者",
                     description="以真实受众视角检验内容效果",
                     icon="👤",
@@ -559,7 +586,9 @@ def seed_default_data():
                 AgentMode(
                     id=generate_uuid(),
                     project_id=None,
-                    name="creative",
+                    name=_template_mode_name("creative", DEFAULT_LOCALE),
+                    stable_key="creative",
+                    locale=DEFAULT_LOCALE,
                     display_name="创意伙伴",
                     description="拓展可能性空间，突破创作瓶颈",
                     icon="💡",
@@ -610,18 +639,274 @@ def seed_default_data():
                 eval_template_existing.description = EVAL_TEMPLATE_V2_DESCRIPTION
                 eval_template_existing.category = EVAL_TEMPLATE_V2_CATEGORY
                 eval_template_existing.name = EVAL_TEMPLATE_V2_NAME
+                eval_template_existing.stable_key = "eval_template_v2"
+                eval_template_existing.locale = DEFAULT_LOCALE
                 print("  - 更新了综合评估模板为最新V2版本")
             else:
                 print("  - 综合评估模板已是最新V2版本，跳过")
         else:
             eval_template = FieldTemplate(
                 name=EVAL_TEMPLATE_V2_NAME,
+                stable_key="eval_template_v2",
+                locale=DEFAULT_LOCALE,
                 description=EVAL_TEMPLATE_V2_DESCRIPTION,
                 category=EVAL_TEMPLATE_V2_CATEGORY,
                 fields=EVAL_TEMPLATE_V2_FIELDS,
             )
             db.add(eval_template)
             print("  - 创建了综合评估模板（V2）")
+
+        # 6. 补齐 ja-JP 资产（按 stable_key + locale upsert，避免只在空库生效）
+        jp_created = 0
+        type_to_mode = {"reading": "review", "dialogue": "dialogue", "decision": "scenario", "exploration": "exploration"}
+        creator_profiles_ja = [
+            {
+                "stable_key": "professional_rigorous",
+                "name": "プロフェッショナル堅実型",
+                "description": "B2B・技術・専門研修向けの堅実な表現",
+                "traits": {
+                    "tone": "専門的、信頼感があり、端正",
+                    "vocabulary": "業界用語を適切に使い、根拠を重視",
+                    "personality": "理性的、客観的、深掘り志向",
+                    "taboos": ["過度な口語", "根拠のない断定"],
+                },
+            },
+            {
+                "stable_key": "warm_humorous",
+                "name": "親和的ユーモア型",
+                "description": "toC・生活者向け・やわらかい話題に適した文体",
+                "traits": {
+                    "tone": "親しみやすく、軽やかで、温かい",
+                    "vocabulary": "日常語中心で分かりやすい",
+                    "personality": "親切、柔軟、共感的",
+                    "taboos": ["威圧的な表現", "冷たい言い回し"],
+                },
+            },
+            {
+                "stable_key": "story_driven",
+                "name": "ストーリードリブン型",
+                "description": "ブランドストーリー、事例共有、感情訴求に適した文体",
+                "traits": {
+                    "tone": "物語性が高く、情景が浮かぶ",
+                    "vocabulary": "描写語と感情語を効果的に使う",
+                    "personality": "温かい、感性的、示唆的",
+                    "taboos": ["データの羅列", "起伏のない説明"],
+                },
+            },
+        ]
+        for item in creator_profiles_ja:
+            jp_created += int(_upsert_locale_asset(
+                db,
+                CreatorProfile,
+                stable_key=item["stable_key"],
+                locale="ja-JP",
+                create_kwargs={
+                    "id": generate_uuid(),
+                    "stable_key": item["stable_key"],
+                    "locale": "ja-JP",
+                    "name": item["name"],
+                    "description": item["description"],
+                    "traits": item["traits"],
+                },
+            ))
+
+        system_prompts_ja = [
+            ("intent", "意図整理プロンプト", "コンテンツ戦略コンサルタントとして、制作目的を明確化してください。"),
+            ("research", "顧客調査プロンプト", "ユーザー調査の専門家として、対象顧客の特徴、課題、需要を整理してください。"),
+            ("design_inner", "内部設計プロンプト", "内容設計の専門家として、構成案と依存関係を設計してください。"),
+            ("produce_inner", "内部生成プロンプト", "コンテンツ制作者として、設計に沿って高品質な内容を作成してください。"),
+            ("design_outer", "外部展開設計プロンプト", "マーケティング戦略の専門家として、チャネル展開案を設計してください。"),
+            ("produce_outer", "外部展開生成プロンプト", "マルチチャネル運用担当として、チャネル向けに内容を最適化してください。"),
+            ("evaluate", "評価プロンプト", "評価専門家として、内容の長所・弱点・改善策を提示してください。"),
+            ("utility", "AIプロンプト生成", "プロンプト設計の専門家として、そのまま使える高品質な AI プロンプトを生成してください。"),
+        ]
+        for stable_key, name, content in system_prompts_ja:
+            jp_created += int(_upsert_locale_asset(
+                db,
+                SystemPrompt,
+                stable_key=stable_key,
+                locale="ja-JP",
+                create_kwargs={
+                    "id": generate_uuid(),
+                    "stable_key": stable_key,
+                    "locale": "ja-JP",
+                    "name": name,
+                    "phase": stable_key,
+                    "content": content,
+                    "description": f"{name} の既定テンプレート",
+                },
+            ))
+
+        channels_ja = [
+            ("xiaohongshu", "小紅書", "中国向けライフスタイル共有プラットフォーム", "social", {"max_length": 1000, "format": "短文+emoji", "style": "親近感・実感・温度感"}),
+            ("wechat_official_account", "WeChat公式アカウント", "深い解説に向く長文配信チャネル", "social", {"max_length": 5000, "format": "長文・図文対応", "style": "専門的または温かい"}),
+            ("sales_ppt", "営業資料PPT", "B2B営業・提案用スライド", "doc", {"max_length": None, "format": "構造化要点", "style": "端的で説得力がある"}),
+            ("landing_page", "ランディングページ", "商品・サービス紹介ページ", "web", {"max_length": 2000, "format": "見出し+価値訴求+CTA", "style": "簡潔で力強い"}),
+        ]
+        for stable_key, name, description, platform, constraints in channels_ja:
+            jp_created += int(_upsert_locale_asset(
+                db,
+                Channel,
+                stable_key=stable_key,
+                locale="ja-JP",
+                create_kwargs={
+                    "id": generate_uuid(),
+                    "stable_key": stable_key,
+                    "locale": "ja-JP",
+                    "name": name,
+                    "description": description,
+                    "platform": platform,
+                    "constraints": constraints,
+                },
+            ))
+
+        template_specs_ja = [
+            {
+                "stable_key": "course_design",
+                "name": "講座設計テンプレート",
+                "description": "オンライン講座や研修設計向け",
+                "category": "講座",
+                "fields": [
+                    {"name": "講座目標", "type": "text", "ai_prompt": "プロジェクト意図と対象受講者を踏まえ、測定可能な講座目標を定義してください。", "pre_questions": ["受講者の現在レベルは？", "受講後に何ができるようになるべきか？"], "depends_on": [], "dependency_type": "all"},
+                    {"name": "講座構成", "type": "structured", "ai_prompt": "講座目標に基づき、モジュール構成と各パートの要点を設計してください。", "pre_questions": ["想定総時間は？"], "depends_on": ["講座目標"], "dependency_type": "all"},
+                    {"name": "講座内容", "type": "richtext", "ai_prompt": "講座構成に沿って、各モジュールの内容を具体化してください。", "pre_questions": [], "depends_on": ["講座構成"], "dependency_type": "all"},
+                ],
+            },
+            {
+                "stable_key": "article_writing",
+                "name": "記事作成テンプレート",
+                "description": "オウンドメディアやブログ向け",
+                "category": "記事",
+                "fields": [
+                    {"name": "記事テーマ", "type": "text", "ai_prompt": "意図整理に基づいて、記事の中心テーマと切り口を定義してください。", "pre_questions": ["最も伝えたい主張は？"], "depends_on": [], "dependency_type": "all"},
+                    {"name": "記事構成", "type": "structured", "ai_prompt": "導入・主張・結論が明確な記事構成を設計してください。", "pre_questions": [], "depends_on": ["記事テーマ"], "dependency_type": "all"},
+                    {"name": "本文", "type": "richtext", "ai_prompt": "記事構成に沿って本文を執筆し、一貫した文体を保ってください。", "pre_questions": [], "depends_on": ["記事構成"], "dependency_type": "all"},
+                ],
+            },
+        ]
+        for spec in template_specs_ja:
+            normalized_payload, _ = normalize_field_template_payload(template_name=spec["name"], fields=spec["fields"], root_nodes=None)
+            jp_created += int(_upsert_locale_asset(
+                db,
+                FieldTemplate,
+                stable_key=spec["stable_key"],
+                locale="ja-JP",
+                create_kwargs={
+                    "id": generate_uuid(),
+                    "stable_key": spec["stable_key"],
+                    "locale": "ja-JP",
+                    "name": spec["name"],
+                    "description": spec["description"],
+                    "category": spec["category"],
+                    "schema_version": normalized_payload["schema_version"],
+                    "fields": normalized_payload["fields"],
+                    "root_nodes": normalized_payload["root_nodes"],
+                },
+            ))
+
+        simulator_name_map_ja = {
+            "dialogue": "デフォルト対話シミュレーター",
+            "reading": "デフォルト閲覧シミュレーター",
+            "decision": "デフォルト意思決定シミュレーター",
+            "exploration": "デフォルト探索シミュレーター",
+        }
+        simulator_meta_ja = {
+            "dialogue": {
+                "description": "複数ターンの対話を模擬し、相談・接客場面を検証する",
+                "evaluation_dimensions": ["応答関連性", "問題解決度", "対話体験"],
+            },
+            "reading": {
+                "description": "全体を読んだ後の理解・価値・行動意欲を評価する",
+                "evaluation_dimensions": ["理解しやすさ", "価値認知", "行動意欲"],
+            },
+            "decision": {
+                "description": "購買・導入判断のプロセスを模擬する",
+                "evaluation_dimensions": ["転換意欲", "懸念点", "信頼度"],
+            },
+            "exploration": {
+                "description": "目的を持った探索行動から情報発見性を評価する",
+                "evaluation_dimensions": ["答え到達効率", "情報完全性", "満足度"],
+            },
+        }
+        for type_id, type_info in INTERACTION_TYPES.items():
+            normalized_prompt = Simulator.get_default_template(type_id, "ja-JP")
+            secondary_prompt = Simulator.get_default_secondary_template(type_id, "ja-JP")
+            simulator_meta = simulator_meta_ja.get(type_id, {})
+            jp_created += int(_upsert_locale_asset(
+                db,
+                Simulator,
+                stable_key=f"default_{type_id}",
+                locale="ja-JP",
+                create_kwargs={
+                    "id": generate_uuid(),
+                    "stable_key": f"default_{type_id}",
+                    "locale": "ja-JP",
+                    "name": simulator_name_map_ja.get(type_id, f"デフォルト{type_id}シミュレーター"),
+                    "description": simulator_meta.get("description", type_info["description"]),
+                    "interaction_type": type_id,
+                    "interaction_mode": type_to_mode.get(type_id, "review"),
+                    "prompt_template": normalized_prompt,
+                    "secondary_prompt": secondary_prompt,
+                    "evaluation_dimensions": simulator_meta.get("evaluation_dimensions", type_info["evaluation_dimensions"]),
+                },
+            ))
+
+        agent_modes_ja = [
+            ("assistant", "アシスタント", "指示実行と進行を支援", "あなたはクリエイターの制作アシスタントです。結果と次の行動を簡潔に示してください。"),
+            ("strategist", "戦略アドバイザー", "方向性・読者・目標を整理", "あなたは戦略アドバイザーです。方向性、対象、目的の整合性を問い直し、選択肢を明確にしてください。"),
+            ("critic", "レビュアー", "品質上の課題を厳格に発見", "あなたは厳格なレビュアーです。問題点を具体的に指摘し、修正可能な改善案を提示してください。"),
+            ("reader", "対象読者", "実在読者視点で反応", "あなたは対象読者本人として反応してください。専門家目線ではなく、率直な体験を言葉にしてください。"),
+            ("creative", "クリエイティブパートナー", "新しい切り口を広げる", "あなたはクリエイティブパートナーです。複数の方向性を広げ、意外性のある案も含めて提案してください。"),
+        ]
+        for index, (stable_key, display_name, description, system_prompt) in enumerate(agent_modes_ja):
+            jp_created += int(_upsert_locale_asset(
+                db,
+                AgentMode,
+                stable_key=stable_key,
+                locale="ja-JP",
+                create_kwargs={
+                    "id": generate_uuid(),
+                    "project_id": None,
+                    "name": _template_mode_name(stable_key, "ja-JP"),
+                    "stable_key": stable_key,
+                    "locale": "ja-JP",
+                    "display_name": display_name,
+                    "description": description,
+                    "icon": ["🛠️", "🧭", "🔍", "👤", "💡"][index],
+                    "is_system": True,
+                    "is_template": True,
+                    "sort_order": index,
+                    "system_prompt": system_prompt,
+                },
+            ))
+
+        eval_template_ja_payload, _ = normalize_field_template_payload(
+            template_name="総合評価テンプレート",
+            fields=[
+                {"name": "ペルソナ設定", "ai_prompt": "評価用ペルソナを管理します。調査から読込、手動作成、AI生成に対応します。"},
+                {"name": "評価タスク設定", "ai_prompt": "Eval V2 のタスクと Trial を構成し、対象内容・ペルソナ・評価器を設定します。", "depends_on": ["ペルソナ設定"], "dependency_type": "all"},
+                {"name": "評価レポート", "ai_prompt": "評価結果、Trial 詳細、集計、横断分析をまとめて確認します。", "depends_on": ["評価タスク設定"], "dependency_type": "all"},
+            ],
+            root_nodes=None,
+        )
+        jp_created += int(_upsert_locale_asset(
+            db,
+            FieldTemplate,
+            stable_key="eval_template_v2",
+            locale="ja-JP",
+            create_kwargs={
+                "id": generate_uuid(),
+                "stable_key": "eval_template_v2",
+                "locale": "ja-JP",
+                "name": "総合評価テンプレート",
+                "description": "Eval V2 総合評価テンプレート：ペルソナ → タスク → レポート。",
+                "category": "評価",
+                "schema_version": eval_template_ja_payload["schema_version"],
+                "fields": eval_template_ja_payload["fields"],
+                "root_nodes": eval_template_ja_payload["root_nodes"],
+            },
+        ))
+        print(f"  - 补齐/更新了 {jp_created} 个 ja-JP 预置资产")
         
         db.commit()
         print("预置数据插入完成！")

@@ -44,8 +44,8 @@ def client_and_session():
         app.dependency_overrides.clear()
 
 
-def _seed_project_and_templates(session):
-    project = Project(id=generate_uuid(), name="Mode Test Project")
+def _seed_project_and_templates(session, *, locale: str = "zh-CN"):
+    project = Project(id=generate_uuid(), name="Mode Test Project", locale=locale)
     session.add(project)
     session.flush()
 
@@ -297,6 +297,18 @@ def test_create_conversation_and_history_filter_by_mode_id(client_and_session):
     renamed_rows = history_after_rename.json()
     assert len(renamed_rows) == 1
     assert renamed_rows[0]["content"] == "critic history"
+
+
+def test_create_conversation_defaults_to_project_locale_copy(client_and_session):
+    client, session = client_and_session
+    project, _ = _seed_project_and_templates(session, locale="ja-JP")
+
+    imported = client.post("/api/modes/import-templates", json={"project_id": project.id}).json()
+    assistant_mode = imported["imported"][0]
+
+    conv = client.post("/api/agent/conversations", json={"project_id": project.id, "mode_id": assistant_mode["id"]})
+    assert conv.status_code == 200
+    assert conv.json()["title"] == "新しい会話"
 
 
 def test_chat_requires_project_mode_and_uses_mode_id(client_and_session, monkeypatch):

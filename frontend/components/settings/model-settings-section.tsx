@@ -7,6 +7,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { modelsAPI, settingsAPI } from "@/lib/api";
 import type { ModelInfo, AgentSettingsData } from "@/lib/api";
+import { useSettingsUiIsJa } from "./shared";
 
 interface ModelSettingsSectionProps {
   settings: AgentSettingsData | null;
@@ -14,6 +15,7 @@ interface ModelSettingsSectionProps {
 }
 
 export function ModelSettingsSection({ settings, onRefresh }: ModelSettingsSectionProps) {
+  const isJa = useSettingsUiIsJa();
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [envProvider, setEnvProvider] = useState<string>("openai");
   const [envDefault, setEnvDefault] = useState<{ main: string; mini: string }>({ main: "", mini: "" });
@@ -33,9 +35,9 @@ export function ModelSettingsSection({ settings, onRefresh }: ModelSettingsSecti
       setLoadError(null);
     } catch (err) {
       console.error("加载模型列表失败:", err);
-      setLoadError("无法加载可用模型列表，请检查后端是否运行");
+      setLoadError(isJa ? "利用可能なモデル一覧を読み込めません。バックエンドが起動しているか確認してください" : "无法加载可用模型列表，请检查后端是否运行");
     }
-  }, []);
+  }, [isJa]);
 
   useEffect(() => {
     loadModels();
@@ -56,10 +58,10 @@ export function ModelSettingsSection({ settings, onRefresh }: ModelSettingsSecti
         default_mini_model: defaultMiniModel || null,
       });
       onRefresh();
-      alert("模型配置已保存");
+      alert(isJa ? "モデル設定を保存しました" : "模型配置已保存");
     } catch (err) {
       console.error("保存失败:", err);
-      alert("保存失败: " + (err instanceof Error ? err.message : "未知错误"));
+      alert((isJa ? "保存に失敗しました: " : "保存失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
     } finally {
       setIsSaving(false);
     }
@@ -77,9 +79,9 @@ export function ModelSettingsSection({ settings, onRefresh }: ModelSettingsSecti
     <div>
       <div className="flex justify-between items-center mb-6">
         <div>
-          <h2 className="text-xl font-semibold text-zinc-100">模型配置</h2>
+          <h2 className="text-xl font-semibold text-zinc-100">{isJa ? "モデル設定" : "模型配置"}</h2>
           <p className="text-sm text-zinc-500 mt-1">
-            选择全局默认的 LLM 模型。内容块可单独覆盖此设置。
+            {isJa ? "グローバル既定の LLM モデルを選択します。内容ブロックごとに上書きも可能です。" : "选择全局默认的 LLM 模型。内容块可单独覆盖此设置。"}
           </p>
         </div>
         <button
@@ -87,7 +89,7 @@ export function ModelSettingsSection({ settings, onRefresh }: ModelSettingsSecti
           disabled={isSaving}
           className="px-4 py-2 bg-brand-600 hover:bg-brand-700 rounded-lg disabled:opacity-50 text-white"
         >
-          {isSaving ? "保存中..." : "保存配置"}
+          {isSaving ? (isJa ? "保存中..." : "保存中...") : (isJa ? "設定を保存" : "保存配置")}
         </button>
       </div>
 
@@ -101,25 +103,25 @@ export function ModelSettingsSection({ settings, onRefresh }: ModelSettingsSecti
         {/* 当前环境信息 */}
         <div className="p-4 bg-surface-2 border border-surface-3 rounded-xl">
           <h3 className="font-medium text-zinc-200 mb-3 flex items-center gap-2">
-            <span>🔧</span> 环境配置
+            <span>🔧</span> {isJa ? "環境設定" : "环境配置"}
           </h3>
           <div className="grid grid-cols-2 gap-4 text-sm">
             <div>
-              <span className="text-zinc-500">当前 Provider：</span>
+              <span className="text-zinc-500">{isJa ? "現在の Provider:" : "当前 Provider："}</span>
               <span className="text-zinc-200 ml-1">{envProvider.toUpperCase()}</span>
             </div>
             <div>
-              <span className="text-zinc-500">可用 Provider：</span>
+              <span className="text-zinc-500">{isJa ? "利用可能な Provider:" : "可用 Provider："}</span>
               <span className="text-zinc-200 ml-1">
-                {[...new Set(models.map(m => m.provider))].map(p => p.toUpperCase()).join(", ") || "无"}
+                {[...new Set(models.map(m => m.provider))].map(p => p.toUpperCase()).join(", ") || (isJa ? "なし" : "无")}
               </span>
             </div>
             <div>
-              <span className="text-zinc-500">.env 默认主模型：</span>
+              <span className="text-zinc-500">{isJa ? ".env 既定のメインモデル:" : ".env 默认主模型："}</span>
               <span className="text-zinc-300 ml-1 font-mono text-xs">{envDefault.main}</span>
             </div>
             <div>
-              <span className="text-zinc-500">.env 默认轻量模型：</span>
+              <span className="text-zinc-500">{isJa ? ".env 既定の軽量モデル:" : ".env 默认轻量模型："}</span>
               <span className="text-zinc-300 ml-1 font-mono text-xs">{envDefault.mini}</span>
             </div>
           </div>
@@ -128,17 +130,17 @@ export function ModelSettingsSection({ settings, onRefresh }: ModelSettingsSecti
         {/* 全局默认主模型 */}
         <div className="p-5 bg-surface-2 border border-surface-3 rounded-xl">
           <h3 className="font-medium text-zinc-200 mb-2 flex items-center gap-2">
-            <span>🧠</span> 默认主模型
+            <span>🧠</span> {isJa ? "既定のメインモデル" : "默认主模型"}
           </h3>
           <p className="text-sm text-zinc-500 mb-4">
-            用于内容生成、Agent 对话等主要任务。留空则使用 .env 中的默认值。
+            {isJa ? "内容生成や Agent 対話など主要タスクに使われます。空欄の場合は .env の既定値を使います。" : "用于内容生成、Agent 对话等主要任务。留空则使用 .env 中的默认值。"}
           </p>
           <select
             value={defaultModel}
             onChange={e => setDefaultModel(e.target.value)}
             className="w-full px-3 py-2.5 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 appearance-none cursor-pointer"
           >
-            <option value="">使用 .env 默认 ({envDefault.main})</option>
+            <option value="">{isJa ? `.env 既定値を使用 (${envDefault.main})` : `使用 .env 默认 (${envDefault.main})`}</option>
             {mainModels.map(m => (
               <option key={m.id} value={m.id}>
                 {m.name} ({m.provider.toUpperCase()}) — {m.id}
@@ -147,29 +149,29 @@ export function ModelSettingsSection({ settings, onRefresh }: ModelSettingsSecti
             {/* Also show mini models as an option for main (user might want a cheaper model) */}
             {miniModels.map(m => (
               <option key={m.id} value={m.id}>
-                {m.name} ({m.provider.toUpperCase()}) — {m.id} [轻量]
+                {m.name} ({m.provider.toUpperCase()}) — {m.id} {isJa ? "[軽量]" : "[轻量]"}
               </option>
             ))}
           </select>
           <div className="mt-2 text-xs text-zinc-500">
-            当前生效：<span className="text-brand-400 font-mono">{effectiveMain}</span>
+            {isJa ? "現在有効:" : "当前生效："}<span className="text-brand-400 font-mono">{effectiveMain}</span>
           </div>
         </div>
 
         {/* 全局默认轻量模型 */}
         <div className="p-5 bg-surface-2 border border-surface-3 rounded-xl">
           <h3 className="font-medium text-zinc-200 mb-2 flex items-center gap-2">
-            <span>⚡</span> 默认轻量模型
+            <span>⚡</span> {isJa ? "既定の軽量モデル" : "默认轻量模型"}
           </h3>
           <p className="text-sm text-zinc-500 mb-4">
-            用于快速任务（如提示词生成、内联编辑等）。留空则使用 .env 中的默认值。
+            {isJa ? "プロンプト生成やインライン編集など高速タスクに使われます。空欄の場合は .env の既定値を使います。" : "用于快速任务（如提示词生成、内联编辑等）。留空则使用 .env 中的默认值。"}
           </p>
           <select
             value={defaultMiniModel}
             onChange={e => setDefaultMiniModel(e.target.value)}
             className="w-full px-3 py-2.5 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 appearance-none cursor-pointer"
           >
-            <option value="">使用 .env 默认 ({envDefault.mini})</option>
+            <option value="">{isJa ? `.env 既定値を使用 (${envDefault.mini})` : `使用 .env 默认 (${envDefault.mini})`}</option>
             {miniModels.map(m => (
               <option key={m.id} value={m.id}>
                 {m.name} ({m.provider.toUpperCase()}) — {m.id}
@@ -177,34 +179,34 @@ export function ModelSettingsSection({ settings, onRefresh }: ModelSettingsSecti
             ))}
             {mainModels.map(m => (
               <option key={m.id} value={m.id}>
-                {m.name} ({m.provider.toUpperCase()}) — {m.id} [主力]
+                {m.name} ({m.provider.toUpperCase()}) — {m.id} {isJa ? "[主力]" : "[主力]"}
               </option>
             ))}
           </select>
           <div className="mt-2 text-xs text-zinc-500">
-            当前生效：<span className="text-brand-400 font-mono">{effectiveMini}</span>
+            {isJa ? "現在有効:" : "当前生效："}<span className="text-brand-400 font-mono">{effectiveMini}</span>
           </div>
         </div>
 
         {/* 模型覆盖链说明 */}
         <div className="p-4 bg-surface-2/50 border border-surface-3 rounded-xl">
           <h3 className="font-medium text-zinc-300 mb-2 flex items-center gap-2">
-            <span>📋</span> 模型选择优先级
+            <span>📋</span> {isJa ? "モデル選択の優先順位" : "模型选择优先级"}
           </h3>
           <div className="text-sm text-zinc-400 space-y-1">
-            <p>1. <strong className="text-zinc-300">内容块覆盖</strong> — 在内容块编辑器中为单个块指定模型（最高优先）</p>
-            <p>2. <strong className="text-zinc-300">全局默认</strong> — 此页面设置的默认模型（中等优先）</p>
-            <p>3. <strong className="text-zinc-300">.env 配置</strong> — 环境变量中的模型配置（最低优先 / 兜底）</p>
+            <p>{isJa ? "1. " : "1. "}<strong className="text-zinc-300">{isJa ? "内容ブロック上書き" : "内容块覆盖"}</strong>{isJa ? " — 内容ブロック編集画面で個別指定したモデル（最優先）" : " — 在内容块编辑器中为单个块指定模型（最高优先）"}</p>
+            <p>{isJa ? "2. " : "2. "}<strong className="text-zinc-300">{isJa ? "グローバル既定" : "全局默认"}</strong>{isJa ? " — このページで設定する既定モデル（中優先）" : " — 此页面设置的默认模型（中等优先）"}</p>
+            <p>{isJa ? "3. " : "3. "}<strong className="text-zinc-300">.env {isJa ? "設定" : "配置"}</strong>{isJa ? " — 環境変数のモデル設定（最低優先 / フォールバック）" : " — 环境变量中的模型配置（最低优先 / 兜底）"}</p>
           </div>
         </div>
 
         {/* 可用模型列表 */}
         <div className="p-5 bg-surface-2 border border-surface-3 rounded-xl">
           <h3 className="font-medium text-zinc-200 mb-3 flex items-center gap-2">
-            <span>📦</span> 可用模型列表
+            <span>📦</span> {isJa ? "利用可能なモデル一覧" : "可用模型列表"}
           </h3>
           {models.length === 0 ? (
-            <p className="text-sm text-zinc-500">未检测到可用模型，请检查 API Key 配置。</p>
+            <p className="text-sm text-zinc-500">{isJa ? "利用可能なモデルが見つかりません。API Key 設定を確認してください。" : "未检测到可用模型，请检查 API Key 配置。"}</p>
           ) : (
             <div className="grid md:grid-cols-2 gap-3">
               {models.map(m => (
@@ -221,7 +223,7 @@ export function ModelSettingsSection({ settings, onRefresh }: ModelSettingsSecti
                     <span className={`px-1.5 py-0.5 text-xs rounded ${
                       m.tier === "main" ? "bg-purple-600/20 text-purple-400" : "bg-emerald-600/20 text-emerald-400"
                     }`}>
-                      {m.tier === "main" ? "主力" : "轻量"}
+                      {m.tier === "main" ? (isJa ? "主力" : "主力") : (isJa ? "軽量" : "轻量")}
                     </span>
                   </div>
                   <div className="flex items-center gap-2 mt-1">
@@ -230,9 +232,9 @@ export function ModelSettingsSection({ settings, onRefresh }: ModelSettingsSecti
                   </div>
                   {(effectiveMain === m.id || effectiveMini === m.id) && (
                     <div className="mt-1 text-xs text-brand-400">
-                      {effectiveMain === m.id && "当前主模型"}
+                      {effectiveMain === m.id && (isJa ? "現在のメインモデル" : "当前主模型")}
                       {effectiveMain === m.id && effectiveMini === m.id && " / "}
-                      {effectiveMini === m.id && "当前轻量模型"}
+                      {effectiveMini === m.id && (isJa ? "現在の軽量モデル" : "当前轻量模型")}
                     </div>
                   )}
                 </div>

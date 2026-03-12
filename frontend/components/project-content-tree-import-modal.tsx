@@ -9,6 +9,7 @@ import { useMemo, useRef, useState } from "react";
 import { FileJson, Upload } from "lucide-react";
 
 import { projectAPI } from "@/lib/api";
+import { useUiIsJa } from "@/lib/ui-locale";
 import { sendNotification } from "@/lib/utils";
 
 interface ImportSummary {
@@ -20,15 +21,15 @@ interface ImportSummary {
   externalDependencyCount: number;
 }
 
-function buildImportSummary(data: unknown): ImportSummary {
+function buildImportSummary(data: unknown, isJa: boolean): ImportSummary {
   if (!data || typeof data !== "object") {
-    throw new Error("文件内容不是有效的 JSON 对象");
+    throw new Error(isJa ? "ファイル内容が有効な JSON オブジェクトではありません" : "文件内容不是有效的 JSON 对象");
   }
 
   const payload = data as Record<string, unknown>;
   const blocks = Array.isArray(payload.content_blocks) ? payload.content_blocks : [];
   if (blocks.length === 0) {
-    throw new Error("JSON 中缺少 content_blocks，无法执行目录追加导入");
+    throw new Error(isJa ? "JSON に content_blocks が存在しないため、ツリー追加インポートを実行できません" : "JSON 中缺少 content_blocks，无法执行目录追加导入");
   }
 
   const activeBlocks = blocks.filter((item) => item && typeof item === "object" && !(item as Record<string, unknown>).deleted_at) as Array<
@@ -47,7 +48,9 @@ function buildImportSummary(data: unknown): ImportSummary {
     externalDependencyCount += dependsOn.filter((depId) => !idSet.has(String(depId || ""))).length;
   }
 
-  const sourceType = payload.type === "content_block_bundle" ? "范围导出 JSON" : "项目完整导出 JSON";
+  const sourceType = payload.type === "content_block_bundle"
+    ? (isJa ? "範囲エクスポート JSON" : "范围导出 JSON")
+    : (isJa ? "プロジェクト完全エクスポート JSON" : "项目完整导出 JSON");
   return {
     sourceType,
     nodeCount: activeBlocks.length,
@@ -61,14 +64,17 @@ function buildImportSummary(data: unknown): ImportSummary {
 export function ProjectContentTreeImportModal({
   open,
   projectId,
+  projectLocale,
   onClose,
   onImported,
 }: {
   open: boolean;
   projectId: string;
+  projectLocale?: string | null;
   onClose: () => void;
   onImported?: () => void;
 }) {
+  const isJa = useUiIsJa(projectLocale);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [rawData, setRawData] = useState<unknown>(null);
   const [fileName, setFileName] = useState("");
@@ -78,7 +84,7 @@ export function ProjectContentTreeImportModal({
   const summary = useMemo(() => {
     if (!rawData) return null;
     try {
-      return buildImportSummary(rawData);
+      return buildImportSummary(rawData, isJa);
     } catch (summaryError) {
       return {
         sourceType: "",
@@ -87,10 +93,10 @@ export function ProjectContentTreeImportModal({
         fieldCount: 0,
         groupCount: 0,
         externalDependencyCount: 0,
-        error: summaryError instanceof Error ? summaryError.message : "无法解析导入摘要",
+        error: summaryError instanceof Error ? summaryError.message : (isJa ? "インポート概要を解析できません" : "无法解析导入摘要"),
       };
     }
-  }, [rawData]);
+  }, [isJa, rawData]);
 
   if (!open) return null;
 
@@ -118,7 +124,7 @@ export function ProjectContentTreeImportModal({
     try {
       const text = await file.text();
       const json = JSON.parse(text);
-      buildImportSummary(json);
+      buildImportSummary(json, isJa);
       setRawData(json);
       setFileName(file.name);
       setError(null);
@@ -126,27 +132,29 @@ export function ProjectContentTreeImportModal({
       console.error("读取导入文件失败:", fileError);
       setRawData(null);
       setFileName(file.name);
-      setError(fileError instanceof Error ? fileError.message : "文件格式错误");
+      setError(fileError instanceof Error ? fileError.message : (isJa ? "ファイル形式エラー" : "文件格式错误"));
     }
   };
 
   const handleImport = async () => {
     if (!rawData) {
-      setError("请先选择一个可导入的 JSON 文件");
+      setError(isJa ? "先にインポート可能な JSON ファイルを選択してください" : "请先选择一个可导入的 JSON 文件");
       return;
     }
     setImporting(true);
     setError(null);
     try {
       const result = await projectAPI.importContentTreeJson(projectId, rawData);
-      const warningText = result.warning_count > 0 ? `，忽略了 ${result.warning_count} 条范围外依赖` : "";
-      sendNotification("导入完成", `已追加导入 ${result.blocks_created} 个内容块${warningText}`);
+      const warningText = result.warning_count > 0
+        ? (isJa ? `。範囲外依存 ${result.warning_count} 件は無視しました` : `，忽略了 ${result.warning_count} 条范围外依赖`)
+        : "";
+      sendNotification(isJa ? "インポート完了" : "导入完成", isJa ? `${result.blocks_created} 個の内容ブロックを追加インポートしました${warningText}` : `已追加导入 ${result.blocks_created} 个内容块${warningText}`);
       resetState();
       onImported?.();
       onClose();
     } catch (importError) {
       console.error("导入内容树失败:", importError);
-      setError(importError instanceof Error ? importError.message : "导入失败");
+      setError(importError instanceof Error ? importError.message : (isJa ? "インポートに失敗しました" : "导入失败"));
     } finally {
       setImporting(false);
     }
@@ -159,8 +167,8 @@ export function ProjectContentTreeImportModal({
         onClick={(event) => event.stopPropagation()}
       >
         <div className="border-b border-surface-3 px-5 py-4">
-          <h3 className="text-base font-semibold text-zinc-100">从 JSON 导入</h3>
-          <p className="mt-1 text-xs text-zinc-500">导入内容会追加到当前项目目录末尾，不会覆盖现有结构。</p>
+          <h3 className="text-base font-semibold text-zinc-100">{isJa ? "JSON からインポート" : "从 JSON 导入"}</h3>
+          <p className="mt-1 text-xs text-zinc-500">{isJa ? "インポート内容は現在のプロジェクトツリー末尾に追加され、既存構造は上書きされません。" : "导入内容会追加到当前项目目录末尾，不会覆盖现有结构。"}</p>
         </div>
 
         <div className="space-y-4 px-5 py-4">
@@ -172,7 +180,7 @@ export function ProjectContentTreeImportModal({
             className="flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-surface-3 bg-surface-2 px-4 py-6 text-sm text-zinc-300 hover:bg-surface-3"
           >
             <Upload className="h-4 w-4" />
-            {fileName ? `重新选择文件：${fileName}` : "选择 JSON 文件"}
+            {fileName ? (isJa ? `ファイルを再選択: ${fileName}` : `重新选择文件：${fileName}`) : (isJa ? "JSON ファイルを選択" : "选择 JSON 文件")}
           </button>
 
           {summary && !("error" in summary) && (
@@ -182,12 +190,12 @@ export function ProjectContentTreeImportModal({
                 <span>{fileName}</span>
               </div>
               <div className="space-y-1 text-xs text-zinc-400">
-                <div>来源类型：{summary.sourceType}</div>
-                <div>根节点数：{summary.rootCount}</div>
-                <div>总节点数：{summary.nodeCount}</div>
-                <div>分组数：{summary.groupCount}</div>
-                <div>内容块数：{summary.fieldCount}</div>
-                <div>范围外依赖数：{summary.externalDependencyCount}</div>
+                <div>{isJa ? "ソース種別" : "来源类型"}: {summary.sourceType}</div>
+                <div>{isJa ? "ルートノード数" : "根节点数"}: {summary.rootCount}</div>
+                <div>{isJa ? "総ノード数" : "总节点数"}: {summary.nodeCount}</div>
+                <div>{isJa ? "グループ数" : "分组数"}: {summary.groupCount}</div>
+                <div>{isJa ? "内容ブロック数" : "内容块数"}: {summary.fieldCount}</div>
+                <div>{isJa ? "範囲外依存数" : "范围外依赖数"}: {summary.externalDependencyCount}</div>
               </div>
             </div>
           )}
@@ -195,7 +203,7 @@ export function ProjectContentTreeImportModal({
           {error && <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">{error}</div>}
 
           <div className="rounded-lg border border-surface-3 bg-surface-2 px-3 py-2 text-xs text-zinc-500">
-            第一版只追加导入 `content_blocks`，不会把源文件中的对话、草稿、评分器等外围对象并入当前项目。
+            {isJa ? "初版では `content_blocks` のみを追加インポートします。元ファイル中の対話、草稿、評価器など周辺オブジェクトは現在のプロジェクトへ取り込みません。" : "第一版只追加导入 `content_blocks`，不会把源文件中的对话、草稿、评分器等外围对象并入当前项目。"}
           </div>
         </div>
 
@@ -205,7 +213,7 @@ export function ProjectContentTreeImportModal({
             onClick={handleClose}
             className="rounded-lg bg-surface-3 px-4 py-2 text-sm text-zinc-200 hover:bg-surface-4"
           >
-            取消
+            {isJa ? "キャンセル" : "取消"}
           </button>
           <button
             type="button"
@@ -213,7 +221,7 @@ export function ProjectContentTreeImportModal({
             disabled={importing || !rawData}
             className="rounded-lg bg-brand-600 px-4 py-2 text-sm text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {importing ? "导入中..." : "追加导入到当前项目"}
+            {importing ? (isJa ? "インポート中..." : "导入中...") : (isJa ? "現在のプロジェクトへ追加インポート" : "追加导入到当前项目")}
           </button>
         </div>
       </div>
