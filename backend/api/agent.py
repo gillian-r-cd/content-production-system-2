@@ -32,6 +32,7 @@ from core.content_block_reference import (
     list_active_project_blocks,
 )
 from core.content_block_runtime_surface import build_block_runtime_surface
+from core.dependency_regeneration_service import finalize_block_content_change, schedule_project_auto_trigger
 from core.database import get_db
 from core.locale_text import rt
 from core.localization import DEFAULT_LOCALE, normalize_locale
@@ -53,6 +54,11 @@ RUNTIME_SCOPE = "group_runtime"
 
 # normalize_content 已移至 core.llm_compat 统一管理
 _normalize_content = normalize_content  # 向后兼容别名
+
+
+def _set_block_status_after_content_write(block: ContentBlock) -> None:
+    """Agent 正式落库写内容后，沿用内容块的 need_review 语义重算状态。"""
+    block.status = "in_progress" if bool(getattr(block, "need_review", False)) else "completed"
 
 
 async def _extract_and_save_memories(
@@ -1965,6 +1971,8 @@ async def confirm_suggestion(
             raise HTTPException(status_code=400, detail="No cards selected for application")
 
         applied_results: list[AppliedCardInfo] = []
+        affected_parent_ids: set[str] = set()
+        affected_project_ids: set[str] = set()
         try:
             for cid, card in cards_to_apply:
                 entity_id = card["target_entity_id"]
@@ -2011,6 +2019,12 @@ async def confirm_suggestion(
 
                 # 3. 应用修改
                 entity.content = modified_content
+                _set_block_status_after_content_write(entity)
+                finalize_block_content_change(block=entity, db=db)
+                if entity.parent_id:
+                    affected_parent_ids.add(entity.parent_id)
+                if entity.project_id:
+                    affected_project_ids.add(entity.project_id)
 
                 # 4. 记录结果
                 applied_results.append(AppliedCardInfo(
@@ -2036,6 +2050,15 @@ async def confirm_suggestion(
             )
 
             db.commit()
+
+            if affected_parent_ids:
+                from core.block_generation_service import update_parent_status
+
+                for parent_id in affected_parent_ids:
+                    update_parent_status(parent_id, db)
+
+            for project_id in affected_project_ids:
+                schedule_project_auto_trigger(project_id)
 
             field_names = ", ".join(f"「{c['target_field']}」" for _, c in cards_to_apply)
             return ConfirmSuggestionResponse(

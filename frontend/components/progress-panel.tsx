@@ -31,6 +31,18 @@ interface ProgressPanelProps {
   onStartAllReady?: () => void;
 }
 
+function hasAutoRegenerationActivity(blocks: ContentBlock[]): boolean {
+  for (const block of blocks) {
+    if ((block.auto_generate && block.needs_regeneration) || (block.status === "in_progress" && !block.need_review)) {
+      return true;
+    }
+    if (block.children && block.children.length > 0 && hasAutoRegenerationActivity(block.children)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function ProgressPanel({
   project,
   blocksRefreshKey = 0,
@@ -70,19 +82,12 @@ export function ProgressPanel({
   
   // ===== 加载内容块 =====
   // P0-1: 统一使用 ContentBlock API，classic 和 tree 视图都需要
-  useEffect(() => {
-    if (project?.id) {
-      loadContentBlocks();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project?.id, blocksRefreshKey]);
-
   const publishBlocks = useCallback((blocks: ContentBlock[]) => {
     setContentBlocks(blocks);
     onBlocksChange?.(createContentBlockSnapshot(blocks));
   }, [onBlocksChange]);
   
-  const loadContentBlocks = async () => {
+  const loadContentBlocks = useCallback(async () => {
     if (!project?.id) return;
     
     // 只在首次加载时显示 spinner，后续静默刷新
@@ -97,15 +102,6 @@ export function ProgressPanel({
       } else {
         publishBlocks([]);
       }
-      
-      // 前端驱动自动触发链
-      runAutoTriggerChain(project.id, () => {
-        blockAPI.getProjectBlocks(project.id).then((freshData) => {
-          if (freshData.blocks) {
-            publishBlocks(freshData.blocks);
-          }
-        }).catch(console.error);
-      }).catch(console.error);
     } catch (err) {
       console.error("加载内容块失败:", err);
       publishBlocks([]);
@@ -113,7 +109,31 @@ export function ProgressPanel({
       setIsLoadingBlocks(false);
       initialBlocksLoadDone.current = true;
     }
-  };
+  }, [project?.id, publishBlocks]);
+
+  useEffect(() => {
+    if (project?.id) {
+      loadContentBlocks();
+    }
+  }, [project?.id, blocksRefreshKey, loadContentBlocks]);
+
+  useEffect(() => {
+    if (!project?.id) return;
+    // 项目打开时补跑一次 auto_trigger，确保服务重启后遗留的 stale 状态也能恢复。
+    runAutoTriggerChain(project.id, () => {
+      loadContentBlocks().catch(console.error);
+    }).catch(console.error);
+  }, [project?.id, loadContentBlocks]);
+
+  useEffect(() => {
+    if (!project?.id) return;
+    if (!hasAutoRegenerationActivity(contentBlocks)) return;
+
+    const pollTimer = setInterval(() => {
+      loadContentBlocks().catch(console.error);
+    }, 2500);
+    return () => clearInterval(pollTimer);
+  }, [contentBlocks, loadContentBlocks, project?.id]);
   
   // P0-1: buildVirtualBlocksFromFields 已移除（不再从 ProjectField 构建虚拟块）
   

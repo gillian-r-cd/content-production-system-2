@@ -33,6 +33,7 @@ def test_build_ref_context_uses_japanese_runtime_labels():
     assert "[現在の回答]" in text
     assert "[手動確認が必要: はい]" in text
     assert "[自動生成: いいえ]" in text
+    assert "[再生成待ち: いいえ]" in text
     assert "[モデル上書き: 既定モデル]" in text
     assert "[ステータス: completed]" in text
     assert "[ブロック種別: field]" in text
@@ -105,6 +106,7 @@ def test_build_ref_context_includes_visible_runtime_fields_and_excludes_hidden_l
     assert "目标受众是谁？: 初学者" in text
     assert "[需要人工确认: 否]" in text
     assert "[自动生成: 是]" in text
+    assert "[待重新生成: 否]" in text
     assert "[模型覆盖: gpt-4.1-mini]" in text
     assert "[特殊处理器: evaluate]" in text
     assert "constraints" not in text

@@ -100,6 +100,11 @@ def build_block_runtime_surface(
             "agent.reference_context.auto_generate",
             value=_bool_text(bool(getattr(block, "auto_generate", False)), normalized_locale),
         ),
+        rt(
+            normalized_locale,
+            "agent.reference_context.needs_regeneration",
+            value=_bool_text(bool(getattr(block, "needs_regeneration", False)), normalized_locale),
+        ),
         rt(normalized_locale, "agent.reference_context.model_override", value=model_override),
         rt(normalized_locale, "agent.reference_context.status", status=status),
         rt(normalized_locale, "agent.reference_context.block_type", block_type=block_type),

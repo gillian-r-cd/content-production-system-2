@@ -51,6 +51,7 @@ function makeEvalBlock(id: string, name: string, specialHandler: "eval_persona_s
     special_handler: specialHandler,
     need_review: false,
     auto_generate: false,
+    needs_regeneration: false,
     is_collapsed: false,
     model_override: null,
     children: [],

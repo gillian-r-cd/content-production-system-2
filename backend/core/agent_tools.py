@@ -37,6 +37,7 @@ from langchain_core.runnables import RunnableConfig
 from fastapi import HTTPException
 
 from core.content_block_runtime_surface import build_block_runtime_surface
+from core.dependency_regeneration_service import finalize_block_content_change, schedule_project_auto_trigger
 from core.localization import DEFAULT_LOCALE, normalize_locale
 from core.locale_text import rt
 from core.llm_compat import normalize_content, get_stop_reason, resolve_model
@@ -107,6 +108,20 @@ def _set_content_status(entity) -> None:
         entity.status = "in_progress"
     else:
         entity.status = "completed"
+
+
+def _commit_block_content_change(entity, db) -> None:
+    """统一收敛 Agent 写入内容块后的失效传播、提交与自动触发。"""
+    finalize_block_content_change(block=entity, db=db)
+    db.commit()
+
+    parent_id = getattr(entity, "parent_id", None)
+    if parent_id:
+        from core.block_generation_service import update_parent_status
+
+        update_parent_status(parent_id, db)
+
+    schedule_project_auto_trigger(getattr(entity, "project_id", ""))
 
 
 def _entity_label(entity, fallback: str) -> str:
@@ -587,7 +602,7 @@ async def _generate_field_impl(
             _save_version(db, entity.id, entity.content, "agent")
         entity.content = new_content
         _set_content_status(entity)
-        db.commit()
+        _commit_block_content_change(entity, db)
 
         logger.info(f"[generate_field_content] 已生成「{target_label}」, {len(new_content)} 字")
         return _json_ok(target_label, "generated", f"✅ 已生成「{target_label}」的内容")
@@ -745,7 +760,7 @@ def update_field(field_name: str, content: str, config: Annotated[RunnableConfig
             _save_version(db, entity.id, entity.content, "agent")
         entity.content = content
         _set_content_status(entity)
-        db.commit()
+        _commit_block_content_change(entity, db)
 
         return _json_ok(target_label, "updated", f"已更新「{target_label}」")
     except Exception as e:
@@ -1106,13 +1121,12 @@ async def _run_research_impl(query: str, research_type: str, config: RunnableCon
                 _save_version(db, research_block.id, research_block.content, "agent")
             research_block.content = report_json
             _set_content_status(research_block)
-            db.flush()
             saved = True
 
         # NOTE: ProjectField 保存路径已移除（P0-1 统一到 ContentBlock）
 
         if saved:
-            db.commit()
+            _commit_block_content_change(research_block, db)
 
         summary = report.summary[:500] if hasattr(report, "summary") else str(report)[:500]
         return json.dumps({

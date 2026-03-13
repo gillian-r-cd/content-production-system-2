@@ -10,7 +10,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { blockAPI, projectAPI, runAutoTriggerChain, agentAPI, modelsAPI } from "@/lib/api";
+import { blockAPI, projectAPI, agentAPI, modelsAPI } from "@/lib/api";
 import { useBlockGeneration } from "@/lib/hooks/useBlockGeneration";
 import {
   countAnsweredPreQuestions,
@@ -48,6 +48,22 @@ import {
   Loader2,
   Cpu,
 } from "lucide-react";
+
+function getBlockStatusLabel(status: string, isJa: boolean, needsRegeneration = false) {
+  if (needsRegeneration) return isJa ? "再生成待ち" : "待重生成";
+  if (status === "completed") return isJa ? "完了" : "已完成";
+  if (status === "in_progress") return isJa ? "生成中" : "生成中";
+  if (status === "failed") return isJa ? "失敗" : "失败";
+  return isJa ? "待機中" : "待处理";
+}
+
+function getBlockStatusClass(status: string, needsRegeneration = false) {
+  if (needsRegeneration) return "bg-sky-600/20 text-sky-400";
+  if (status === "completed") return "bg-emerald-600/20 text-emerald-400";
+  if (status === "in_progress") return "bg-amber-600/20 text-amber-400";
+  if (status === "failed") return "bg-red-600/20 text-red-400";
+  return "bg-zinc-700 text-zinc-400";
+}
 
 // ===== 版本警告弹窗组件（含保存新版本功能） =====
 function VersionWarningDialog({
@@ -384,7 +400,11 @@ export function ContentBlockEditor({
       if (cancelled) return;
       const snapshot = blockSnapshotRef.current;
       // 如果后端状态或更新时间戳已经领先于本地，立即回写并触发树刷新
-      if ((freshBlock.updated_at || "") !== snapshot.updatedAt || freshBlock.status !== snapshot.status) {
+      if (
+        (freshBlock.updated_at || "") !== snapshot.updatedAt
+        || freshBlock.status !== snapshot.status
+        || freshBlock.needs_regeneration !== snapshot.needsRegeneration
+      ) {
         console.log(`[BlockEditor] 检测到数据不同步: block=${snapshot.name}, local_status=${snapshot.status}, server_status=${freshBlock.status}`);
         onBlockUpdatedRef.current?.(freshBlock);
         onUpdateRef.current?.();
@@ -402,6 +422,7 @@ export function ContentBlockEditor({
     status: block.status,
     content: block.content || "",
     updatedAt: block.updated_at || "",
+    needsRegeneration: block.needs_regeneration,
   });
   const pollStatusRef = useRef(block.status);
   const pollUpdatedAtRef = useRef(block.updated_at || "");
@@ -411,22 +432,27 @@ export function ContentBlockEditor({
       status: block.status,
       content: block.content || "",
       updatedAt: block.updated_at || "",
+      needsRegeneration: block.needs_regeneration,
     };
-  }, [block.name, block.status, block.content, block.updated_at]);
+  }, [block.name, block.status, block.content, block.updated_at, block.needs_regeneration]);
   useEffect(() => {
     pollStatusRef.current = block.status;
     pollUpdatedAtRef.current = block.updated_at || "";
-  }, [block.status, block.updated_at]);
+  }, [block.status, block.updated_at, block.needs_regeneration]);
   
   useEffect(() => {
-    if (block.status !== "in_progress" || isGenerating) return;
+    if (!(block.status === "in_progress" || (block.auto_generate && block.needs_regeneration)) || isGenerating) return;
     if (block.id.startsWith("virtual_")) return;
     
     const pollInterval = setInterval(async () => {
       try {
         const fresh = await blockAPI.get(block.id);
         // 只在状态或更新时间戳实际变化时才触发同步
-        if (fresh.status !== pollStatusRef.current || (fresh.updated_at || "") !== pollUpdatedAtRef.current) {
+        if (
+          fresh.status !== pollStatusRef.current
+          || (fresh.updated_at || "") !== pollUpdatedAtRef.current
+          || fresh.needs_regeneration !== blockSnapshotRef.current.needsRegeneration
+        ) {
           onBlockUpdatedRef.current?.(fresh);
           onUpdateRef.current?.();
         }
@@ -435,7 +461,7 @@ export function ContentBlockEditor({
       }
     }, 3000);
     return () => clearInterval(pollInterval);
-  }, [block.id, block.status, isGenerating]);
+  }, [block.auto_generate, block.id, block.needs_regeneration, block.status, isGenerating]);
   
   // 保存预提问答案状态
   const [isSavingPreAnswers, setIsSavingPreAnswers] = useState(false);
@@ -461,11 +487,6 @@ export function ContentBlockEditor({
       setPreAnswers(normalizePreAnswers(updatedBlock.pre_answers || {}, updatedBlock.pre_questions || []));
       setPreAnswersSaved(true);
       setTimeout(() => setPreAnswersSaved(false), 2000);
-      
-      // 前端驱动自动触发链
-      if (projectId) {
-        runAutoTriggerChain(projectId, () => onUpdate?.()).catch(console.error);
-      }
     } catch (err) {
       console.error("保存预提问答案失败:", err);
       alert((isJa ? "保存に失敗しました: " : "保存失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
@@ -829,15 +850,8 @@ export function ContentBlockEditor({
               </h2>
             )}
             
-            <span className={`px-2 py-0.5 text-xs rounded ${
-              block.status === "completed" ? "bg-emerald-600/20 text-emerald-400" :
-              block.status === "in_progress" ? "bg-amber-600/20 text-amber-400" :
-              block.status === "failed" ? "bg-red-600/20 text-red-400" :
-              "bg-zinc-700 text-zinc-400"
-            }`}>
-              {block.status === "completed" ? (isJa ? "完了" : "已完成") :
-               block.status === "in_progress" ? (isJa ? "生成中" : "生成中") :
-               block.status === "failed" ? (isJa ? "失敗" : "失败") : (isJa ? "待機中" : "待处理")}
+            <span className={`px-2 py-0.5 text-xs rounded ${getBlockStatusClass(block.status, block.needs_regeneration)}`}>
+              {getBlockStatusLabel(block.status, isJa, block.needs_regeneration)}
             </span>
           </div>
           
@@ -864,7 +878,7 @@ export function ContentBlockEditor({
                     ? "bg-brand-600 hover:bg-brand-700 text-white"
                     : "bg-zinc-700 text-zinc-500 cursor-not-allowed"
                 }`}
-                title={!canGenerate ? (isJa ? `依存内容が空です: ${unmetDependencies.map(d => d.name).join(", ")}` : `依赖内容为空: ${unmetDependencies.map(d => d.name).join(", ")}`) : (isJa ? "内容を生成" : "生成内容")}
+                title={!canGenerate ? (isJa ? `依存内容が未準備です: ${unmetDependencies.map(d => d.name).join(", ")}` : `依赖内容未就绪: ${unmetDependencies.map(d => d.name).join(", ")}`) : (isJa ? "内容を生成" : "生成内容")}
               >
                 <Play className="w-4 h-4" />
                 {isJa ? "生成" : "生成"}
@@ -873,20 +887,18 @@ export function ContentBlockEditor({
             
             {/* 依赖内容为空警告 */}
             {!canGenerate && !isGenerating && (
-              <span className="text-xs text-amber-500" title={isJa ? `依存内容が空です: ${unmetDependencies.map(d => d.name).join(", ")}` : `依赖内容为空: ${unmetDependencies.map(d => d.name).join(", ")}`}>
-                {isJa ? `${unmetDependencies.length} 件の依存内容が空です` : `${unmetDependencies.length}个依赖内容为空`}
+              <span className="text-xs text-amber-500" title={isJa ? `依存内容が未準備です: ${unmetDependencies.map(d => d.name).join(", ")}` : `依赖内容未就绪: ${unmetDependencies.map(d => d.name).join(", ")}`}>
+                {isJa ? `${unmetDependencies.length} 件の依存内容が未準備です` : `${unmetDependencies.length}个依赖内容未就绪`}
               </span>
             )}
             
             {/* 用户确认按钮：need_review 且有内容但未确认 */}
-            {block.need_review && block.status === "in_progress" && block.content && !isGenerating && (
+            {block.need_review && block.status === "in_progress" && block.content && !block.needs_regeneration && !isGenerating && (
               <button
                 onClick={async () => {
                   try {
                     const confirmedBlock = await blockAPI.confirm(block.id);
                     applyUpdatedBlock(confirmedBlock, true);
-                    // 确认后触发下游自动生成链
-                    runAutoTriggerChain(projectId, () => onUpdate?.()).catch(console.error);
                   } catch (err) {
                     console.error("确认失败:", err);
                     alert((isJa ? "確認に失敗しました: " : "确认失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));

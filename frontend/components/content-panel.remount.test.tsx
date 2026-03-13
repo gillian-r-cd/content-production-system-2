@@ -60,6 +60,7 @@ function buildBlock(id: string): ContentBlock {
     special_handler: null,
     need_review: false,
     auto_generate: false,
+    needs_regeneration: false,
     is_collapsed: false,
     model_override: null,
     children: [],

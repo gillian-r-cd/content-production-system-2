@@ -164,4 +164,78 @@ def test_resolve_dependencies_uses_japanese_runtime_error_copy():
 
     _, _, error = generation_service.resolve_dependencies(block, DummySession(), locale="ja-JP")
 
-    assert error == "以下の依存コンテンツが未完了です: 前提"
+    assert error == "以下の依存コンテンツが未準備です: 前提"
+
+
+@pytest.mark.asyncio
+async def test_generate_block_content_sync_marks_downstream_blocks_for_regeneration(db_session, monkeypatch):
+    project = Project(
+        id="project-zh",
+        name="Chinese Project",
+        locale="zh-CN",
+        current_phase="produce_inner",
+        phase_order=["produce_inner"],
+        phase_status={"produce_inner": "pending"},
+    )
+    upstream = ContentBlock(
+        id="upstream",
+        project_id=project.id,
+        name="上游",
+        block_type="field",
+        depth=0,
+        order_index=0,
+        status="completed",
+        content="最新上游内容",
+    )
+    target = ContentBlock(
+        id="target",
+        project_id=project.id,
+        name="中间块",
+        block_type="field",
+        depth=0,
+        order_index=1,
+        status="completed",
+        content="旧中间内容",
+        need_review=False,
+        auto_generate=True,
+        needs_regeneration=True,
+        depends_on=["upstream"],
+        ai_prompt="请基于依赖生成中间块",
+    )
+    downstream = ContentBlock(
+        id="downstream",
+        project_id=project.id,
+        name="下游块",
+        block_type="field",
+        depth=0,
+        order_index=2,
+        status="completed",
+        content="旧下游内容",
+        need_review=False,
+        auto_generate=True,
+        depends_on=["target"],
+    )
+    db_session.add_all([project, upstream, target, downstream])
+    db_session.commit()
+
+    monkeypatch.setattr(config_module, "validate_llm_config", lambda: None)
+    monkeypatch.setattr(version_service, "save_content_version", lambda *args, **kwargs: None)
+    monkeypatch.setattr(generation_service, "resolve_model", lambda model_override=None: "gpt-4o-mini")
+    monkeypatch.setattr(generation_service, "get_chat_model", lambda model=None: object())
+
+    async def fake_ainvoke_with_retry(_model, messages):
+        return SimpleNamespace(
+            content="新的中间内容",
+            usage_metadata={"input_tokens": 10, "output_tokens": 20},
+        )
+
+    monkeypatch.setattr(generation_service, "ainvoke_with_retry", fake_ainvoke_with_retry)
+
+    result = await generation_service.generate_block_content_sync(block_id=target.id, db=db_session)
+    db_session.refresh(target)
+    db_session.refresh(downstream)
+
+    assert result["status"] == "completed"
+    assert target.content == "新的中间内容"
+    assert target.needs_regeneration is False
+    assert downstream.needs_regeneration is True

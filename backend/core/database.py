@@ -187,6 +187,7 @@ def _ensure_content_block_columns(engine) -> None:
     """兼容旧库：为 content_blocks 补齐 0225-compatible 新增列。"""
     new_columns = {
         "auto_generate": "BOOLEAN DEFAULT 0",
+        "needs_regeneration": "BOOLEAN DEFAULT 0",
         "model_override": "VARCHAR(100)",
         "digest": "TEXT",
         "guidance_input": "TEXT DEFAULT ''",
@@ -288,6 +289,16 @@ def _backfill_compat_defaults(engine) -> None:
             "UPDATE phase_templates SET locale = :default_locale "
             "WHERE locale IS NULL OR locale = ''",
             {"default_locale": DEFAULT_LOCALE},
+        ),
+        (
+            "UPDATE content_blocks SET auto_generate = 0 "
+            "WHERE auto_generate IS NULL",
+            {},
+        ),
+        (
+            "UPDATE content_blocks SET needs_regeneration = 0 "
+            "WHERE needs_regeneration IS NULL",
+            {},
         ),
         (
             "UPDATE channels SET locale = :default_locale "

@@ -9,17 +9,28 @@ entity_id 可以是 ContentBlock.id 或 ProjectField.id
 """
 
 from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 import logging
 
 from core.database import get_db
-from core.models import ContentVersion, ContentBlock, ProjectField, generate_uuid
+from core.dependency_regeneration_service import finalize_block_content_change, schedule_project_auto_trigger
+from core.localization import DEFAULT_LOCALE, normalize_locale
+from core.locale_text import rt
+from core.models import ContentVersion, ContentBlock, Project, ProjectField, generate_uuid
 
 logger = logging.getLogger("versions")
 
 router = APIRouter(prefix="/api/versions", tags=["versions"])
+
+
+def _entity_locale(*, block: ContentBlock | None, field: ProjectField | None, db: Session) -> str:
+    project_id = getattr(block or field, "project_id", None)
+    if not project_id:
+        return DEFAULT_LOCALE
+    project = db.query(Project).filter(Project.id == project_id).first()
+    return normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
 
 
 # ============== Schemas ==============
@@ -102,16 +113,13 @@ def list_versions(entity_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/{entity_id}/rollback/{version_id}", response_model=RollbackResponse)
-def rollback_version(entity_id: str, version_id: str, db: Session = Depends(get_db)):
+def rollback_version(
+    entity_id: str,
+    version_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     """回滚到指定版本"""
-
-    # 查找目标版本
-    target_version = db.query(ContentVersion).filter(
-        ContentVersion.id == version_id,
-        ContentVersion.block_id == entity_id,
-    ).first()
-    if not target_version:
-        raise HTTPException(status_code=404, detail="Version not found")
 
     # 查找实体（ContentBlock 或 ProjectField）
     block = db.query(ContentBlock).filter(
@@ -125,7 +133,17 @@ def rollback_version(entity_id: str, version_id: str, db: Session = Depends(get_
         ).first()
 
     if not block and not field:
-        raise HTTPException(status_code=404, detail="Entity not found")
+        raise HTTPException(status_code=404, detail=rt(DEFAULT_LOCALE, "version.entity_not_found"))
+
+    locale = _entity_locale(block=block, field=field, db=db)
+
+    # 查找目标版本
+    target_version = db.query(ContentVersion).filter(
+        ContentVersion.id == version_id,
+        ContentVersion.block_id == entity_id,
+    ).first()
+    if not target_version:
+        raise HTTPException(status_code=404, detail=rt(locale, "version.not_found"))
 
     entity = block or field
     old_content = entity.content or ""
@@ -150,6 +168,8 @@ def rollback_version(entity_id: str, version_id: str, db: Session = Depends(get_
     entity.content = target_version.content
     if hasattr(entity, 'status'):
         entity.status = "completed"
+    if block:
+        finalize_block_content_change(block=block, db=db)
 
     db.commit()
     db.refresh(entity)
@@ -157,9 +177,12 @@ def rollback_version(entity_id: str, version_id: str, db: Session = Depends(get_
     entity_name = entity.name if hasattr(entity, 'name') else entity_id
     logger.info(f"[版本] 回滚 {entity_name} 到 v{target_version.version_number}")
 
+    if block:
+        schedule_project_auto_trigger(block.project_id, background_tasks=background_tasks)
+
     return RollbackResponse(
         success=True,
         entity_id=entity_id,
         restored_version=target_version.version_number,
-        message=f"已回滚到版本 v{target_version.version_number}",
+        message=rt(locale, "version.rollback.success", version=target_version.version_number),
     )

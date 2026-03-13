@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from core.llm import ainvoke_with_retry, get_chat_model, parse_llm_error
 from core.llm_compat import normalize_content, resolve_model
+from core.dependency_regeneration_service import finalize_block_content_change
 from core.models import ContentBlock, GenerationLog, Project, generate_uuid
 from core.pre_question_utils import iter_answered_pre_question_items, list_missing_required_pre_questions
 from core.prompt_engine import GoldenContext
@@ -104,12 +105,20 @@ def resolve_dependencies(
         block.depends_on = updated_depends_on
         db.flush()
 
-    incomplete = [dep for dep in resolved_deps if not dep.content or not dep.content.strip()]
-    if incomplete:
+    not_ready = [
+        dep for dep in resolved_deps
+        if (
+            not dep.content
+            or not dep.content.strip()
+            or dep.status != "completed"
+            or bool(getattr(dep, "needs_regeneration", False))
+        )
+    ]
+    if not_ready:
         return resolved_deps, "", rt(
             locale,
-            "block.dependencies_missing_content",
-            missing_labels="、".join(dep.name for dep in incomplete),
+            "block.dependencies_not_ready",
+            missing_labels="、".join(dep.name for dep in not_ready),
         )
 
     dependency_content = "\n\n".join(
@@ -190,8 +199,8 @@ def list_ready_block_ids(
     统一 ready 判定。
 
     mode:
-    - auto_trigger: 仅扫描 auto_generate=True 的 ready 块
-    - start_all_ready: 忽略 auto_generate，扫描所有 ready 块
+    - auto_trigger: 仅扫描 auto_generate=True 的 ready 块（含首次生成与依赖失效后的重生成）
+    - start_all_ready: 忽略 auto_generate，扫描所有 ready 块（含手动批量重生成）
     """
     exclude_ids = exclude_ids or set()
     all_blocks = db.query(ContentBlock).filter(
@@ -208,9 +217,10 @@ def list_ready_block_ids(
             continue
         if mode == "auto_trigger" and not getattr(block, "auto_generate", False):
             continue
-        if block.status not in ("pending", "failed"):
-            continue
-        if block.content and block.content.strip():
+        has_content = bool(block.content and block.content.strip())
+        is_initial_candidate = block.status in ("pending", "failed") and not has_content
+        is_regeneration_candidate = bool(getattr(block, "needs_regeneration", False))
+        if not is_initial_candidate and not is_regeneration_candidate:
             continue
 
         deps = block.depends_on or []
@@ -218,7 +228,13 @@ def list_ready_block_ids(
             all_deps_ready = True
             for dep_id in deps:
                 dep = blocks_by_id.get(dep_id)
-                if not dep or not dep.content or not dep.content.strip() or dep.status != "completed":
+                if (
+                    not dep
+                    or not dep.content
+                    or not dep.content.strip()
+                    or dep.status != "completed"
+                    or bool(getattr(dep, "needs_regeneration", False))
+                ):
                     all_deps_ready = False
                     break
             if not all_deps_ready:
@@ -291,8 +307,10 @@ async def generate_block_content_sync(
 
     from core.version_service import save_content_version
 
+    was_stale = bool(getattr(block, "needs_regeneration", False))
     save_content_version(db, block.id, block.content, "ai_regenerate", "重新生成前的版本")
     block.status = "in_progress"
+    block.needs_regeneration = False
     db.commit()
 
     try:
@@ -305,6 +323,7 @@ async def generate_block_content_sync(
         generated_content = normalize_content(response.content)
         block.content = generated_content
         block.status = "completed" if not block.need_review else "in_progress"
+        finalize_block_content_change(block=block, db=db)
 
         usage = getattr(response, "usage_metadata", {}) or {}
         db.add(GenerationLog(
@@ -343,5 +362,6 @@ async def generate_block_content_sync(
         raise
     except Exception as exc:
         block.status = "failed"
+        block.needs_regeneration = was_stale
         db.commit()
         raise HTTPException(status_code=500, detail=parse_llm_error(exc)) from exc

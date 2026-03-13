@@ -484,8 +484,8 @@ function BlockNode({
 
         {/* 状态指示器 */}
         <span
-          className={`w-2 h-2 rounded-full ${statusColors[block.status] || statusColors.pending}`}
-          title={block.status}
+          className={`w-2 h-2 rounded-full ${block.needs_regeneration ? "bg-sky-400" : (statusColors[block.status] || statusColors.pending)}`}
+          title={block.needs_regeneration ? (isJa ? "再生成待ち" : "待重生成") : block.status}
         />
 
         {/* 菜单按钮 */}

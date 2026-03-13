@@ -150,6 +150,74 @@ def test_list_ready_blocks_only_blocks_unanswered_required_questions(db_session)
     assert set(ready_ids) == {"optional-only", "required-answered"}
 
 
+def test_list_ready_blocks_includes_stale_blocks_and_blocks_on_stale_dependencies(db_session):
+    project = create_project(db_session)
+    fresh_dep = ContentBlock(
+        id="fresh-dep",
+        project_id=project.id,
+        parent_id=None,
+        name="最新依赖",
+        block_type="field",
+        depth=0,
+        order_index=0,
+        content="最新内容",
+        status="completed",
+    )
+    stale_auto = ContentBlock(
+        id="stale-auto",
+        project_id=project.id,
+        parent_id=None,
+        name="待自动重生成块",
+        block_type="field",
+        depth=0,
+        order_index=1,
+        content="旧内容",
+        status="completed",
+        auto_generate=True,
+        need_review=False,
+        needs_regeneration=True,
+        depends_on=["fresh-dep"],
+    )
+    stale_manual = ContentBlock(
+        id="stale-manual",
+        project_id=project.id,
+        parent_id=None,
+        name="待手动重生成块",
+        block_type="field",
+        depth=0,
+        order_index=2,
+        content="旧内容",
+        status="completed",
+        auto_generate=False,
+        need_review=False,
+        needs_regeneration=True,
+        depends_on=["fresh-dep"],
+    )
+    blocked_downstream = ContentBlock(
+        id="blocked-downstream",
+        project_id=project.id,
+        parent_id=None,
+        name="被 stale 依赖阻塞的下游块",
+        block_type="field",
+        depth=0,
+        order_index=3,
+        content="旧内容",
+        status="completed",
+        auto_generate=True,
+        need_review=False,
+        needs_regeneration=True,
+        depends_on=["stale-auto"],
+    )
+    db_session.add_all([fresh_dep, stale_auto, stale_manual, blocked_downstream])
+    db_session.commit()
+
+    auto_ids = list_ready_blocks(project_id=project.id, mode="auto_trigger", db=db_session)
+    all_ids = list_ready_blocks(project_id=project.id, mode="start_all_ready", db=db_session)
+
+    assert auto_ids == ["stale-auto"]
+    assert set(all_ids) == {"stale-auto", "stale-manual"}
+
+
 def test_run_project_blocks_scans_multiple_rounds(db_session, monkeypatch):
     from core import project_run_service as run_service
 
@@ -207,6 +275,90 @@ def test_run_project_blocks_scans_multiple_rounds(db_session, monkeypatch):
     assert len(result["rounds"]) == 2
     assert result["rounds"][0]["started_ids"] == ["field-1"]
     assert result["rounds"][1]["started_ids"] == ["field-2"]
+
+
+def test_run_project_blocks_reprocesses_stale_chain_in_dependency_order(db_session, monkeypatch):
+    from core import project_run_service as run_service
+
+    project = create_project(db_session)
+    source = ContentBlock(
+        id="source",
+        project_id=project.id,
+        parent_id=None,
+        name="上游块",
+        block_type="field",
+        depth=0,
+        order_index=0,
+        status="completed",
+        content="最新上游内容",
+    )
+    middle = ContentBlock(
+        id="middle",
+        project_id=project.id,
+        parent_id=None,
+        name="中间块",
+        block_type="field",
+        depth=0,
+        order_index=1,
+        status="completed",
+        content="旧中间内容",
+        auto_generate=True,
+        need_review=False,
+        needs_regeneration=True,
+        depends_on=["source"],
+    )
+    downstream = ContentBlock(
+        id="downstream",
+        project_id=project.id,
+        parent_id=None,
+        name="下游块",
+        block_type="field",
+        depth=0,
+        order_index=2,
+        status="completed",
+        content="旧下游内容",
+        auto_generate=True,
+        need_review=False,
+        needs_regeneration=True,
+        depends_on=["middle"],
+    )
+    db_session.add_all([source, middle, downstream])
+    db_session.commit()
+
+    session_factory = sessionmaker(
+        autocommit=False,
+        autoflush=False,
+        bind=db_session.get_bind(),
+    )
+
+    async def fake_generate_block_content_sync(*, block_id: str, db):
+        block = db.query(ContentBlock).filter(ContentBlock.id == block_id).first()
+        block.content = f"{block.name} 新内容"
+        block.status = "completed"
+        block.needs_regeneration = False
+        db.commit()
+        return {"block_id": block_id, "status": "completed", "content": block.content}
+
+    monkeypatch.setattr(run_service, "get_session_maker", lambda: session_factory)
+    monkeypatch.setattr(run_service, "generate_block_content_sync", fake_generate_block_content_sync)
+
+    result = asyncio.run(run_project_blocks(
+        project_id=project.id,
+        mode="auto_trigger",
+        max_concurrency=2,
+    ))
+
+    db_session.refresh(middle)
+    db_session.refresh(downstream)
+
+    assert result["started_count"] == 2
+    assert result["completed_count"] == 2
+    assert result["failed_count"] == 0
+    assert len(result["rounds"]) == 2
+    assert result["rounds"][0]["started_ids"] == ["middle"]
+    assert result["rounds"][1]["started_ids"] == ["downstream"]
+    assert middle.needs_regeneration is False
+    assert downstream.needs_regeneration is False
 
 
 def test_run_project_blocks_handles_auto_split_applied_blocks(db_session, monkeypatch):

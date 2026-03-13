@@ -9,9 +9,10 @@
 支持无限层级、拖拽排序、依赖引用
 """
 
+import asyncio
 import logging
 from typing import Optional, List, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -35,6 +36,12 @@ from core.models import (
 from core.prompt_engine import PromptEngine, GoldenContext
 from core.locale_text import rt
 from core.template_schema import instantiate_template_nodes, normalize_field_template_payload
+from core.dependency_regeneration_service import (
+    DependencyUpdateSummary,
+    enqueue_project_auto_trigger,
+    finalize_block_content_change,
+    schedule_project_auto_trigger,
+)
 from core.block_generation_service import (
     build_generation_system_prompt,
     ensure_required_pre_questions_answered,
@@ -124,6 +131,7 @@ class BlockResponse(BaseModel):
     special_handler: Optional[str]
     need_review: bool
     auto_generate: bool = False  # 是否自动生成
+    needs_regeneration: bool = False
     is_collapsed: bool
     model_override: Optional[str] = None
     children: List["BlockResponse"] = Field(default_factory=list)
@@ -187,6 +195,7 @@ def _block_to_response(
         special_handler=block.special_handler,
         need_review=block.need_review,
         auto_generate=getattr(block, 'auto_generate', False),
+        needs_regeneration=bool(getattr(block, 'needs_regeneration', False)),
         is_collapsed=block.is_collapsed,
         model_override=getattr(block, 'model_override', None),
         children=children,
@@ -338,10 +347,9 @@ def check_auto_triggers(
     
     自动触发条件：
     1. auto_generate = True（与 need_review 正交：auto_generate 控制是否自动开始，need_review 控制生成后是否需人工确认）
-    2. status 是 pending/failed（或 in_progress 但无内容）
-    3. 没有已有内容
-    4. 有依赖且所有依赖都有内容
-    5. pre_questions 都已回答
+    2. 要么是空块首次生成，要么是 `needs_regeneration=True` 的已有内容块
+    3. 有依赖时，所有依赖都必须 `completed` 且自身不处于待重新生成状态
+    4. pre_questions 都已回答
     """
     eligible_ids = list_ready_block_ids(project_id=project_id, db=db, mode="auto_trigger")
 
@@ -472,6 +480,7 @@ def save_block_as_field_template(
 @router.post("/", response_model=BlockResponse)
 def create_block(
     data: BlockCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
     """创建内容块"""
@@ -527,6 +536,9 @@ def create_block(
     db.add(block)
     db.commit()
     db.refresh(block)
+
+    if block.block_type == "field" and bool(getattr(block, "auto_generate", False)):
+        schedule_project_auto_trigger(block.project_id, background_tasks=background_tasks)
     
     return _block_to_response(block)
 
@@ -535,6 +547,7 @@ def create_block(
 def update_block(
     block_id: str,
     data: BlockUpdate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
     """更新内容块"""
@@ -544,12 +557,21 @@ def update_block(
     ).first()
     if not block:
         raise HTTPException(status_code=404, detail="内容块不存在")
+
+    project = db.query(Project).filter(Project.id == block.project_id).first()
+    project_locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
     
     # 记录内容是否发生变化（用于版本警告）
     content_changed = (
         data.content is not None
         and data.content != (block.content or "")
     )
+    pre_questions_changed = data.pre_questions is not None
+    pre_answers_changed = data.pre_answers is not None
+    depends_on_changed = data.depends_on is not None and data.depends_on != (block.depends_on or [])
+    need_review_changed = data.need_review is not None and data.need_review != bool(getattr(block, "need_review", True))
+    auto_generate_changed = data.auto_generate is not None and data.auto_generate != bool(getattr(block, "auto_generate", False))
+    status_changed = data.status is not None and data.status != (block.status or "")
     
     # ===== 内容变更前保存旧版本 =====
     if content_changed:
@@ -601,6 +623,11 @@ def update_block(
     if data.model_override is not None:
         # 空字符串表示清除覆盖（恢复使用全局默认）
         block.model_override = data.model_override if data.model_override else None
+
+    dependency_update = DependencyUpdateSummary()
+    if content_changed and block.block_type == "field":
+        dependency_update = finalize_block_content_change(block=block, db=db)
+
     db.commit()
     db.refresh(block)
     
@@ -609,39 +636,37 @@ def update_block(
     if block.parent_id and block.block_type == "field":
         update_parent_status(block.parent_id, db)
     
-    # ===== 版本警告：检查是否有下游已完成内容依赖于此块 =====
     version_warning = None
     affected_blocks = None
-    
-    if content_changed and block.block_type == "field":
-        # 找到同项目所有未删除的 field 块
-        all_blocks = db.query(ContentBlock).filter(
-            ContentBlock.project_id == block.project_id,
-            ContentBlock.id != block.id,
-            ContentBlock.deleted_at == None,
-            ContentBlock.block_type == "field",
-            ContentBlock.status.in_(["completed", "in_progress"]),
-        ).all()
-        
-        affected = []
-        for other in all_blocks:
-            deps = other.depends_on or []
-            if block.id in deps and other.content and other.content.strip():
-                affected.append(other.name)
-        
-        if affected:
-            version_warning = (
-                f"您修改了「{block.name}」的内容，以下内容块依赖于它且已有内容，"
-                f"可能需要重新生成或创建新版本：{', '.join(affected)}"
-            )
-            affected_blocks = affected
-    
+
+    if dependency_update.manual_attention_block_names:
+        version_warning = rt(
+            project_locale,
+            "block.dependency_update.manual_attention",
+            name=block.name,
+            affected_names="、".join(dependency_update.manual_attention_block_names),
+        )
+        affected_blocks = dependency_update.manual_attention_block_names
+
+    should_schedule_auto_trigger = any([
+        content_changed,
+        pre_questions_changed,
+        pre_answers_changed,
+        depends_on_changed,
+        need_review_changed,
+        auto_generate_changed,
+        status_changed,
+    ])
+    if should_schedule_auto_trigger and block.block_type == "field":
+        schedule_project_auto_trigger(block.project_id, background_tasks=background_tasks)
+
     return _block_to_response(block, version_warning, affected_blocks)
 
 
 @router.post("/{block_id}/confirm", response_model=BlockResponse)
 def confirm_block(
     block_id: str,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
     """
@@ -654,9 +679,18 @@ def confirm_block(
     ).first()
     if not block:
         raise HTTPException(status_code=404, detail="内容块不存在")
+
+    project = db.query(Project).filter(Project.id == block.project_id).first()
+    project_locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
     
     if not block.content or not block.content.strip():
         raise HTTPException(status_code=400, detail="内容为空，无法确认")
+
+    if bool(getattr(block, "needs_regeneration", False)):
+        raise HTTPException(
+            status_code=409,
+            detail=rt(project_locale, "block.confirm.stale", name=block.name),
+        )
     
     block.status = "completed"
     db.commit()
@@ -665,6 +699,8 @@ def confirm_block(
     # 更新父级状态
     if block.parent_id:
         update_parent_status(block.parent_id, db)
+
+    schedule_project_auto_trigger(block.project_id, background_tasks=background_tasks)
     
     return _block_to_response(block)
 
@@ -824,6 +860,7 @@ def duplicate_block(
             special_handler=node.special_handler,
             need_review=node.need_review,
             auto_generate=getattr(node, 'auto_generate', False),
+            needs_regeneration=False,
             is_collapsed=node.is_collapsed,
             model_override=getattr(node, 'model_override', None),
         )
@@ -994,10 +1031,18 @@ def _deprecated_resolve_dependencies(block: ContentBlock, db: Session) -> tuple:
 @router.post("/{block_id}/generate")
 async def generate_block_content(
     block_id: str,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
     """生成内容块内容"""
-    return await generate_block_content_sync(block_id=block_id, db=db)
+    result = await generate_block_content_sync(block_id=block_id, db=db)
+    block = db.query(ContentBlock).filter(
+        ContentBlock.id == block_id,
+        ContentBlock.deleted_at == None,  # noqa: E711
+    ).first()
+    if block and block.block_type == "field":
+        schedule_project_auto_trigger(block.project_id, background_tasks=background_tasks)
+    return result
 
 
 @router.post("/{block_id}/generate/stream")
@@ -1064,9 +1109,11 @@ async def generate_block_content_stream(
     chat_model = get_chat_model(model=effective_model)
     
     # ===== 流式生成前保存旧版本 =====
+    was_stale = bool(getattr(block, "needs_regeneration", False))
     _save_content_version(block, "ai_regenerate", db, source_detail="重新生成前的版本")
     
     block.status = "in_progress"
+    block.needs_regeneration = False
     db.commit()
     
     start_time = time.time()
@@ -1097,6 +1144,7 @@ async def generate_block_content_stream(
             block.content = full_content
             # 关键逻辑：need_review=True 时等待用户确认，否则自动完成
             block.status = "completed" if not block.need_review else "in_progress"
+            finalize_block_content_change(block=block, db=db)
             
             # 计算耗时和tokens（估算）
             duration_ms = int((time.time() - start_time) * 1000)
@@ -1126,8 +1174,8 @@ async def generate_block_content_stream(
             # 更新父级状态（递归向上）
             if block.parent_id:
                 update_parent_status(block.parent_id, db)
-            
-            # 注意：不在后端触发下游块生成，由前端调用 check-auto-triggers 后自行触发
+
+            asyncio.create_task(asyncio.to_thread(enqueue_project_auto_trigger, block.project_id))
             
             # 发送完成事件
             done_data = json.dumps({
@@ -1142,6 +1190,7 @@ async def generate_block_content_stream(
             
         except Exception as e:
             block.status = "failed"
+            block.needs_regeneration = was_stale
             db.commit()
             # 详细日志：记录完整异常信息便于排查
             logger.error(
@@ -1213,6 +1262,7 @@ def apply_template_to_project(
     project_id: str,
     template_id: str,
     parent_id: Optional[str] = None,
+    background_tasks: BackgroundTasks = None,
     db: Session = Depends(get_db),
 ):
     """
@@ -1288,6 +1338,7 @@ def apply_template_to_project(
         db.add(ContentBlock(**block_data))
 
     db.commit()
+    schedule_project_auto_trigger(project_id, background_tasks=background_tasks)
     
     return {
         "message": rt(project_locale, "phase_template.apply.success", name=template_name),

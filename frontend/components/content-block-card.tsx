@@ -9,7 +9,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { blockAPI, runAutoTriggerChain, modelsAPI } from "@/lib/api";
+import { blockAPI, modelsAPI } from "@/lib/api";
 import { useBlockGeneration } from "@/lib/hooks/useBlockGeneration";
 import type { ContentBlock, ModelInfo } from "@/lib/api";
 import type { PreQuestion } from "@/lib/preQuestions";
@@ -58,11 +58,20 @@ interface ContentBlockCardProps {
   onSelect?: () => void;  // 点击选中此块（用于进入子组/分组）
 }
 
-function getBlockStatusLabel(status: string, isJa: boolean) {
+function getBlockStatusLabel(status: string, isJa: boolean, needsRegeneration = false) {
+  if (needsRegeneration) return isJa ? "再生成待ち" : "待重生成";
   if (status === "completed") return isJa ? "完了" : "已完成";
   if (status === "in_progress") return isJa ? "生成中" : "生成中";
   if (status === "failed") return isJa ? "失敗" : "失败";
   return isJa ? "待機中" : "待处理";
+}
+
+function getBlockStatusClass(status: string, needsRegeneration = false) {
+  if (needsRegeneration) return "bg-sky-600/20 text-sky-400";
+  if (status === "completed") return "bg-emerald-600/20 text-emerald-400";
+  if (status === "in_progress") return "bg-amber-600/20 text-amber-400";
+  if (status === "failed") return "bg-red-600/20 text-red-400";
+  return "bg-zinc-700 text-zinc-400";
 }
 
 export function ContentBlockCard({ 
@@ -226,11 +235,6 @@ export function ContentBlockCard({
       setPreAnswers(normalizePreAnswers(updatedBlock.pre_answers || {}, updatedBlock.pre_questions || []));
       setPreAnswersSaved(true);
       setTimeout(() => setPreAnswersSaved(false), 2000);
-      
-      // 保存后前端驱动自动触发链
-      if (projectId) {
-        runAutoTriggerChain(projectId, () => onUpdate?.()).catch(console.error);
-      }
     } catch (err) {
       console.error("保存答案失败:", err);
       alert((isJa ? "保存に失敗しました: " : "保存失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
@@ -271,7 +275,7 @@ export function ContentBlockCard({
   useEffect(() => {
     pollStatusRef.current = block.status;
     pollUpdatedAtRef.current = block.updated_at || "";
-  }, [block.status, block.updated_at]);
+  }, [block.status, block.updated_at, block.needs_regeneration]);
 
   const handleAddPreQuestion = (required = false) => {
     const question = newPreQuestion.trim();
@@ -322,9 +326,9 @@ export function ContentBlockCard({
     }
   };
 
-  // ===== 关键修复：如果 block 状态是 in_progress 但当前组件没在流式生成，则轮询刷新 =====
+  // 后端会自动调度依赖更新链；当前块如果正在自动重生成或等待被自动重生成，则轮询刷新。
   useEffect(() => {
-    if (block.status === "in_progress" && !isGenerating) {
+    if ((block.status === "in_progress" || (block.auto_generate && block.needs_regeneration)) && !isGenerating) {
       const pollInterval = setInterval(async () => {
         try {
           const fresh = await blockAPI.get(block.id);
@@ -338,7 +342,7 @@ export function ContentBlockCard({
       }, 2000);
       return () => clearInterval(pollInterval);
     }
-  }, [block.id, block.status, isGenerating]);
+  }, [block.auto_generate, block.id, block.needs_regeneration, block.status, isGenerating]);
 
   // 保存名称
   const handleSaveName = async () => {
@@ -498,13 +502,8 @@ export function ContentBlockCard({
               )}
               
               {/* 状态标签 */}
-              <span className={`px-2 py-0.5 text-xs rounded flex-shrink-0 ${
-                block.status === "completed" ? "bg-emerald-600/20 text-emerald-400" :
-                block.status === "in_progress" ? "bg-amber-600/20 text-amber-400" :
-                block.status === "failed" ? "bg-red-600/20 text-red-400" :
-                "bg-zinc-700 text-zinc-400"
-              }`}>
-                {getBlockStatusLabel(block.status, isJa)}
+              <span className={`px-2 py-0.5 text-xs rounded flex-shrink-0 ${getBlockStatusClass(block.status, block.needs_regeneration)}`}>
+                {getBlockStatusLabel(block.status, isJa, block.needs_regeneration)}
               </span>
             </div>
             
@@ -571,13 +570,8 @@ export function ContentBlockCard({
                 {info.title}
               </span>
               {/* 状态标签 */}
-              <span className={`px-2 py-0.5 text-xs rounded flex-shrink-0 ${
-                block.status === "completed" ? "bg-emerald-600/20 text-emerald-400" :
-                block.status === "in_progress" ? "bg-amber-600/20 text-amber-400" :
-                block.status === "failed" ? "bg-red-600/20 text-red-400" :
-                "bg-zinc-700 text-zinc-400"
-              }`}>
-                {getBlockStatusLabel(block.status, isJa)}
+              <span className={`px-2 py-0.5 text-xs rounded flex-shrink-0 ${getBlockStatusClass(block.status, block.needs_regeneration)}`}>
+                {getBlockStatusLabel(block.status, isJa, block.needs_regeneration)}
               </span>
             </div>
             <span className="text-zinc-500 text-sm flex items-center gap-1 flex-shrink-0">
@@ -655,13 +649,8 @@ export function ContentBlockCard({
             )}
             
               {/* 状态标签 */}
-              <span className={`px-2 py-0.5 text-xs rounded flex-shrink-0 ${
-                block.status === "completed" ? "bg-emerald-600/20 text-emerald-400" :
-                block.status === "in_progress" ? "bg-amber-600/20 text-amber-400" :
-                block.status === "failed" ? "bg-red-600/20 text-red-400" :
-                "bg-zinc-700 text-zinc-400"
-              }`}>
-                {getBlockStatusLabel(block.status, isJa)}
+              <span className={`px-2 py-0.5 text-xs rounded flex-shrink-0 ${getBlockStatusClass(block.status, block.needs_regeneration)}`}>
+                {getBlockStatusLabel(block.status, isJa, block.needs_regeneration)}
               </span>
           </div>
           
@@ -768,7 +757,7 @@ export function ContentBlockCard({
                 }`}
                 title={
                   !canGenerate
-                    ? `${isJa ? "依存内容が空です" : "依赖内容为空"}: ${unmetDependencies.map(d => d.name).join(", ")}`
+                    ? `${isJa ? "依存内容が未準備です" : "依赖内容未就绪"}: ${unmetDependencies.map(d => d.name).join(", ")}`
                     : block.status === "completed" ? (isJa ? "再生成" : "重新生成") : (isJa ? "内容を生成" : "生成内容")
                 }
               >
@@ -1175,7 +1164,13 @@ export function ContentBlockCard({
                               ? "bg-amber-600/20 text-amber-400"
                               : "bg-zinc-700 text-zinc-400"
                           }`}>
-                            {dep.status === "completed" ? getBlockStatusLabel(dep.status, isJa) : (dep.content && dep.content.trim() !== "") ? (isJa ? "確認待ち" : "待确认") : (isJa ? "未完了" : "未完成")}
+                            {dep.needs_regeneration
+                              ? (isJa ? "再生成待ち" : "待重生成")
+                              : dep.status === "completed"
+                                ? getBlockStatusLabel(dep.status, isJa)
+                                : (dep.content && dep.content.trim() !== "")
+                                  ? (isJa ? "確認待ち" : "待确认")
+                                  : (isJa ? "未完了" : "未完成")}
                           </span>
                         </div>
                       </div>

@@ -745,6 +745,7 @@ export interface ContentBlock {
   special_handler: string | null;
   need_review: boolean;
   auto_generate: boolean;  // 是否自动生成（依赖就绪时自动触发）
+  needs_regeneration: boolean;
   is_collapsed: boolean;
   model_override?: string | null;
   children: ContentBlock[];

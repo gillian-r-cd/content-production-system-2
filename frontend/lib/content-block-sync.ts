@@ -54,6 +54,7 @@ export function buildBlockSubtreeSyncToken(block: ContentBlock): string {
     block.id,
     block.updated_at || "",
     block.status || "",
+    block.needs_regeneration ? "stale" : "fresh",
     block.parent_id || "",
     String(block.order_index ?? ""),
     childToken,

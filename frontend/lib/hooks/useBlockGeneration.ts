@@ -7,7 +7,7 @@
 "use client";
 
 import { useState, useRef, useMemo, useCallback } from "react";
-import { blockAPI, runAutoTriggerChain } from "@/lib/api";
+import { blockAPI } from "@/lib/api";
 import { readSSEStream } from "@/lib/sse";
 import { useUiIsJa } from "@/lib/ui-locale";
 import { sendNotification } from "@/lib/utils";
@@ -72,7 +72,9 @@ export function useBlockGeneration({
   );
 
   const unmetDependencies = useMemo(
-    () => dependencyBlocks.filter((d) => !d.content || !d.content.trim() || d.status !== "completed"),
+    () => dependencyBlocks.filter(
+      (d) => !d.content || !d.content.trim() || d.status !== "completed" || d.needs_regeneration,
+    ),
     [dependencyBlocks],
   );
 
@@ -90,8 +92,8 @@ export function useBlockGeneration({
       if (unmetDependencies.length > 0) {
         messages.push(
           isJa
-            ? `以下の依存コンテンツが未完了です:\n${unmetDependencies.map((d) => `• ${d.name}`).join("\n")}`
-            : `以下依赖内容为空:\n${unmetDependencies.map((d) => `• ${d.name}`).join("\n")}`,
+            ? `以下の依存コンテンツが未準備です:\n${unmetDependencies.map((d) => `• ${d.name}`).join("\n")}`
+            : `以下依赖内容尚未就绪:\n${unmetDependencies.map((d) => `• ${d.name}`).join("\n")}`,
         );
       }
       if (missingRequiredPreQuestionCount > 0) {
@@ -148,9 +150,6 @@ export function useBlockGeneration({
             isJa ? "コンテンツ生成が完了しました" : "内容生成完成",
             isJa ? `「${block.name}」の生成が完了しました。クリックして確認してください` : `「${block.name}」已生成完毕，点击查看`,
           );
-          if (projectId) {
-            runAutoTriggerChain(projectId, () => onUpdate?.()).catch(console.error);
-          }
         }
         if (data.error) {
           throw new Error(data.error as string);

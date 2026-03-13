@@ -31,6 +31,7 @@ function buildBlock(overrides: Partial<ContentBlock> & Pick<ContentBlock, "id" |
     special_handler: overrides.special_handler || null,
     need_review: overrides.need_review ?? false,
     auto_generate: overrides.auto_generate ?? false,
+    needs_regeneration: overrides.needs_regeneration ?? false,
     is_collapsed: overrides.is_collapsed ?? false,
     model_override: overrides.model_override ?? null,
     children: overrides.children || [],
