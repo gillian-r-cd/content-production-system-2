@@ -27,11 +27,11 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from core.content_block_reference import (
-    build_block_reference_label,
     build_blocks_by_id,
     find_block_by_identifier,
     list_active_project_blocks,
 )
+from core.content_block_runtime_surface import build_block_runtime_surface
 from core.database import get_db
 from core.locale_text import rt
 from core.localization import DEFAULT_LOCALE, normalize_locale
@@ -160,32 +160,8 @@ def _build_ref_context(
     blocks_by_id: dict[str, ContentBlock] | None = None,
     locale: str = DEFAULT_LOCALE,
 ) -> str:
-    """将内容块/字段构建为 Agent 可理解的完整上下文。
-
-    包含内容正文、AI 提示词和状态信息，确保即使内容为空时
-    Agent 也能了解该块的配置和用途。
-    """
-    parts = []
-    content = getattr(entity, "content", "") or ""
-    ai_prompt = getattr(entity, "ai_prompt", "") or ""
-    status = getattr(entity, "status", "") or ""
-    reference_label = build_block_reference_label(entity, blocks_by_id=blocks_by_id)
-
-    parts.append(rt(locale, "agent.reference_context.target", label=reference_label))
-
-    if content.strip():
-        parts.append(content)
-    else:
-        parts.append(rt(locale, "agent.reference_context.empty_content"))
-
-    if ai_prompt.strip():
-        # 截取 AI 提示词的前 1000 字，避免过长
-        parts.append(f"\n{rt(locale, 'agent.reference_context.ai_prompt')}\n{ai_prompt[:1000]}")
-
-    if status:
-        parts.append(f"\n{rt(locale, 'agent.reference_context.status', status=status)}")
-
-    return "\n".join(parts)
+    """将内容块构建为 Agent 可理解的正式运行时上下文。"""
+    return build_block_runtime_surface(entity, blocks_by_id=blocks_by_id, locale=locale)
 
 
 # _load_seed_history 已删除 — Checkpointer 改为 SqliteSaver 持久化后不再需要
@@ -362,6 +338,43 @@ def _get_or_create_conversation(
     return new_conv
 
 
+def _get_project_conversation_or_404(
+    db: Session,
+    *,
+    conversation_id: str,
+    project_id: str,
+) -> Conversation:
+    conversation = db.query(Conversation).filter(
+        Conversation.id == conversation_id,
+        Conversation.project_id == project_id,
+    ).first()
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return conversation
+
+
+def _get_project_conversations_or_404(
+    db: Session,
+    *,
+    conversation_ids: list[str],
+    project_id: str,
+) -> list[Conversation]:
+    if not conversation_ids:
+        return []
+    rows = db.query(Conversation).filter(
+        Conversation.id.in_(conversation_ids),
+        Conversation.project_id == project_id,
+    ).all()
+    if len(rows) != len(set(conversation_ids)):
+        found_ids = {row.id for row in rows}
+        missing_ids = [conversation_id for conversation_id in conversation_ids if conversation_id not in found_ids]
+        raise HTTPException(
+            status_code=404,
+            detail=f"Conversation not found: {', '.join(missing_ids)}",
+        )
+    return rows
+
+
 # ============== Schemas ==============
 
 class SelectionContext(BaseModel):
@@ -521,11 +534,14 @@ def create_conversation(
 def update_conversation(
     conversation_id: str,
     request: UpdateConversationRequest,
+    project_id: str,
     db: Session = Depends(get_db),
 ):
-    conv = db.query(Conversation).filter(Conversation.id == conversation_id).first()
-    if not conv:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+    conv = _get_project_conversation_or_404(
+        db,
+        conversation_id=conversation_id,
+        project_id=project_id,
+    )
     if request.title is not None:
         conv.title = request.title.strip() or conv.title
     if request.status is not None:
@@ -538,20 +554,27 @@ def update_conversation(
 @router.delete("/conversations/{conversation_id}")
 def delete_conversation(
     conversation_id: str,
+    project_id: str,
     db: Session = Depends(get_db),
 ):
     """删除单个会话及其全部消息。"""
-    conv = db.query(Conversation).filter(Conversation.id == conversation_id).first()
-    if not conv:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+    conv = _get_project_conversation_or_404(
+        db,
+        conversation_id=conversation_id,
+        project_id=project_id,
+    )
     # 先删除关联的消息
-    db.query(ChatMessage).filter(ChatMessage.conversation_id == conversation_id).delete()
+    db.query(ChatMessage).filter(
+        ChatMessage.conversation_id == conversation_id,
+        ChatMessage.project_id == project_id,
+    ).delete()
     db.delete(conv)
     db.commit()
     return {"ok": True, "deleted_id": conversation_id}
 
 
 class BatchDeleteConversationsRequest(BaseModel):
+    project_id: str
     conversation_ids: List[str]
 
 
@@ -564,9 +587,20 @@ def batch_delete_conversations(
     ids = request.conversation_ids
     if not ids:
         return {"ok": True, "deleted_count": 0}
+    rows = _get_project_conversations_or_404(
+        db,
+        conversation_ids=ids,
+        project_id=request.project_id,
+    )
     # 先删除关联消息
-    db.query(ChatMessage).filter(ChatMessage.conversation_id.in_(ids)).delete(synchronize_session=False)
-    deleted = db.query(Conversation).filter(Conversation.id.in_(ids)).delete(synchronize_session=False)
+    db.query(ChatMessage).filter(
+        ChatMessage.conversation_id.in_(ids),
+        ChatMessage.project_id == request.project_id,
+    ).delete(synchronize_session=False)
+    deleted = db.query(Conversation).filter(
+        Conversation.id.in_([row.id for row in rows]),
+        Conversation.project_id == request.project_id,
+    ).delete(synchronize_session=False)
     db.commit()
     return {"ok": True, "deleted_count": deleted}
 
@@ -574,11 +608,18 @@ def batch_delete_conversations(
 @router.get("/conversations/{conversation_id}/messages", response_model=List[ChatMessageResponse])
 def get_conversation_messages(
     conversation_id: str,
+    project_id: str,
     limit: int = 200,
     db: Session = Depends(get_db),
 ):
+    _get_project_conversation_or_404(
+        db,
+        conversation_id=conversation_id,
+        project_id=project_id,
+    )
     messages = db.query(ChatMessage).filter(
-        ChatMessage.conversation_id == conversation_id
+        ChatMessage.conversation_id == conversation_id,
+        ChatMessage.project_id == project_id,
     ).order_by(ChatMessage.created_at.asc()).limit(limit).all()
     return [_to_message_response(m) for m in messages]
 
@@ -1114,7 +1155,7 @@ async def stream_chat(
         )
         if ref_contents:
             ref_text = "\n".join(
-                f"{rt(project_locale, 'agent.references.block_item', name=name)}\n{content[:2000]}"
+                f"{rt(project_locale, 'agent.references.block_item', name=name)}\n{content}"
                 for name, content in ref_contents.items()
             )
             augmented_message = (
@@ -1124,18 +1165,23 @@ async def stream_chat(
     # B: 选中文字引用上下文 — 叠加到 augmented_message，不替换已有上下文
     if request.selection_context:
         sc = request.selection_context
-        # 读取完整内容块内容
-        block_full_content = ""
+        block_runtime_context = ""
         block = db.query(ContentBlock).filter(ContentBlock.id == sc.block_id).first()
-        if block and block.content:
-            block_full_content = block.content[:3000]  # 防止超长
+        if block:
+            active_blocks = list_active_project_blocks(db, request.project_id)
+            blocks_by_id = build_blocks_by_id(active_blocks)
+            block_runtime_context = build_block_runtime_surface(
+                block,
+                blocks_by_id=blocks_by_id,
+                locale=project_locale,
+            )
         selection_section = (
             f"\n\n---\n{rt(project_locale, 'agent.references.selection_header')}\n"
             f"{rt(project_locale, 'agent.references.selected_text', block_name=sc.block_name)}\n"
             f"---\n{sc.selected_text}\n---\n"
         )
-        if block_full_content:
-            selection_section += f"{rt(project_locale, 'agent.references.full_block')}\n{block_full_content}\n"
+        if block_runtime_context:
+            selection_section += f"{rt(project_locale, 'agent.references.full_block_context')}\n{block_runtime_context}\n"
         augmented_message += selection_section
 
     # Checkpointer 配置 + LLM 日志回调

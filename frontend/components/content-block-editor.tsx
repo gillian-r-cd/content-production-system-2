@@ -163,13 +163,24 @@ interface ContentBlockEditorProps {
   onUpdate?: () => void;
   /** 版本创建后通知父组件刷新项目列表 */
   onVersionCreated?: () => void;
+  onBlockUpdated?: (block: ContentBlock) => void;
   /** M3: 将消息发送到 Agent 对话面板（Eval 诊断→Agent 修改桥接） */
   onSendToAgent?: (message: string) => void;
   /** B: 将选中文字+内容块引用发送到 Agent Panel 输入框上方 */
   onSendSelectionToAgent?: (ref: AgentSelectionRef) => void;
 }
 
-export function ContentBlockEditor({ block, projectId, projectLocale, allBlocks = [], onUpdate, onVersionCreated, onSendToAgent, onSendSelectionToAgent }: ContentBlockEditorProps) {
+export function ContentBlockEditor({
+  block,
+  projectId,
+  projectLocale,
+  allBlocks = [],
+  onUpdate,
+  onVersionCreated,
+  onBlockUpdated,
+  onSendToAgent,
+  onSendSelectionToAgent,
+}: ContentBlockEditorProps) {
   const isJa = useUiIsJa(projectLocale);
   // P0-1: 统一使用 blockAPI（已移除 fieldAPI/isVirtual 分支）
   const [isEditing, setIsEditing] = useState(false);
@@ -264,6 +275,33 @@ export function ContentBlockEditor({ block, projectId, projectLocale, allBlocks 
     setIsEditing(false);
     await _handleGenerate();
   };
+
+  const onUpdateRef = useRef(onUpdate);
+  const onBlockUpdatedRef = useRef(onBlockUpdated);
+
+  useEffect(() => {
+    onUpdateRef.current = onUpdate;
+  }, [onUpdate]);
+
+  useEffect(() => {
+    onBlockUpdatedRef.current = onBlockUpdated;
+  }, [onBlockUpdated]);
+
+  const applyUpdatedBlock = useCallback((updatedBlock: ContentBlock, refreshTree = false) => {
+    onBlockUpdatedRef.current?.(updatedBlock);
+    if (refreshTree) {
+      onUpdateRef.current?.();
+    }
+    return updatedBlock;
+  }, []);
+
+  const updateCurrentBlock = useCallback(async (
+    payload: Parameters<typeof blockAPI.update>[1],
+    options?: { refreshTree?: boolean },
+  ) => {
+    const updatedBlock = await blockAPI.update(block.id, payload);
+    return applyUpdatedBlock(updatedBlock, options?.refreshTree ?? false);
+  }, [applyUpdatedBlock, block.id]);
   
   // 可选的依赖（排除自己和自己的子节点）
   // 允许选择：所有 field 类型内容块
@@ -299,7 +337,7 @@ export function ContentBlockEditor({ block, projectId, projectLocale, allBlocks 
     // M5: 同步 model_override
     setModelOverride(block.model_override || "");
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [block.id, block.content, block.name, block.ai_prompt, block.depends_on, block.pre_answers, block.pre_questions]);
+  }, [block.id, block.content, block.name, block.ai_prompt, block.depends_on, block.pre_answers, block.pre_questions, block.model_override, block.updated_at]);
 
   useEffect(() => {
     if (showPreQuestionsSection && preQuestions.length === 0) {
@@ -345,10 +383,11 @@ export function ContentBlockEditor({ block, projectId, projectLocale, allBlocks 
     blockAPI.get(block.id).then(freshBlock => {
       if (cancelled) return;
       const snapshot = blockSnapshotRef.current;
-      // 如果后端状态和本地不一致（例如后端是 in_progress 但本地不是），触发刷新
-      if (freshBlock.status !== snapshot.status || freshBlock.content !== snapshot.content) {
+      // 如果后端状态或更新时间戳已经领先于本地，立即回写并触发树刷新
+      if ((freshBlock.updated_at || "") !== snapshot.updatedAt || freshBlock.status !== snapshot.status) {
         console.log(`[BlockEditor] 检测到数据不同步: block=${snapshot.name}, local_status=${snapshot.status}, server_status=${freshBlock.status}`);
-        onUpdateRef.current?.(); // 触发整个 allBlocks 刷新
+        onBlockUpdatedRef.current?.(freshBlock);
+        onUpdateRef.current?.();
       }
     }).catch(() => {}); // 静默忽略（可能是虚拟块等）
     
@@ -358,28 +397,26 @@ export function ContentBlockEditor({ block, projectId, projectLocale, allBlocks 
   // ===== 关键修复 2：如果 block 状态是 in_progress 但当前组件没在流式生成，则轮询刷新 =====
   // 优化：先检查后端数据是否实际变化，只在变化时才触发父组件刷新
   // 避免每3秒无条件调用 onUpdate() 导致整棵树级联重渲染
-  const onUpdateRef = useRef(onUpdate);
   const blockSnapshotRef = useRef({
     name: block.name,
     status: block.status,
     content: block.content || "",
+    updatedAt: block.updated_at || "",
   });
   const pollStatusRef = useRef(block.status);
-  const pollContentLenRef = useRef((block.content || "").length);
-  useEffect(() => {
-    onUpdateRef.current = onUpdate;
-  }, [onUpdate]);
+  const pollUpdatedAtRef = useRef(block.updated_at || "");
   useEffect(() => {
     blockSnapshotRef.current = {
       name: block.name,
       status: block.status,
       content: block.content || "",
+      updatedAt: block.updated_at || "",
     };
-  }, [block.name, block.status, block.content]);
+  }, [block.name, block.status, block.content, block.updated_at]);
   useEffect(() => {
     pollStatusRef.current = block.status;
-    pollContentLenRef.current = (block.content || "").length;
-  }, [block.status, block.content]);
+    pollUpdatedAtRef.current = block.updated_at || "";
+  }, [block.status, block.updated_at]);
   
   useEffect(() => {
     if (block.status !== "in_progress" || isGenerating) return;
@@ -388,9 +425,9 @@ export function ContentBlockEditor({ block, projectId, projectLocale, allBlocks 
     const pollInterval = setInterval(async () => {
       try {
         const fresh = await blockAPI.get(block.id);
-        // 只在状态或内容实际变化时才触发全局刷新
-        if (fresh.status !== pollStatusRef.current || 
-            (fresh.content || "").length !== pollContentLenRef.current) {
+        // 只在状态或更新时间戳实际变化时才触发同步
+        if (fresh.status !== pollStatusRef.current || (fresh.updated_at || "") !== pollUpdatedAtRef.current) {
+          onBlockUpdatedRef.current?.(fresh);
           onUpdateRef.current?.();
         }
       } catch {
@@ -416,13 +453,14 @@ export function ContentBlockEditor({ block, projectId, projectLocale, allBlocks 
           normalizedAnswers[question.id] = value;
         }
       }
-      await blockAPI.update(block.id, {
+      const updatedBlock = await updateCurrentBlock({
         pre_questions: normalizedQuestions,
         pre_answers: normalizedAnswers,
       });
+      setPreQuestions(normalizePreQuestions(updatedBlock.pre_questions || []));
+      setPreAnswers(normalizePreAnswers(updatedBlock.pre_answers || {}, updatedBlock.pre_questions || []));
       setPreAnswersSaved(true);
       setTimeout(() => setPreAnswersSaved(false), 2000);
-      onUpdate?.();
       
       // 前端驱动自动触发链
       if (projectId) {
@@ -440,8 +478,8 @@ export function ContentBlockEditor({ block, projectId, projectLocale, allBlocks 
   const handleSaveName = async () => {
     if (editedName.trim() && editedName !== block.name) {
       try {
-        await blockAPI.update(block.id, { name: editedName.trim() });
-        onUpdate?.();
+        const updatedBlock = await updateCurrentBlock({ name: editedName.trim() });
+        setEditedName(updatedBlock.name);
       } catch (err) {
         console.error("更新名称失败:", err);
       alert((isJa ? "名称更新に失敗しました: " : "更新名称失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
@@ -485,17 +523,13 @@ export function ContentBlockEditor({ block, projectId, projectLocale, allBlocks 
   // 保存内容
   const handleSaveContent = async () => {
     try {
-      const result = (await blockAPI.update(block.id, { content: editedContent })) as {
-        version_warning?: string;
-        affected_blocks?: unknown;
-        affected_fields?: unknown;
-      };
+      const result = await updateCurrentBlock({ content: editedContent }, { refreshTree: true });
       setIsEditing(false);
-      onUpdate?.();
+      setEditedContent(result.content || "");
       
       // 检查是否有版本警告
       const warning = result?.version_warning;
-      const affected = result?.affected_blocks || result?.affected_fields;
+      const affected = result?.affected_blocks;
       if (warning) {
         setVersionWarning(warning);
         const normalizedAffected = Array.isArray(affected)
@@ -531,12 +565,12 @@ export function ContentBlockEditor({ block, projectId, projectLocale, allBlocks 
   // 保存 AI 提示词
   const handleSavePrompt = async () => {
     try {
-      await blockAPI.update(block.id, {
+      const updatedBlock = await updateCurrentBlock({
         ai_prompt: editedPrompt,
       });
-      setSavedPrompt(editedPrompt); // 乐观更新本地状态，立即反映到 UI
+      setEditedPrompt(updatedBlock.ai_prompt || "");
+      setSavedPrompt(updatedBlock.ai_prompt || "");
       setShowPromptModal(false);
-      onUpdate?.();
     } catch (err) {
       console.error("保存提示词失败:", err);
       alert((isJa ? "プロンプト保存に失敗しました: " : "保存提示词失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
@@ -546,9 +580,9 @@ export function ContentBlockEditor({ block, projectId, projectLocale, allBlocks 
   // 保存依赖
   const handleSaveDependencies = async () => {
     try {
-      await blockAPI.update(block.id, { depends_on: selectedDependencies });
+      const updatedBlock = await updateCurrentBlock({ depends_on: selectedDependencies });
+      setSelectedDependencies(updatedBlock.depends_on || []);
       setShowDependencyModal(false);
-      onUpdate?.();
     } catch (err) {
       console.error("保存依赖失败:", err);
       alert((isJa ? "依存関係の保存に失敗しました: " : "保存依赖失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
@@ -559,10 +593,9 @@ export function ContentBlockEditor({ block, projectId, projectLocale, allBlocks 
   const handleSaveModelOverride = async (modelId: string) => {
     try {
       // 空字符串 "" 表示清除覆盖（恢复使用全局默认），后端会转为 null
-      await blockAPI.update(block.id, { model_override: modelId });
-      setModelOverride(modelId);
+      const updatedBlock = await updateCurrentBlock({ model_override: modelId });
+      setModelOverride(updatedBlock.model_override || "");
       setShowModelSelector(false);
-      onUpdate?.();
       sendNotification(modelId ? (isJa ? `モデルを設定しました: ${modelId}` : `已设置模型: ${modelId}`) : (isJa ? "既定モデルに戻しました" : "已恢复为默认模型"), "success");
     } catch (err) {
       console.error("保存模型覆盖失败:", err);
@@ -709,12 +742,12 @@ export function ContentBlockEditor({ block, projectId, projectLocale, allBlocks 
     }
 
     try {
-      await blockAPI.update(block.id, { content: newContent });
+      const updatedBlock = await updateCurrentBlock({ content: newContent }, { refreshTree: true });
+      setEditedContent(updatedBlock.content || "");
       setInlineEditResult(null);
       setSelectedText("");
       setToolbarPosition(null);
       clearSelectionHighlight();
-      onUpdate?.();
       sendNotification(isJa ? "AI の修正を適用しました" : "已应用 AI 修改", "success");
     } catch (err) {
       console.error("[M4] Apply inline edit failed:", err);
@@ -850,8 +883,8 @@ export function ContentBlockEditor({ block, projectId, projectLocale, allBlocks 
               <button
                 onClick={async () => {
                   try {
-                    await blockAPI.confirm(block.id);
-                    onUpdate?.();
+                    const confirmedBlock = await blockAPI.confirm(block.id);
+                    applyUpdatedBlock(confirmedBlock, true);
                     // 确认后触发下游自动生成链
                     runAutoTriggerChain(projectId, () => onUpdate?.()).catch(console.error);
                   } catch (err) {
@@ -944,8 +977,7 @@ export function ContentBlockEditor({ block, projectId, projectLocale, allBlocks 
           <button
             onClick={async () => {
               try {
-                await blockAPI.update(block.id, { need_review: !block.need_review });
-                onUpdate?.();
+                await updateCurrentBlock({ need_review: !block.need_review });
               } catch (err) {
                 console.error("切换确认状态失败:", err);
               }
@@ -966,8 +998,7 @@ export function ContentBlockEditor({ block, projectId, projectLocale, allBlocks 
             <button
               onClick={async () => {
                 try {
-                  await blockAPI.update(block.id, { auto_generate: !block.auto_generate });
-                  onUpdate?.();
+                  await updateCurrentBlock({ auto_generate: !block.auto_generate });
                 } catch (err) {
                   console.error("切换自动生成失败:", err);
                 }

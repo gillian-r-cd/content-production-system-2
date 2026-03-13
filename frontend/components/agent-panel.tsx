@@ -321,7 +321,7 @@ export function AgentPanel({
   const loadHistory = useCallback(async () => {
     if (!projectId || !activeConversationId) return;
     try {
-      const history = await agentAPI.getConversationMessages(activeConversationId, 200);
+      const history = await agentAPI.getConversationMessages(projectId, activeConversationId, 200);
       setMessages(history);
 
       // 从 message_metadata.suggestion_cards 恢复卡片状态（持久化 → 刷新后不丢失）
@@ -1341,8 +1341,9 @@ export function AgentPanel({
 
   // ---- 会话删除 ----
   const handleDeleteConversation = async (convId: string) => {
+    if (!projectId) return;
     try {
-      await agentAPI.deleteConversation(convId);
+      await agentAPI.deleteConversation(projectId, convId);
       setConversations((prev) => prev.filter((c) => c.id !== convId));
       setSelectedConvIds((prev) => { const next = new Set(prev); next.delete(convId); return next; });
       // 如果删除的是当前激活的会话，自动切换
@@ -1364,10 +1365,10 @@ export function AgentPanel({
   };
 
   const handleBatchDeleteConversations = async () => {
-    if (selectedConvIds.size === 0) return;
+    if (!projectId || selectedConvIds.size === 0) return;
     const ids = Array.from(selectedConvIds);
     try {
-      await agentAPI.batchDeleteConversations(ids);
+      await agentAPI.batchDeleteConversations(projectId, ids);
       setConversations((prev) => prev.filter((c) => !selectedConvIds.has(c.id)));
       // 如果当前会话被删了，切换
       if (activeConversationId && selectedConvIds.has(activeConversationId)) {

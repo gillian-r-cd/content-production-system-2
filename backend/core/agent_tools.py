@@ -34,6 +34,9 @@ from typing import Optional, List, Annotated
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool, InjectedToolArg
 from langchain_core.runnables import RunnableConfig
+from fastapi import HTTPException
+
+from core.content_block_runtime_surface import build_block_runtime_surface
 from core.localization import DEFAULT_LOCALE, normalize_locale
 from core.locale_text import rt
 from core.llm_compat import normalize_content, get_stop_reason, resolve_model
@@ -391,7 +394,7 @@ async def _rewrite_field_impl(
                         "agent.reference_block_header",
                         label=_entity_label(ref_entity, ref_name),
                     )
-                    + f"\n{ref_entity.content[:2000]}"
+                    + f"\n{ref_entity.content}"
                 )
 
         reference_section = (
@@ -517,6 +520,11 @@ async def _generate_field_impl(
     from core.llm import get_chat_model
     from langchain_core.messages import SystemMessage, HumanMessage
     from core.models import Project
+    from core.block_generation_service import (
+        build_generation_system_prompt,
+        ensure_required_pre_questions_answered,
+        resolve_dependencies,
+    )
 
     project_id = _get_project_id(config)
     db = _get_db()
@@ -543,37 +551,21 @@ async def _generate_field_impl(
             )
 
         project = db.query(Project).filter(Project.id == project_id).first()
+        if not project:
+            return _json_err("项目不存在")
         locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE) if project else DEFAULT_LOCALE)
-        creator_ctx = ""
-        if project and project.creator_profile:
-            creator_ctx = project.creator_profile.to_prompt_context(locale=locale)
+        ensure_required_pre_questions_answered(entity, locale=locale)
 
-        ai_prompt = getattr(entity, "ai_prompt", "") or ""
+        _, dependency_content, dep_error = resolve_dependencies(entity, db, locale=locale)
+        if dep_error:
+            return _json_err(dep_error)
 
-        # 收集依赖内容（depends_on 是 block ID 列表）
-        deps_ctx = ""
-        depends_on = getattr(entity, "depends_on", None) or []
-        if depends_on and isinstance(depends_on, list):
-            from core.models.content_block import ContentBlock as CB
-            for dep_id in depends_on:
-                dep_block = db.query(CB).filter(
-                    CB.id == dep_id,
-                    CB.deleted_at == None,  # noqa: E711
-                ).first()
-                if dep_block and dep_block.content:
-                    deps_ctx += f"\n### {dep_block.name}\n{dep_block.content[:2000]}"
-
-        sections = [rt(locale, "agent.generate.intro", target_label=target_label)]
-        if creator_ctx:
-            sections.append(rt(locale, "agent.generate.creator", creator_ctx=creator_ctx))
-        if ai_prompt:
-            sections.append(rt(locale, "agent.generate.requirement", ai_prompt=ai_prompt))
-        if deps_ctx:
-            sections.append(rt(locale, "agent.generate.dependencies", deps_ctx=deps_ctx))
-        if instruction:
-            sections.append(rt(locale, "agent.generate.instruction", instruction=instruction))
-        sections.append(rt(locale, "agent.generate.output_only"))
-        system_prompt = "\n\n".join(sections)
+        system_prompt = build_generation_system_prompt(
+            block=entity,
+            project=project,
+            dependency_content=dependency_content,
+            extra_instruction=instruction,
+        )
 
         # ⚠️ 传 config 给 LLM 调用，确保 astream_events 能捕获工具内 LLM 的流式 token
         from core.llm import ainvoke_with_retry
@@ -600,6 +592,8 @@ async def _generate_field_impl(
         logger.info(f"[generate_field_content] 已生成「{target_label}」, {len(new_content)} 字")
         return _json_ok(target_label, "generated", f"✅ 已生成「{target_label}」的内容")
 
+    except HTTPException as exc:
+        return _json_err(str(exc.detail))
     except Exception as e:
         logger.error(f"generate_field_content error: {e}", exc_info=True)
         db.rollback()
@@ -641,6 +635,8 @@ async def query_field(
 async def _query_field_impl(field_name: str, question: str, config: RunnableConfig) -> str:
     from core.llm import get_chat_model
     from langchain_core.messages import SystemMessage, HumanMessage
+    from core.content_block_reference import build_blocks_by_id, list_active_project_blocks
+    from core.models import Project
 
     project_id = _get_project_id(config)
     db = _get_db()
@@ -650,18 +646,23 @@ async def _query_field_impl(field_name: str, question: str, config: RunnableConf
             return f"找不到内容块「{field_name}」"
         target_label = _entity_label(entity, field_name)
 
-        content = entity.content or ""
-        if not content.strip():
-            return f"内容块「{target_label}」为空，还没有生成内容。"
+        project = db.query(Project).filter(Project.id == project_id).first()
+        locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE) if project else DEFAULT_LOCALE)
+        active_blocks = list_active_project_blocks(db, project_id)
+        blocks_by_id = build_blocks_by_id(active_blocks)
+        runtime_surface = build_block_runtime_surface(
+            entity,
+            blocks_by_id=blocks_by_id,
+            locale=locale,
+        )
 
         # query 使用轻量模型（仅做内容分析，不需要主模型）
         effective_model = resolve_model(use_mini=True)
         chat_model = get_chat_model(model=effective_model)
         # ⚠️ 传 config 给 LLM 调用
         from core.llm import ainvoke_with_retry
-        locale = normalize_locale(getattr(entity, "locale", None) or DEFAULT_LOCALE)
         response = await ainvoke_with_retry(chat_model, [
-            SystemMessage(content=rt(locale, "agent.query.system", target_label=target_label, content=content[:4000])),
+            SystemMessage(content=rt(locale, "agent.query.system", target_label=target_label, content=runtime_surface)),
             HumanMessage(content=question),
         ], config=config)
         return normalize_content(response.content)

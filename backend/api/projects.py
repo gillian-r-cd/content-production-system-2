@@ -12,8 +12,8 @@
 
 import json
 from datetime import datetime
-from typing import Optional, List, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional, List, Dict, Any, Literal
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -31,6 +31,53 @@ router = APIRouter()
 
 def _project_locale(project: Project) -> str:
     return normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
+
+
+def _rewrite_embedded_project_asset_ids(
+    value: Any,
+    *,
+    block_id_mapping: Dict[str, str],
+    mode_id_mapping: Dict[str, str],
+) -> Any:
+    if isinstance(value, list):
+        return [
+            _rewrite_embedded_project_asset_ids(
+                item,
+                block_id_mapping=block_id_mapping,
+                mode_id_mapping=mode_id_mapping,
+            )
+            for item in value
+        ]
+    if isinstance(value, dict):
+        rewritten: Dict[str, Any] = {}
+        for key, item in value.items():
+            if key == "mode_id" and isinstance(item, str):
+                rewritten[key] = mode_id_mapping.get(item, item)
+                continue
+            if key in {"block_id", "target_entity_id"} and isinstance(item, str):
+                rewritten[key] = block_id_mapping.get(item, item)
+                continue
+            rewritten[key] = _rewrite_embedded_project_asset_ids(
+                item,
+                block_id_mapping=block_id_mapping,
+                mode_id_mapping=mode_id_mapping,
+            )
+        return rewritten
+    return value
+
+
+def _rewrite_chat_message_metadata_for_project(
+    message_metadata: Dict[str, Any] | None,
+    *,
+    block_id_mapping: Dict[str, str],
+    mode_id_mapping: Dict[str, str],
+) -> Dict[str, Any]:
+    cloned = json.loads(json.dumps(message_metadata or {}))
+    return _rewrite_embedded_project_asset_ids(
+        cloned,
+        block_id_mapping=block_id_mapping,
+        mode_id_mapping=mode_id_mapping,
+    )
 
 
 # ============== Schemas ==============
@@ -94,6 +141,19 @@ class SaveAsFieldTemplateRequest(BaseModel):
 class ImportContentTreeJsonRequest(BaseModel):
     """项目级内容树追加导入请求"""
     data: Dict[str, Any]
+
+
+class MarkdownImportFileRequest(BaseModel):
+    """单个 Markdown 文件载荷"""
+    name: str
+    path: Optional[str] = None
+    content: str
+
+
+class ImportMarkdownFilesRequest(BaseModel):
+    """项目级 Markdown 批量导入请求"""
+    import_mode: Literal["heading_tree", "raw_file"] = "heading_tree"
+    files: List[MarkdownImportFileRequest]
 
 
 class BatchDeleteProjectsRequest(BaseModel):
@@ -240,7 +300,15 @@ def _relink_project_version_children_before_delete(
 
 def _delete_project_with_related_data(db: Session, project: Project) -> None:
     """删除单个项目及其所有关联数据，但不在内部提交事务。"""
-    from core.models import ProjectField, ContentBlock, BlockHistory, MemoryItem, ProjectStructureDraft, AgentMode
+    from core.models import (
+        ProjectField,
+        ContentBlock,
+        BlockHistory,
+        MemoryItem,
+        ProjectStructureDraft,
+        AgentMode,
+        Conversation,
+    )
     from core.models.chat_history import ChatMessage
     from core.models.generation_log import GenerationLog
     from core.models.simulation_record import SimulationRecord
@@ -302,6 +370,7 @@ def _delete_project_with_related_data(db: Session, project: Project) -> None:
 
     # 删除关联的对话记录
     db.query(ChatMessage).filter(ChatMessage.project_id == project_id).delete()
+    db.query(Conversation).filter(Conversation.project_id == project_id).delete()
 
     # 删除关联的字段（传统架构）
     db.query(ProjectField).filter(ProjectField.project_id == project_id).delete()
@@ -489,7 +558,7 @@ def duplicate_project(
     - 项目本身（新名称加 "(副本)" 后缀）
     - 所有字段 (ProjectField)
     - 所有内容块 (ContentBlock) — 灵活架构的核心数据
-    - 所有对话记录 (ChatMessage)
+    - 所有会话与对话记录 (Conversation + ChatMessage)
     - 所有内容版本 (ContentVersion)
     - 所有块操作历史 (BlockHistory)
     - 所有模拟记录 (SimulationRecord)
@@ -497,7 +566,7 @@ def duplicate_project(
     - 所有项目记忆 (MemoryItem)
     - 所有项目专用评分器 (Grader)
     """
-    from core.models import ProjectField, MemoryItem, ProjectStructureDraft, AgentMode
+    from core.models import ProjectField, MemoryItem, ProjectStructureDraft, AgentMode, Conversation
     from core.models.chat_history import ChatMessage
     from core.models.content_block import ContentBlock
     from core.models.content_version import ContentVersion
@@ -622,25 +691,67 @@ def duplicate_project(
             digest=old_block.digest,
         )
         db.add(new_block)
-    
-    # ---- 复制对话记录 ----
+
+    # ---- 预构建角色映射（Conversation / ChatMessage / MemoryItem 都会引用 mode_id）----
+    old_modes = db.query(AgentMode).filter(
+        AgentMode.project_id == old_project.id,
+        AgentMode.is_template.is_(False),
+    ).order_by(AgentMode.sort_order, AgentMode.created_at).all()
+    mode_id_mapping = {
+        old_mode.id: generate_uuid()
+        for old_mode in old_modes
+        if old_mode.id
+    }
+
+    # ---- 复制会话 ----
+    old_conversations = db.query(Conversation).filter(
+        Conversation.project_id == old_project.id,
+    ).order_by(
+        Conversation.last_message_at.asc(),
+        Conversation.created_at.asc(),
+    ).all()
+    conversation_id_mapping: Dict[str, str] = {}
+    for old_conversation in old_conversations:
+        new_conversation_id = generate_uuid()
+        conversation_id_mapping[old_conversation.id] = new_conversation_id
+        new_conversation = Conversation(
+            id=new_conversation_id,
+            project_id=new_project.id,
+            mode_id=mode_id_mapping.get(old_conversation.mode_id, old_conversation.mode_id),
+            mode=old_conversation.mode,
+            title=old_conversation.title,
+            status=old_conversation.status,
+            bootstrap_policy=old_conversation.bootstrap_policy,
+            last_message_at=old_conversation.last_message_at,
+            message_count=old_conversation.message_count,
+        )
+        db.add(new_conversation)
+
+    # ---- 复制对话消息 ----
     old_messages = db.query(ChatMessage).filter(
         ChatMessage.project_id == old_project.id
     ).order_by(ChatMessage.created_at).all()
-    
+
     message_id_mapping = {}
     for old_msg in old_messages:
         new_msg_id = generate_uuid()
         message_id_mapping[old_msg.id] = new_msg_id
-        
+
+    for old_msg in old_messages:
+        new_msg_id = message_id_mapping[old_msg.id]
         new_msg = ChatMessage(
             id=new_msg_id,
             project_id=new_project.id,
+            conversation_id=conversation_id_mapping.get(old_msg.conversation_id) if old_msg.conversation_id else None,
             role=old_msg.role,
             content=old_msg.content,
             original_content=old_msg.original_content,
             is_edited=old_msg.is_edited,
-            message_metadata=old_msg.message_metadata.copy() if old_msg.message_metadata else {},
+            message_metadata=_rewrite_chat_message_metadata_for_project(
+                old_msg.message_metadata,
+                block_id_mapping=block_id_mapping,
+                mode_id_mapping=mode_id_mapping,
+            ),
             parent_message_id=message_id_mapping.get(old_msg.parent_message_id) if old_msg.parent_message_id else None,
         )
         db.add(new_msg)
@@ -791,7 +902,7 @@ def duplicate_project(
             id=generate_uuid(),
             project_id=new_project.id,
             content=old_mem.content,
-            source_mode_id=old_mem.source_mode_id,
+            source_mode_id=mode_id_mapping.get(old_mem.source_mode_id, old_mem.source_mode_id),
             source_mode=old_mem.source_mode,
             source_phase=old_mem.source_phase,
             related_blocks=old_mem.related_blocks.copy() if old_mem.related_blocks else [],
@@ -799,13 +910,9 @@ def duplicate_project(
         db.add(new_mem)
 
     # ---- 复制项目角色 ----
-    old_modes = db.query(AgentMode).filter(
-        AgentMode.project_id == old_project.id,
-        AgentMode.is_template.is_(False),
-    ).order_by(AgentMode.sort_order, AgentMode.created_at).all()
     for old_mode in old_modes:
         new_mode = AgentMode(
-            id=generate_uuid(),
+            id=mode_id_mapping.get(old_mode.id, generate_uuid()),
             project_id=new_project.id,
             name=f"mode_{generate_uuid().replace('-', '')[:12]}",
             stable_key=getattr(old_mode, "stable_key", "") or old_mode.name,
@@ -1086,7 +1193,7 @@ def export_project(
         ProjectField, ContentBlock, GenerationLog,
         SimulationRecord,
         EvalRun, EvalTask, EvalTrial,
-        MemoryItem, ProjectStructureDraft, AgentMode,
+        MemoryItem, ProjectStructureDraft, AgentMode, Conversation,
     )
     from core.models.chat_history import ChatMessage
     from core.models.content_version import ContentVersion
@@ -1136,7 +1243,15 @@ def export_project(
     ).all()
     fields_data = [_ser(f) for f in fields]
 
-    # ChatMessages
+    # Conversations + ChatMessages
+    conversations = db.query(Conversation).filter(
+        Conversation.project_id == project_id,
+    ).order_by(
+        Conversation.last_message_at.asc(),
+        Conversation.created_at.asc(),
+    ).all()
+    conversations_data = [_ser(c) for c in conversations]
+
     messages = db.query(ChatMessage).filter(
         ChatMessage.project_id == project_id,
     ).order_by(ChatMessage.created_at).all()
@@ -1228,6 +1343,7 @@ def export_project(
         "creator_profile": creator_profile_data,
         "content_blocks": blocks_data,
         "project_fields": fields_data,
+        "conversations": conversations_data,
         "chat_messages": messages_data,
         "content_versions": versions_data,
         "block_history": history_data,
@@ -1332,6 +1448,49 @@ def import_content_tree_json(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.post("/{project_id}/import-markdown-files")
+def import_markdown_files(
+    project_id: str,
+    request: ImportMarkdownFilesRequest,
+    http_request: Request,
+    db: Session = Depends(get_db),
+):
+    """从多个 Markdown 文件向当前项目追加导入内容树。"""
+    from core.content_markdown_import_service import import_markdown_files as import_markdown_files_payload
+
+    # region agent log
+    try:
+        with open("/Users/rantianshu/Desktop/content-production-system-2/.cursor/debug.log", "a", encoding="utf-8") as debug_file:
+            debug_file.write(json.dumps({
+                "runId": "markdown-import-initial",
+                "hypothesisId": "H4",
+                "location": "backend/api/projects.py:1458",
+                "message": "backend markdown import route hit",
+                "data": {
+                    "projectId": project_id,
+                    "path": str(http_request.url.path),
+                    "method": http_request.method,
+                    "fileCount": len(request.files),
+                    "importMode": request.import_mode,
+                },
+                "timestamp": int(datetime.utcnow().timestamp() * 1000),
+            }, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    # endregion
+
+    try:
+        return import_markdown_files_payload(
+            db=db,
+            project_id=project_id,
+            files=[file.model_dump() for file in request.files],
+            import_mode=request.import_mode,
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 class ProjectImportRequest(BaseModel):
     """导入项目请求"""
     data: Dict[str, Any]
@@ -1353,7 +1512,7 @@ def import_project(
         ProjectField, ContentBlock, GenerationLog,
         SimulationRecord,
         EvalRun, EvalTask, EvalTrial,
-        MemoryItem, ProjectStructureDraft, AgentMode,
+        MemoryItem, ProjectStructureDraft, AgentMode, Conversation,
     )
     from core.models.chat_history import ChatMessage
     from core.models.content_version import ContentVersion
@@ -1466,6 +1625,12 @@ def import_project(
         _set_timestamps(new_project, proj_data)
         db.add(new_project)
 
+        # AgentMode 会被 Conversation / ChatMessage / MemoryItem 引用，先注册 ID 映射。
+        for mode_data in data.get("agent_modes", []):
+            old_mode_id = mode_data.get("id", "")
+            if old_mode_id:
+                _new_id(old_mode_id)
+
         # ============ 3. ContentBlocks ============
         # 过滤掉已软删除的块（安全兜底：正常导出已排除，但旧版导出文件可能包含）
         active_blocks = [
@@ -1538,7 +1703,30 @@ def import_project(
             _set_timestamps(new_field, f)
             db.add(new_field)
 
-        # ============ 5. ChatMessages ============
+        # ============ 5. Conversations ============
+        conversation_id_mapping: Dict[str, str] = {}
+        for conversation_data in data.get("conversations", []):
+            old_id = conversation_data.get("id", "")
+            if old_id:
+                conversation_id_mapping[old_id] = _new_id(old_id)
+
+        for conversation_data in data.get("conversations", []):
+            old_id = conversation_data.get("id", "")
+            new_conversation = Conversation(
+                id=id_map[old_id],
+                project_id=new_proj_id,
+                mode_id=_map_id(conversation_data.get("mode_id")),
+                mode=conversation_data.get("mode", "assistant"),
+                title=conversation_data.get("title", ""),
+                status=conversation_data.get("status", "active"),
+                bootstrap_policy=conversation_data.get("bootstrap_policy", "memory_only"),
+                last_message_at=_parse_dt(conversation_data.get("last_message_at")),
+                message_count=conversation_data.get("message_count", 0),
+            )
+            _set_timestamps(new_conversation, conversation_data)
+            db.add(new_conversation)
+
+        # ============ 6. ChatMessages ============
         for m in data.get("chat_messages", []):
             old_id = m.get("id", "")
             _new_id(old_id)
@@ -1548,17 +1736,22 @@ def import_project(
             new_msg = ChatMessage(
                 id=id_map[old_id],
                 project_id=new_proj_id,
+                conversation_id=conversation_id_mapping.get(m.get("conversation_id")) if m.get("conversation_id") else None,
                 role=m.get("role", "user"),
                 content=m.get("content", ""),
                 original_content=m.get("original_content", ""),
                 is_edited=m.get("is_edited", False),
-                message_metadata=m.get("message_metadata", {}),
+                message_metadata=_rewrite_chat_message_metadata_for_project(
+                    m.get("message_metadata", {}),
+                    block_id_mapping=id_map,
+                    mode_id_mapping=id_map,
+                ),
                 parent_message_id=_map_id(m.get("parent_message_id")),
             )
             _set_timestamps(new_msg, m)
             db.add(new_msg)
 
-        # ============ 6. ContentVersions ============
+        # ============ 7. ContentVersions ============
         for v in data.get("content_versions", []):
             old_id = v.get("id", "")
             new_ver = ContentVersion(
@@ -1687,7 +1880,7 @@ def import_project(
                 id=_new_id(old_id),
                 project_id=new_mem_proj_id,
                 content=mem.get("content", ""),
-                source_mode_id=mem.get("source_mode_id"),
+                source_mode_id=_map_id(mem.get("source_mode_id")),
                 source_mode=mem.get("source_mode", "assistant"),
                 source_phase=mem.get("source_phase", ""),
                 related_blocks=mem.get("related_blocks", []),
@@ -1785,6 +1978,7 @@ def import_project(
             "stats": {
                 "content_blocks": len(active_blocks),
                 "project_fields": len(data.get("project_fields", [])),
+                "conversations": len(data.get("conversations", [])),
                 "chat_messages": len(data.get("chat_messages", [])),
                 "content_versions": len(data.get("content_versions", [])),
                 "simulation_records": len(data.get("simulation_records", [])),

@@ -174,6 +174,11 @@ async function fetchAPI<T>(
   options: RequestInit = {}
 ): Promise<T> {
   const url = `${API_BASE}${endpoint}`;
+  const method = options.method || "GET";
+
+  // #region agent log
+  fetch("http://127.0.0.1:7242/ingest/41308a22-a688-4d62-9d81-f84e13dbaa44",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({runId:"markdown-import-initial",hypothesisId:"H1",location:"frontend/lib/api.ts:176",message:"fetchAPI request",data:{endpoint,url,apiBase:API_BASE,method},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
   
   const response = await fetch(url, {
     ...options,
@@ -184,6 +189,10 @@ async function fetchAPI<T>(
   });
 
   if (!response.ok) {
+    const responsePreview = await response.clone().text().catch(() => "");
+    // #region agent log
+    fetch("http://127.0.0.1:7242/ingest/41308a22-a688-4d62-9d81-f84e13dbaa44",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({runId:"markdown-import-initial",hypothesisId:"H2",location:"frontend/lib/api.ts:187",message:"fetchAPI non-ok response",data:{endpoint,url,method,status:response.status,statusText:response.statusText,contentType:response.headers.get("content-type"),bodyPreview:responsePreview.slice(0,300)},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     const error = await response.json().catch(() => ({ detail: "Unknown error" }));
     // 处理Pydantic验证错误格式 (detail可能是数组)
     let errorMessage: string;
@@ -282,6 +291,34 @@ export const projectAPI = {
     }>(`/api/projects/${id}/import-content-tree-json`, {
       method: "POST",
       body: JSON.stringify({ data }),
+    }),
+
+  importMarkdownFiles: (
+    id: string,
+    data: {
+      import_mode: "heading_tree" | "raw_file";
+      files: Array<{ name: string; path?: string; content: string }>;
+    },
+  ) =>
+    fetchAPI<{
+      message: string;
+      import_mode: "heading_tree" | "raw_file";
+      file_count: number;
+      root_count: number;
+      blocks_created: number;
+      warning_count: number;
+      warnings: string[];
+      files: Array<{
+        name: string;
+        path: string;
+        mode_used: "heading_tree" | "raw_file";
+        root_name: string;
+        blocks_created: number;
+        warning_count: number;
+      }>;
+    }>(`/api/projects/${id}/import-markdown-files`, {
+      method: "POST",
+      body: JSON.stringify(data),
     }),
 
   importProject: (data: any, asNew: boolean = true) =>
@@ -449,18 +486,23 @@ export const agentAPI = {
       body: JSON.stringify(data),
     }),
 
-  getConversationMessages: (conversationId: string, limit: number = 200) =>
-    fetchAPI<ChatMessageRecord[]>(`/api/agent/conversations/${conversationId}/messages?limit=${limit}`),
+  getConversationMessages: (projectId: string, conversationId: string, limit: number = 200) =>
+    fetchAPI<ChatMessageRecord[]>(
+      `/api/agent/conversations/${conversationId}/messages?project_id=${projectId}&limit=${limit}`,
+    ),
 
   // 删除单个会话
-  deleteConversation: (conversationId: string) =>
-    fetchAPI<{ ok: boolean; deleted_id: string }>(`/api/agent/conversations/${conversationId}`, { method: "DELETE" }),
+  deleteConversation: (projectId: string, conversationId: string) =>
+    fetchAPI<{ ok: boolean; deleted_id: string }>(
+      `/api/agent/conversations/${conversationId}?project_id=${projectId}`,
+      { method: "DELETE" },
+    ),
 
   // 批量删除会话
-  batchDeleteConversations: (conversationIds: string[]) =>
+  batchDeleteConversations: (projectId: string, conversationIds: string[]) =>
     fetchAPI<{ ok: boolean; deleted_count: number }>("/api/agent/conversations/batch-delete", {
       method: "POST",
-      body: JSON.stringify({ conversation_ids: conversationIds }),
+      body: JSON.stringify({ project_id: projectId, conversation_ids: conversationIds }),
     }),
 
   // Inline AI 编辑
@@ -708,6 +750,8 @@ export interface ContentBlock {
   children: ContentBlock[];
   created_at: string | null;
   updated_at: string | null;
+  version_warning?: string | null;
+  affected_blocks?: string[] | null;
 }
 
 export interface BlockTree {

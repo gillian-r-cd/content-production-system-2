@@ -14,6 +14,14 @@ import { AgentPanel } from "@/components/agent-panel";
 import { CreateProjectModal } from "@/components/create-project-modal";
 import { GlobalSearchModal } from "@/components/global-search-modal";
 import { ProjectAutoSplitModal } from "@/components/project-auto-split-modal";
+import {
+  buildBlockSubtreeSyncToken,
+  buildBlockTreeSyncToken,
+  findBlockInTree,
+  replaceBlockInFlat,
+  replaceBlockInTree,
+  type ContentBlockSnapshot,
+} from "@/lib/content-block-sync";
 import { projectAPI, startAllReadyBlocks } from "@/lib/api";
 import { formatProjectText, normalizeProjectLocale, persistClientLocale, projectUiText, resolveClientLocale } from "@/lib/project-locale";
 import { requestNotificationPermission } from "@/lib/utils";
@@ -94,6 +102,24 @@ function groupProjectsByFamily(projects: Project[]): ProjectFamily[] {
   return families;
 }
 
+function syncSelectedBlockFromTree(
+  previousSelectedBlock: ContentBlock | null,
+  nextTree: ContentBlock[],
+): ContentBlock | null {
+  if (!previousSelectedBlock) {
+    return null;
+  }
+
+  const latestSelectedBlock = findBlockInTree(nextTree, previousSelectedBlock.id);
+  if (!latestSelectedBlock) {
+    return null;
+  }
+
+  return buildBlockSubtreeSyncToken(previousSelectedBlock) === buildBlockSubtreeSyncToken(latestSelectedBlock)
+    ? previousSelectedBlock
+    : latestSelectedBlock;
+}
+
 export default function WorkspacePage() {
   const [browserLocale, setBrowserLocale] = useState<"zh-CN" | "ja-JP" | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -104,11 +130,13 @@ export default function WorkspacePage() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);  // 用于触发子组件刷新
   const [blocksRefreshKey, setBlocksRefreshKey] = useState(0); // 用于触发 ContentBlocks 刷新
+  const [blockTree, setBlockTree] = useState<ContentBlock[]>([]);
   const [selectedBlock, setSelectedBlock] = useState<ContentBlock | null>(null); // 树形视图选中的内容块
   const [allBlocks, setAllBlocks] = useState<ContentBlock[]>([]); // 所有内容块（用于依赖选择）
   const [showProjectMenu, setShowProjectMenu] = useState(false); // 项目下拉菜单
   const projectMenuRef = useRef<HTMLDivElement>(null);
   const importFileRef = useRef<HTMLInputElement>(null);
+  const blockTreeSyncTokenRef = useRef("");
   
   // 批量选择相关状态
   const [isBatchMode, setIsBatchMode] = useState(false);
@@ -187,6 +215,8 @@ export default function WorkspacePage() {
       localStorage.setItem("lastProjectId", currentProject.id);
     }
     // 清除旧项目残留状态 —— 新项目的数据会由各自的 useEffect 重新加载
+    blockTreeSyncTokenRef.current = "";
+    setBlockTree([]);
     setSelectedBlock(null);
     setAllBlocks([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -241,28 +271,39 @@ export default function WorkspacePage() {
     console.log("选中内容块:", block.name, block.block_type);
   };
 
-  // 当 allBlocks 更新时，同步更新 selectedBlock 的内容（保持数据同步）
-  useEffect(() => {
-    if (selectedBlock && allBlocks.length > 0) {
-      // 递归查找匹配的 block
-      const findBlock = (blocks: ContentBlock[], id: string): ContentBlock | null => {
-        for (const block of blocks) {
-          if (block.id === id) return block;
-          if (block.children) {
-            const found = findBlock(block.children, id);
-            if (found) return found;
-          }
-        }
-        return null;
-      };
-      
-      const updatedBlock = findBlock(allBlocks, selectedBlock.id);
-      if (updatedBlock && JSON.stringify(updatedBlock) !== JSON.stringify(selectedBlock)) {
-        setSelectedBlock(updatedBlock);
-      }
+  const handleBlocksChange = useCallback((snapshot: ContentBlockSnapshot) => {
+    if (snapshot.syncToken === blockTreeSyncTokenRef.current) {
+      return;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allBlocks]);
+
+    blockTreeSyncTokenRef.current = snapshot.syncToken;
+    setBlockTree(snapshot.tree);
+    setAllBlocks(snapshot.flat);
+    setSelectedBlock((previousSelectedBlock) => syncSelectedBlockFromTree(previousSelectedBlock, snapshot.tree));
+  }, []);
+
+  const handleBlockUpdated = useCallback((updatedBlock: ContentBlock) => {
+    setAllBlocks((previousBlocks) => replaceBlockInFlat(previousBlocks, updatedBlock));
+
+    setBlockTree((previousTree) => {
+      const nextTree = replaceBlockInTree(previousTree, updatedBlock);
+      if (nextTree !== previousTree) {
+        blockTreeSyncTokenRef.current = buildBlockTreeSyncToken(nextTree);
+        setSelectedBlock((previousSelectedBlock) => syncSelectedBlockFromTree(previousSelectedBlock, nextTree));
+        return nextTree;
+      }
+
+      setSelectedBlock((previousSelectedBlock) => {
+        if (!previousSelectedBlock || previousSelectedBlock.id !== updatedBlock.id) {
+          return previousSelectedBlock;
+        }
+        return buildBlockSubtreeSyncToken(previousSelectedBlock) === buildBlockSubtreeSyncToken(updatedBlock)
+          ? previousSelectedBlock
+          : updatedBlock;
+      });
+      return previousTree;
+    });
+  }, []);
 
   const handleCreateProject = () => {
     setShowCreateModal(true);
@@ -776,7 +817,7 @@ export default function WorkspacePage() {
               project={currentProject}
               blocksRefreshKey={blocksRefreshKey}
               onBlockSelect={handleBlockSelect}
-              onBlocksChange={setAllBlocks}
+              onBlocksChange={handleBlocksChange}
               onProjectChange={async () => {
                 // 刷新项目数据
                 if (currentProject) {
@@ -814,6 +855,7 @@ export default function WorkspacePage() {
                 const updatedProjects = await projectAPI.list();
                 setProjects(updatedProjects);
               }}
+              onBlockUpdated={handleBlockUpdated}
               onBlockSelect={handleBlockSelect}
               onSendToAgent={setPendingAgentMessage}
               onSendSelectionToAgent={setPendingAgentSelection}
@@ -880,18 +922,7 @@ export default function WorkspacePage() {
           open={showSearch}
           onClose={() => setShowSearch(false)}
           onNavigateToField={(fieldId) => {
-            // P0-1: 统一通过 allBlocks 定位内容块
-            const findBlockRecursive = (blocks: ContentBlock[], id: string): ContentBlock | null => {
-              for (const b of blocks) {
-                if (b.id === id) return b;
-                if (b.children) {
-                  const found = findBlockRecursive(b.children, id);
-                  if (found) return found;
-                }
-              }
-              return null;
-            };
-            const block = findBlockRecursive(allBlocks, fieldId);
+            const block = findBlockInTree(blockTree, fieldId);
             if (block) {
               setSelectedBlock(block);
             }

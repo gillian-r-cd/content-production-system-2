@@ -24,6 +24,7 @@ interface ContentPanelProps {
   onFieldsChange?: () => void;
   /** 版本创建后通知父组件刷新项目列表 */
   onVersionCreated?: () => void;
+  onBlockUpdated?: (block: ContentBlock) => void;
   onBlockSelect?: (block: ContentBlock) => void;
   /** M3: 将消息发送到 Agent 对话面板（Eval 诊断→Agent 修改桥接） */
   onSendToAgent?: (message: string) => void;
@@ -38,6 +39,7 @@ export function ContentPanel({
   allBlocks = [],
   onFieldsChange,
   onVersionCreated,
+  onBlockUpdated,
   onBlockSelect,
   onSendToAgent,
   onSendSelectionToAgent,
@@ -70,12 +72,14 @@ export function ContentPanel({
       if (intentContent) {
         return (
           <ContentBlockEditor
+            key={selectedBlock.id}
             block={selectedBlock}
             projectId={projectId}
             projectLocale={projectLocale}
             allBlocks={allBlocks}
             onUpdate={onFieldsChange}
             onVersionCreated={onVersionCreated}
+            onBlockUpdated={onBlockUpdated}
             onSendToAgent={onSendToAgent}
             onSendSelectionToAgent={onSendSelectionToAgent}
           />
@@ -131,12 +135,14 @@ export function ContentPanel({
         }
         return (
           <ContentBlockEditor
+            key={selectedBlock.id}
             block={selectedBlock}
             projectId={projectId}
             projectLocale={projectLocale}
             allBlocks={allBlocks}
             onUpdate={onFieldsChange}
             onVersionCreated={onVersionCreated}
+            onBlockUpdated={onBlockUpdated}
             onSendToAgent={onSendToAgent}
             onSendSelectionToAgent={onSendSelectionToAgent}
           />
@@ -202,6 +208,7 @@ export function ContentPanel({
                   projectLocale={projectLocale}
                   allBlocks={allBlocks}
                   onUpdate={onFieldsChange}
+                  onBlockUpdated={onBlockUpdated}
                   onSelect={() => onBlockSelect?.(child)}
                 />
               ))}
@@ -375,12 +382,14 @@ export function ContentPanel({
     // 默认：使用 ContentBlockEditor
     return (
       <ContentBlockEditor
+        key={selectedBlock.id}
         block={selectedBlock}
         projectId={projectId}
         projectLocale={projectLocale}
         allBlocks={allBlocks}
         onUpdate={onFieldsChange}
         onVersionCreated={onVersionCreated}
+        onBlockUpdated={onBlockUpdated}
         onSendToAgent={onSendToAgent}
         onSendSelectionToAgent={onSendSelectionToAgent}
       />
@@ -403,12 +412,14 @@ export function ContentPanel({
   // 兜底：未知块类型也用 ContentBlockEditor
   return (
     <ContentBlockEditor
+      key={selectedBlock.id}
       block={selectedBlock}
       projectId={projectId}
       projectLocale={projectLocale}
       allBlocks={allBlocks}
       onUpdate={onFieldsChange}
       onVersionCreated={onVersionCreated}
+      onBlockUpdated={onBlockUpdated}
       onSendToAgent={onSendToAgent}
       onSendSelectionToAgent={onSendSelectionToAgent}
     />

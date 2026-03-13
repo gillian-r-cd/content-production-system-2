@@ -54,6 +54,7 @@ interface ContentBlockCardProps {
   projectLocale?: string | null;
   allBlocks?: ContentBlock[];  // 用于依赖选择
   onUpdate?: () => void;
+  onBlockUpdated?: (block: ContentBlock) => void;
   onSelect?: () => void;  // 点击选中此块（用于进入子组/分组）
 }
 
@@ -70,6 +71,7 @@ export function ContentBlockCard({
   projectLocale,
   allBlocks = [], 
   onUpdate,
+  onBlockUpdated,
   onSelect 
 }: ContentBlockCardProps) {
   // P0-1: 统一使用 blockAPI（已移除 fieldAPI/isVirtual 分支）
@@ -113,6 +115,8 @@ export function ContentBlockCard({
   const [showModelSelector, setShowModelSelector] = useState(false);
   const modelBtnRef = useRef<HTMLButtonElement>(null);
   const [modelDropdownPos, setModelDropdownPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const pollStatusRef = useRef(block.status);
+  const pollUpdatedAtRef = useRef(block.updated_at || "");
 
   // Escape 键关闭弹窗 + 点击外部关闭模型选择器
   useEffect(() => {
@@ -163,6 +167,33 @@ export function ContentBlockCard({
     _handleStop();
   };
 
+  const onUpdateRef = useRef(onUpdate);
+  const onBlockUpdatedRef = useRef(onBlockUpdated);
+
+  useEffect(() => {
+    onUpdateRef.current = onUpdate;
+  }, [onUpdate]);
+
+  useEffect(() => {
+    onBlockUpdatedRef.current = onBlockUpdated;
+  }, [onBlockUpdated]);
+
+  const applyUpdatedBlock = useCallback((updatedBlock: ContentBlock, refreshTree = false) => {
+    onBlockUpdatedRef.current?.(updatedBlock);
+    if (refreshTree) {
+      onUpdateRef.current?.();
+    }
+    return updatedBlock;
+  }, []);
+
+  const updateCurrentBlock = useCallback(async (
+    payload: Parameters<typeof blockAPI.update>[1],
+    options?: { refreshTree?: boolean },
+  ) => {
+    const updatedBlock = await blockAPI.update(block.id, payload);
+    return applyUpdatedBlock(updatedBlock, options?.refreshTree ?? false);
+  }, [applyUpdatedBlock, block.id]);
+
   const [copied, setCopied] = useState(false);
   
   const handleCopyContent = (e: React.MouseEvent) => {
@@ -187,13 +218,14 @@ export function ContentBlockCard({
           normalizedAnswers[question.id] = value;
         }
       }
-      await blockAPI.update(block.id, {
+      const updatedBlock = await updateCurrentBlock({
         pre_questions: normalizedQuestions,
         pre_answers: normalizedAnswers,
       });
+      setPreQuestions(normalizePreQuestions(updatedBlock.pre_questions || []));
+      setPreAnswers(normalizePreAnswers(updatedBlock.pre_answers || {}, updatedBlock.pre_questions || []));
       setPreAnswersSaved(true);
       setTimeout(() => setPreAnswersSaved(false), 2000);
-      onUpdate?.();
       
       // 保存后前端驱动自动触发链
       if (projectId) {
@@ -234,7 +266,12 @@ export function ContentBlockCard({
     // M5: 同步 model_override
     setModelOverride(block.model_override || "");
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [block.id, block.content, block.name, block.ai_prompt, block.depends_on, block.pre_answers, block.pre_questions]);
+  }, [block.id, block.content, block.name, block.ai_prompt, block.depends_on, block.pre_answers, block.pre_questions, block.model_override, block.updated_at]);
+
+  useEffect(() => {
+    pollStatusRef.current = block.status;
+    pollUpdatedAtRef.current = block.updated_at || "";
+  }, [block.status, block.updated_at]);
 
   const handleAddPreQuestion = (required = false) => {
     const question = newPreQuestion.trim();
@@ -275,10 +312,9 @@ export function ContentBlockCard({
   const handleSaveModelOverride = async (modelId: string) => {
     try {
       // 空字符串 "" 表示清除覆盖（恢复使用全局默认），后端会转为 null
-      await blockAPI.update(block.id, { model_override: modelId });
-      setModelOverride(modelId);
+      const updatedBlock = await updateCurrentBlock({ model_override: modelId });
+      setModelOverride(updatedBlock.model_override || "");
       setShowModelSelector(false);
-      onUpdate?.();
       sendNotification(modelId ? (isJa ? `モデルを設定しました: ${modelId}` : `已设置模型: ${modelId}`) : (isJa ? "既定モデルに戻しました" : "已恢复为默认模型"), "success");
     } catch (err: unknown) {
       console.error("保存模型覆盖失败:", err);
@@ -289,20 +325,27 @@ export function ContentBlockCard({
   // ===== 关键修复：如果 block 状态是 in_progress 但当前组件没在流式生成，则轮询刷新 =====
   useEffect(() => {
     if (block.status === "in_progress" && !isGenerating) {
-      const pollInterval = setInterval(() => {
-        onUpdate?.(); // 触发父组件刷新数据
+      const pollInterval = setInterval(async () => {
+        try {
+          const fresh = await blockAPI.get(block.id);
+          if (fresh.status !== pollStatusRef.current || (fresh.updated_at || "") !== pollUpdatedAtRef.current) {
+            onBlockUpdatedRef.current?.(fresh);
+            onUpdateRef.current?.();
+          }
+        } catch {
+          // 静默忽略轮询错误
+        }
       }, 2000);
       return () => clearInterval(pollInterval);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [block.status, isGenerating]);
+  }, [block.id, block.status, isGenerating]);
 
   // 保存名称
   const handleSaveName = async () => {
     if (editedName.trim() && editedName !== block.name) {
       try {
-        await blockAPI.update(block.id, { name: editedName.trim() });
-        onUpdate?.();
+        const updatedBlock = await updateCurrentBlock({ name: editedName.trim() });
+        setEditedName(updatedBlock.name);
       } catch (err) {
         console.error("更新名称失败:", err);
         alert((isJa ? "名前の更新に失敗しました: " : "更新名称失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
@@ -315,9 +358,9 @@ export function ContentBlockCard({
   // 保存内容
   const handleSaveContent = async () => {
     try {
-      await blockAPI.update(block.id, { content: editedContent });
+      const updatedBlock = await updateCurrentBlock({ content: editedContent }, { refreshTree: true });
       setIsEditing(false);
-      onUpdate?.();
+      setEditedContent(updatedBlock.content || "");
     } catch (err) {
       console.error("保存失败:", err);
       alert((isJa ? "保存に失敗しました: " : "保存失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
@@ -327,12 +370,12 @@ export function ContentBlockCard({
   // 保存 AI 提示词
   const handleSavePrompt = async () => {
     try {
-      await blockAPI.update(block.id, {
+      const updatedBlock = await updateCurrentBlock({
         ai_prompt: editedPrompt,
       });
-      setSavedPrompt(editedPrompt); // 乐观更新本地状态，立即反映到 UI
+      setEditedPrompt(updatedBlock.ai_prompt || "");
+      setSavedPrompt(updatedBlock.ai_prompt || "");
       setShowPromptModal(false);
-      onUpdate?.();
     } catch (err) {
       console.error("保存提示词失败:", err);
       alert((isJa ? "プロンプトの保存に失敗しました: " : "保存提示词失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
@@ -361,9 +404,9 @@ export function ContentBlockCard({
   // 保存依赖
   const handleSaveDependencies = async () => {
     try {
-      await blockAPI.update(block.id, { depends_on: selectedDependencies });
+      const updatedBlock = await updateCurrentBlock({ depends_on: selectedDependencies });
+      setSelectedDependencies(updatedBlock.depends_on || []);
       setShowDependencyModal(false);
-      onUpdate?.();
     } catch (err) {
       console.error("保存依赖失败:", err);
       alert((isJa ? "依存関係の保存に失敗しました: " : "保存依赖失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")));
@@ -397,8 +440,7 @@ export function ContentBlockCard({
   // 切换 need_review 状态
   const handleToggleNeedReview = async () => {
     try {
-      await blockAPI.update(block.id, { need_review: !block.need_review });
-      onUpdate?.();
+      await updateCurrentBlock({ need_review: !block.need_review });
     } catch (err) {
       console.error("切换审核状态失败:", err);
     }
@@ -407,8 +449,7 @@ export function ContentBlockCard({
   // 切换 auto_generate 状态
   const handleToggleAutoGenerate = async () => {
     try {
-      await blockAPI.update(block.id, { auto_generate: !block.auto_generate });
-      onUpdate?.();
+      await updateCurrentBlock({ auto_generate: !block.auto_generate });
     } catch (err) {
       console.error("切换自动生成失败:", err);
     }

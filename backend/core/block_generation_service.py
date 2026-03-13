@@ -125,6 +125,7 @@ def build_generation_system_prompt(
     block: ContentBlock,
     project: Project,
     dependency_content: str,
+    extra_instruction: str = "",
 ) -> str:
     """构建内容块生成 prompt。"""
     locale = normalize_locale(getattr(project, "locale", DEFAULT_LOCALE))
@@ -153,8 +154,14 @@ def build_generation_system_prompt(
         system_prompt = system_prompt.replace("{creator_profile}", creator_profile_text or rt(locale, "fallback.no_creator_profile"))
         system_prompt = system_prompt.replace("{dependencies}", dependency_content or rt(locale, "fallback.no_dependencies"))
         system_prompt += pre_answers_text
+        if extra_instruction.strip():
+            system_prompt += rt(locale, "block.extra_instruction_header", instruction=extra_instruction)
         system_prompt += rt(locale, "block.markdown_tail", instructions=format_instructions)
         return system_prompt
+
+    extra_instruction_text = ""
+    if extra_instruction.strip():
+        extra_instruction_text = rt(locale, "block.extra_instruction_header", instruction=extra_instruction)
 
     return f"""{gc.to_prompt()}
 
@@ -163,6 +170,7 @@ def build_generation_system_prompt(
 {rt(locale, "block.task_header")}
 {ai_prompt}
 {pre_answers_text}
+{extra_instruction_text}
 
 {f'---{chr(10)}{rt(locale, "block.reference_header")}{chr(10)}{dependency_content}' if dependency_content else ''}
 
@@ -242,6 +250,8 @@ async def generate_block_content_sync(
     *,
     block_id: str,
     db: Session,
+    extra_instruction: str = "",
+    config=None,
 ) -> dict:
     """非流式生成单个内容块，供项目级调度器和普通生成接口复用。"""
     from core.config import validate_llm_config
@@ -273,6 +283,7 @@ async def generate_block_content_sync(
         block=block,
         project=project,
         dependency_content=dependency_content,
+        extra_instruction=extra_instruction,
     )
 
     effective_model = resolve_model(model_override=getattr(block, "model_override", None))
@@ -285,10 +296,11 @@ async def generate_block_content_sync(
     db.commit()
 
     try:
+        invoke_kwargs = {"config": config} if config is not None else {}
         response = await ainvoke_with_retry(chat_model, [
             SystemMessage(content=system_prompt),
             HumanMessage(content=rt(locale, "block.generate.human", name=block.name)),
-        ])
+        ], **invoke_kwargs)
 
         generated_content = normalize_content(response.content)
         block.content = generated_content

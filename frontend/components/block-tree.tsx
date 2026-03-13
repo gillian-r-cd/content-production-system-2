@@ -31,6 +31,7 @@ import { ContentBlock, blockAPI, settingsAPI, TemplateNode, FieldTemplate } from
 import { useUiIsJa } from "@/lib/ui-locale";
 import { ContentTreeActionItems } from "./content-tree-action-items";
 import { ProjectContentTreeImportModal } from "./project-content-tree-import-modal";
+import { ProjectMarkdownImportModal } from "./project-markdown-import-modal";
 import { ContentTreeTemplateSaveModal } from "./content-tree-template-save-modal";
 
 function flattenTemplateNodes(nodes: TemplateNode[] = []): TemplateNode[] {
@@ -75,6 +76,7 @@ interface ProjectQuickActionsProps {
   onAddGroup: () => void;
   onAddField: () => void;
   onAddFromTemplate: () => void;
+  onImportMarkdown: () => void;
   onImportJson: () => void;
 }
 
@@ -107,6 +109,7 @@ function ProjectQuickActions({
   onAddGroup,
   onAddField,
   onAddFromTemplate,
+  onImportMarkdown,
   onImportJson,
 }: ProjectQuickActionsProps) {
   const isJa = useUiIsJa(projectLocale);
@@ -139,6 +142,15 @@ function ProjectQuickActions({
       label: isJa ? "テンプレートから追加" : "从模板添加",
       icon: <Package className="w-4 h-4" />,
       onClick: onAddFromTemplate,
+      className: isEmptyVariant
+        ? "mt-2 flex items-center gap-2 px-4 py-2 bg-surface-3 text-zinc-200 rounded-lg hover:bg-surface-4 transition-colors"
+        : "w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-500 hover:text-zinc-300 hover:bg-surface-2 rounded-lg transition-colors",
+    },
+    {
+      key: "import-markdown",
+      label: isJa ? "Markdown を取り込む" : "从 Markdown 导入",
+      icon: <FileText className="w-4 h-4" />,
+      onClick: onImportMarkdown,
       className: isEmptyVariant
         ? "mt-2 flex items-center gap-2 px-4 py-2 bg-surface-3 text-zinc-200 rounded-lg hover:bg-surface-4 transition-colors"
         : "w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-500 hover:text-zinc-300 hover:bg-surface-2 rounded-lg transition-colors",
@@ -746,7 +758,8 @@ export default function BlockTree({
   const [templates, setTemplates] = useState<FieldTemplate[]>([]);
   const [templatesLoading, setTemplatesLoading] = useState(false);
   const [isApplyingTemplate, setIsApplyingTemplate] = useState(false);
-  const [showImportModal, setShowImportModal] = useState(false);
+  const [showJsonImportModal, setShowJsonImportModal] = useState(false);
+  const [showMarkdownImportModal, setShowMarkdownImportModal] = useState(false);
 
   // 处理删除成功，保存到撤回栈
   const handleDeleteSuccess = useCallback((item: UndoHistoryItem) => {
@@ -903,7 +916,8 @@ export default function BlockTree({
       onAddGroup={handleAddGroup}
       onAddField={handleAddTopLevelField}
       onAddFromTemplate={openTemplateModal}
-      onImportJson={() => setShowImportModal(true)}
+      onImportMarkdown={() => setShowMarkdownImportModal(true)}
+      onImportJson={() => setShowJsonImportModal(true)}
     />
   );
 
@@ -1025,11 +1039,18 @@ export default function BlockTree({
     <>
       {treeContent}
       {projectTemplateModal}
-      <ProjectContentTreeImportModal
-        open={showImportModal}
+      <ProjectMarkdownImportModal
+        open={showMarkdownImportModal}
         projectId={projectId}
         projectLocale={projectLocale}
-        onClose={() => setShowImportModal(false)}
+        onClose={() => setShowMarkdownImportModal(false)}
+        onImported={onBlocksChange}
+      />
+      <ProjectContentTreeImportModal
+        open={showJsonImportModal}
+        projectId={projectId}
+        projectLocale={projectLocale}
+        onClose={() => setShowJsonImportModal(false)}
         onImported={onBlocksChange}
       />
     </>

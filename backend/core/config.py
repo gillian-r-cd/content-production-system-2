@@ -8,9 +8,12 @@
 使用 pydantic-settings 从 .env 文件加载配置
 """
 
+import logging
 from typing import Optional
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -61,8 +64,16 @@ class Settings(BaseSettings):
 
 @lru_cache()
 def get_settings() -> Settings:
-    """获取配置单例"""
-    return Settings()
+    """获取配置单例。
+
+    正常情况下优先读取 `backend/.env`。在测试或受限环境中，如果 `.env`
+    因权限问题不可读，则显式回退到纯环境变量，避免导入期直接失败。
+    """
+    try:
+        return Settings()
+    except OSError as exc:
+        logger.warning("failed to load settings from .env, fallback to environment only: %s", exc)
+        return Settings(_env_file=None)
 
 
 settings = get_settings()

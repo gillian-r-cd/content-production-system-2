@@ -21,6 +21,7 @@ dist/
 # IDE
 .idea/
 .vscode/
+.cursor/
 *.swp
 *.swo
 
@@ -38,14 +39,17 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+frontend/.npm-cache/
 
 # Test
 .pytest_cache/
 .coverage
 htmlcov/
+frontend/test-results/
 
 # Misc
 *.bak
 *.tmp
+backend/.venv312/
 
 

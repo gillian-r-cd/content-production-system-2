@@ -12,6 +12,7 @@ from langchain_core.messages import AIMessage
 
 from core.database import Base, get_db
 from core.models import Project, AgentMode, Conversation, ChatMessage, generate_uuid
+from core.models.content_block import ContentBlock
 import core.memory_service as memory_service
 import api.agent as agent_api
 from main import app
@@ -311,6 +312,63 @@ def test_create_conversation_defaults_to_project_locale_copy(client_and_session)
     assert conv.json()["title"] == "新しい会話"
 
 
+def test_conversation_endpoints_validate_project_ownership(client_and_session):
+    client, session = client_and_session
+    project_a, _ = _seed_project_and_templates(session)
+    project_b = Project(id=generate_uuid(), name="Other Project")
+    session.add(project_b)
+    session.commit()
+
+    imported_a = client.post("/api/modes/import-templates", json={"project_id": project_a.id}).json()
+    imported_b = client.post("/api/modes/import-templates", json={"project_id": project_b.id}).json()
+    mode_a = imported_a["imported"][0]
+    _ = imported_b["imported"][0]
+
+    created = client.post(
+        "/api/agent/conversations",
+        json={"project_id": project_a.id, "mode_id": mode_a["id"], "title": "会话 A"},
+    )
+    assert created.status_code == 200
+    conversation_id = created.json()["id"]
+
+    session.add(ChatMessage(
+        id=generate_uuid(),
+        project_id=project_a.id,
+        conversation_id=conversation_id,
+        role="user",
+        content="只属于项目 A 的消息",
+        message_metadata={"mode_id": mode_a["id"], "mode_label": mode_a["display_name"]},
+    ))
+    session.commit()
+
+    wrong_project_patch = client.patch(
+        f"/api/agent/conversations/{conversation_id}",
+        params={"project_id": project_b.id},
+        json={"title": "不该成功"},
+    )
+    wrong_project_messages = client.get(
+        f"/api/agent/conversations/{conversation_id}/messages",
+        params={"project_id": project_b.id},
+    )
+    wrong_project_delete = client.delete(
+        f"/api/agent/conversations/{conversation_id}",
+        params={"project_id": project_b.id},
+    )
+    wrong_project_batch_delete = client.post(
+        "/api/agent/conversations/batch-delete",
+        json={"project_id": project_b.id, "conversation_ids": [conversation_id]},
+    )
+
+    assert wrong_project_patch.status_code == 404
+    assert wrong_project_messages.status_code == 404
+    assert wrong_project_delete.status_code == 404
+    assert wrong_project_batch_delete.status_code == 404
+
+    session.expire_all()
+    assert session.query(Conversation).filter(Conversation.id == conversation_id).count() == 1
+    assert session.query(ChatMessage).filter(ChatMessage.conversation_id == conversation_id).count() == 1
+
+
 def test_chat_requires_project_mode_and_uses_mode_id(client_and_session, monkeypatch):
     client, session = client_and_session
     project, _ = _seed_project_and_templates(session)
@@ -357,6 +415,138 @@ def test_chat_requires_project_mode_and_uses_mode_id(client_and_session, monkeyp
     assert len(msgs) == 2
     assert msgs[0].message_metadata["mode_id"] == mode["id"]
     assert msgs[1].message_metadata["mode_label"] == mode["display_name"]
+
+
+def test_project_lifecycle_preserves_conversations_and_rewrites_embedded_ids(client_and_session):
+    client, session = client_and_session
+    project, _ = _seed_project_and_templates(session)
+
+    imported = client.post("/api/modes/import-templates", json={"project_id": project.id}).json()
+    mode = imported["imported"][0]
+
+    block = ContentBlock(
+        id=generate_uuid(),
+        project_id=project.id,
+        name="会话引用块",
+        block_type="field",
+        depth=0,
+        order_index=0,
+        content="原始内容",
+        status="completed",
+        ai_prompt="",
+        depends_on=[],
+    )
+    session.add(block)
+    session.commit()
+
+    created_conversation = client.post(
+        "/api/agent/conversations",
+        json={"project_id": project.id, "mode_id": mode["id"], "title": "会话资产"},
+    )
+    assert created_conversation.status_code == 200
+    conversation_id = created_conversation.json()["id"]
+
+    session.add(ChatMessage(
+        id=generate_uuid(),
+        project_id=project.id,
+        conversation_id=conversation_id,
+        role="assistant",
+        content="带资产引用的消息",
+        message_metadata={
+            "mode_id": mode["id"],
+            "mode_label": mode["display_name"],
+            "selection_context": {
+                "block_id": block.id,
+                "block_name": block.name,
+                "selected_text": "高亮片段",
+            },
+            "suggestion_cards": [
+                {
+                    "id": "card-1",
+                    "target_field": block.name,
+                    "target_entity_id": block.id,
+                    "summary": "改一下标题",
+                }
+            ],
+        },
+    ))
+    session.commit()
+
+    duplicated = client.post(f"/api/projects/{project.id}/duplicate")
+    assert duplicated.status_code == 200
+    duplicated_project_id = duplicated.json()["id"]
+
+    session.expire_all()
+    duplicated_mode = session.query(AgentMode).filter(
+        AgentMode.project_id == duplicated_project_id,
+        AgentMode.display_name == mode["display_name"],
+    ).first()
+    duplicated_block = session.query(ContentBlock).filter(
+        ContentBlock.project_id == duplicated_project_id,
+        ContentBlock.name == block.name,
+    ).first()
+    duplicated_conversation = session.query(Conversation).filter(
+        Conversation.project_id == duplicated_project_id,
+        Conversation.title == "会话资产",
+    ).first()
+    duplicated_message = session.query(ChatMessage).filter(
+        ChatMessage.project_id == duplicated_project_id,
+        ChatMessage.content == "带资产引用的消息",
+    ).first()
+
+    assert duplicated_mode is not None
+    assert duplicated_block is not None
+    assert duplicated_conversation is not None
+    assert duplicated_conversation.mode_id == duplicated_mode.id
+    assert duplicated_message is not None
+    assert duplicated_message.conversation_id == duplicated_conversation.id
+    assert duplicated_message.message_metadata["mode_id"] == duplicated_mode.id
+    assert duplicated_message.message_metadata["selection_context"]["block_id"] == duplicated_block.id
+    assert duplicated_message.message_metadata["suggestion_cards"][0]["target_entity_id"] == duplicated_block.id
+
+    exported = client.get(f"/api/projects/{project.id}/export")
+    assert exported.status_code == 200
+    exported_json = exported.json()
+    assert len(exported_json["conversations"]) == 1
+
+    imported_project = client.post("/api/projects/import", json={"data": exported_json})
+    assert imported_project.status_code == 200
+    imported_project_id = imported_project.json()["project"]["id"]
+
+    session.expire_all()
+    imported_mode = session.query(AgentMode).filter(
+        AgentMode.project_id == imported_project_id,
+        AgentMode.display_name == mode["display_name"],
+    ).first()
+    imported_block = session.query(ContentBlock).filter(
+        ContentBlock.project_id == imported_project_id,
+        ContentBlock.name == block.name,
+    ).first()
+    imported_conversation = session.query(Conversation).filter(
+        Conversation.project_id == imported_project_id,
+        Conversation.title == "会话资产",
+    ).first()
+    imported_message = session.query(ChatMessage).filter(
+        ChatMessage.project_id == imported_project_id,
+        ChatMessage.content == "带资产引用的消息",
+    ).first()
+
+    assert imported_mode is not None
+    assert imported_block is not None
+    assert imported_conversation is not None
+    assert imported_conversation.mode_id == imported_mode.id
+    assert imported_message is not None
+    assert imported_message.conversation_id == imported_conversation.id
+    assert imported_message.message_metadata["mode_id"] == imported_mode.id
+    assert imported_message.message_metadata["selection_context"]["block_id"] == imported_block.id
+    assert imported_message.message_metadata["suggestion_cards"][0]["target_entity_id"] == imported_block.id
+
+    deleted = client.delete(f"/api/projects/{imported_project_id}")
+    assert deleted.status_code == 200
+
+    session.expire_all()
+    assert session.query(Conversation).filter(Conversation.project_id == imported_project_id).count() == 0
+    assert session.query(ChatMessage).filter(ChatMessage.project_id == imported_project_id).count() == 0
 
 
 def test_duplicate_and_export_import_preserve_project_modes(client_and_session):
