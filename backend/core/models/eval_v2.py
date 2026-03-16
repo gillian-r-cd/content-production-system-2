@@ -18,7 +18,7 @@ Eval V2 数据模型（并行新链路）
 from __future__ import annotations
 
 from typing import Optional, List, TYPE_CHECKING
-from sqlalchemy import String, Text, JSON, ForeignKey, Integer, Float, DateTime
+from sqlalchemy import String, Text, JSON, ForeignKey, Integer, Float, DateTime, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.models.base import BaseModel
@@ -65,6 +65,9 @@ class EvalTaskV2(BaseModel):
     content_hash: Mapped[str] = mapped_column(String(64), default="")
     last_executed_at: Mapped[Optional[DateTime]] = mapped_column(DateTime, nullable=True)
     last_error: Mapped[str] = mapped_column(Text, default="")
+    # 持久化取消标记：内存态 stop_requested 重启后丢失，cancel_requested 持久保存
+    # 启动时如检测到 cancel_requested=True 且 status=running，自动将 status 置为 failed
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # 快速读取的最新聚合结果（最新 batch）
     latest_scores: Mapped[dict] = mapped_column(JSON, default=dict)   # {dimensions: {...}}

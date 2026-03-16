@@ -19,12 +19,24 @@ if sys.platform == "win32":
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
+import traceback
+
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel as _PydanticBase
 
 from core.config import settings
 from core.localization import DEFAULT_LOCALE, normalize_locale, resolve_eval_anchor_name
+
+
+# ===== 统一错误响应模型 =====
+class ErrorResponse(_PydanticBase):
+    """统一 API 错误响应格式。"""
+    error: str           # 机器可读的简短错误码或消息
+    detail: str = ""     # 人类可读的详细描述（可选）
+    status_code: int = 500
 
 
 # ===== 日志配置 =====
@@ -305,6 +317,34 @@ def _dedupe_eval_anchor_blocks_on_startup():
         )
 
 
+def _heal_stale_running_tasks_on_startup():
+    """
+    启动时将所有卡在 running 状态的 EvalTask 重置为 failed。
+    进程内存态（_TASK_RUNTIME_STATE）在重启后丢失，
+    若 DB 仍显示 running 会导致 pause/stop/resume 接口报"任务未运行"。
+    """
+    try:
+        from core.database import get_session_maker
+        from core.models import EvalTaskV2
+        Session = get_session_maker()
+        db = Session()
+        stale = db.query(EvalTaskV2).filter(EvalTaskV2.status == "running").all()
+        for t in stale:
+            t.status = "failed"
+            if not (t.last_error or "").strip():
+                t.last_error = "执行状态丢失（服务重启或任务中断），请重新执行。"
+        if stale:
+            db.commit()
+            logging.getLogger("startup").info(
+                "启动时重置 %d 个 stale running EvalTask 为 failed", len(stale)
+            )
+        db.close()
+    except Exception as e:
+        logging.getLogger("startup").warning(
+            "启动时清理 stale running tasks 失败（不影响运行）: %s", e
+        )
+
+
 def _check_llm_config_on_startup():
     """
     启动时检查 LLM 配置，在日志中给出明确警告。
@@ -358,6 +398,38 @@ def create_app() -> FastAPI:
         expose_headers=["*"],  # 允许前端访问所有响应头
     )
 
+    # ===== 统一异常处理 =====
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(request: Request, exc: HTTPException):
+        """将 HTTPException 转为统一格式的 JSON 响应。"""
+        detail = exc.detail or ""
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": str(detail)[:500] if isinstance(detail, str) else str(detail)[:500],
+                "detail": str(detail),
+                "status_code": exc.status_code,
+            },
+        )
+
+    @app.exception_handler(Exception)
+    async def generic_exception_handler(request: Request, exc: Exception):
+        """捕获未处理的通用异常，返回统一格式，避免泄露内部堆栈。"""
+        _generic_logger = logging.getLogger("error_handler")
+        _generic_logger.error(
+            "未处理异常 [%s %s]: %s\n%s",
+            request.method, request.url.path,
+            exc, traceback.format_exc(),
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+                "detail": "服务器内部错误，请稍后重试。",
+                "status_code": 500,
+            },
+        )
+
     # 健康检查
     @app.get("/health")
     async def health_check():
@@ -372,34 +444,34 @@ def create_app() -> FastAPI:
     from api import memories as memories_api
     from api import models as models_api
     
-    app.include_router(projects.router, prefix="/api/projects", tags=["projects"])
-    app.include_router(fields.router, prefix="/api/fields", tags=["fields"])  # [已废弃] P0-1: 统一使用 blocks.router，保留兼容
-    app.include_router(agent.router, prefix="/api/agent", tags=["agent"])
-    app.include_router(settings_api.router, prefix="/api/settings", tags=["settings"])
-    app.include_router(simulation.router, prefix="/api/simulations", tags=["simulations"])
-    
+    app.include_router(projects.router, prefix="/api/projects", tags=["projects"])          # → /api/projects
+    app.include_router(fields.router, prefix="/api/fields", tags=["fields"])                # → /api/fields  [已废弃] P0-1: 统一使用 blocks.router，保留兼容
+    app.include_router(agent.router, prefix="/api/agent", tags=["agent"])                   # → /api/agent
+    app.include_router(settings_api.router, prefix="/api/settings", tags=["settings"])      # → /api/settings
+    app.include_router(simulation.router, prefix="/api/simulations", tags=["simulations"])  # → /api/simulations
+
     # 新架构：内容块和阶段模板
-    app.include_router(blocks.router)  # 路由前缀已在 blocks.py 中定义
-    app.include_router(phase_templates.router)  # 路由前缀已在 phase_templates.py 中定义
-    app.include_router(project_structure_drafts.router)
-    
+    app.include_router(blocks.router)                   # → /api/blocks          (prefix 在 blocks.py 中定义)
+    app.include_router(phase_templates.router)          # → /api/phase-templates (prefix 在 phase_templates.py 中定义)
+    app.include_router(project_structure_drafts.router) # → /api/project-structure-drafts (prefix 在 project_structure_drafts.py 中定义)
+
     # 新 Eval 体系
-    app.include_router(eval_api.router)  # 路由前缀已在 eval.py 中定义
-    
+    app.include_router(eval_api.router)     # → /api/eval     (prefix 在 eval.py 中定义)
+
     # Grader 评分器管理
-    app.include_router(graders_api.router)
-    
+    app.include_router(graders_api.router)  # → /api/graders  (prefix 在 graders.py 中定义)
+
     # 版本历史
-    app.include_router(versions.router)
-    
+    app.include_router(versions.router)     # → /api/versions (prefix 在 versions.py 中定义)
+
     # Agent 模式管理
-    app.include_router(modes_api.router)
-    
+    app.include_router(modes_api.router)    # → /api/modes    (prefix 在 modes.py 中定义)
+
     # 项目记忆管理
-    app.include_router(memories_api.router)
-    
+    app.include_router(memories_api.router) # → /api/memories (prefix 在 memories.py 中定义)
+
     # 可用模型列表
-    app.include_router(models_api.router)
+    app.include_router(models_api.router)   # → /api/models   (prefix 在 models.py 中定义)
 
     # 启动时确保数据库就绪：schema -> 种子数据 -> 评估模板同步 -> 清理
     @app.on_event("startup")
@@ -410,6 +482,7 @@ def create_app() -> FastAPI:
         _sync_eval_presets_on_startup()
         _cleanup_legacy_eval_templates_on_startup()
         _dedupe_eval_anchor_blocks_on_startup()
+        _heal_stale_running_tasks_on_startup()
         # ===== 启动时校验 LLM 配置，提前暴露 .env 问题 =====
         _check_llm_config_on_startup()
 

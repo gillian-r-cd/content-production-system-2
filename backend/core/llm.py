@@ -267,6 +267,53 @@ def parse_llm_error(error: Exception) -> str:
     return f"AI 调用失败: {err_str}"
 
 
+def _is_thinking_budget_error(error: Exception) -> bool:
+    """判断异常是否为 Gemini thinking_budget 参数不支持的错误。"""
+    err_str = str(error).lower()
+    return "thinking_budget" in err_str or (
+        "thinking" in err_str and (
+            "invalid" in err_str
+            or "unsupported" in err_str
+            or "not supported" in err_str
+            or "400" in err_str
+        )
+    )
+
+
+def _strip_thinking_budget(chat_model) -> "BaseChatModel":
+    """
+    返回去掉 thinking_budget 参数的同类模型副本。
+    仅针对 ChatGoogleGenerativeAI；其他 provider 原样返回。
+    """
+    try:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        if not isinstance(chat_model, ChatGoogleGenerativeAI):
+            return chat_model
+    except ImportError:
+        return chat_model
+
+    # 从现有实例提取构造参数
+    model_name = getattr(chat_model, "model", None) or getattr(chat_model, "model_name", None) or "gemini-pro"
+    temperature = getattr(chat_model, "temperature", 0.7)
+    streaming = getattr(chat_model, "streaming", True)
+    timeout = getattr(chat_model, "request_timeout", None) or getattr(chat_model, "timeout", 300)
+    max_output_tokens = getattr(chat_model, "max_output_tokens", 16384)
+    google_api_key = getattr(chat_model, "google_api_key", None)
+
+    _llm_logger.warning(
+        "[llm_retry] 去掉 thinking_budget 后重建 Gemini 模型: %s", model_name
+    )
+    return ChatGoogleGenerativeAI(
+        model=model_name,
+        google_api_key=google_api_key,
+        temperature=temperature,
+        streaming=streaming,
+        timeout=timeout,
+        max_retries=3,
+        max_output_tokens=max_output_tokens,
+    )
+
+
 async def ainvoke_with_retry(
     chat_model,
     messages,
@@ -279,6 +326,7 @@ async def ainvoke_with_retry(
     带指数退避重试的 ainvoke 调用。
 
     对瞬态错误（overloaded / rate_limit / 503 等）自动重试，
+    对 Gemini thinking_budget 参数错误，去掉该参数后重试一次，
     对其他错误直接抛出（parse_llm_error 友好化）。
 
     Args:
@@ -288,12 +336,21 @@ async def ainvoke_with_retry(
         base_delay: 初始退避延迟（秒），每次翻倍
         **kwargs: 传给 ainvoke 的额外参数（如 config）
     """
+    _thinking_budget_fallback_done = False
     last_error = None
     for attempt in range(1 + max_retries):
         try:
             return await chat_model.ainvoke(messages, **kwargs)
         except Exception as e:
             last_error = e
+            # Gemini thinking_budget 参数不兼容：去掉参数重试一次
+            if not _thinking_budget_fallback_done and _is_thinking_budget_error(e):
+                _thinking_budget_fallback_done = True
+                _llm_logger.warning(
+                    "[llm_retry] Gemini thinking_budget 错误，去掉参数后重试: %s", e
+                )
+                chat_model = _strip_thinking_budget(chat_model)
+                continue  # 立即重试，不计入 attempt
             if attempt < max_retries and _is_retryable(e):
                 delay = base_delay * (2 ** attempt)
                 _llm_logger.warning(

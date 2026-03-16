@@ -110,6 +110,7 @@ export function ContentBlockCard({
   );
   const [isSavingPreAnswers, setIsSavingPreAnswers] = useState(false);
   const [preAnswersSaved, setPreAnswersSaved] = useState(false);
+  const [preQuestionsExpanded, setPreQuestionsExpanded] = useState(false);
   const hasPreQuestions = preQuestions.length > 0;
   const showPreQuestionsSection = block.block_type === "field";
   const [newPreQuestion, setNewPreQuestion] = useState("");
@@ -444,7 +445,7 @@ export function ContentBlockCard({
   // 切换 need_review 状态
   const handleToggleNeedReview = async () => {
     try {
-      await updateCurrentBlock({ need_review: !block.need_review });
+      await updateCurrentBlock({ need_review: !block.need_review }, { refreshTree: true });
     } catch (err) {
       console.error("切换审核状态失败:", err);
     }
@@ -828,121 +829,131 @@ export function ContentBlockCard({
         <div className="border-t border-surface-3">
           {/* 生成前提问区域 */}
           {showPreQuestionsSection && (
-            <div className="p-4 bg-amber-900/10 border-b border-amber-600/20">
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-amber-400 text-sm font-medium">
+            <div className="bg-amber-900/10 border-b border-amber-600/20">
+              <button
+                onClick={() => setPreQuestionsExpanded((v) => !v)}
+                className="w-full flex items-center justify-between px-4 py-3 text-left"
+              >
+                <span className="text-amber-400 text-sm font-medium flex items-center gap-1.5">
+                  {preQuestionsExpanded
+                    ? <ChevronDown className="w-3.5 h-3.5" />
+                    : <ChevronRight className="w-3.5 h-3.5" />}
                   {hasPreQuestions
                     ? (isJa
                       ? `生成前ヒアリング（必須 ${answeredRequiredPreQuestionCount}/${requiredPreQuestionCount}、全回答 ${answeredPreQuestionCount}/${preQuestions.length}）`
                       : `生成前提问（必答 ${answeredRequiredPreQuestionCount}/${requiredPreQuestionCount}，全部已答 ${answeredPreQuestionCount}/${preQuestions.length}）`)
                     : (isJa ? "生成前ヒアリング" : "生成前提问")}
                 </span>
-                <div className="flex items-center gap-2">
-                  {preAnswersSaved && (
-                    <span className="text-xs text-green-400">{isJa ? "✓ 保存済み" : "✓ 已保存"}</span>
-                  )}
-                  <button
-                    onClick={handleSavePreAnswers}
-                    disabled={isSavingPreAnswers}
-                    className="px-3 py-1 text-xs bg-amber-600 hover:bg-amber-700 disabled:bg-amber-800 text-white rounded transition-colors"
-                  >
-                    {isSavingPreAnswers ? (isJa ? "保存中..." : "保存中...") : (isJa ? "回答を保存" : "保存回答")}
-                  </button>
-                </div>
-              </div>
-              <div className="space-y-3">
-                {hasPreQuestions ? (
-                  preQuestions.map((question, idx) => (
-                    <div key={question.id} className="space-y-2 rounded-lg border border-amber-500/15 bg-surface-1/60 p-3">
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="text"
-                          value={question.question}
-                          onChange={(e) => {
-                            const nextQuestion = e.target.value;
-                            setPreQuestions((prev) => prev.map((item) => (
-                              item.id === question.id
-                                ? { ...item, question: nextQuestion }
-                                : item
-                            )));
-                            setPreAnswersSaved(false);
-                          }}
-                          placeholder={isJa ? `${idx + 1}. 質問を入力` : `${idx + 1}. 输入问题`}
-                          className="flex-1 rounded border border-surface-3 bg-surface-2 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-                        />
-                        <label className="flex items-center gap-1.5 text-xs text-zinc-400">
+                {preAnswersSaved && (
+                  <span className="text-xs text-green-400">{isJa ? "✓ 保存済み" : "✓ 已保存"}</span>
+                )}
+              </button>
+              {preQuestionsExpanded && (
+                <div className="px-4 pb-4">
+                  <div className="flex justify-end mb-3">
+                    <button
+                      onClick={handleSavePreAnswers}
+                      disabled={isSavingPreAnswers}
+                      className="px-3 py-1 text-xs bg-amber-600 hover:bg-amber-700 disabled:bg-amber-800 text-white rounded transition-colors"
+                    >
+                      {isSavingPreAnswers ? (isJa ? "保存中..." : "保存中...") : (isJa ? "回答を保存" : "保存回答")}
+                    </button>
+                  </div>
+                  <div className="space-y-3">
+                    {hasPreQuestions ? (
+                      preQuestions.map((question, idx) => (
+                        <div key={question.id} className="space-y-2 rounded-lg border border-amber-500/15 bg-surface-1/60 p-3">
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              value={question.question}
+                              onChange={(e) => {
+                                const nextQuestion = e.target.value;
+                                setPreQuestions((prev) => prev.map((item) => (
+                                  item.id === question.id
+                                    ? { ...item, question: nextQuestion }
+                                    : item
+                                )));
+                                setPreAnswersSaved(false);
+                              }}
+                              placeholder={isJa ? `${idx + 1}. 質問を入力` : `${idx + 1}. 输入问题`}
+                              className="flex-1 rounded border border-surface-3 bg-surface-2 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                            />
+                            <label className="flex items-center gap-1.5 text-xs text-zinc-400">
+                              <input
+                                type="checkbox"
+                                checked={question.required}
+                                onChange={(e) => {
+                                  setPreQuestions((prev) => prev.map((item) => (
+                                    item.id === question.id
+                                      ? { ...item, required: e.target.checked }
+                                      : item
+                                  )));
+                                  setPreAnswersSaved(false);
+                                }}
+                              />
+                              {isJa ? "必須" : "必答"}
+                            </label>
+                            <button
+                              onClick={() => handleRemovePreQuestion(question.id)}
+                              className="px-2 py-0.5 text-xs bg-red-600/20 text-red-300 rounded hover:bg-red-600/30"
+                            >
+                              {isJa ? "削除" : "删除"}
+                            </button>
+                          </div>
                           <input
-                            type="checkbox"
-                            checked={question.required}
+                            type="text"
+                            value={preAnswers[question.id] || ""}
                             onChange={(e) => {
-                              setPreQuestions((prev) => prev.map((item) => (
-                                item.id === question.id
-                                  ? { ...item, required: e.target.checked }
-                                  : item
-                              )));
+                              const newAnswers = { ...preAnswers, [question.id]: e.target.value };
+                              setPreAnswers(newAnswers);
                               setPreAnswersSaved(false);
                             }}
+                            className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                            placeholder={question.required ? (isJa ? "必須質問への回答を入力してください..." : "请输入必答问题的回答...") : (isJa ? "任意回答: 空欄可" : "选答：可留空")}
                           />
-                          {isJa ? "必須" : "必答"}
-                        </label>
-                        <button
-                          onClick={() => handleRemovePreQuestion(question.id)}
-                          className="px-2 py-0.5 text-xs bg-red-600/20 text-red-300 rounded hover:bg-red-600/30"
-                        >
-                          {isJa ? "削除" : "删除"}
-                        </button>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="rounded-lg border border-dashed border-amber-500/30 bg-surface-1/60 px-4 py-3 text-sm text-zinc-500">
+                        {isJa ? "生成前ヒアリングはまだありません。先に質問を追加し、回答を保存すると、生成時にそれらが文脈へ入ります。" : "还没有生成前提问。你可以先添加问题，再保存回答，生成时这些问答会进入上下文。"}
                       </div>
-                      <input
-                        type="text"
-                        value={preAnswers[question.id] || ""}
-                        onChange={(e) => {
-                          const newAnswers = { ...preAnswers, [question.id]: e.target.value };
-                          setPreAnswers(newAnswers);
-                          setPreAnswersSaved(false);
-                        }}
-                        className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-                        placeholder={question.required ? (isJa ? "必須質問への回答を入力してください..." : "请输入必答问题的回答...") : (isJa ? "任意回答: 空欄可" : "选答：可留空")}
-                      />
-                    </div>
-                  ))
-                ) : (
-                  <div className="rounded-lg border border-dashed border-amber-500/30 bg-surface-1/60 px-4 py-3 text-sm text-zinc-500">
-                    {isJa ? "生成前ヒアリングはまだありません。先に質問を追加し、回答を保存すると、生成時にそれらが文脈へ入ります。" : "还没有生成前提问。你可以先添加问题，再保存回答，生成时这些问答会进入上下文。"}
+                    )}
                   </div>
-                )}
-              </div>
-              <div className="mt-3 flex items-center gap-2">
-                <input
-                  type="text"
-                  value={newPreQuestion}
-                  onChange={(e) => setNewPreQuestion(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      handleAddPreQuestion();
-                    }
-                  }}
-                  className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-                  placeholder={isJa ? "生成前ヒアリングを追加..." : "新增生成前提问..."}
-                />
-                <button
-                  onClick={() => handleAddPreQuestion(false)}
-                  className="px-3 py-2 text-xs bg-surface-3 text-zinc-200 rounded hover:bg-surface-4"
-                >
-                  {isJa ? "任意質問を追加" : "添加选答题"}
-                </button>
-                <button
-                  onClick={() => handleAddPreQuestion(true)}
-                  className="px-3 py-2 text-xs bg-amber-600/80 text-white rounded hover:bg-amber-600"
-                >
-                  {isJa ? "必須質問を追加" : "添加必答题"}
-                </button>
-              </div>
-              <p className="mt-3 text-xs text-zinc-500">
-                {missingRequiredPreQuestionCount > 0
-                  ? (isJa ? `必須質問があと ${missingRequiredPreQuestionCount} 件未回答です。必須質問が残っていると「すべて開始」と手動生成を実行できません。` : `还有 ${missingRequiredPreQuestionCount} 个必答问题未回答；必答题会阻止“全部开始”和手动生成。`)
-                  : (isJa ? "入力後は「回答を保存」をクリックしてください。回答は生成内容の文脈として AI に渡されます。任意質問は空欄でも構いません。" : "填写完毕后请点击「保存回答」按钮，答案会作为生成内容的上下文传递给 AI；选答题可留空。")}
-              </p>
+                  <div className="mt-3 flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={newPreQuestion}
+                      onChange={(e) => setNewPreQuestion(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          handleAddPreQuestion();
+                        }
+                      }}
+                      className="w-full px-3 py-2 bg-surface-1 border border-surface-3 rounded-lg text-zinc-200 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                      placeholder={isJa ? "生成前ヒアリングを追加..." : "新増生成前提问..."}
+                    />
+                    <button
+                      onClick={() => handleAddPreQuestion(false)}
+                      className="px-3 py-2 text-xs bg-surface-3 text-zinc-200 rounded hover:bg-surface-4"
+                    >
+                      {isJa ? "任意質問を追加" : "添加选答题"}
+                    </button>
+                    <button
+                      onClick={() => handleAddPreQuestion(true)}
+                      className="px-3 py-2 text-xs bg-amber-600/80 text-white rounded hover:bg-amber-600"
+                    >
+                      {isJa ? "必須質問を追加" : "添加必答题"}
+                    </button>
+                  </div>
+                  <p className="mt-3 text-xs text-zinc-500">
+                    {missingRequiredPreQuestionCount > 0
+                      ? (isJa ? `必須質問があと ${missingRequiredPreQuestionCount} 件未回答です。必須質問が残っていると「すべて開始」と手動生成を実行できません。` : `还有 ${missingRequiredPreQuestionCount} 个必答问题未回答；必答题会阻止"全部开始"和手动生成。`)
+                      : (isJa ? "入力後は「回答を保存」をクリックしてください。回答は生成内容の文脈として AI に渡されます。任意質問は空欄でも構いません。" : "填写完毕后请点击「保存回答」按钮，答案会作为生成内容的上下文传递给 AI；选答题可留空。")}
+                  </p>
+                </div>
+              )}
             </div>
           )}
           

@@ -355,12 +355,6 @@ export function ContentBlockEditor({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [block.id, block.content, block.name, block.ai_prompt, block.depends_on, block.pre_answers, block.pre_questions, block.model_override, block.updated_at]);
 
-  useEffect(() => {
-    if (showPreQuestionsSection && preQuestions.length === 0) {
-      setPreQuestionsExpanded(true);
-    }
-  }, [showPreQuestionsSection, preQuestions.length]);
-
   const handleAddPreQuestion = (required = false) => {
     const question = newPreQuestion.trim();
     if (!question) return;
@@ -678,7 +672,16 @@ export function ContentBlockEditor({
     setTimeout(() => {
       const selection = window.getSelection();
       if (!selection || selection.isCollapsed || !selection.toString().trim()) {
-        // 没有选中文本时不清空（避免干扰已有的 inline edit 状态）
+        // 没有产生新选中（纯点击）→ 清除旧的选中状态
+        if (selectedText || inlineEditResult) {
+          setSelectedText("");
+          setToolbarPosition(null);
+          setInlineEditResult(null);
+          setShowCustomInput(false);
+          setCustomInstruction("");
+          clearSelectionHighlight();
+          window.getSelection()?.removeAllRanges();
+        }
         return;
       }
       // 确保选中区域在我们的内容展示区域内
@@ -703,7 +706,7 @@ export function ContentBlockEditor({
       // 清除之前的结果（新选中 = 新一轮）
       setInlineEditResult(null);
     }, 10);
-  }, [applySelectionHighlight]);
+  }, [selectedText, inlineEditResult, applySelectionHighlight, clearSelectionHighlight]);
 
   /** 点击工具栏按钮，发起 inline AI 调用 */
   const handleInlineEdit = useCallback(async (operation: "rewrite" | "expand" | "condense" | "custom", instruction?: string) => {
@@ -989,7 +992,7 @@ export function ContentBlockEditor({
           <button
             onClick={async () => {
               try {
-                await updateCurrentBlock({ need_review: !block.need_review });
+                await updateCurrentBlock({ need_review: !block.need_review }, { refreshTree: true });
               } catch (err) {
                 console.error("切换确认状态失败:", err);
               }

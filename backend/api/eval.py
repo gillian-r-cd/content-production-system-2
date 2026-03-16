@@ -2799,6 +2799,17 @@ def _build_task_progress_payload(task: EvalTaskV2) -> dict:
     else:
         percent = 100 if task.status in ("completed", "failed", "stopped") else 0
     is_running = bool(rt.get("is_running", False)) and (task.status == "running")
+
+    # batch_id / started_at 优先运行态；回退到 DB 持久字段
+    batch_id = rt.get("batch_id", "") or task.latest_batch_id or ""
+    db_started_at = ""
+    if task.last_executed_at:
+        try:
+            db_started_at = task.last_executed_at.isoformat() if hasattr(task.last_executed_at, "isoformat") else str(task.last_executed_at)
+        except Exception:
+            db_started_at = ""
+    started_at = rt.get("started_at", "") or db_started_at
+
     return {
         "total": total,
         "completed": completed,
@@ -2809,8 +2820,8 @@ def _build_task_progress_payload(task: EvalTaskV2) -> dict:
         "stop_requested": bool(rt.get("stop_requested", False)),
         "pause_requested": bool(rt.get("pause_requested", False)),
         "resume_requested": bool(rt.get("resume_requested", False)),
-        "batch_id": rt.get("batch_id", ""),
-        "started_at": rt.get("started_at", ""),
+        "batch_id": batch_id,
+        "started_at": started_at,
         "updated_at": rt.get("updated_at", ""),
     }
 

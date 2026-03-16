@@ -616,6 +616,14 @@ def update_block(
         flag_modified(block, "depends_on")
     if data.need_review is not None:
         block.need_review = data.need_review
+        # 状态联动：仅在没有显式传 status 且内容存在时生效
+        if data.status is None and (block.content or "").strip():
+            if not data.need_review:
+                # need_review → false：有内容即视为已确认
+                block.status = "completed"
+            elif data.need_review and block.status == "completed":
+                # need_review → true：已完成的块重新需要人工确认
+                block.status = "in_progress"
     if data.auto_generate is not None:
         block.auto_generate = data.auto_generate
     if data.is_collapsed is not None:

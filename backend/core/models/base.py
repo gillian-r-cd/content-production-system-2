@@ -9,7 +9,7 @@
 """
 
 import uuid
-from datetime import UTC, datetime
+from datetime import timezone, datetime
 from sqlalchemy import String, DateTime
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -23,7 +23,7 @@ def generate_uuid() -> str:
 
 def utcnow_naive() -> datetime:
     """返回不带时区的 UTC 当前时间，兼容现有 SQLite DateTime 列。"""
-    return datetime.now(UTC).replace(tzinfo=None)
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class BaseModel(Base):

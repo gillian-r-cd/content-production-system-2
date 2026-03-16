@@ -154,8 +154,34 @@ class FieldTemplate(BaseModel):
                         f"字段'{field['name']}'依赖的'{dep}'不存在"
                     )
 
-        # 检测循环依赖
-        # TODO: 实现拓扑排序检测
+        # 检测循环依赖（Kahn 算法拓扑排序）
+        field_names_list = [f["name"] for f in normalized["fields"]]
+        # 构建邻接表：被依赖 → 依赖它的节点（in-degree 入度）
+        in_degree: dict[str, int] = {name: 0 for name in field_names_list}
+        adj: dict[str, list[str]] = {name: [] for name in field_names_list}
+        for field in normalized["fields"]:
+            for dep in field.get("depends_on", []):
+                if dep in in_degree:
+                    in_degree[field["name"]] += 1
+                    adj[dep].append(field["name"])
+        # Kahn 算法：从入度为 0 的节点开始 BFS
+        from collections import deque
+        queue = deque(name for name, deg in in_degree.items() if deg == 0)
+        visited = 0
+        while queue:
+            node = queue.popleft()
+            visited += 1
+            for neighbor in adj[node]:
+                in_degree[neighbor] -= 1
+                if in_degree[neighbor] == 0:
+                    queue.append(neighbor)
+        if visited != len(field_names_list):
+            # 存在环：找出环中的节点（入度仍 > 0 的节点）
+            cycle_nodes = [name for name, deg in in_degree.items() if deg > 0]
+            errors.append(
+                f"字段依赖关系存在循环依赖，涉及字段: {', '.join(cycle_nodes)}。"
+                f"请检查这些字段的 depends_on 配置，确保依赖图无环。"
+            )
 
         return errors
 

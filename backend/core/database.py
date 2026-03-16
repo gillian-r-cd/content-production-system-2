@@ -84,6 +84,7 @@ def ensure_compat_schema(engine) -> None:
     _ensure_field_template_columns(engine)
     _ensure_phase_template_columns(engine)
     _ensure_localized_asset_columns(engine)
+    _ensure_eval_task_v2_columns(engine)
     _backfill_compat_defaults(engine)
 
 
@@ -381,6 +382,17 @@ def _backfill_compat_defaults(engine) -> None:
     with engine.begin() as conn:
         for sql, params in statements:
             conn.execute(text(sql), params)
+
+
+def _ensure_eval_task_v2_columns(engine) -> None:
+    """
+    兼容旧库：为 eval_tasks_v2 补齐运行时状态追踪列。
+    cancel_requested 用于跨重启的取消标记（内存态 stop_requested 重启后丢失）。
+    """
+    new_columns = {
+        "cancel_requested": "BOOLEAN DEFAULT 0",
+    }
+    _add_missing_columns(engine, "eval_tasks_v2", new_columns)
 
 
 def _add_missing_columns(engine, table: str, columns: dict[str, str]) -> None:
