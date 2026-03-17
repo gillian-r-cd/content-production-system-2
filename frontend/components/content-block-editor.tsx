@@ -906,8 +906,8 @@ export function ContentBlockEditor({
                 {isJa ? "生成を停止" : "停止生成"}
               </button>
             )}
-            {/* 生成按钮 */}
-            {block.status !== "completed" && !isGenerating && (
+            {/* 生成按钮：无已有内容时显示（从零创建） */}
+            {!block.content && !isGenerating && (
               <button
                 onClick={handleGenerate}
                 disabled={!canGenerate}
@@ -948,11 +948,17 @@ export function ContentBlockEditor({
               </button>
             )}
             
-            {/* 重新生成按钮 */}
-            {(block.status === "completed" || (block.status === "in_progress" && block.content)) && !isGenerating && (
+            {/* 重新生成按钮：有已有内容时显示（替换/重做），与"生成"互斥无重叠 */}
+            {block.content && !isGenerating && (
               <button
                 onClick={handleGenerate}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-amber-600/20 hover:bg-amber-600/30 text-amber-400 border border-amber-500/30 rounded-lg transition-colors"
+                disabled={!canGenerate}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-sm border rounded-lg transition-colors ${
+                  canGenerate
+                    ? "bg-amber-600/20 hover:bg-amber-600/30 text-amber-400 border-amber-500/30"
+                    : "bg-zinc-700/50 text-zinc-500 border-zinc-600/30 cursor-not-allowed"
+                }`}
+                title={!canGenerate ? (isJa ? `依存内容が未準備です: ${unmetDependencies.map(d => d.name).join(", ")}` : `依赖内容未就绪: ${unmetDependencies.map(d => d.name).join(", ")}`) : (isJa ? "内容を再生成" : "重新生成内容")}
               >
                 <RefreshCw className="w-4 h-4" />
                 {isJa ? "再生成" : "重新生成"}

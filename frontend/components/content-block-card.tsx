@@ -744,7 +744,7 @@ export function ContentBlockCard({
               </button>
             </div>
             
-            {/* 生成按钮 */}
+            {/* 生成/重新生成按钮：有内容显示 RefreshCw（重新生成），无内容显示 Play（首次生成） */}
             {!isGenerating && (
               <button
                 onClick={handleGenerate}
@@ -752,17 +752,17 @@ export function ContentBlockCard({
                 className={`p-1.5 rounded transition-colors ${
                   !canGenerate
                     ? "text-zinc-600 cursor-not-allowed"
-                    : block.status === "completed"
+                    : block.content
                     ? "text-amber-400 hover:bg-amber-600/20"
                     : "text-brand-400 hover:bg-brand-600/20"
                 }`}
                 title={
                   !canGenerate
                     ? `${isJa ? "依存内容が未準備です" : "依赖内容未就绪"}: ${unmetDependencies.map(d => d.name).join(", ")}`
-                    : block.status === "completed" ? (isJa ? "再生成" : "重新生成") : (isJa ? "内容を生成" : "生成内容")
+                    : block.content ? (isJa ? "再生成" : "重新生成") : (isJa ? "内容を生成" : "生成内容")
                 }
               >
-                {block.status === "completed" ? <RefreshCw className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+                {block.content ? <RefreshCw className="w-4 h-4" /> : <Play className="w-4 h-4" />}
               </button>
             )}
             
