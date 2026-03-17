@@ -148,6 +148,13 @@ function buildVisualToMarkdownMap(markdown: string): { visual: string; map: numb
     }
 
     // 普通字符，直接映射
+    // \r 直接跳过（Windows 行尾）
+    if (ch === "\r") { i++; continue; }
+    // 连续 \n 折叠为一个（Markdown 段落间 \n\n → 浏览器 selection 只有一个 \n）
+    if (ch === "\n" && visualChars.length > 0 && visualChars[visualChars.length - 1] === "\n") {
+      i++;
+      continue;
+    }
     map.push(i);
     visualChars.push(ch);
     i++;
@@ -821,11 +828,13 @@ export function ContentBlockEditor({
       // 计算选中文本在原始 Markdown 中的位置范围
       if (block.content) {
         const { visual, map } = buildVisualToMarkdownMap(block.content);
-        const startInVisual = visual.indexOf(text);
-        if (startInVisual !== -1 && startInVisual + text.length - 1 < map.length) {
+        // 与 visual 的折叠规则一致：多个 \n 归一为一个，去掉 \r
+        const normalizedText = text.replace(/\r/g, "").replace(/\n{2,}/g, "\n");
+        const startInVisual = visual.indexOf(normalizedText);
+        if (startInVisual !== -1 && startInVisual + normalizedText.length - 1 < map.length) {
           setSelectedMarkdownRange({
             start: map[startInVisual],
-            end: map[startInVisual + text.length - 1] + 1,
+            end: map[startInVisual + normalizedText.length - 1] + 1,
           });
         } else {
           setSelectedMarkdownRange(null);
