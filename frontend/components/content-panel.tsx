@@ -6,6 +6,7 @@
 
 "use client";
 
+import { useRef, useState, useCallback } from "react";
 import type { ContentBlock, AgentSelectionRef } from "@/lib/api";
 import { formatProjectText, isJaProjectLocale, projectUiText } from "@/lib/project-locale";
 import { useUiLocale } from "@/lib/ui-locale";
@@ -65,6 +66,61 @@ export function ContentPanel({
   const uiLocale = useUiLocale(projectLocale);
   const t = projectUiText(uiLocale);
   const isJa = isJaProjectLocale(uiLocale);
+
+  // ===== 多视图拖拽布局状态（各模式独立保持） =====
+  const multiViewRef = useRef<HTMLDivElement>(null);
+  // split2: 左栏宽度 %（右栏 flex-1 自动填满）
+  const [split2LeftPct, setSplit2LeftPct] = useState(50);
+  // split3: 前两栏宽度 %（第三栏 flex-1 自动填满）
+  const [split3Pcts, setSplit3Pcts] = useState<[number, number]>([33.33, 33.33]);
+  // grid4: 左列宽度 % + 上行高度 %（其余 flex-1 填满）
+  const [grid4LeftPct, setGrid4LeftPct] = useState(50);
+  const [grid4TopPct, setGrid4TopPct] = useState(50);
+
+  // 列拖拽：传入 startPct（鼠标按下时的当前值）避免闭包旧值问题
+  const startColDrag = useCallback((
+    e: React.MouseEvent,
+    startPct: number,
+    setPct: (v: number) => void,
+    minPct = 15,
+    maxPct = 80,
+  ) => {
+    e.preventDefault();
+    const container = multiViewRef.current;
+    if (!container) return;
+    const totalW = container.getBoundingClientRect().width;
+    const startX = e.clientX;
+    const onMove = (ev: MouseEvent) => {
+      const dx = ev.clientX - startX;
+      setPct(Math.min(maxPct, Math.max(minPct, startPct + (dx / totalW) * 100)));
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, []);
+
+  // 行拖拽（仅 grid4 使用）
+  const startRowDrag = useCallback((e: React.MouseEvent, startPct: number) => {
+    e.preventDefault();
+    const container = multiViewRef.current;
+    if (!container) return;
+    const totalH = container.getBoundingClientRect().height;
+    const startY = e.clientY;
+    const onMove = (ev: MouseEvent) => {
+      const dy = ev.clientY - startY;
+      setGrid4TopPct(Math.min(80, Math.max(20, startPct + (dy / totalH) * 100)));
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, []);
+
   // ===== 早期返回（在所有Hooks之后）=====
 
   if (!projectId) {
@@ -80,61 +136,124 @@ export function ContentPanel({
 
   // ===== 多视图模式（优先于单视图所有逻辑） =====
   if (viewLayout !== "single") {
-    const slotCount = viewLayout === "split2" ? 2 : viewLayout === "split3" ? 3 : 4;
-    const gridColsClass = viewLayout === "split2" ? "grid-cols-2" : viewLayout === "split3" ? "grid-cols-3" : "grid-cols-2";
-    const isGrid4 = viewLayout === "grid4";
-
-    return (
-      <div className="h-full flex flex-col">
+    // 单个槽位渲染（复用于所有多视图布局）
+    const renderSlot = (i: number, style: React.CSSProperties) => {
+      const slotBlock = slotBlocks[i] ?? null;
+      const isActive = activeSlotIndex === i;
+      return (
         <div
-          className={`flex-1 min-h-0 grid divide-x divide-surface-3 ${gridColsClass} ${isGrid4 ? "grid-rows-2 divide-y" : ""}`}
+          key={i}
+          style={style}
+          className={`relative overflow-hidden flex flex-col min-w-0 min-h-0 ${isActive ? "ring-2 ring-inset ring-brand-500/40" : ""}`}
+          onClick={() => { if (!isActive) onSlotFocus?.(i); }}
         >
-          {Array.from({ length: slotCount }).map((_, i) => {
-            const slotBlock = slotBlocks[i] ?? null;
-            const isActive = activeSlotIndex === i;
-            return (
-              <div
-                key={i}
-                className={`relative overflow-y-auto flex flex-col ${isActive ? "ring-2 ring-inset ring-brand-500/40" : ""}`}
-                onClick={() => { if (!isActive) onSlotFocus?.(i); }}
-              >
-                {slotBlock ? (
-                  <>
-                    <ContentBlockEditor
-                      key={slotBlock.id}
-                      block={slotBlock}
-                      compact={true}
-                      projectId={projectId}
-                      projectLocale={projectLocale}
-                      allBlocks={allBlocks}
-                      onUpdate={onFieldsChange}
-                      onVersionCreated={onVersionCreated}
-                      onBlockUpdated={onBlockUpdated}
-                      onSendToAgent={onSendToAgent}
-                      onSendSelectionToAgent={onSendSelectionToAgent}
-                    />
-                    <button
-                      onClick={(e) => { e.stopPropagation(); onSlotClose?.(i); }}
-                      className="absolute top-2 right-8 z-20 w-5 h-5 flex items-center justify-center rounded bg-surface-2/80 text-zinc-500 hover:text-red-400 hover:bg-surface-3 transition-colors"
-                      title={isJa ? "このペインを閉じる" : "关闭此窗格"}
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
-                  </>
-                ) : (
-                  <div
-                    className="flex-1 flex flex-col items-center justify-center gap-3 text-zinc-600 cursor-pointer hover:text-zinc-400 transition-colors select-none"
-                    onClick={() => onSlotFocus?.(i)}
-                  >
-                    <LayoutGrid className="w-8 h-8" />
-                    <p className="text-sm text-center px-6">
-                      {isJa ? "左のツリーから内容ブロックを選択してください" : "从左侧目录点击内容块以添加到此窗格"}
-                    </p>
-                  </div>
-                )}
+          {slotBlock ? (
+            <>
+              <div className="flex-1 overflow-y-auto min-h-0">
+                <ContentBlockEditor
+                  key={slotBlock.id}
+                  block={slotBlock}
+                  compact={true}
+                  projectId={projectId}
+                  projectLocale={projectLocale}
+                  allBlocks={allBlocks}
+                  onUpdate={onFieldsChange}
+                  onVersionCreated={onVersionCreated}
+                  onBlockUpdated={onBlockUpdated}
+                  onSendToAgent={onSendToAgent}
+                  onSendSelectionToAgent={onSendSelectionToAgent}
+                />
               </div>
-            );
-          })}
+              <button
+                onClick={(e) => { e.stopPropagation(); onSlotClose?.(i); }}
+                className="absolute top-2 right-8 z-20 w-5 h-5 flex items-center justify-center rounded bg-surface-2/80 text-zinc-500 hover:text-red-400 hover:bg-surface-3 transition-colors"
+                title={isJa ? "このペインを閉じる" : "关闭此窗格"}
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </>
+          ) : (
+            <div
+              className="flex-1 flex flex-col items-center justify-center gap-3 text-zinc-600 cursor-pointer hover:text-zinc-400 transition-colors select-none"
+              onClick={() => onSlotFocus?.(i)}
+            >
+              <LayoutGrid className="w-8 h-8" />
+              <p className="text-sm text-center px-6">
+                {isJa ? "左のツリーから内容ブロックを選択してください" : "从左侧目录点击内容块以添加到此窗格"}
+              </p>
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    // 列分隔拖拽条
+    const ColHandle = ({ startPct, setPct, minPct = 15, maxPct = 85 }: {
+      startPct: number;
+      setPct: (v: number) => void;
+      minPct?: number;
+      maxPct?: number;
+    }) => (
+      <div
+        className="w-1 flex-shrink-0 bg-surface-3 hover:bg-brand-500/60 cursor-col-resize transition-colors select-none"
+        onMouseDown={(e) => startColDrag(e, startPct, setPct, minPct, maxPct)}
+      />
+    );
+
+    // 行分隔拖拽条（grid4 专用）
+    const RowHandle = ({ startPct }: { startPct: number }) => (
+      <div
+        className="h-1 flex-shrink-0 bg-surface-3 hover:bg-brand-500/60 cursor-row-resize transition-colors select-none"
+        onMouseDown={(e) => startRowDrag(e, startPct)}
+      />
+    );
+
+    if (viewLayout === "split2") {
+      return (
+        <div ref={multiViewRef} className="h-full flex flex-row overflow-hidden">
+          {renderSlot(0, { width: `${split2LeftPct}%`, flexShrink: 0 })}
+          <ColHandle startPct={split2LeftPct} setPct={setSplit2LeftPct} />
+          {renderSlot(1, { flex: 1 })}
+        </div>
+      );
+    }
+
+    if (viewLayout === "split3") {
+      return (
+        <div ref={multiViewRef} className="h-full flex flex-row overflow-hidden">
+          {renderSlot(0, { width: `${split3Pcts[0]}%`, flexShrink: 0 })}
+          <ColHandle
+            startPct={split3Pcts[0]}
+            setPct={(v) => setSplit3Pcts([v, split3Pcts[1]])}
+            maxPct={100 - split3Pcts[1] - 15}
+          />
+          {renderSlot(1, { width: `${split3Pcts[1]}%`, flexShrink: 0 })}
+          <ColHandle
+            startPct={split3Pcts[1]}
+            setPct={(v) => setSplit3Pcts([split3Pcts[0], v])}
+            minPct={15}
+            maxPct={100 - split3Pcts[0] - 15}
+          />
+          {renderSlot(2, { flex: 1 })}
+        </div>
+      );
+    }
+
+    // grid4
+    return (
+      <div ref={multiViewRef} className="h-full flex flex-row overflow-hidden">
+        {/* 左列 */}
+        <div style={{ width: `${grid4LeftPct}%`, flexShrink: 0 }} className="flex flex-col min-h-0">
+          {renderSlot(0, { flex: 1 })}
+          <RowHandle startPct={grid4TopPct} />
+          {renderSlot(2, { flex: 1 })}
+        </div>
+        <ColHandle startPct={grid4LeftPct} setPct={setGrid4LeftPct} />
+        {/* 右列 */}
+        <div style={{ flex: 1 }} className="flex flex-col min-h-0">
+          {renderSlot(1, { flex: 1 })}
+          <RowHandle startPct={grid4TopPct} />
+          {renderSlot(3, { flex: 1 })}
         </div>
       </div>
     );
