@@ -314,10 +314,23 @@ export default function WorkspacePage() {
     setBlockTree(snapshot.tree);
     setAllBlocks(snapshot.flat);
     setSelectedBlock((previousSelectedBlock) => syncSelectedBlockFromTree(previousSelectedBlock, snapshot.tree));
+
+    // 多视图：轮询/刷新后同步各 slot 内容块到最新树节点，保持状态一致
+    setSlotBlocks((prev) =>
+      prev.map((b) => {
+        if (!b) return null;
+        return findBlockInTree(snapshot.tree, b.id) ?? b;
+      }) as (ContentBlock | null)[],
+    );
   }, []);
 
   const handleBlockUpdated = useCallback((updatedBlock: ContentBlock) => {
     setAllBlocks((previousBlocks) => replaceBlockInFlat(previousBlocks, updatedBlock));
+
+    // 多视图：slot 内容块也需同步，否则保存/生成后 slot 里的 block prop 永远是旧数据
+    setSlotBlocks((prev) =>
+      prev.map((b) => (b?.id === updatedBlock.id ? updatedBlock : b)) as (ContentBlock | null)[],
+    );
 
     setBlockTree((previousTree) => {
       const nextTree = replaceBlockInTree(previousTree, updatedBlock);
