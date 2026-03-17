@@ -162,7 +162,7 @@ export function WorkspaceLayout({
       </div>
 
       {/* ── 中栏 ── */}
-      <main className="flex-1 overflow-y-auto bg-surface-0 min-w-0">
+      <main className="flex-1 overflow-hidden bg-surface-0 min-w-0">
         {centerPanel}
       </main>
 

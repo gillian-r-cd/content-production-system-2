@@ -167,7 +167,10 @@ def rollback_version(
     # 执行回滚
     entity.content = target_version.content
     if hasattr(entity, 'status'):
-        entity.status = "completed"
+        # 遵守 need_review 契约：回滚后的状态与正常生成完成后一致
+        # need_review=True → in_progress（需人工确认），need_review=False → completed
+        need_review = getattr(entity, 'need_review', False)
+        entity.status = "completed" if not need_review else "in_progress"
     if block:
         finalize_block_content_change(block=block, db=db)
 

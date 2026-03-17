@@ -9,7 +9,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { WorkspaceLayout } from "@/components/layout/workspace-layout";
 import { ProgressPanel } from "@/components/progress-panel";
-import { ContentPanel } from "@/components/content-panel";
+import { ContentPanel, type ViewLayout } from "@/components/content-panel";
 import { AgentPanel } from "@/components/agent-panel";
 import { CreateProjectModal } from "@/components/create-project-modal";
 import { GlobalSearchModal } from "@/components/global-search-modal";
@@ -159,9 +159,15 @@ export default function WorkspacePage() {
 
   // B: 选中文字→Agent Panel 引用上下文
   const [pendingAgentSelection, setPendingAgentSelection] = useState<AgentSelectionRef | null>(null);
+
+  // 多视图状态
+  const [viewLayout, setViewLayout] = useState<ViewLayout>("single");
+  const [slotBlocks, setSlotBlocks] = useState<(ContentBlock | null)[]>([null, null, null, null]);
+  const [activeSlotIndex, setActiveSlotIndex] = useState(0);
   // Workspace UI 必须优先跟随当前项目语言；只有未进入项目时才回退到客户端记住的 locale。
   const uiLocale = normalizeProjectLocale(currentProject?.locale || browserLocale || "zh-CN");
   const t = projectUiText(uiLocale);
+  const isJa = uiLocale === "ja-JP";
 
   // 点击外部关闭下拉菜单
   useEffect(() => {
@@ -219,6 +225,9 @@ export default function WorkspacePage() {
     setBlockTree([]);
     setSelectedBlock(null);
     setAllBlocks([]);
+    setViewLayout("single");
+    setSlotBlocks([null, null, null, null]);
+    setActiveSlotIndex(0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentProject?.id]);
 
@@ -268,7 +277,32 @@ export default function WorkspacePage() {
 
   const handleBlockSelect = (block: ContentBlock) => {
     setSelectedBlock(block);
+    setSlotBlocks(prev => {
+      const next = [...prev] as (ContentBlock | null)[];
+      next[activeSlotIndex] = block;
+      return next;
+    });
     console.log("选中内容块:", block.name, block.block_type);
+  };
+
+  const handleSlotClose = (index: number) => {
+    setSlotBlocks(prev => {
+      const next = [...prev] as (ContentBlock | null)[];
+      next[index] = null;
+      return next;
+    });
+    if (activeSlotIndex === index) {
+      setActiveSlotIndex(0);
+    }
+  };
+
+  const handleViewLayoutChange = (layout: ViewLayout) => {
+    if (layout !== "single" && viewLayout === "single" && selectedBlock) {
+      // 从单视图切换到多视图时：把当前选中块放入 slot 0
+      setSlotBlocks([selectedBlock, null, null, null]);
+    }
+    setViewLayout(layout);
+    setActiveSlotIndex(0);
   };
 
   const handleBlocksChange = useCallback((snapshot: ContentBlockSnapshot) => {
@@ -839,27 +873,63 @@ export default function WorkspacePage() {
             />
           }
           centerPanel={
-            <ContentPanel
-              projectId={currentProject?.id || null}
-              projectLocale={currentProject?.locale}
-              selectedBlock={selectedBlock}
-              allBlocks={allBlocks}
-              onFieldsChange={() => {
-                if (currentProject) {
-                  // 刷新 ContentBlocks（确保树形视图和内容面板同步）
-                  setBlocksRefreshKey(prev => prev + 1);
-                }
-              }}
-              onVersionCreated={async () => {
-                // 弹窗创建版本后刷新项目列表，确保新版本可见
-                const updatedProjects = await projectAPI.list();
-                setProjects(updatedProjects);
-              }}
-              onBlockUpdated={handleBlockUpdated}
-              onBlockSelect={handleBlockSelect}
-              onSendToAgent={setPendingAgentMessage}
-              onSendSelectionToAgent={setPendingAgentSelection}
-            />
+            <div className="h-full flex flex-col overflow-hidden">
+              {/* 视图切换工具栏（有项目且选中内容块时显示） */}
+              {currentProject && selectedBlock && (
+                <div className="flex items-center gap-1 px-3 py-1.5 border-b border-surface-3 bg-surface-1 flex-shrink-0">
+                  <span className="text-xs text-zinc-500 mr-1.5">{isJa ? "表示:" : "视图:"}</span>
+                  {(
+                    [
+                      { id: "single" as ViewLayout, label: "1", title: isJa ? "単一表示" : "单栏" },
+                      { id: "split2" as ViewLayout, label: "2", title: isJa ? "2分割" : "并排 2" },
+                      { id: "split3" as ViewLayout, label: "3", title: isJa ? "3分割" : "并排 3" },
+                      { id: "grid4" as ViewLayout, label: "⊞", title: isJa ? "4分割グリッド" : "四方格" },
+                    ] as const
+                  ).map(({ id, label, title }) => (
+                    <button
+                      key={id}
+                      onClick={() => handleViewLayoutChange(id)}
+                      title={title}
+                      className={`w-7 h-6 text-xs rounded transition-colors font-mono ${
+                        viewLayout === id
+                          ? "bg-brand-600 text-white"
+                          : "bg-surface-2 text-zinc-400 hover:bg-surface-3 hover:text-zinc-200"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div className="flex-1 min-h-0 overflow-hidden">
+                <ContentPanel
+                  projectId={currentProject?.id || null}
+                  projectLocale={currentProject?.locale}
+                  selectedBlock={selectedBlock}
+                  allBlocks={allBlocks}
+                  onFieldsChange={() => {
+                    if (currentProject) {
+                      // 刷新 ContentBlocks（确保树形视图和内容面板同步）
+                      setBlocksRefreshKey(prev => prev + 1);
+                    }
+                  }}
+                  onVersionCreated={async () => {
+                    // 弹窗创建版本后刷新项目列表，确保新版本可见
+                    const updatedProjects = await projectAPI.list();
+                    setProjects(updatedProjects);
+                  }}
+                  onBlockUpdated={handleBlockUpdated}
+                  onBlockSelect={handleBlockSelect}
+                  onSendToAgent={setPendingAgentMessage}
+                  onSendSelectionToAgent={setPendingAgentSelection}
+                  viewLayout={viewLayout}
+                  slotBlocks={slotBlocks}
+                  activeSlotIndex={activeSlotIndex}
+                  onSlotFocus={setActiveSlotIndex}
+                  onSlotClose={handleSlotClose}
+                />
+              </div>
+            </div>
           }
           rightPanel={
             <AgentPanel

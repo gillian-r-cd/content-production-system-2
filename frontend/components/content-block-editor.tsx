@@ -47,6 +47,7 @@ import {
   Sparkles,
   Loader2,
   Cpu,
+  SlidersHorizontal,
 } from "lucide-react";
 
 function getBlockStatusLabel(status: string, isJa: boolean, needsRegeneration = false) {
@@ -184,6 +185,8 @@ interface ContentBlockEditorProps {
   onSendToAgent?: (message: string) => void;
   /** B: 将选中文字+内容块引用发送到 Agent Panel 输入框上方 */
   onSendSelectionToAgent?: (ref: AgentSelectionRef) => void;
+  /** 多视图模式：隐藏面包屑、压缩标题栏高度 */
+  compact?: boolean;
 }
 
 export function ContentBlockEditor({
@@ -196,6 +199,7 @@ export function ContentBlockEditor({
   onBlockUpdated,
   onSendToAgent,
   onSendSelectionToAgent,
+  compact = false,
 }: ContentBlockEditorProps) {
   const isJa = useUiIsJa(projectLocale);
   // P0-1: 统一使用 blockAPI（已移除 fieldAPI/isVirtual 分支）
@@ -218,6 +222,10 @@ export function ContentBlockEditor({
   const [modelOverride, setModelOverride] = useState<string>(block.model_override || "");
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
   const [showModelSelector, setShowModelSelector] = useState(false);
+
+  // 配置面板折叠状态：提示词未配置时默认展开（引导用户配置），已配置时默认折叠（节省空间）
+  // compact 模式（多视图）下始终默认折叠，最大化内容区域
+  const [showSettings, setShowSettings] = useState(compact ? false : !savedPrompt);
 
   // M4: Inline AI 编辑状态
   const [selectedText, setSelectedText] = useState("");
@@ -812,20 +820,22 @@ export function ContentBlockEditor({
   }, [selectedText, inlineEditResult, clearSelectionHighlight]);
 
   return (
-    <div className="h-full flex flex-col p-6">
-      {/* 面包屑导航 */}
-      <div className="flex items-center gap-2 text-sm text-zinc-500 mb-4">
-        <Folder className="w-4 h-4" />
-        <span>{isJa ? "内容ブロック" : "内容块"}</span>
-        <ChevronRight className="w-3 h-3" />
-        <FileText className="w-4 h-4" />
-        <span className="text-zinc-300">{block.name}</span>
-      </div>
+    <div className="h-full flex flex-col">
+      {/* 面包屑导航（compact 多视图模式下隐藏） */}
+      {!compact && (
+        <div className="flex items-center gap-2 text-sm text-zinc-500 px-4 py-2">
+          <Folder className="w-4 h-4" />
+          <span>{isJa ? "内容ブロック" : "内容块"}</span>
+          <ChevronRight className="w-3 h-3" />
+          <FileText className="w-4 h-4" />
+          <span className="text-zinc-300">{block.name}</span>
+        </div>
+      )}
 
       {/* 主编辑卡片 */}
-      <div className="flex-1 bg-surface-1 border border-surface-3 rounded-xl overflow-hidden flex flex-col">
+      <div className="flex-1 bg-surface-1 border-t border-surface-3 overflow-hidden flex flex-col">
         {/* 标题栏 */}
-        <div className="px-5 py-4 border-b border-surface-3 flex items-center justify-between">
+        <div className={`px-5 border-b border-surface-3 flex items-center justify-between ${compact ? "py-2" : "py-4"}`}>
           <div className="flex items-center gap-3">
             {isEditingName ? (
               <input
@@ -856,8 +866,33 @@ export function ContentBlockEditor({
             <span className={`px-2 py-0.5 text-xs rounded ${getBlockStatusClass(block.status, block.needs_regeneration)}`}>
               {getBlockStatusLabel(block.status, isJa, block.needs_regeneration)}
             </span>
+
+            {/* 配置面板折叠开关 */}
+            <div className="relative">
+              <button
+                onClick={() => setShowSettings(!showSettings)}
+                className={`p-1.5 rounded-md transition-colors ${
+                  showSettings
+                    ? "bg-surface-3 text-zinc-300"
+                    : "text-zinc-500 hover:text-zinc-300 hover:bg-surface-2"
+                }`}
+                title={
+                  showSettings
+                    ? (isJa ? "設定を閉じる" : "收起配置")
+                    : (!savedPrompt
+                        ? (isJa ? "設定を開く（プロンプト未設定）" : "展开配置（提示词未配置）")
+                        : (isJa ? "設定を開く" : "展开配置"))
+                }
+              >
+                <SlidersHorizontal className="w-3.5 h-3.5" />
+              </button>
+              {/* 提示词未配置时，显示小红点警告 */}
+              {!savedPrompt && (
+                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-red-500 rounded-full pointer-events-none" />
+              )}
+            </div>
           </div>
-          
+
           {/* 操作按钮 */}
           <div className="flex items-center gap-2">
             {/* 生成中：显示停止按钮 */}
@@ -949,7 +984,9 @@ export function ContentBlockEditor({
           </div>
         </div>
 
-        {/* 配置区域 */}
+        {/* 配置区域（可折叠） — 使用 CSS grid 实现无闪烁高度过渡 */}
+        <div className={`grid transition-[grid-template-rows] duration-200 ease-in-out ${showSettings ? "grid-rows-[1fr]" : "grid-rows-[0fr]"}`}>
+        <div className="overflow-hidden">
         <div className="px-5 py-3 border-b border-surface-3 bg-surface-2/50 flex flex-wrap items-center gap-3">
           {/* AI 提示词配置 */}
           <button
@@ -1082,7 +1119,7 @@ export function ContentBlockEditor({
           )}
         </div>
 
-        {/* 生成前提问区域（可折叠） */}
+        {/* 生成前提问区域（可折叠） — 并入设置面板 */}
         {showPreQuestionsSection && (
           <div className="border-b border-amber-600/20">
             <button
@@ -1218,6 +1255,8 @@ export function ContentBlockEditor({
             )}
           </div>
         )}
+        </div>
+        </div>
 
         {/* 内容区域 */}
         <div className="flex-1 p-5 overflow-y-auto">

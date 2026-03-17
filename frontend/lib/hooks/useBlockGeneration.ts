@@ -122,6 +122,10 @@ export function useBlockGeneration({
     abortControllerRef.current = abortController;
     setIsGenerating(true);
     setGeneratingContent("");
+    // 生成开始时立即通知侧边栏刷新：backend 在流式端点进入时就将 status 设为 "in_progress"，
+    // 若不在此通知，ProgressPanel 会一直显示旧状态（如 pending）直到生成结束，
+    // 且因 hasAutoRegenerationActivity 基于旧数据判断，轮询也不会启动。
+    onUpdate?.();
 
     try {
       // P0-1: 统一使用 blockAPI 流式生成
@@ -167,6 +171,8 @@ export function useBlockGeneration({
             + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")),
           );
         }
+        // 生成失败时也需刷新侧边栏，使状态等显示 backend 已写入的 "failed" 状态
+        onUpdate?.();
       }
     } finally {
       if (generatingBlockIdRef.current === currentBlockId) {

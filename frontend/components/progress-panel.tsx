@@ -33,7 +33,10 @@ interface ProgressPanelProps {
 
 function hasAutoRegenerationActivity(blocks: ContentBlock[]): boolean {
   for (const block of blocks) {
-    if ((block.auto_generate && block.needs_regeneration) || (block.status === "in_progress" && !block.need_review)) {
+    // need_review=true のブロックも streaming 中は in_progress になるため、
+    // !block.need_review の条件を外して全 in_progress ブロックをポーリング対象にする。
+    // （need_review=true かつ確認待ち状態のブロックも含まれるが、ポーリングは軽量で許容範囲内）
+    if ((block.auto_generate && block.needs_regeneration) || block.status === "in_progress") {
       return true;
     }
     if (block.children && block.children.length > 0 && hasAutoRegenerationActivity(block.children)) {

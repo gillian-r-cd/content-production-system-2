@@ -15,6 +15,9 @@ import { ChannelSelector } from "./channel-selector";
 import { ResearchPanel } from "./research-panel";
 import { EvalPhasePanel } from "./eval-phase-panel";
 import { ProposalSelector } from "./proposal-selector";
+import { X, LayoutGrid } from "lucide-react";
+
+export type ViewLayout = "single" | "split2" | "split3" | "grid4";
 
 interface ContentPanelProps {
   projectId: string | null;
@@ -30,6 +33,16 @@ interface ContentPanelProps {
   onSendToAgent?: (message: string) => void;
   /** B: 将选中文字+内容块引用发送到 Agent Panel 输入框上方 */
   onSendSelectionToAgent?: (ref: AgentSelectionRef) => void;
+  /** 多视图布局模式 */
+  viewLayout?: ViewLayout;
+  /** 各槽位对应的内容块（最多4个） */
+  slotBlocks?: (ContentBlock | null)[];
+  /** 当前激活的槽位（侧边栏点击填入此槽） */
+  activeSlotIndex?: number;
+  /** 槽位聚焦回调 */
+  onSlotFocus?: (index: number) => void;
+  /** 关闭槽位回调 */
+  onSlotClose?: (index: number) => void;
 }
 
 export function ContentPanel({
@@ -43,18 +56,85 @@ export function ContentPanel({
   onBlockSelect,
   onSendToAgent,
   onSendSelectionToAgent,
+  viewLayout = "single",
+  slotBlocks = [null, null, null, null],
+  activeSlotIndex = 0,
+  onSlotFocus,
+  onSlotClose,
 }: ContentPanelProps) {
   const uiLocale = useUiLocale(projectLocale);
   const t = projectUiText(uiLocale);
   const isJa = isJaProjectLocale(uiLocale);
   // ===== 早期返回（在所有Hooks之后）=====
-  
+
   if (!projectId) {
     return (
       <div className="flex items-center justify-center h-full text-zinc-500">
         <div className="text-center">
           <p className="text-lg mb-2">{t.chooseOrCreateProject}</p>
           <p className="text-sm">{t.chooseProjectHint}</p>
+        </div>
+      </div>
+    );
+  }
+
+  // ===== 多视图模式（优先于单视图所有逻辑） =====
+  if (viewLayout !== "single") {
+    const slotCount = viewLayout === "split2" ? 2 : viewLayout === "split3" ? 3 : 4;
+    const gridColsClass = viewLayout === "split2" ? "grid-cols-2" : viewLayout === "split3" ? "grid-cols-3" : "grid-cols-2";
+    const isGrid4 = viewLayout === "grid4";
+
+    return (
+      <div className="h-full flex flex-col">
+        <div
+          className={`flex-1 min-h-0 grid divide-x divide-surface-3 ${gridColsClass} ${isGrid4 ? "grid-rows-2 divide-y" : ""}`}
+        >
+          {Array.from({ length: slotCount }).map((_, i) => {
+            const slotBlock = slotBlocks[i] ?? null;
+            const isActive = activeSlotIndex === i;
+            return (
+              <div
+                key={i}
+                className={`relative overflow-y-auto flex flex-col ${isActive ? "ring-2 ring-inset ring-brand-500/40" : ""}`}
+                onClick={() => { if (!isActive) onSlotFocus?.(i); }}
+              >
+                {slotBlock ? (
+                  <>
+                    <ContentBlockEditor
+                      key={slotBlock.id}
+                      block={slotBlock}
+                      compact={true}
+                      projectId={projectId}
+                      projectLocale={projectLocale}
+                      allBlocks={allBlocks}
+                      onUpdate={onFieldsChange}
+                      onVersionCreated={onVersionCreated}
+                      onBlockUpdated={onBlockUpdated}
+                      onSendToAgent={onSendToAgent}
+                      onSendSelectionToAgent={onSendSelectionToAgent}
+                    />
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onSlotClose?.(i); }}
+                      className="absolute top-2 right-8 z-20 w-5 h-5 flex items-center justify-center rounded bg-surface-2/80 text-zinc-500 hover:text-red-400 hover:bg-surface-3 transition-colors"
+                      title={isJa ? "このペインを閉じる" : "关闭此窗格"}
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </>
+                ) : (
+                  <div
+                    className="flex-1 flex flex-col items-center justify-center gap-3 text-zinc-600 cursor-pointer hover:text-zinc-400 transition-colors select-none"
+                    onClick={() => onSlotFocus?.(i)}
+                  >
+                    <LayoutGrid className="w-8 h-8" />
+                    <p className="text-sm text-center px-6">
+                      {isJa ? "左のツリーから内容ブロックを選択してください" : "从左侧目录点击内容块以添加到此窗格"}
+                    </p>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
     );

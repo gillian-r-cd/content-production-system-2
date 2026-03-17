@@ -1183,7 +1183,13 @@ async def generate_block_content_stream(
             if block.parent_id:
                 update_parent_status(block.parent_id, db)
 
-            asyncio.create_task(asyncio.to_thread(enqueue_project_auto_trigger, block.project_id))
+            # 使用独立 daemon 线程，而非 asyncio 线程池。
+            # asyncio.to_thread() 会复用线程池中的线程；enqueue_project_auto_trigger 内部调用
+            # asyncio.run() 会创建并关闭一个新的 event loop，导致线程被回收后再次使用时
+            # LangChain/httpx/anyio 的资源绑定在已关闭的 loop 上，引发 "Event loop is closed"。
+            # schedule_project_auto_trigger 通过 _launch_auto_trigger_thread() 启动独立 daemon 线程，
+            # 与 asyncio 线程池完全隔离，避免上述问题。
+            schedule_project_auto_trigger(block.project_id)
             
             # 发送完成事件
             done_data = json.dumps({
@@ -1226,8 +1232,15 @@ async def generate_block_content_stream(
                         if save_block:
                             partial_content = "".join(content_parts)
                             save_block.content = partial_content
-                            save_block.status = "completed"
-                            
+                            # 遵守 need_review 契约：中断时的状态与正常完成时相同
+                            # need_review=True → in_progress（需人工确认），need_review=False → completed（自动完成）
+                            # 原代码硬编码 "completed" 导致 need_review=True 的块被错误标为已完成，
+                            # 下游 auto_generate 块的依赖检查会错误通过，引发提前自动生成。
+                            save_block.status = "completed" if not save_block.need_review else "in_progress"
+                            finalize_block_content_change(block=save_block, db=save_db)
+                            if save_block.parent_id:
+                                update_parent_status(save_block.parent_id, save_db)
+
                             # 记录日志
                             from core.models import GenerationLog, generate_uuid
                             duration_ms = int((time.time() - start_time) * 1000)
