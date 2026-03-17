@@ -50,6 +50,112 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 
+/**
+ * 构建"渲染文本 → 原始 Markdown 索引"映射。
+ * 返回 visual（去除 Markdown 语法后的纯文本）和 map（visual[i] 对应 markdown[map[i]]）。
+ * 用于将 DOM selection 的文本位置映射回 block.content 中的原始位置。
+ */
+function buildVisualToMarkdownMap(markdown: string): { visual: string; map: number[] } {
+  const visualChars: string[] = [];
+  const map: number[] = [];
+  let i = 0;
+  const len = markdown.length;
+
+  while (i < len) {
+    const ch = markdown[i];
+    const isLineStart = i === 0 || markdown[i - 1] === "\n";
+
+    // 块级：标题前缀 (# / ## / ### ...)
+    if (isLineStart && ch === "#") {
+      let j = i;
+      while (j < len && markdown[j] === "#") j++;
+      if (j < len && markdown[j] === " ") {
+        i = j + 1;
+        continue;
+      }
+    }
+
+    // 块级：无序列表 (- / * / + followed by space)
+    if (isLineStart && (ch === "-" || ch === "+" || (ch === "*" && markdown[i + 1] === " ")) && i + 1 < len && markdown[i + 1] === " ") {
+      i += 2;
+      continue;
+    }
+
+    // 块级：有序列表 (1. / 2. ...)
+    if (isLineStart && /\d/.test(ch)) {
+      let j = i;
+      while (j < len && /\d/.test(markdown[j])) j++;
+      if (j < len && markdown[j] === "." && j + 1 < len && markdown[j + 1] === " ") {
+        i = j + 2;
+        continue;
+      }
+    }
+
+    // 块级：引用 (> text)
+    if (isLineStart && ch === ">" && i + 1 < len && markdown[i + 1] === " ") {
+      i += 2;
+      continue;
+    }
+
+    // 行内：按优先级尝试多字符标记（长标记优先，避免 ** 误匹配 ***）
+    const inlinePatterns: [string, string][] = [
+      ["***", "***"],
+      ["**", "**"],
+      ["__", "__"],
+      ["~~", "~~"],
+    ];
+    let matched = false;
+    for (const [open, close] of inlinePatterns) {
+      if (markdown.slice(i, i + open.length) === open) {
+        const contentStart = i + open.length;
+        const closeIdx = markdown.indexOf(close, contentStart);
+        if (closeIdx !== -1 && !markdown.slice(contentStart, closeIdx).includes("\n")) {
+          // 跳过开标记，内容字符正常映射，跳过闭标记
+          i = contentStart;
+          while (i < closeIdx) {
+            map.push(i);
+            visualChars.push(markdown[i]);
+            i++;
+          }
+          i += close.length;
+          matched = true;
+          break;
+        }
+      }
+    }
+    if (matched) continue;
+
+    // 行内：单字符斜体 * 或 _（确保不是 ** / __）
+    if ((ch === "*" || ch === "_") && i + 1 < len && markdown[i + 1] !== ch) {
+      const closeIdx = markdown.indexOf(ch, i + 1);
+      if (closeIdx !== -1 && !markdown.slice(i + 1, closeIdx).includes("\n")) {
+        i++;
+        while (i < closeIdx) { map.push(i); visualChars.push(markdown[i]); i++; }
+        i++;
+        continue;
+      }
+    }
+
+    // 行内：代码 `...`
+    if (ch === "`") {
+      const closeIdx = markdown.indexOf("`", i + 1);
+      if (closeIdx !== -1 && !markdown.slice(i + 1, closeIdx).includes("\n")) {
+        i++;
+        while (i < closeIdx) { map.push(i); visualChars.push(markdown[i]); i++; }
+        i++;
+        continue;
+      }
+    }
+
+    // 普通字符，直接映射
+    map.push(i);
+    visualChars.push(ch);
+    i++;
+  }
+
+  return { visual: visualChars.join(""), map };
+}
+
 function getBlockStatusLabel(status: string, isJa: boolean, needsRegeneration = false) {
   if (needsRegeneration) return isJa ? "再生成待ち" : "待重生成";
   if (status === "completed") return isJa ? "完了" : "已完成";
@@ -229,6 +335,8 @@ export function ContentBlockEditor({
 
   // M4: Inline AI 编辑状态
   const [selectedText, setSelectedText] = useState("");
+  // 选中文本在 block.content (原始 Markdown) 中的字节范围，用于精确替换
+  const [selectedMarkdownRange, setSelectedMarkdownRange] = useState<{ start: number; end: number } | null>(null);
   const [inlineEditLoading, setInlineEditLoading] = useState(false);
   const [inlineEditResult, setInlineEditResult] = useState<{
     original: string;
@@ -355,6 +463,7 @@ export function ContentBlockEditor({
     setPreAnswers(normalizePreAnswers(block.pre_answers || {}, normalizedQuestions));
     // M4: 切换 block 或内容变化时清空 inline edit 状态
     setSelectedText("");
+    setSelectedMarkdownRange(null);
     setToolbarPosition(null);
     setInlineEditResult(null);
     setInlineEditLoading(false);
@@ -683,6 +792,7 @@ export function ContentBlockEditor({
         // 没有产生新选中（纯点击）→ 清除旧的选中状态
         if (selectedText || inlineEditResult) {
           setSelectedText("");
+          setSelectedMarkdownRange(null);
           setToolbarPosition(null);
           setInlineEditResult(null);
           setShowCustomInput(false);
@@ -707,6 +817,23 @@ export function ContentBlockEditor({
       applySelectionHighlight(range.cloneRange());
 
       setSelectedText(text);
+
+      // 计算选中文本在原始 Markdown 中的位置范围
+      if (block.content) {
+        const { visual, map } = buildVisualToMarkdownMap(block.content);
+        const startInVisual = visual.indexOf(text);
+        if (startInVisual !== -1 && startInVisual + text.length - 1 < map.length) {
+          setSelectedMarkdownRange({
+            start: map[startInVisual],
+            end: map[startInVisual + text.length - 1] + 1,
+          });
+        } else {
+          setSelectedMarkdownRange(null);
+        }
+      } else {
+        setSelectedMarkdownRange(null);
+      }
+
       setToolbarPosition({
         top: rect.top - 8,                    // 选区上方
         left: rect.left + rect.width / 2,     // 水平居中
@@ -714,7 +841,7 @@ export function ContentBlockEditor({
       // 清除之前的结果（新选中 = 新一轮）
       setInlineEditResult(null);
     }, 10);
-  }, [selectedText, inlineEditResult, applySelectionHighlight, clearSelectionHighlight]);
+  }, [selectedText, inlineEditResult, block.content, applySelectionHighlight, clearSelectionHighlight]);
 
   /** 点击工具栏按钮，发起 inline AI 调用 */
   const handleInlineEdit = useCallback(async (operation: "rewrite" | "expand" | "condense" | "custom", instruction?: string) => {
@@ -723,8 +850,12 @@ export function ContentBlockEditor({
     // 收起自定义输入框
     setShowCustomInput(false);
     try {
+      // 优先发送原始 Markdown 片段（含格式标记），避免纯文本无法匹配回原内容
+      const textToSend = selectedMarkdownRange && block.content
+        ? block.content.slice(selectedMarkdownRange.start, selectedMarkdownRange.end)
+        : selectedText;
       const result = await agentAPI.inlineEdit({
-        text: selectedText,
+        text: textToSend,
         operation,
         context: (block.content || "").slice(0, 500),
         project_id: projectId,
@@ -741,36 +872,34 @@ export function ContentBlockEditor({
     } finally {
       setInlineEditLoading(false);
     }
-  }, [selectedText, inlineEditLoading, block.content, projectId]);
+  }, [selectedText, selectedMarkdownRange, inlineEditLoading, block.content, projectId]);
 
   /** 接受 inline 修改：在原内容中定位并替换 */
   const handleAcceptInlineEdit = useCallback(async () => {
     if (!inlineEditResult || !block.content) return;
     const { original, replacement } = inlineEditResult;
 
-    // 尝试在原始 Markdown 内容中精确查找选中文本
     let newContent = block.content;
-    if (newContent.includes(original)) {
+
+    if (selectedMarkdownRange) {
+      // 主路径：使用位置映射精确替换，无需文本搜索
+      newContent =
+        block.content.slice(0, selectedMarkdownRange.start) +
+        replacement +
+        block.content.slice(selectedMarkdownRange.end);
+    } else if (newContent.includes(original)) {
+      // 回退1：原文直接可以在 Markdown 中匹配（无格式的普通文本）
       newContent = newContent.replace(original, replacement);
     } else {
-      // 回退: 尝试忽略 Markdown 行内标记的匹配
-      // 构建一个 regex，在 original 的每个字符之间允许可选的 **, __, ~~, ` 等标记
-      const escaped = original.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const flexiblePattern = escaped.split("").join("(?:\\*{1,2}|_{1,2}|~~|`)*");
-      const regex = new RegExp(flexiblePattern);
-      const match = newContent.match(regex);
-      if (match && match.index !== undefined) {
-        newContent = newContent.slice(0, match.index) + replacement + newContent.slice(match.index + match[0].length);
-      } else {
-        // 真的找不到 → 复制到剪贴板让用户手动替换
-        await navigator.clipboard.writeText(replacement);
-        sendNotification(isJa ? "原文を自動特定できませんでした。修正後のテキストをクリップボードにコピーしたので手動で置き換えてください。" : "无法自动定位原文（可能含格式标记），修改后的文本已复制到剪贴板，请手动替换", "warning");
-        setInlineEditResult(null);
-        setSelectedText("");
-        setToolbarPosition(null);
-        clearSelectionHighlight();
-        return;
-      }
+      // 回退2：真的找不到 → 复制到剪贴板让用户手动替换
+      await navigator.clipboard.writeText(replacement);
+      sendNotification(isJa ? "原文を自動特定できませんでした。修正後のテキストをクリップボードにコピーしたので手動で置き換えてください。" : "无法自动定位原文（可能含格式标记），修改后的文本已复制到剪贴板，请手动替换", "warning");
+      setInlineEditResult(null);
+      setSelectedText("");
+      setSelectedMarkdownRange(null);
+      setToolbarPosition(null);
+      clearSelectionHighlight();
+      return;
     }
 
     try {
@@ -778,6 +907,7 @@ export function ContentBlockEditor({
       setEditedContent(updatedBlock.content || "");
       setInlineEditResult(null);
       setSelectedText("");
+      setSelectedMarkdownRange(null);
       setToolbarPosition(null);
       clearSelectionHighlight();
       sendNotification(isJa ? "AI の修正を適用しました" : "已应用 AI 修改", "success");
@@ -785,12 +915,13 @@ export function ContentBlockEditor({
       console.error("[M4] Apply inline edit failed:", err);
       sendNotification((isJa ? "保存に失敗しました: " : "保存失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")), "error");
     }
-  }, [inlineEditResult, block.content, block.id, onUpdate, clearSelectionHighlight]);
+  }, [inlineEditResult, selectedMarkdownRange, block.content, block.id, onUpdate, clearSelectionHighlight]);
 
   /** 拒绝 inline 修改 */
   const handleRejectInlineEdit = useCallback(() => {
     setInlineEditResult(null);
     setSelectedText("");
+    setSelectedMarkdownRange(null);
     setToolbarPosition(null);
     setShowCustomInput(false);
     setCustomInstruction("");
@@ -809,6 +940,7 @@ export function ContentBlockEditor({
       if (contentDisplayRef.current?.contains(e.target as Node)) return;
       // 其他地方 → 清除
       setSelectedText("");
+      setSelectedMarkdownRange(null);
       setToolbarPosition(null);
       setInlineEditResult(null);
       setShowCustomInput(false);
@@ -1674,6 +1806,7 @@ export function ContentBlockEditor({
                       onClick={() => {
                         onSendSelectionToAgent({ blockId: block.id, blockName: block.name, selectedText });
                         setSelectedText("");
+                        setSelectedMarkdownRange(null);
                         setToolbarPosition(null);
                         setShowCustomInput(false);
                         setCustomInstruction("");
