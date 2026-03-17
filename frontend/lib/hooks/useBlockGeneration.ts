@@ -39,6 +39,8 @@ interface UseBlockGenerationReturn {
   canGenerate: boolean;
   unmetDependencies: ContentBlock[];
   missingRequiredPreQuestionCount: number;
+  /** 提示词未配置（是 canGenerate=false 的原因之一） */
+  missingPrompt: boolean;
   /** 触发生成（调用者自行处理 e.stopPropagation 等 UI 层逻辑） */
   handleGenerate: () => Promise<void>;
   /** 停止生成 */
@@ -83,12 +85,23 @@ export function useBlockGeneration({
     [preQuestions, preAnswers],
   );
 
-  const canGenerate = unmetDependencies.length === 0 && missingRequiredPreQuestionCount === 0;
+  // ---- 提示词检查 ----
+  // AI 提示词是生成的核心配置，未配置时不允许生成
+  const missingPrompt = useMemo(() => !block.ai_prompt?.trim(), [block.ai_prompt]);
+
+  const canGenerate = unmetDependencies.length === 0 && missingRequiredPreQuestionCount === 0 && !missingPrompt;
 
   // ---- 生成 ----
   const handleGenerate = useCallback(async () => {
     if (!canGenerate) {
       const messages: string[] = [];
+      if (missingPrompt) {
+        messages.push(
+          isJa
+            ? "AI プロンプトが未設定です。⚙ 設定ボタンからプロンプトを設定してから生成してください。"
+            : "尚未配置 AI 提示词，请先点击 ⚙ 设置按钮配置提示词后再生成。",
+        );
+      }
       if (unmetDependencies.length > 0) {
         messages.push(
           isJa
@@ -183,7 +196,7 @@ export function useBlockGeneration({
       }
     }
   }, [
-    block.id, block.name, projectId, canGenerate, unmetDependencies,
+    block.id, block.name, projectId, canGenerate, missingPrompt, unmetDependencies,
     missingRequiredPreQuestionCount, preAnswers, hasPreQuestions,
     onSavePreAnswers, onUpdate, onContentReady, isJa,
   ]);
@@ -206,6 +219,7 @@ export function useBlockGeneration({
     canGenerate,
     unmetDependencies,
     missingRequiredPreQuestionCount,
+    missingPrompt,
     handleGenerate,
     handleStop,
   };

@@ -155,7 +155,7 @@ export function ContentBlockCard({
 
   // ---- 生成逻辑（通过 Hook 统一管理） ----
   const {
-    isGenerating, generatingContent, canGenerate, unmetDependencies,
+    isGenerating, generatingContent, canGenerate, unmetDependencies, missingPrompt,
     handleGenerate: _handleGenerate, handleStop: _handleStop,
   } = useBlockGeneration({
     block, projectId, projectLocale, allBlocks,
@@ -758,7 +758,11 @@ export function ContentBlockCard({
                 }`}
                 title={
                   !canGenerate
-                    ? `${isJa ? "依存内容が未準備です" : "依赖内容未就绪"}: ${unmetDependencies.map(d => d.name).join(", ")}`
+                    ? missingPrompt
+                      ? (isJa ? "プロンプト未設定" : "未配置提示词")
+                      : unmetDependencies.length > 0
+                      ? `${isJa ? "依存内容が未準備です" : "依赖内容未就绪"}: ${unmetDependencies.map(d => d.name).join(", ")}`
+                      : (isJa ? "必須ヒアリング未回答" : "必答提问未回答")
                     : block.content ? (isJa ? "再生成" : "重新生成") : (isJa ? "内容を生成" : "生成内容")
                 }
               >

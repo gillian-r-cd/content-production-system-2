@@ -284,7 +284,7 @@ export function ContentBlockEditor({
 
   // ---- 生成逻辑（通过 Hook 统一管理） ----
   const {
-    isGenerating, generatingContent, canGenerate, unmetDependencies,
+    isGenerating, generatingContent, canGenerate, unmetDependencies, missingPrompt,
     handleGenerate: _handleGenerate, handleStop: handleStopGeneration,
   } = useBlockGeneration({
     block, projectId, projectLocale, allBlocks,
@@ -916,17 +916,38 @@ export function ContentBlockEditor({
                     ? "bg-brand-600 hover:bg-brand-700 text-white"
                     : "bg-zinc-700 text-zinc-500 cursor-not-allowed"
                 }`}
-                title={!canGenerate ? (isJa ? `依存内容が未準備です: ${unmetDependencies.map(d => d.name).join(", ")}` : `依赖内容未就绪: ${unmetDependencies.map(d => d.name).join(", ")}`) : (isJa ? "内容を生成" : "生成内容")}
+                title={
+                  !canGenerate
+                    ? missingPrompt
+                      ? (isJa ? "AI プロンプトが未設定です。⚙ 設定から先に設定してください" : "未配置 AI 提示词，请先点击 ⚙ 配置")
+                      : unmetDependencies.length > 0
+                      ? (isJa ? `依存内容が未準備です: ${unmetDependencies.map(d => d.name).join(", ")}` : `依赖内容未就绪: ${unmetDependencies.map(d => d.name).join(", ")}`)
+                      : (isJa ? "必須の生成前ヒアリングが未回答です" : "必答生成前提问未回答")
+                    : (isJa ? "内容を生成" : "生成内容")
+                }
               >
                 <Play className="w-4 h-4" />
                 {isJa ? "生成" : "生成"}
               </button>
             )}
             
-            {/* 依赖内容为空警告 */}
+            {/* 生成前置条件警告：提示词 > 依赖 > 必答预提问，按优先级显示 */}
             {!canGenerate && !isGenerating && (
-              <span className="text-xs text-amber-500" title={isJa ? `依存内容が未準備です: ${unmetDependencies.map(d => d.name).join(", ")}` : `依赖内容未就绪: ${unmetDependencies.map(d => d.name).join(", ")}`}>
-                {isJa ? `${unmetDependencies.length} 件の依存内容が未準備です` : `${unmetDependencies.length}个依赖内容未就绪`}
+              <span
+                className="text-xs text-amber-500"
+                title={
+                  missingPrompt
+                    ? (isJa ? "AI プロンプトが未設定です。⚙ 設定から設定してください" : "请先点击 ⚙ 设置按钮配置 AI 提示词")
+                    : unmetDependencies.length > 0
+                    ? (isJa ? `依存内容が未準備です: ${unmetDependencies.map(d => d.name).join(", ")}` : `依赖内容未就绪: ${unmetDependencies.map(d => d.name).join(", ")}`)
+                    : (isJa ? "必須の生成前ヒアリングが未回答です" : "必答生成前提问未填写")
+                }
+              >
+                {missingPrompt
+                  ? (isJa ? "プロンプト未設定" : "未配置提示词")
+                  : unmetDependencies.length > 0
+                  ? (isJa ? `${unmetDependencies.length} 件の依存未準備` : `${unmetDependencies.length} 个依赖未就绪`)
+                  : (isJa ? `必須ヒアリング ${missingRequiredPreQuestionCount} 件未回答` : `${missingRequiredPreQuestionCount} 个必答题未回答`)}
               </span>
             )}
             
@@ -958,7 +979,15 @@ export function ContentBlockEditor({
                     ? "bg-amber-600/20 hover:bg-amber-600/30 text-amber-400 border-amber-500/30"
                     : "bg-zinc-700/50 text-zinc-500 border-zinc-600/30 cursor-not-allowed"
                 }`}
-                title={!canGenerate ? (isJa ? `依存内容が未準備です: ${unmetDependencies.map(d => d.name).join(", ")}` : `依赖内容未就绪: ${unmetDependencies.map(d => d.name).join(", ")}`) : (isJa ? "内容を再生成" : "重新生成内容")}
+                title={
+                  !canGenerate
+                    ? missingPrompt
+                      ? (isJa ? "AI プロンプトが未設定です。⚙ 設定から先に設定してください" : "未配置 AI 提示词，请先点击 ⚙ 配置")
+                      : unmetDependencies.length > 0
+                      ? (isJa ? `依存内容が未準備です: ${unmetDependencies.map(d => d.name).join(", ")}` : `依赖内容未就绪: ${unmetDependencies.map(d => d.name).join(", ")}`)
+                      : (isJa ? "必須の生成前ヒアリングが未回答です" : "必答生成前提问未回答")
+                    : (isJa ? "内容を再生成" : "重新生成内容")
+                }
               >
                 <RefreshCw className="w-4 h-4" />
                 {isJa ? "再生成" : "重新生成"}
