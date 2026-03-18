@@ -26,7 +26,7 @@ import { projectAPI, startAllReadyBlocks } from "@/lib/api";
 import { formatProjectText, normalizeProjectLocale, persistClientLocale, projectUiText, resolveClientLocale } from "@/lib/project-locale";
 import { requestNotificationPermission } from "@/lib/utils";
 import type { Project, ContentBlock, AgentSelectionRef } from "@/lib/api";
-import { Copy, Trash2, ChevronDown, ChevronRight, CheckSquare, Square, X, Download, Upload, Search, Plus, History } from "lucide-react";
+import { Copy, Trash2, ChevronDown, ChevronRight, CheckSquare, Square, X, Download, Upload, Search, Plus, History, Pencil, Check } from "lucide-react";
 
 // ===== 版本族谱分组 =====
 // 将扁平的项目列表按 parent_version_id 链分组为版本族
@@ -148,6 +148,9 @@ export default function WorkspacePage() {
   // 版本分组: 新建版本备注输入（正在创建版本的项目 ID）
   const [creatingVersionForId, setCreatingVersionForId] = useState<string | null>(null);
   const [versionNote, setVersionNote] = useState("");
+  // 重命名项目
+  const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
   
   // 全局搜索
   const [showSearch, setShowSearch] = useState(false);
@@ -359,6 +362,29 @@ export default function WorkspacePage() {
   const handleProjectCreated = (project: Project) => {
     setProjects([...projects, project]);
     setCurrentProject(project);
+  };
+
+  const handleStartRename = (projectId: string, currentName: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setRenamingProjectId(projectId);
+    setRenameValue(currentName);
+  };
+
+  const handleConfirmRename = async (projectId: string, e?: React.MouseEvent | React.KeyboardEvent) => {
+    e?.stopPropagation();
+    const newName = renameValue.trim();
+    if (!newName) { setRenamingProjectId(null); return; }
+    try {
+      const updated = await projectAPI.update(projectId, { name: newName });
+      setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, name: updated.name } : p)));
+      if (currentProject?.id === projectId) setCurrentProject((prev) => prev ? { ...prev, name: updated.name } : prev);
+    } catch (err) {
+      console.error("重命名项目失败:", err);
+      setError(t.renameProjectFailed);
+    } finally {
+      setRenamingProjectId(null);
+      setRenameValue("");
+    }
   };
 
   const handleDuplicateProject = async (projectId: string, e: React.MouseEvent) => {
@@ -681,8 +707,22 @@ export default function WorkspacePage() {
                               <div className="flex-shrink-0 w-[18px]" />
                             )}
 
-                            <div className="flex-1 min-w-0">
-                              <div className="text-sm text-zinc-200 truncate">{family.name}</div>
+                            <div className="flex-1 min-w-0" onClick={(e) => renamingProjectId === family.latest.id && e.stopPropagation()}>
+                              {renamingProjectId === family.latest.id ? (
+                                <input
+                                  autoFocus
+                                  className="w-full text-sm bg-surface-3 border border-brand-500 rounded px-1.5 py-0.5 text-zinc-100 outline-none"
+                                  value={renameValue}
+                                  onChange={(e) => setRenameValue(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") handleConfirmRename(family.latest.id, e);
+                                    if (e.key === "Escape") { e.stopPropagation(); setRenamingProjectId(null); }
+                                  }}
+                                  onClick={(e) => e.stopPropagation()}
+                                />
+                              ) : (
+                                <div className="text-sm text-zinc-200 truncate">{family.name}</div>
+                              )}
                               <div className="text-xs text-zinc-500">
                                 v{family.latest.version}
                                 {hasMultipleVersions && !isExpanded && (
@@ -692,29 +732,55 @@ export default function WorkspacePage() {
                             </div>
 
                             {/* 操作按钮 */}
-                            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <button
-                                onClick={(e) => handleExportProject(family.latest.id, family.name, e)}
-                                className="p-1.5 hover:bg-surface-3 rounded text-zinc-400 hover:text-green-400"
-                                title={t.exportProjectTitle}
-                              >
-                                <Download className="w-4 h-4" />
-                              </button>
-                              <button
-                                onClick={(e) => handleDuplicateProject(family.latest.id, e)}
-                                className="p-1.5 hover:bg-surface-3 rounded text-zinc-400 hover:text-brand-400"
-                                title={t.duplicateProjectTitle}
-                              >
-                                <Copy className="w-4 h-4" />
-                              </button>
-                              <button
-                                onClick={(e) => handleDeleteProject(family.latest.id, e)}
-                                className="p-1.5 hover:bg-surface-3 rounded text-zinc-400 hover:text-red-400"
-                                title={t.deleteProjectTitle}
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </div>
+                            {renamingProjectId === family.latest.id ? (
+                              <div className="flex items-center gap-1">
+                                <button
+                                  onClick={(e) => handleConfirmRename(family.latest.id, e)}
+                                  className="p-1.5 hover:bg-surface-3 rounded text-zinc-400 hover:text-green-400"
+                                  title={t.renameProjectSave}
+                                >
+                                  <Check className="w-4 h-4" />
+                                </button>
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); setRenamingProjectId(null); }}
+                                  className="p-1.5 hover:bg-surface-3 rounded text-zinc-400 hover:text-zinc-200"
+                                  title={t.renameProjectCancel}
+                                >
+                                  <X className="w-4 h-4" />
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <button
+                                  onClick={(e) => handleStartRename(family.latest.id, family.name, e)}
+                                  className="p-1.5 hover:bg-surface-3 rounded text-zinc-400 hover:text-brand-400"
+                                  title={t.renameProjectTitle}
+                                >
+                                  <Pencil className="w-4 h-4" />
+                                </button>
+                                <button
+                                  onClick={(e) => handleExportProject(family.latest.id, family.name, e)}
+                                  className="p-1.5 hover:bg-surface-3 rounded text-zinc-400 hover:text-green-400"
+                                  title={t.exportProjectTitle}
+                                >
+                                  <Download className="w-4 h-4" />
+                                </button>
+                                <button
+                                  onClick={(e) => handleDuplicateProject(family.latest.id, e)}
+                                  className="p-1.5 hover:bg-surface-3 rounded text-zinc-400 hover:text-brand-400"
+                                  title={t.duplicateProjectTitle}
+                                >
+                                  <Copy className="w-4 h-4" />
+                                </button>
+                                <button
+                                  onClick={(e) => handleDeleteProject(family.latest.id, e)}
+                                  className="p-1.5 hover:bg-surface-3 rounded text-zinc-400 hover:text-red-400"
+                                  title={t.deleteProjectTitle}
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
+                            )}
                           </div>
 
                           {/* 展开后的版本列表 */}
