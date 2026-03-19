@@ -278,9 +278,10 @@ def apply_edits(
     return result, changes
 
 
-def generate_revision_markdown(old: str, new: str) -> str:
+def generate_revision_markdown(old: str, new: str, context: int = 3) -> str:
     """
     生成带修订标记的 markdown。删除用 <del>，新增用 <ins>。
+    只展示修改块及其前后各 context 行上下文，中间大段不变内容折叠为省略提示。
 
     输入: old - 修改前文本, new - 修改后文本
     输出: 带 <del>/<ins> 标签的字符串
@@ -288,19 +289,43 @@ def generate_revision_markdown(old: str, new: str) -> str:
     old_lines = old.splitlines(keepends=True)
     new_lines = new.splitlines(keepends=True)
     matcher = difflib.SequenceMatcher(None, old_lines, new_lines)
+    opcodes = matcher.get_opcodes()
+
     result = []
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+    prev_was_change = False  # 上一个 opcode 是否是变更块
+
+    for idx, (tag, i1, i2, j1, j2) in enumerate(opcodes):
         if tag == "equal":
-            result.extend(old_lines[i1:i2])
-        elif tag == "replace":
-            for line in old_lines[i1:i2]:
-                result.append(f"<del>{line.rstrip()}</del>\n")
-            for line in new_lines[j1:j2]:
-                result.append(f"<ins>{line.rstrip()}</ins>\n")
-        elif tag == "delete":
-            for line in old_lines[i1:i2]:
-                result.append(f"<del>{line.rstrip()}</del>\n")
-        elif tag == "insert":
-            for line in new_lines[j1:j2]:
-                result.append(f"<ins>{line.rstrip()}</ins>\n")
+            block = old_lines[i1:i2]
+            n = len(block)
+            has_next_change = any(opcodes[k][0] != "equal" for k in range(idx + 1, len(opcodes)))
+            show_head = prev_was_change          # 紧接上一变更块：输出首部上下文
+            show_tail = has_next_change          # 后面还有变更块：输出尾部上下文
+
+            if n <= context * 2 + 1:
+                # 行数很少，直接全量输出
+                result.extend(block)
+            else:
+                # 计算实际省略行数（取决于 head/tail 是否输出）
+                omit_start = context if show_head else 0
+                omit_end = n - context if show_tail else n
+                skipped = omit_end - omit_start
+
+                if show_head:
+                    result.extend(block[:context])
+                if skipped > 0:
+                    result.append(f"<span class='diff-omit'>…… 省略 {skipped} 行未修改内容 ……</span>\n")
+                if show_tail:
+                    result.extend(block[n - context:])
+
+            prev_was_change = False
+        else:
+            if tag in ("replace", "delete"):
+                for line in old_lines[i1:i2]:
+                    result.append(f"<del>{line.rstrip()}</del>\n")
+            if tag in ("replace", "insert"):
+                for line in new_lines[j1:j2]:
+                    result.append(f"<ins>{line.rstrip()}</ins>\n")
+            prev_was_change = True
+
     return "".join(result)

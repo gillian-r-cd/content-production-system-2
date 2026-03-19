@@ -247,13 +247,18 @@ export function SuggestionCard({ data, projectId, projectLocale, onStatusChange,
 
       {/* Diff 预览 */}
       {data.diff_preview && (
-        <div className="my-2 p-3 bg-surface-1 rounded text-sm overflow-x-auto max-h-64 overflow-y-auto">
+        <div className="my-2 p-3 bg-surface-1 rounded text-sm overflow-x-auto max-h-96 overflow-y-auto">
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             rehypePlugins={[rehypeRaw]}
             components={{
               del: ({ children }) => <del className="bg-red-900/30 text-red-300 line-through">{children}</del>,
               ins: ({ children }) => <ins className="bg-green-900/30 text-green-300 no-underline">{children}</ins>,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              span: ({ className, children, ...props }: any) =>
+                className === "diff-omit"
+                  ? <span className="block text-xs text-zinc-500 italic py-0.5 select-none">{children}</span>
+                  : <span className={className} {...props}>{children}</span>,
               p: ({ children }) => <p className="mb-1 last:mb-0">{children}</p>,
             }}
           >
@@ -540,13 +545,18 @@ function GroupItemCard({ data, isJa }: { data: SuggestionCardData; isJa: boolean
         )}
       </div>
       {data.diff_preview && (
-        <div className="mt-1 p-2 bg-surface-2 rounded text-xs overflow-x-auto max-h-40 overflow-y-auto">
+        <div className="mt-1 p-2 bg-surface-2 rounded text-xs overflow-x-auto max-h-64 overflow-y-auto">
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             rehypePlugins={[rehypeRaw]}
             components={{
               del: ({ children }) => <del className="bg-red-900/30 text-red-300 line-through">{children}</del>,
               ins: ({ children }) => <ins className="bg-green-900/30 text-green-300 no-underline">{children}</ins>,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              span: ({ className, children, ...props }: any) =>
+                className === "diff-omit"
+                  ? <span className="block text-xs text-zinc-500 italic py-0.5 select-none">{children}</span>
+                  : <span className={className} {...props}>{children}</span>,
               p: ({ children }) => <p className="mb-0.5 last:mb-0">{children}</p>,
             }}
           >
