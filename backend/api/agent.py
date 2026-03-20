@@ -746,6 +746,7 @@ async def chat(
             "memory_context": memory_ctx,
         }
         config = {
+            "recursion_limit": 100,
             "configurable": {
                 "thread_id": _build_thread_id(request.project_id, mode_id, conversation.id),
                 "project_id": request.project_id,
@@ -920,6 +921,7 @@ async def retry_message(
         "memory_context": memory_ctx,
     }
     config = {
+        "recursion_limit": 100,
         "configurable": {
             "thread_id": _build_thread_id(user_msg.project_id, mode_id, conversation.id),
             "project_id": user_msg.project_id,
@@ -1200,6 +1202,9 @@ async def stream_chat(
         operation="agent_stream",
     )
     config = {
+        # 默认 25 步对复杂多块任务不够（agent→tool 每轮算 2 步）；
+        # 100 步 ≈ 50 次工具调用，足以覆盖正常任务，同时防止真正的死循环。
+        "recursion_limit": 100,
         "configurable": {
             "thread_id": thread_id,
             "project_id": request.project_id,
