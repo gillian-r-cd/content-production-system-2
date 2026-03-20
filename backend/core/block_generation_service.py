@@ -111,7 +111,6 @@ def resolve_dependencies(
             not dep.content
             or not dep.content.strip()
             or dep.status != "completed"
-            or bool(getattr(dep, "needs_regeneration", False))
         )
     ]
     if not_ready:
@@ -233,7 +232,6 @@ def list_ready_block_ids(
                     or not dep.content
                     or not dep.content.strip()
                     or dep.status != "completed"
-                    or bool(getattr(dep, "needs_regeneration", False))
                 ):
                     all_deps_ready = False
                     break

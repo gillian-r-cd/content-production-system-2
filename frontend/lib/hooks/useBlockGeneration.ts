@@ -75,7 +75,7 @@ export function useBlockGeneration({
 
   const unmetDependencies = useMemo(
     () => dependencyBlocks.filter(
-      (d) => !d.content || !d.content.trim() || d.status !== "completed" || d.needs_regeneration,
+      (d) => !d.content || !d.content.trim() || d.status !== "completed",
     ),
     [dependencyBlocks],
   );

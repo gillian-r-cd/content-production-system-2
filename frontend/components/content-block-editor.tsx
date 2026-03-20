@@ -51,6 +51,23 @@ import {
 } from "lucide-react";
 
 /**
+ * 计算 DOM range 的 startContainer/startOffset 在 container 所有文本节点中的绝对字符偏移量。
+ * 用于在 visual 字符串中定位正确的重复出现，避免总取第一个匹配。
+ */
+function getTextOffsetInContainer(container: Element, targetNode: Node, targetOffset: number): number {
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  let offset = 0;
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    if (node === targetNode) {
+      return offset + targetOffset;
+    }
+    offset += (node.textContent || "").length;
+  }
+  return -1;
+}
+
+/**
  * 构建"渲染文本 → 原始 Markdown 索引"映射。
  * 返回 visual（去除 Markdown 语法后的纯文本）和 map（visual[i] 对应 markdown[map[i]]）。
  * 用于将 DOM selection 的文本位置映射回 block.content 中的原始位置。
@@ -371,6 +388,10 @@ export function ContentBlockEditor({
   const [showCustomInput, setShowCustomInput] = useState(false);
   const [customInstruction, setCustomInstruction] = useState("");
   const customInputRef = useRef<HTMLInputElement>(null);
+  // M4+: 直接替换 — 不经 LLM，用户指定替换文本
+  const [showReplaceInput, setShowReplaceInput] = useState(false);
+  const [replaceValue, setReplaceValue] = useState("");
+  const replaceInputRef = useRef<HTMLInputElement>(null);
 
   // 复制状态
   const [copied, setCopied] = useState(false);
@@ -474,6 +495,8 @@ export function ContentBlockEditor({
     setToolbarPosition(null);
     setInlineEditResult(null);
     setInlineEditLoading(false);
+    setShowReplaceInput(false);
+    setReplaceValue("");
     // M5: 同步 model_override
     setModelOverride(block.model_override || "");
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -804,6 +827,8 @@ export function ContentBlockEditor({
           setInlineEditResult(null);
           setShowCustomInput(false);
           setCustomInstruction("");
+          setShowReplaceInput(false);
+          setReplaceValue("");
           clearSelectionHighlight();
           window.getSelection()?.removeAllRanges();
         }
@@ -814,7 +839,7 @@ export function ContentBlockEditor({
         return;
       }
       const text = selection.toString().trim();
-      if (text.length < 2) return; // 忽略过短的选中
+      if (text.length < 1) return; // 忽略空选中
 
       const range = selection.getRangeAt(0);
       const rect = range.getBoundingClientRect();
@@ -830,7 +855,50 @@ export function ContentBlockEditor({
         const { visual, map } = buildVisualToMarkdownMap(block.content);
         // 与 visual 的折叠规则一致：多个 \n 归一为一个，去掉 \r
         const normalizedText = text.replace(/\r/g, "").replace(/\n{2,}/g, "\n");
-        const startInVisual = visual.indexOf(normalizedText);
+
+        // 用"前缀出现次数"定位用户实际选中的那次，避免依赖绝对偏移量
+        // 原理：在选区起始点之前的渲染文本里，normalizedText 出现了 k 次，
+        // 说明用户选的是第 k 次出现（0-indexed）。在 visual 里找同一次即可。
+        // 这种方法不受 DOM 换行 vs visual 换行折叠的影响，只依赖顺序。
+        let occurrencesBefore = 0;
+        try {
+          if (contentDisplayRef.current) {
+            // 用 Range API 获取选区起始点之前的所有渲染文本
+            const preRange = document.createRange();
+            preRange.selectNodeContents(contentDisplayRef.current);
+            preRange.setEnd(range.startContainer, range.startOffset);
+            const textBefore = preRange.toString().replace(/\r/g, "").replace(/\n{2,}/g, "\n");
+            // 在前缀文本里数 normalizedText 出现了几次
+            let pos = 0;
+            while (true) {
+              const idx = textBefore.indexOf(normalizedText, pos);
+              if (idx === -1) break;
+              occurrencesBefore++;
+              pos = idx + normalizedText.length;
+            }
+          }
+        } catch { /* 兜底：occurrencesBefore 保持 0，取第一个出现 */ }
+
+        // 在 visual 里找第 occurrencesBefore 次出现（0-indexed = 第 occurrencesBefore+1 自然次）
+        let startInVisual = -1;
+        {
+          let count = 0;
+          let searchFrom = 0;
+          while (true) {
+            const idx = visual.indexOf(normalizedText, searchFrom);
+            if (idx === -1) break;
+            if (count === occurrencesBefore) {
+              startInVisual = idx;
+              break;
+            }
+            count++;
+            searchFrom = idx + normalizedText.length;
+          }
+        }
+        if (startInVisual === -1) {
+          startInVisual = visual.indexOf(normalizedText); // 兜底：取第一个出现
+        }
+
         if (startInVisual !== -1 && startInVisual + normalizedText.length - 1 < map.length) {
           setSelectedMarkdownRange({
             start: map[startInVisual],
@@ -934,6 +1002,8 @@ export function ContentBlockEditor({
     setToolbarPosition(null);
     setShowCustomInput(false);
     setCustomInstruction("");
+    setShowReplaceInput(false);
+    setReplaceValue("");
     clearSelectionHighlight();
     window.getSelection()?.removeAllRanges();
   }, [clearSelectionHighlight]);
@@ -949,6 +1019,17 @@ export function ContentBlockEditor({
       // 回退：纯文本精确匹配
       newContent = block.content.replace(selectedText, "");
     } else {
+      // 无法定位选中内容在 Markdown 中的位置，给出提示并清除状态
+      sendNotification(isJa ? "選択箇所を特定できませんでした。再度選択してください" : "无法定位选中内容，请重新选择", "warning");
+      setSelectedText("");
+      setSelectedMarkdownRange(null);
+      setToolbarPosition(null);
+      setShowCustomInput(false);
+      setCustomInstruction("");
+      setShowReplaceInput(false);
+      setReplaceValue("");
+      clearSelectionHighlight();
+      window.getSelection()?.removeAllRanges();
       return;
     }
     try {
@@ -964,10 +1045,44 @@ export function ContentBlockEditor({
       setToolbarPosition(null);
       setShowCustomInput(false);
       setCustomInstruction("");
+      setShowReplaceInput(false);
+      setReplaceValue("");
       clearSelectionHighlight();
       window.getSelection()?.removeAllRanges();
     }
   }, [block.content, selectedText, selectedMarkdownRange, isJa, clearSelectionHighlight]);
+
+  /** 直接替换选中内容（不经 LLM） */
+  const handleConfirmReplace = useCallback(async () => {
+    if (!block.content) return;
+    const replacement = replaceValue; // 允许替换为空字符串（相当于删除）
+    let newContent: string;
+    if (selectedMarkdownRange) {
+      newContent = block.content.slice(0, selectedMarkdownRange.start) + replacement + block.content.slice(selectedMarkdownRange.end);
+    } else if (selectedText && block.content.includes(selectedText)) {
+      newContent = block.content.replace(selectedText, replacement);
+    } else {
+      return;
+    }
+    try {
+      const updatedBlock = await updateCurrentBlock({ content: newContent }, { refreshTree: true });
+      setEditedContent(updatedBlock.content || "");
+      sendNotification(isJa ? "選択箇所を置換しました" : "已替换选中内容", "success");
+    } catch (err) {
+      console.error("[M4] Replace selection failed:", err);
+      sendNotification((isJa ? "置換に失敗しました: " : "替换失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")), "error");
+    } finally {
+      setSelectedText("");
+      setSelectedMarkdownRange(null);
+      setToolbarPosition(null);
+      setShowReplaceInput(false);
+      setReplaceValue("");
+      setShowCustomInput(false);
+      setCustomInstruction("");
+      clearSelectionHighlight();
+      window.getSelection()?.removeAllRanges();
+    }
+  }, [block.content, selectedText, selectedMarkdownRange, replaceValue, isJa, clearSelectionHighlight]);
 
   /** 清除选中：点击内容区域外时 */
   useEffect(() => {
@@ -985,6 +1100,8 @@ export function ContentBlockEditor({
       setInlineEditResult(null);
       setShowCustomInput(false);
       setCustomInstruction("");
+      setShowReplaceInput(false);
+      setReplaceValue("");
       clearSelectionHighlight();
     };
     document.addEventListener("mousedown", handleMouseDown);
@@ -1745,7 +1862,7 @@ export function ContentBlockEditor({
             left: `${toolbarPosition.left}px`,
             transform: "translate(-50%, -100%)",
           }}
-          onMouseDown={(e) => e.preventDefault()} // 阻止清除文本选中
+          onMouseDown={(e) => { if ((e.target as HTMLElement).tagName !== "INPUT") e.preventDefault(); }} // 阻止清除文本选中，但不拦截 input 内的光标定位
         >
           {/* 状态 1: AI 处理中 */}
           {inlineEditLoading && (
@@ -1833,6 +1950,8 @@ export function ContentBlockEditor({
                 <button
                   onClick={() => {
                     setShowCustomInput(true);
+                    setShowReplaceInput(false);
+                    setReplaceValue("");
                     setTimeout(() => customInputRef.current?.focus(), 50);
                   }}
                   className="px-2.5 py-1 text-xs text-brand-300 hover:text-white hover:bg-brand-600/30 rounded transition-colors"
@@ -1859,6 +1978,18 @@ export function ContentBlockEditor({
                     </button>
                   </>
                 )}
+                <div className="w-px h-4 bg-surface-3" />
+                <button
+                  onClick={() => {
+                    setShowReplaceInput(true);
+                    setShowCustomInput(false);
+                    setTimeout(() => replaceInputRef.current?.focus(), 50);
+                  }}
+                  className="px-2.5 py-1 text-xs text-zinc-300 hover:text-white hover:bg-brand-600/30 rounded transition-colors"
+                  title={isJa ? "選択箇所を置換" : "替换选中内容"}
+                >
+                  {isJa ? "置換" : "替换"}
+                </button>
                 <div className="w-px h-4 bg-surface-3" />
                 <button
                   onClick={handleDeleteSelection}
@@ -1901,6 +2032,34 @@ export function ContentBlockEditor({
                     className="px-2.5 py-1 text-xs bg-brand-600 hover:bg-brand-700 disabled:bg-surface-3 disabled:text-zinc-600 text-white rounded transition-colors"
                   >
                     {isJa ? "送信" : "提交"}
+                  </button>
+                </div>
+              )}
+              {/* 直接替换：输入框 */}
+              {showReplaceInput && (
+                <div className="flex gap-1.5 bg-surface-1 border border-surface-3 rounded-lg shadow-xl px-2 py-1.5">
+                  <input
+                    ref={replaceInputRef}
+                    type="text"
+                    value={replaceValue}
+                    onChange={(e) => setReplaceValue(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        handleConfirmReplace();
+                      }
+                      if (e.key === "Escape") {
+                        setShowReplaceInput(false);
+                        setReplaceValue("");
+                      }
+                    }}
+                    placeholder={isJa ? "置換後のテキストを入力..." : "输入替换内容..."}
+                    className="flex-1 min-w-[200px] px-2 py-1 text-xs bg-surface-2 border border-surface-3 rounded text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-brand-500/50"
+                  />
+                  <button
+                    onClick={handleConfirmReplace}
+                    className="px-2.5 py-1 text-xs bg-brand-600 hover:bg-brand-700 text-white rounded transition-colors"
+                  >
+                    {isJa ? "確定" : "确认"}
                   </button>
                 </div>
               )}

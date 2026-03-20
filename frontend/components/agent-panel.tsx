@@ -15,7 +15,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import { settingsAPI } from "@/lib/api";
-import { Square, Clock, Trash2, X, Plus, Users } from "lucide-react";
+import { Square, Clock, Trash2, X, Plus, Users, ChevronRight, Loader2, Check } from "lucide-react";
 import { MemoryPanel } from "./memory-panel";
 import { AgentModeManager } from "./agent-mode-manager";
 import { SuggestionCard, UndoToast } from "./suggestion-card";
@@ -27,6 +27,17 @@ interface MentionItem {
   name: string;
   label: string;  // 显示在下拉菜单的分类标签（如阶段名或父级名）
   hasContent: boolean;
+}
+
+/** 全局自增计数器，用于生成唯一的 StreamStep id，避免同工具多次调用时 Date.now() 碰撞 */
+let _stepSeq = 0;
+
+/** 流式处理过程中的单步记录（工具调用等），用于折叠展示 */
+interface StreamStep {
+  id: string;
+  label: string;
+  status: "running" | "done";
+  chars?: number;
 }
 
 interface AgentPanelProps {
@@ -179,6 +190,9 @@ export function AgentPanel({
 
   // B: 内容块选中文字引用上下文（输入框上方展示引用卡片）
   const [selectionRef, setSelectionRef] = useState<AgentSelectionRef | null>(null);
+
+  // 每条消息的流式处理步骤（工具调用等），key = message ID
+  const [messageSteps, setMessageSteps] = useState<Map<string, StreamStep[]>>(new Map());
 
   const handleModeSelection = useCallback((modeId: string) => {
     setActiveModeId(modeId);
@@ -678,82 +692,39 @@ export function AgentPanel({
               if (data.type === "route") {
                 // 记录路由类型（后端兼容事件，首个 tool 触发）
                 currentRoute = data.target;
-                console.log("[AgentPanel] Route:", currentRoute);
-                
-                // 显示当前正在执行的操作
-                const routeStatusNames: Record<string, string> = isJa ? {
-                  "intent": "🔍 意図を分析しています...",
-                  "research": "📊 顧客調査を進めています...",
-                  "design_inner": "✏️ 内部構成を設計しています...",
-                  "produce_inner": "📝 内部コンテンツを生成しています...",
-                  "design_outer": "🎨 外部展開案を設計しています...",
-                  "produce_outer": "🖼️ 外部展開コンテンツを生成しています...",
-                  "evaluate": "📋 評価を実行しています...",
-                  "generate_field": "⚙️ 内容ブロックを生成しています...",
-                  "rewrite": "✏️ 内容を書き直しています...",
-                  "suggest": "✏️ 修正提案を作成しています...",
-                  "generic_research": "🔍 詳細調査を進めています...",
-                  "query": "🔎 内容ブロックを確認しています...",
-                  "chat": "💬 考えています...",
-                } : {
-                  "intent": "🔍 正在分析意图...",
-                  "research": "📊 正在进行消费者调研...",
-                  "design_inner": "✏️ 正在设计内涵方案...",
-                  "produce_inner": "📝 正在生产内涵内容...",
-                  "design_outer": "🎨 正在设计外延方案...",
-                  "produce_outer": "🖼️ 正在生产外延内容...",
-                  "evaluate": "📋 正在执行评估...",
-                  "generate_field": "⚙️ 正在生成内容块...",
-                  "rewrite": "✏️ 正在重写内容...",
-                  "suggest": "✏️ 正在生成修改建议...",
-                  "generic_research": "🔍 正在进行深度调研...",
-                  "query": "🔎 正在查询内容块...",
-                  "chat": "💬 正在思考...",
-                };
-                const statusText = routeStatusNames[currentRoute] || (isJa ? `⏳ 処理中 [${currentRoute}]...` : `⏳ 正在处理 [${currentRoute}]...`);
-                setMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === tempAiMsg.id ? { ...m, content: statusText } : m
-                  )
-                );
               } else if (data.type === "tool_start") {
-                // 工具开始执行（LangGraph 新事件）
+                // 工具开始执行 → 添加 running 步骤
                 const toolName = toolNames[data.tool] || data.tool;
-                console.log("[AgentPanel] Tool start:", data.tool);
-                setMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === tempAiMsg.id
-                      ? { ...m, content: isJa ? `🔧 ${toolName} を実行しています...` : `🔧 正在使用 ${toolName}...` }
-                      : m
-                  )
-                );
+                setMessageSteps((prev) => {
+                  const next = new Map(prev);
+                  const steps = next.get(tempAiMsg.id) || [];
+                  next.set(tempAiMsg.id, [...steps, { id: `${data.tool}-${++_stepSeq}`, label: toolName, status: "running" as const }]);
+                  return next;
+                });
               } else if (data.type === "tool_progress") {
-                // 工具内部 LLM 生成进度
-                const toolName = toolNames[data.tool] || data.tool;
+                // 工具生成进度 → 更新最后一个 running 步骤的字数
                 const chars = data.chars || 0;
-                setMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === tempAiMsg.id
-                      ? { ...m, content: isJa ? `🔧 ${toolName} 実行中... (${chars} 字)` : `🔧 ${toolName} 生成中... (${chars} 字)` }
-                      : m
-                  )
-                );
+                setMessageSteps((prev) => {
+                  const next = new Map(prev);
+                  const steps = [...(next.get(tempAiMsg.id) || [])];
+                  for (let i = steps.length - 1; i >= 0; i--) {
+                    if (steps[i].status === "running") { steps[i] = { ...steps[i], chars }; break; }
+                  }
+                  next.set(tempAiMsg.id, steps);
+                  return next;
+                });
               } else if (data.type === "tool_end") {
-                // 工具完成（LangGraph 新事件）
-                console.log("[AgentPanel] Tool end:", data.tool, "field_updated:", data.field_updated);
-                if (data.field_updated && onContentUpdate) {
-                  onContentUpdate();
-                }
-                // 更新 AI 气泡：显示工具完成摘要（不再停留在"正在使用XXX"）
-                const toolName = toolNames[data.tool] || data.tool;
-                const summary = data.output ? data.output.slice(0, 200) : "";
-                setMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === tempAiMsg.id
-                      ? { ...m, content: isJa ? `✅ ${toolName} が完了しました。${summary ? "\n" + summary : ""}` : `✅ ${toolName} 完成。${summary ? "\n" + summary : ""}` }
-                      : m
-                  )
-                );
+                // 工具完成 → 标记最后一个 running 步骤为 done
+                if (data.field_updated && onContentUpdate) onContentUpdate();
+                setMessageSteps((prev) => {
+                  const next = new Map(prev);
+                  const steps = [...(next.get(tempAiMsg.id) || [])];
+                  for (let i = steps.length - 1; i >= 0; i--) {
+                    if (steps[i].status === "running") { steps[i] = { ...steps[i], status: "done", chars: undefined }; break; }
+                  }
+                  next.set(tempAiMsg.id, steps);
+                  return next;
+                });
               } else if (data.type === "suggestion_card") {
                 // Suggestion Card（propose_edit 工具输出）— 关联到当前 AI 消息
                 console.log("[AgentPanel] Suggestion card:", data.id, data.target_field, "→ msg:", tempAiMsg.id, "mode:", activeModeId);
@@ -849,6 +820,15 @@ export function AgentPanel({
                   setSuggestions((prev) =>
                     prev.map((s) => s.messageId === tempAiMsg.id ? { ...s, messageId: data.message_id } : s)
                   );
+                  // 同步 messageSteps: temp ID → 真实 ID
+                  setMessageSteps((prev) => {
+                    const steps = prev.get(tempAiMsg.id);
+                    if (!steps) return prev;
+                    const next = new Map(prev);
+                    next.delete(tempAiMsg.id);
+                    next.set(data.message_id, steps);
+                    return next;
+                  });
                 }
                 if (data.conversation_id) {
                   setActiveConversationId(data.conversation_id);
@@ -1062,49 +1042,36 @@ export function AgentPanel({
                 }
               } else if (data.type === "route") {
                 currentRoute = data.target;
-                const routeStatusNames: Record<string, string> = isJa ? {
-                  "intent": "🔍 意図を分析しています...",
-                  "research": "📊 顧客調査を進めています...",
-                  "generate_field": "⚙️ 内容ブロックを生成しています...",
-                  "rewrite": "✏️ 内容を書き直しています...",
-                  "suggest": "✏️ 修正提案を作成しています...",
-                  "evaluate": "📋 評価を実行しています...",
-                  "chat": "💬 考えています...",
-                } : {
-                  "intent": "🔍 正在分析意图...",
-                  "research": "📊 正在进行消费者调研...",
-                  "generate_field": "⚙️ 正在生成内容块...",
-                  "rewrite": "✏️ 正在重写内容...",
-                  "suggest": "✏️ 正在生成修改建议...",
-                  "evaluate": "📋 正在执行评估...",
-                  "chat": "💬 正在思考...",
-                };
-                const statusText = routeStatusNames[currentRoute] || (isJa ? "⏳ 処理中..." : "⏳ 正在处理...");
-                setMessages(prev =>
-                  prev.map(m => m.id === tempAiMsg.id ? { ...m, content: statusText } : m)
-                );
               } else if (data.type === "tool_start") {
                 const toolName = toolNames[data.tool] || data.tool;
-                setMessages(prev =>
-                  prev.map(m => m.id === tempAiMsg.id ? { ...m, content: isJa ? `🔧 ${toolName} を実行しています...` : `🔧 正在使用 ${toolName}...` } : m)
-                );
+                setMessageSteps((prev) => {
+                  const next = new Map(prev);
+                  const steps = next.get(tempAiMsg.id) || [];
+                  next.set(tempAiMsg.id, [...steps, { id: `${data.tool}-${++_stepSeq}`, label: toolName, status: "running" as const }]);
+                  return next;
+                });
               } else if (data.type === "tool_progress") {
-                const toolName = toolNames[data.tool] || data.tool;
                 const chars = data.chars || 0;
-                setMessages(prev =>
-                  prev.map(m => m.id === tempAiMsg.id
-                    ? { ...m, content: isJa ? `🔧 ${toolName} 実行中... (${chars} 字)` : `🔧 ${toolName} 生成中... (${chars} 字)` }
-                    : m)
-                );
+                setMessageSteps((prev) => {
+                  const next = new Map(prev);
+                  const steps = [...(next.get(tempAiMsg.id) || [])];
+                  for (let i = steps.length - 1; i >= 0; i--) {
+                    if (steps[i].status === "running") { steps[i] = { ...steps[i], chars }; break; }
+                  }
+                  next.set(tempAiMsg.id, steps);
+                  return next;
+                });
               } else if (data.type === "tool_end") {
-                if (data.field_updated && onContentUpdate) {
-                  onContentUpdate();
-                }
-                const tn = toolNames[data.tool] || data.tool;
-                const sm = data.output ? data.output.slice(0, 200) : "";
-                setMessages(prev =>
-                  prev.map(m => m.id === tempAiMsg.id ? { ...m, content: isJa ? `✅ ${tn} が完了しました。${sm ? "\n" + sm : ""}` : `✅ ${tn} 完成。${sm ? "\n" + sm : ""}` } : m)
-                );
+                if (data.field_updated && onContentUpdate) onContentUpdate();
+                setMessageSteps((prev) => {
+                  const next = new Map(prev);
+                  const steps = [...(next.get(tempAiMsg.id) || [])];
+                  for (let i = steps.length - 1; i >= 0; i--) {
+                    if (steps[i].status === "running") { steps[i] = { ...steps[i], status: "done", chars: undefined }; break; }
+                  }
+                  next.set(tempAiMsg.id, steps);
+                  return next;
+                });
               } else if (data.type === "suggestion_card") {
                 console.log("[AgentPanel] Suggestion card (edit):", data.id, data.target_field, "→ msg:", tempAiMsg.id, "mode:", activeModeId);
                 const newCard: SuggestionCardData = {
@@ -1177,6 +1144,15 @@ export function AgentPanel({
                   setSuggestions((prev) =>
                     prev.map((s) => s.messageId === tempAiMsg.id ? { ...s, messageId: data.message_id } : s)
                   );
+                  // 同步 messageSteps: temp ID → 真实 ID
+                  setMessageSteps((prev) => {
+                    const steps = prev.get(tempAiMsg.id);
+                    if (!steps) return prev;
+                    const next = new Map(prev);
+                    next.delete(tempAiMsg.id);
+                    next.set(data.message_id, steps);
+                    return next;
+                  });
                 }
                 // M7 T7.5: 流结束后清空 followUpSourceRef
                 followUpSourceRef.current = null;
@@ -1641,6 +1617,7 @@ export function AgentPanel({
               onCancelEdit={() => setEditingMessageId(null)}
               onRetry={() => handleRetry(msg.id)}
               onCopy={() => handleCopy(msg.content)}
+              steps={messageSteps.get(msg.id)}
             />
             {/* 此消息关联的 Suggestion Cards — inline 渲染在消息正下方 */}
             {/* 按 mode 隔离：只渲染当前模式产生的卡片（M1.5 修复跨模式泄漏） */}
@@ -1874,6 +1851,46 @@ interface MessageBubbleProps {
   onCancelEdit: () => void;
   onRetry: () => void;
   onCopy: () => void;
+  steps?: StreamStep[];
+}
+
+/** 可折叠的流式处理步骤列表（工具调用等内部过程） */
+function ProcessSteps({ steps, isStreaming }: { steps: StreamStep[]; isStreaming: boolean }) {
+  const [expanded, setExpanded] = useState(true);
+
+  useEffect(() => {
+    // 流式结束且有内容时自动折叠
+    if (!isStreaming) setExpanded(false);
+  }, [isStreaming]);
+
+  if (steps.length === 0) return null;
+  return (
+    <div className="mb-2 rounded-lg border border-surface-3/60 overflow-hidden text-xs">
+      <button
+        onClick={() => setExpanded((e) => !e)}
+        className="w-full flex items-center gap-1.5 px-3 py-1.5 text-zinc-500 hover:text-zinc-300 hover:bg-surface-3/40 transition-colors"
+      >
+        {isStreaming
+          ? <Loader2 className="w-3 h-3 animate-spin text-brand-400 flex-shrink-0" />
+          : <ChevronRight className={cn("w-3 h-3 flex-shrink-0 transition-transform", expanded && "rotate-90")} />
+        }
+        <span>{isStreaming ? "处理中..." : `过程 · ${steps.length} 步`}</span>
+      </button>
+      {expanded && (
+        <div className="px-3 pb-2 pt-0.5 space-y-1 border-t border-surface-3/40">
+          {steps.map((step) => (
+            <div key={step.id} className="flex items-center gap-1.5 text-zinc-500">
+              {step.status === "running"
+                ? <Loader2 className="w-3 h-3 animate-spin text-brand-400 flex-shrink-0" />
+                : <Check className="w-3 h-3 text-emerald-500/70 flex-shrink-0" />
+              }
+              <span>{step.label}{step.chars ? ` · ${step.chars} 字` : ""}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function MessageBubble({
@@ -1887,6 +1904,7 @@ function MessageBubble({
   onCancelEdit,
   onRetry,
   onCopy,
+  steps,
 }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const uiLocale = useUiLocale(projectLocale);
@@ -2002,6 +2020,13 @@ function MessageBubble({
             </div>
           ) : (
             <>
+              {/* AI 处理过程步骤（可折叠），仅 AI 消息显示 */}
+              {!isUser && steps && steps.length > 0 && (
+                <ProcessSteps
+                  steps={steps}
+                  isStreaming={steps.some((s) => s.status === "running")}
+                />
+              )}
               <div className={cn("text-sm", isUser && "whitespace-pre-wrap")}>
                 {isUser ? renderUserContent(message.content) : renderAiContent(message.content)}
               </div>
