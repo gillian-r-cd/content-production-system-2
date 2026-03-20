@@ -938,6 +938,37 @@ export function ContentBlockEditor({
     window.getSelection()?.removeAllRanges();
   }, [clearSelectionHighlight]);
 
+  /** 删除选中内容：直接将选中区域从 block.content 中移除并保存 */
+  const handleDeleteSelection = useCallback(async () => {
+    if (!block.content) return;
+    let newContent: string;
+    if (selectedMarkdownRange) {
+      // 主路径：位置映射精确删除
+      newContent = block.content.slice(0, selectedMarkdownRange.start) + block.content.slice(selectedMarkdownRange.end);
+    } else if (selectedText && block.content.includes(selectedText)) {
+      // 回退：纯文本精确匹配
+      newContent = block.content.replace(selectedText, "");
+    } else {
+      return;
+    }
+    try {
+      const updatedBlock = await updateCurrentBlock({ content: newContent }, { refreshTree: true });
+      setEditedContent(updatedBlock.content || "");
+      sendNotification(isJa ? "選択箇所を削除しました" : "已删除选中内容", "success");
+    } catch (err) {
+      console.error("[M4] Delete selection failed:", err);
+      sendNotification((isJa ? "削除に失敗しました: " : "删除失败: ") + (err instanceof Error ? err.message : (isJa ? "不明なエラー" : "未知错误")), "error");
+    } finally {
+      setSelectedText("");
+      setSelectedMarkdownRange(null);
+      setToolbarPosition(null);
+      setShowCustomInput(false);
+      setCustomInstruction("");
+      clearSelectionHighlight();
+      window.getSelection()?.removeAllRanges();
+    }
+  }, [block.content, selectedText, selectedMarkdownRange, isJa, clearSelectionHighlight]);
+
   /** 清除选中：点击内容区域外时 */
   useEffect(() => {
     if (!selectedText && !inlineEditResult) return;
@@ -1828,6 +1859,15 @@ export function ContentBlockEditor({
                     </button>
                   </>
                 )}
+                <div className="w-px h-4 bg-surface-3" />
+                <button
+                  onClick={handleDeleteSelection}
+                  className="px-2.5 py-1 text-xs text-red-400 hover:text-red-300 hover:bg-red-600/20 rounded transition-colors flex items-center gap-1"
+                  title={isJa ? "選択箇所を削除" : "删除选中内容"}
+                >
+                  <Trash2 className="w-3 h-3" />
+                  {isJa ? "削除" : "删除"}
+                </button>
               </div>
               {/* 对话改：自由输入框 */}
               {showCustomInput && (
