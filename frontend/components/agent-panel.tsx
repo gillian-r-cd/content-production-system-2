@@ -51,6 +51,16 @@ interface AgentPanelProps {
   /** B: 从内容块选中文字传入的引用上下文 */
   externalSelection?: AgentSelectionRef | null;
   onExternalSelectionConsumed?: () => void;
+  /** 多窗格模式：窗格标识（"A" | "B" | "C"），不传则为单窗格模式 */
+  paneLabel?: string;
+  /** 多窗格模式：是否为外部消息/选区的接收目标 */
+  isActivePaneTarget?: boolean;
+  /** 多窗格模式：点击将此窗格设为接收目标 */
+  onSetActivePaneTarget?: () => void;
+  /** 多窗格模式：新增窗格（只在最后一格且 count<3 时传入） */
+  onAddPane?: () => void;
+  /** 多窗格模式：关闭最后一格（只在 count>1 时传入） */
+  onClosePane?: () => void;
 }
 
 // 工具名称映射（匹配后端 AGENT_TOOLS 的 tool.name）
@@ -135,6 +145,11 @@ export function AgentPanel({
   onExternalMessageConsumed,
   externalSelection,
   onExternalSelectionConsumed,
+  paneLabel,
+  isActivePaneTarget,
+  onSetActivePaneTarget,
+  onAddPane,
+  onClosePane,
 }: AgentPanelProps) {
   const uiLocale = useUiLocale(projectLocale);
   const isJa = isJaProjectLocale(uiLocale);
@@ -1435,24 +1450,67 @@ export function AgentPanel({
               {projectId ? (isJa ? "Agent と対話しながらコンテンツ制作を進めます" : "与 Agent 对话推进内容生产") : (isJa ? "先にプロジェクトを選択してください" : "请先选择项目")}
             </p>
           </div>
-          {projectId && (
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => setShowModeManager(true)}
-                title={isJa ? "役割を管理" : "管理角色"}
-                className="text-zinc-500 hover:text-zinc-300 p-2 rounded hover:bg-surface-2 transition"
-              >
-                <Users size={16} />
-              </button>
-              <button
-                onClick={() => setShowMemoryPanel(true)}
-                title={isJa ? "プロジェクト記憶を見る" : "查看项目记忆"}
-                className="text-zinc-500 hover:text-zinc-300 text-lg px-2 py-1 rounded hover:bg-surface-2 transition"
-              >
-                🧠
-              </button>
-            </div>
-          )}
+          <div className="flex items-center gap-1">
+            {/* 多窗格：窗格标识 + 目标切换 + 新增 + 关闭 */}
+            {paneLabel && (
+              <>
+                <span className="text-xs font-mono text-zinc-500 px-1.5 py-0.5 rounded bg-surface-3 select-none">
+                  {paneLabel}
+                </span>
+                {onSetActivePaneTarget && (
+                  <button
+                    onClick={onSetActivePaneTarget}
+                    title={isActivePaneTarget ? (isJa ? "外部メッセージの受信先（クリックで解除）" : "外部消息接收目标（点击切换）") : (isJa ? "この窓をメッセージ受信先にする" : "设为外部消息接收窗口")}
+                    className={cn(
+                      "p-1.5 rounded transition text-sm leading-none",
+                      isActivePaneTarget
+                        ? "text-brand-400 bg-brand-500/15 hover:bg-brand-500/25"
+                        : "text-zinc-500 hover:text-zinc-300 hover:bg-surface-2"
+                    )}
+                  >
+                    {isActivePaneTarget ? "📍" : "📌"}
+                  </button>
+                )}
+                {onAddPane && (
+                  <button
+                    onClick={onAddPane}
+                    title={isJa ? "新しい対話窓を追加" : "新增对话窗口"}
+                    className="p-1.5 rounded text-zinc-500 hover:text-zinc-300 hover:bg-surface-2 transition"
+                  >
+                    <Plus size={13} />
+                  </button>
+                )}
+                {onClosePane && (
+                  <button
+                    onClick={onClosePane}
+                    title={isJa ? "この窓を閉じる" : "关闭此窗口"}
+                    className="p-1.5 rounded text-zinc-500 hover:text-red-400 hover:bg-red-500/10 transition"
+                  >
+                    <X size={13} />
+                  </button>
+                )}
+                <div className="w-px h-4 bg-surface-3 mx-0.5" />
+              </>
+            )}
+            {projectId && (
+              <>
+                <button
+                  onClick={() => setShowModeManager(true)}
+                  title={isJa ? "役割を管理" : "管理角色"}
+                  className="text-zinc-500 hover:text-zinc-300 p-2 rounded hover:bg-surface-2 transition"
+                >
+                  <Users size={16} />
+                </button>
+                <button
+                  onClick={() => setShowMemoryPanel(true)}
+                  title={isJa ? "プロジェクト記憶を見る" : "查看项目记忆"}
+                  className="text-zinc-500 hover:text-zinc-300 text-lg px-2 py-1 rounded hover:bg-surface-2 transition"
+                >
+                  🧠
+                </button>
+              </>
+            )}
+          </div>
         </div>
         {/* 模式切换标签栏 + 会话历史时钟 icon */}
         <div className="px-3 flex items-center gap-1">

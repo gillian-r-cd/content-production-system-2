@@ -10,7 +10,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { WorkspaceLayout } from "@/components/layout/workspace-layout";
 import { ProgressPanel } from "@/components/progress-panel";
 import { ContentPanel, type ViewLayout } from "@/components/content-panel";
-import { AgentPanel } from "@/components/agent-panel";
+import { AgentPanelGroup } from "@/components/agent-panel-group";
 import { CreateProjectModal } from "@/components/create-project-modal";
 import { GlobalSearchModal } from "@/components/global-search-modal";
 import { ProjectAutoSplitModal } from "@/components/project-auto-split-modal";
@@ -159,6 +159,8 @@ export default function WorkspacePage() {
   
   // M3: Eval 诊断→Agent 修改桥接（中栏组件设置消息，右栏 AgentPanel 消费）
   const [pendingAgentMessage, setPendingAgentMessage] = useState<string | null>(null);
+  // 多窗格：当前窗格数（由 AgentPanelGroup 上报，用于自动扩展右栏宽度）
+  const [agentPaneCount, setAgentPaneCount] = useState(1);
 
   // B: 选中文字→Agent Panel 引用上下文
   const [pendingAgentSelection, setPendingAgentSelection] = useState<AgentSelectionRef | null>(null);
@@ -925,6 +927,7 @@ export default function WorkspacePage() {
       <div className="flex-1 overflow-hidden">
         <WorkspaceLayout
           locale={uiLocale}
+          rightWidthTarget={agentPaneCount * 384}
           leftPanel={
             <ProgressPanel
               project={currentProject}
@@ -1011,7 +1014,7 @@ export default function WorkspacePage() {
             </div>
           }
           rightPanel={
-            <AgentPanel
+            <AgentPanelGroup
               key={`${currentProject?.id || "none"}-${refreshKey}`}  // 项目切换时销毁重建，refreshKey 保留阶段推进刷新
               projectId={currentProject?.id || null}
               projectLocale={currentProject?.locale}
@@ -1028,6 +1031,7 @@ export default function WorkspacePage() {
               onExternalMessageConsumed={() => setPendingAgentMessage(null)}
               externalSelection={pendingAgentSelection}
               onExternalSelectionConsumed={() => setPendingAgentSelection(null)}
+              onPaneCountChange={(count) => setAgentPaneCount(count)}
             />
           }
         />

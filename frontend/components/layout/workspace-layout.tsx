@@ -20,7 +20,7 @@ const LEFT_MAX = 420;
 
 const RIGHT_DEFAULT = 384;  // w-96
 const RIGHT_MIN = 280;
-const RIGHT_MAX = 620;
+const RIGHT_MAX = 1200;     // 扩大上限，支持多窗格并列
 
 const COLLAPSED_WIDTH = 0;  // 折叠后宽度
 
@@ -55,6 +55,8 @@ interface WorkspaceLayoutProps {
   leftPanel: ReactNode;
   centerPanel: ReactNode;
   rightPanel: ReactNode;
+  /** 右栏目标宽度：当值增大时自动扩展右栏（多窗格时由父组件传入） */
+  rightWidthTarget?: number;
 }
 
 export function WorkspaceLayout({
@@ -62,6 +64,7 @@ export function WorkspaceLayout({
   leftPanel,
   centerPanel,
   rightPanel,
+  rightWidthTarget,
 }: WorkspaceLayoutProps) {
   const isJa = useUiIsJa(locale);
   // --- 状态 ---
@@ -78,6 +81,13 @@ export function WorkspaceLayout({
       saveState({ lw: leftWidth, rw: rightWidth, lc: leftCollapsed, rc: rightCollapsed });
     }, 300);
   }, [leftWidth, rightWidth, leftCollapsed, rightCollapsed]);
+
+  // 当父组件请求更大宽度时（多窗格），自动扩展右栏（不缩小，用户可手动调回）
+  useEffect(() => {
+    if (!rightWidthTarget || rightCollapsed) return;
+    const target = Math.max(RIGHT_MIN, Math.min(RIGHT_MAX, rightWidthTarget));
+    setRightWidth((w) => (target > w ? target : w));
+  }, [rightWidthTarget, rightCollapsed]);
 
   // --- 拖拽 ---
   const dragging = useRef<"left" | "right" | null>(null);
