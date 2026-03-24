@@ -1451,7 +1451,7 @@ export function AgentPanel({
             </p>
           </div>
           <div className="flex items-center gap-1">
-            {/* 多窗格：窗格标识 + 目标切换 + 新增 + 关闭 */}
+            {/* 多窗格：窗格标识 + 目标切换 + 关闭（仅多窗格时显示） */}
             {paneLabel && (
               <>
                 <span className="text-xs font-mono text-zinc-500 px-1.5 py-0.5 rounded bg-surface-3 select-none">
@@ -1471,15 +1471,6 @@ export function AgentPanel({
                     {isActivePaneTarget ? "📍" : "📌"}
                   </button>
                 )}
-                {onAddPane && (
-                  <button
-                    onClick={onAddPane}
-                    title={isJa ? "新しい対話窓を追加" : "新增对话窗口"}
-                    className="p-1.5 rounded text-zinc-500 hover:text-zinc-300 hover:bg-surface-2 transition"
-                  >
-                    <Plus size={13} />
-                  </button>
-                )}
                 {onClosePane && (
                   <button
                     onClick={onClosePane}
@@ -1491,6 +1482,16 @@ export function AgentPanel({
                 )}
                 <div className="w-px h-4 bg-surface-3 mx-0.5" />
               </>
+            )}
+            {/* 新增窗格按钮：单/多窗格均显示（只在最后一格且 count<3 时传入） */}
+            {onAddPane && (
+              <button
+                onClick={onAddPane}
+                title={isJa ? "新しい対話窓を追加" : "新增对话窗口"}
+                className="p-1.5 rounded text-zinc-500 hover:text-zinc-300 hover:bg-surface-2 transition"
+              >
+                <Plus size={13} />
+              </button>
             )}
             {projectId && (
               <>
