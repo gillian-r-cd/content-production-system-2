@@ -174,12 +174,7 @@ async function fetchAPI<T>(
   options: RequestInit = {}
 ): Promise<T> {
   const url = `${API_BASE}${endpoint}`;
-  const method = options.method || "GET";
 
-  // #region agent log
-  fetch("http://127.0.0.1:7242/ingest/41308a22-a688-4d62-9d81-f84e13dbaa44",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({runId:"markdown-import-initial",hypothesisId:"H1",location:"frontend/lib/api.ts:176",message:"fetchAPI request",data:{endpoint,url,apiBase:API_BASE,method},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
-  
   const response = await fetch(url, {
     ...options,
     headers: {
@@ -189,10 +184,6 @@ async function fetchAPI<T>(
   });
 
   if (!response.ok) {
-    const responsePreview = await response.clone().text().catch(() => "");
-    // #region agent log
-    fetch("http://127.0.0.1:7242/ingest/41308a22-a688-4d62-9d81-f84e13dbaa44",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({runId:"markdown-import-initial",hypothesisId:"H2",location:"frontend/lib/api.ts:187",message:"fetchAPI non-ok response",data:{endpoint,url,method,status:response.status,statusText:response.statusText,contentType:response.headers.get("content-type"),bodyPreview:responsePreview.slice(0,300)},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     const error = await response.json().catch(() => ({ detail: "Unknown error" }));
     // 处理Pydantic验证错误格式 (detail可能是数组)
     let errorMessage: string;

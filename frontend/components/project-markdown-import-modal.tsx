@@ -97,9 +97,6 @@ export function ProjectMarkdownImportModal({
     setImporting(true);
     setError(null);
     try {
-      // #region agent log
-      fetch("http://127.0.0.1:7242/ingest/41308a22-a688-4d62-9d81-f84e13dbaa44",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({runId:"markdown-import-initial",hypothesisId:"H3",location:"frontend/components/project-markdown-import-modal.tsx:99",message:"markdown import submit",data:{projectId,importMode,fileCount:files.length,fileNames:files.map((file)=>file.name),filePaths:files.map((file)=>file.path||file.name)},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       const result = await projectAPI.importMarkdownFiles(projectId, {
         import_mode: importMode,
         files,
@@ -110,9 +107,6 @@ export function ProjectMarkdownImportModal({
       onClose();
     } catch (importError) {
       console.error("导入 Markdown 失败:", importError);
-      // #region agent log
-      fetch("http://127.0.0.1:7242/ingest/41308a22-a688-4d62-9d81-f84e13dbaa44",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({runId:"markdown-import-initial",hypothesisId:"H3",location:"frontend/components/project-markdown-import-modal.tsx:108",message:"markdown import failed in modal",data:{projectId,importMode,fileCount:files.length,errorMessage:importError instanceof Error ? importError.message : String(importError)},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       setError(importError instanceof Error ? importError.message : t.markdownImportFailed);
     } finally {
       setImporting(false);
